@@ -189,7 +189,7 @@ jobs:
           cosign verify --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             --certificate-identity https://github.com/mitstack-eu/talos-cluster-kit/.github/workflows/ci.yml@refs/heads/main \
             "$REF" > /dev/null
-          docker image rm "${REF%@*}"
+          docker image rm "${REF%@*}" # the push left a local copy, which the pull must not read
           docker pull "$REF"
           gh api "orgs/mitstack-eu/packages/container/${TOOLS_PACKAGE##*/}" --jq '{name, visibility, created_at}'
 

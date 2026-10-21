@@ -57,9 +57,11 @@ The member removal Job and the node report run in the tools image that
 `tools/Dockerfile` builds: bash, curl, jq, talosctl and kubectl on Alpine
 3.22. `tools/tools.env` pins both binaries with their sha256, and the
 Dockerfile and the gateway's `prepare.sh` both install from it, so the image
-and the gateway run the same binaries. The block
-builds, signs and pushes that image and passes its digest to
-`etcd.RemoveMemberJob` and `report.Manifests`.
+and the gateway run the same binaries. Each release pushes and signs that
+image and names it in `tools.Image`, which a block passes to
+`etcd.RemoveMemberJob`, `report.Manifests` and the gateway's `ExtraImages`.
+[The README](../README.md#how-a-release-is-versioned) says how the release
+pins it.
 
 ## How the tests run the scripts
 
@@ -100,7 +102,7 @@ and a manual run. Every job runs on the runner the repository variable
 | `components` | Each rendered component matches a fresh render, and shellcheck passes on every script |
 | `tools image` | The tools image builds and each of its commands runs |
 | `pr key gate` | A pull request's title or commits name a board key |
-| `release` | On a push to `main`, tags the commit with the version `.github/version` names |
+| `release` | On a push to `main` with a new version in `.github/version`, pushes and signs the tools image, pulls it with no login, and tags a commit on top that pins it in `tools.Image` |
 | `record delivery` | On a push to `main`, records the push's board keys on Plain |
 
 ## What the kit leaves to its blocks

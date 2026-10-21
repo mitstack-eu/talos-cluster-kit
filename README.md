@@ -40,7 +40,7 @@ the order a block uses them.
 | `gateway` | Renders the cloud-config of the gateway in each location, and mints the cluster's gateway CA and each gateway's certificate | `Render`, `Inputs`, `NewCA`, `CA.Issue`, `ReleaseURL` |
 | `etcd` | Renders the Job that removes a lost node's etcd member and then its Node object, and holds the gateway's script that bootstraps etcd empty or from a snapshot | `RemoveMemberJob`, `BootstrapScript`, `Bootstrap.Args` |
 | `report` | Renders the node report, a CronJob that posts each node, its Talos version, the etcd membership and Argo CD's health to the platform | `Manifests` |
-| `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image and the gateway both install | `Env`, `Pin` |
+| `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image and the gateway both install, and names the tools image a release published | `Env`, `Pin`, `Image` |
 | `testutil` | Holds the fixtures, fakes and decoders this module's tests and a block's tests share | `NewCluster`, `NewTools`, `Golden` |
 
 For example, this renders the configuration a Cloud cluster's image embeds,
@@ -122,6 +122,18 @@ every CI job passes on `main`, the `release` job tags that commit `v` followed
 by the version, unless the tag exists already. The `record delivery` job then
 records the push's board keys, the `MIT-` issue keys its commits name, on
 Plain, mitstack's board.
+
+A release also publishes the tools image, which the member removal Job and the
+node report run in. The `release` job pushes it to the public package
+`ghcr.io/mitstack-eu/talos-cluster-kit-tools`, signs its digest keyless as
+this repository's CI on `main`, and refuses to tag unless a client with no
+login can pull it. An image's digest is known only once it is built, so it
+cannot sit in the commit the image is built from. The job therefore tags a
+commit on top of the merged one, changing only the line of `tools/tools.go`
+that sets `tools.Image` to the pushed reference. On `main`, `tools.Image`
+names no published image, with the tag `unreleased` and a digest of zeros. A
+block reads it from the tag its `go.mod` requires, so a `go.mod` bump alone
+moves its tools image.
 
 The gateway fetches each served manifest from the release a block requires, at
 the URL `gateway.ReleaseURL` gives, and refuses any file whose sha256 differs

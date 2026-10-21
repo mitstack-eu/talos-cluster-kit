@@ -53,7 +53,7 @@ type Cluster struct {
 	Gateways []netip.Addr
 	// GatewayCA is the PEM certificate the gateways' TLS certificates chain to.
 	GatewayCA []byte
-	// Logs is where the node-local Collector exports the node's logs.
+	// Logs is where the node-local Collector exports the node's logs; with none, the node runs no Collector.
 	Logs components.LogExport
 }
 

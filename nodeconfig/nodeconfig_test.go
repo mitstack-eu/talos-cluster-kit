@@ -55,6 +55,43 @@ func goldenPath(profile nodeconfig.Profile, locations int, hostname string) stri
 	return filepath.Join("testdata", "golden", name+".yaml")
 }
 
+func TestRender_WithNoLogReceiverLeavesOutTheCollectorAndBothLogSinksAndNothingElse(t *testing.T) {
+	noReceiver := testutil.NewCluster(t)
+	noReceiver.Logs = components.LogExport{}
+	withReceiver, err := nodeconfig.Render(testutil.NewCluster(t), nodeconfig.Node{})
+	require.NoError(t, err)
+
+	got, err := nodeconfig.Render(noReceiver, nodeconfig.Node{})
+
+	require.NoError(t, err)
+	assert.Equal(t, withoutLogParts(testutil.Documents(t, withReceiver)), testutil.Documents(t, got))
+}
+
+// withoutLogParts drops the service log destination, the kernel log sink and the Collector's manifest.
+func withoutLogParts(docs []map[string]any) []map[string]any {
+	var kept []map[string]any
+	for _, doc := range docs {
+		if doc["kind"] == "KmsgLogConfig" || doc["name"] == "mitstack-node-logs" {
+			continue
+		}
+		if machine, ok := doc["machine"].(map[string]any); ok {
+			delete(machine, "logging")
+		}
+		kept = append(kept, doc)
+	}
+	return kept
+}
+
+func TestRender_RefusesALogReceiverWithACAButNoEndpoint(t *testing.T) {
+	cluster := testutil.NewCluster(t)
+	cluster.Logs.Endpoint = ""
+
+	_, err := nodeconfig.Render(cluster, nodeconfig.Node{})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `log export endpoint "" is not host:port`)
+}
+
 func TestRender_PullsEveryImageOfTheComponentSetFromEveryGatewaysMirror(t *testing.T) {
 	cluster := testutil.NewCluster(t, testutil.WithLocations(3))
 	images, err := mirror.List(cluster.Components)

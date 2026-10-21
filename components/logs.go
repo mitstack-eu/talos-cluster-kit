@@ -16,12 +16,17 @@ const (
 	KernelLogPort  = 5171
 )
 
-// LogExport names the OTLP receiver every node's logs go to.
+// LogExport names the OTLP receiver every node's logs go to, and its zero value names none.
 type LogExport struct {
 	// Endpoint is the receiver's host:port for OTLP over gRPC.
 	Endpoint string
 	// CA is the PEM certificate the Collector verifies the receiver against.
 	CA []byte
+}
+
+// IsZero reports whether e names no receiver, so the cluster keeps its logs on its nodes.
+func (e LogExport) IsZero() bool {
+	return e.Endpoint == "" && len(e.CA) == 0
 }
 
 // logCollectorImage is the pinned opentelemetry-collector-contrib release, by digest.

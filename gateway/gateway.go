@@ -55,7 +55,7 @@ type Inputs struct {
 	ExtraImages []components.Image
 	// ManifestBaseURL is the release of this kit the served manifests are fetched from, as ReleaseURL returns.
 	ManifestBaseURL string
-	// Logs is the receiver the node-local Collectors export to, whose port the gateway forwards.
+	// Logs is the receiver the node-local Collectors export to, whose port the gateway forwards when there is one.
 	Logs components.LogExport
 }
 
@@ -127,8 +127,11 @@ func (in Inputs) templateData() (map[string]string, error) {
 	}, nil
 }
 
-// egressPorts are the TCP ports the nodes may reach past the gateway: HTTPS, and the log receiver's port.
+// egressPorts are the TCP ports the nodes may reach past the gateway: HTTPS, and the log receiver's port if any.
 func (in Inputs) egressPorts() (string, error) {
+	if in.Logs.IsZero() {
+		return strconv.Itoa(httpsPort), nil
+	}
 	_, port, err := net.SplitHostPort(in.Logs.Endpoint)
 	if err != nil {
 		return "", fmt.Errorf("log export endpoint %q: %w", in.Logs.Endpoint, err)

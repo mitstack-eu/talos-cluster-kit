@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,6 +45,20 @@ func TestRender_MatchesTheGoldenCloudConfigWithinHetznersUserDataLimit(t *testin
 	assert.LessOrEqual(t, len(got), gateway.UserDataLimit)
 	require.Len(t, testutil.Documents(t, got), 1, "the cloud-config is not one YAML document")
 	testutil.Golden(t, filepath.Join("testdata", "golden", "cloud-config.yaml"), got)
+}
+
+func TestRender_WithNoLogReceiverForwardsHTTPSAloneAndChangesNothingElse(t *testing.T) {
+	const withLogPort, httpsAlone = "tcp dport { 443, 4317 } accept", "tcp dport { 443 } accept"
+	in := inputs(t)
+	in.Logs = components.LogExport{}
+	withReceiver, err := gateway.Render(inputs(t))
+	require.NoError(t, err)
+	require.Contains(t, string(withReceiver), withLogPort)
+
+	got, err := gateway.Render(in)
+
+	require.NoError(t, err)
+	assert.Equal(t, strings.Replace(string(withReceiver), withLogPort, httpsAlone, 1), string(got))
 }
 
 func TestRender_RefusesAnAddressOutsideTheNetwork(t *testing.T) {

@@ -105,6 +105,58 @@ func TestRender_UsesHetznersResolversAndTimeServersInPlaceOfTalosDefaults(t *tes
 	assert.Empty(t, testutil.Kind(docs, "DiscoveryServiceConfig"), "the configuration still reaches Sidero's discovery service")
 }
 
+func TestRender_CarriesNoAdminClientCertificate(t *testing.T) {
+	cluster := testutil.NewCluster(t)
+
+	got, err := nodeconfig.Render(cluster, nodeconfig.Node{})
+
+	require.NoError(t, err)
+	var certs []*x509.Certificate
+	collectCertificates(t, got, &certs)
+	for _, doc := range testutil.Documents(t, got) {
+		collectBase64Certificates(t, doc, &certs)
+	}
+	require.NotEmpty(t, certs, "the configuration holds no certificate at all")
+	for _, cert := range certs {
+		assert.True(t, cert.IsCA, "certificate %q in the configuration is not a CA", cert.Subject)
+		assert.NotContains(t, cert.Subject.Organization, "os:admin", "certificate %q is an admin client certificate", cert.Subject)
+	}
+}
+
+// collectCertificates parses every PEM certificate block in data.
+func collectCertificates(t *testing.T, data []byte, certs *[]*x509.Certificate) {
+	t.Helper()
+	for block, rest := pem.Decode(data); block != nil; block, rest = pem.Decode(rest) {
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		require.NoError(t, err)
+		*certs = append(*certs, cert)
+	}
+}
+
+// collectBase64Certificates finds the base64-encoded PEM certificates the v1alpha1 document keeps under crt fields.
+func collectBase64Certificates(t *testing.T, node any, certs *[]*x509.Certificate) {
+	t.Helper()
+	switch v := node.(type) {
+	case map[string]any:
+		for key, child := range v {
+			if s, ok := child.(string); ok && key == "crt" {
+				data, err := base64.StdEncoding.DecodeString(s)
+				require.NoError(t, err, "crt field %q", s)
+				collectCertificates(t, data, certs)
+				continue
+			}
+			collectBase64Certificates(t, child, certs)
+		}
+	case []any:
+		for _, child := range v {
+			collectBase64Certificates(t, child, certs)
+		}
+	}
+}
+
 func TestRender_RefusesANodeItsProfileCannotName(t *testing.T) {
 	cases := []struct {
 		name    string

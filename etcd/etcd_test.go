@@ -14,7 +14,7 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 )
 
-// fakeTalosctl answers etcd members from the fourth proof's table and fails remove-member with FAKE_REMOVE_EXIT.
+// fakeTalosctl answers etcd members from testdata/members.txt and fails remove-member with FAKE_REMOVE_EXIT.
 const fakeTalosctl = `
 case "$*" in
   *"etcd members"*) cat "$FAKE_MEMBERS" ;;

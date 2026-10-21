@@ -55,7 +55,7 @@ type Inputs struct {
 	ExtraImages []components.Image
 	// ManifestBaseURL is the release of this kit the served manifests are fetched from, as ReleaseURL returns.
 	ManifestBaseURL string
-	// Logs is the receiver the node-local Collectors export to, whose port the gateway forwards; with none, it forwards no log port.
+	// Logs is the receiver the node-local Collectors export to, whose port the gateway forwards when there is one.
 	Logs components.LogExport
 }
 

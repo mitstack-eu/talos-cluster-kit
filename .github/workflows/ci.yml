@@ -1,0 +1,167 @@
+# Module CI: the repository's one workflow.
+#
+# Every event runs the Go suites, the check that each vendored component
+# matches a fresh render of its pinned chart, shellcheck over every script, and
+# a build of the tools image. A pull request also runs the board key gate.
+#
+# Once all of them pass on a push to main, the release job tags the commit
+# with the version .github/version names, unless that tag exists already, and
+# the record delivery job records the push's board keys on Plain. A block
+# takes a change only by requiring a newer tag in its go.mod.
+#
+# The tools image is built here only to prove it builds; the block that runs
+# the Jobs builds, signs and pushes it, as it does for its own image.
+name: Module CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '["ubicloud-standard-2"]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26.10'
+
+      - name: go vet
+        run: go vet ./...
+
+      # The script suites run bash, curl and jq from the runner's image.
+      - name: go test
+        run: go test -race ./...
+
+  components:
+    name: components
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '["ubicloud-standard-2"]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install helm v3.18.6
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl -fsSL -o helm.tar.gz https://get.helm.sh/helm-v3.18.6-linux-amd64.tar.gz
+          echo "3f43c0aa57243852dd542493a0f54f1396c0bc8ec7296bbb2c01e802010819ce  helm.tar.gz" | sha256sum -c -
+          tar -xzf helm.tar.gz linux-amd64/helm
+          echo "$RUNNER_TEMP/linux-amd64" >> "$GITHUB_PATH"
+
+      - name: Check every component against a fresh render
+        run: scripts/render-components.sh --check
+
+      - name: shellcheck
+        run: shellcheck -x scripts/*.sh scripts/lib/*.sh etcd/scripts/*.sh gateway/scripts/*.sh report/scripts/*.sh
+
+  tools-image:
+    name: tools image
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '["ubicloud-standard-2"]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build the tools image
+        run: docker build -t talos-tools:ci tools
+
+      - name: Run each of its commands
+        run: |
+          set -euo pipefail
+          docker run --rm talos-tools:ci bash --version
+          docker run --rm talos-tools:ci jq --version
+          docker run --rm talos-tools:ci curl --version
+          docker run --rm talos-tools:ci talosctl version --client --short
+          docker run --rm talos-tools:ci kubectl version --client
+
+  pr-key-gate:
+    name: pr key gate
+    if: github.event_name == 'pull_request'
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '["ubicloud-standard-2"]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the base..head range needs history a shallow checkout has not
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26.10'
+
+      # The title comes through the environment, since a pull request's title is text its author controls.
+      - name: Gate the pull request on a board key
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: go run github.com/mitstack-eu/operator-kit/v2/cmd/pr-keys@v2.5.1 --repo . --base "$BASE_SHA" --head "$HEAD_SHA"
+
+  release:
+    name: release
+    needs: [test, components, tools-image]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '["ubicloud-standard-2"]') }}
+    permissions:
+      contents: write
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Tag the commit with the version .github/version names
+        run: |
+          set -euo pipefail
+          tag="v$(cat .github/version)"
+          case "$tag" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::.github/version holds $tag, want MAJOR.MINOR.PATCH"; exit 1 ;;
+          esac
+          if git rev-parse -q --verify "refs/tags/$tag" > /dev/null; then
+            echo "$tag exists at $(git rev-list -n 1 "$tag"), so nothing is released"
+            exit 0
+          fi
+          git tag "$tag" "$GITHUB_SHA"
+          git push origin "refs/tags/$tag"
+          echo "released $tag at $GITHUB_SHA"
+
+  # A push that cuts no tag still delivers its keys, so this needs both jobs to succeed and reads no output of release.
+  record-delivery:
+    name: record delivery
+    needs: [test, release]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '["ubicloud-standard-2"]') }}
+    # It pushes the board-synced anchor tag it advances.
+    permissions:
+      contents: write
+    concurrency:
+      group: record-delivery
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # range resolution reads the board-synced tag and history a shallow checkout has neither
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26.10'
+
+      - name: Record this push's delivered board keys
+        env:
+          TRACKER_BASE_URL: ${{ vars.TRACKER_BASE_URL }}
+          TRACKER_API_TOKEN: ${{ secrets.TRACKER_API_TOKEN }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: go run github.com/mitstack-eu/operator-kit/v2/cmd/board-delivery@v2.5.1 --repo . --before "$BEFORE_SHA" --after "$GITHUB_SHA"

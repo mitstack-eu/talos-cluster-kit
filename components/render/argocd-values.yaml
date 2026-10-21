@@ -1,0 +1,13 @@
+global:
+  image:
+    repository: quay.io/argoproj/argocd
+    tag: v3.5.5@sha256:13db7b10db23283b1b36f855046602e18539a8a8204c9f6f039e8896c8897518
+dex:
+  enabled: false
+redis:
+  image:
+    repository: public.ecr.aws/docker/library/redis
+    tag: 8.2.3-alpine@sha256:08ad0b1d280850169a790dba1393ff7a90aef951fc19632cf4d3ce4f78e679ba
+configs:
+  cm:
+    resource.customizations.health.argoproj.io_Application: 'local h=obj.status and obj.status.health or {} return {status=h.status or "Progressing",message=h.message or ""}'

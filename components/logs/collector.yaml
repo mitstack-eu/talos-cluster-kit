@@ -1,0 +1,78 @@
+# The node-local OpenTelemetry Collector. Talos sends its service and kernel
+# logs over plain TCP to the loopback address, where this Collector listens on
+# the host network, so the plain leg never leaves the machine. The Collector
+# exports over OTLP with TLS, verifying the receiver against the CA below.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mitstack-node-logs
+  namespace: kube-system
+data:
+  ca.crt: |
+{{ indent 4 .CA }}
+  config.yaml: |
+    receivers:
+      tcplog/service:
+        listen_address: 127.0.0.1:{{ .ServicePort }}
+        operators:
+          - type: json_parser
+      tcplog/kernel:
+        listen_address: 127.0.0.1:{{ .KernelPort }}
+        operators:
+          - type: json_parser
+    processors:
+      batch: {}
+    exporters:
+      otlp_grpc:
+        endpoint: {{ .Endpoint }}
+        tls:
+          ca_file: /etc/mitstack-node-logs/ca.crt
+    service:
+      pipelines:
+        logs:
+          receivers: [tcplog/service, tcplog/kernel]
+          processors: [batch]
+          exporters: [otlp_grpc]
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: mitstack-node-logs
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mitstack-node-logs
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mitstack-node-logs
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      priorityClassName: system-node-critical
+      automountServiceAccountToken: false
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: collector
+          image: {{ .Image }}
+          args: [--config=/etc/mitstack-node-logs/config.yaml]
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: {cpu: 20m, memory: 64Mi}
+            limits: {memory: 256Mi}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/mitstack-node-logs
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: mitstack-node-logs

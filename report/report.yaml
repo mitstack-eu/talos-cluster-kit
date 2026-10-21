@@ -1,0 +1,118 @@
+# The node report: a CronJob that reads the cluster with the Talos os:reader
+# role and a Kubernetes identity that may only read Nodes and Applications,
+# and posts the result to the platform. It also creates the one namespace
+# whose pods may hold a Talos identity.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Namespace }}
+---
+apiVersion: talos.dev/v1alpha1
+kind: ServiceAccount
+metadata:
+  name: mitstack-node-report
+  namespace: {{ .Namespace }}
+spec:
+  roles:
+    - os:reader
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mitstack-node-report
+  namespace: {{ .Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mitstack-node-report
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list]
+  - apiGroups: [argoproj.io]
+    resources: [applications]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mitstack-node-report
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mitstack-node-report
+subjects:
+  - kind: ServiceAccount
+    name: mitstack-node-report
+    namespace: {{ .Namespace }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: mitstack-node-report
+  namespace: {{ .Namespace }}
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 240
+      template:
+        spec:
+          serviceAccountName: mitstack-node-report
+          restartPolicy: Never
+          nodeSelector:
+            node-role.kubernetes.io/control-plane: ""
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            fsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: report
+              image: {{ .Image }}
+              command:
+                - bash
+                - -c
+                - |
+{{ indent 18 .Script }}
+              env:
+                - name: REPORT_URL
+                  value: {{ printf "%q" .ReportURL }}
+                - name: SUBSCRIPTION_ID
+                  value: {{ printf "%q" .SubscriptionID }}
+                - name: HOST_IP
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: status.hostIP
+                - name: HOME
+                  value: /tmp
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+                - name: report-token
+                  mountPath: /var/run/mitstack
+                  readOnly: true
+                - name: talos-secrets
+                  mountPath: /var/run/secrets/talos.dev
+                  readOnly: true
+          volumes:
+            - name: tmp
+              emptyDir: {}
+            - name: report-token
+              secret:
+                secretName: {{ .TokenSecret }}
+                defaultMode: 0440
+            - name: talos-secrets
+              secret:
+                secretName: mitstack-node-report

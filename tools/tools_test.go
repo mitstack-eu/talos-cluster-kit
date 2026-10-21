@@ -27,3 +27,9 @@ func TestPin_ReadsEachBinarysPinAndNothingForAnUnknownName(t *testing.T) {
 		})
 	}
 }
+
+func TestImage_NamesTheKitsToolsPackageByTagAndDigest(t *testing.T) {
+	ref := tools.Image
+
+	assert.Regexp(t, `^ghcr\.io/mitstack-eu/talos-cluster-kit-tools:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$`, ref)
+}

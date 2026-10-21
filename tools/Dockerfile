@@ -1,7 +1,7 @@
 # The tools image the etcd member removal and the node report run in: bash,
 # curl, jq, talosctl and kubectl, each binary checked against the sha256 that
 # tools.env pins, the same file the gateway installs its binaries from.
-# A block builds, signs and pushes it, and renders its digest into the Jobs.
+# The kit's release job pushes and signs it, and tools.Image names it.
 FROM docker.io/library/alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
 
 COPY tools.env /tmp/tools.env

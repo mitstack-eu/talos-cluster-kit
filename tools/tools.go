@@ -1,4 +1,5 @@
-// Package tools holds the talosctl and kubectl pins that the tools image and the gateway both install.
+// Package tools holds the talosctl and kubectl pins that the tools image and the gateway both install, and the
+// tools image a release of this kit published.
 package tools
 
 import (
@@ -10,6 +11,9 @@ import (
 //
 //go:embed tools.env
 var Env string
+
+// Image is the tools image this release published and signed, which the release job writes into the commit it tags.
+const Image = "ghcr.io/mitstack-eu/talos-cluster-kit-tools:unreleased@sha256:0000000000000000000000000000000000000000000000000000000000000000"
 
 // Pin returns the value tools.env gives name, or "" when it names none.
 func Pin(name string) string {

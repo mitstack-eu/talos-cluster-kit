@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strconv"
 
 	"github.com/siderolabs/talos/pkg/machinery/config/config"
@@ -34,7 +35,7 @@ const TalosAPINamespace = "mitstack-node"
 
 // adapt changes the generated documents the kit keeps: no kube-proxy, since Cilium replaces it, the nodes'
 // subscription label, etcd and the kubelet bound to the private network, and service logs sent to the
-// node-local Collector.
+// node-local Collector when the cluster has a log receiver.
 func (c Cluster) adapt(generated []config.Document) []config.Document {
 	var docs []config.Document
 	for _, doc := range generated {
@@ -57,6 +58,9 @@ func (c Cluster) adapt(generated []config.Document) []config.Document {
 
 func (c Cluster) adaptV1Alpha1(d *v1alpha1.Config) {
 	d.ClusterConfig.EtcdConfig.EtcdAdvertisedSubnets = []string{c.Network.String()}
+	if c.Logs.IsZero() {
+		return
+	}
 	d.MachineConfig.MachineLogging = &v1alpha1.LoggingConfig{
 		LoggingDestinations: []v1alpha1.LoggingDestination{{
 			LoggingEndpoint:  &v1alpha1.Endpoint{URL: loopbackLogURL(components.ServiceLogPort)},
@@ -76,7 +80,11 @@ func (c Cluster) documents(n Node) ([]config.Document, error) {
 	if err != nil {
 		return nil, err
 	}
-	docs := []config.Document{resolverDocument(), timeSyncDocument(), hostnameDocument(n), c.trustedRootsDocument(), kernelLogDocument(), talosAPIAccessDocument()}
+	docs := []config.Document{resolverDocument(), timeSyncDocument(), hostnameDocument(n), c.trustedRootsDocument()}
+	if !c.Logs.IsZero() {
+		docs = append(docs, kernelLogDocument())
+	}
+	docs = append(docs, talosAPIAccessDocument())
 	docs = append(docs, c.mirrorDocuments()...)
 	return append(docs, manifests...), nil
 }
@@ -152,11 +160,15 @@ func (c Cluster) mirrorDocuments() []config.Document {
 }
 
 // manifestDocuments name each served manifest at the first gateway, and carry each inline one with the
-// node-local Collector.
+// node-local Collector when the cluster has a log receiver.
 func (c Cluster) manifestDocuments() ([]config.Document, error) {
-	collector, err := components.LogCollector(c.Logs)
-	if err != nil {
-		return nil, fmt.Errorf("cluster %q: %w", c.Name, err)
+	inline := c.Components.Inline
+	if !c.Logs.IsZero() {
+		collector, err := components.LogCollector(c.Logs)
+		if err != nil {
+			return nil, fmt.Errorf("cluster %q: %w", c.Name, err)
+		}
+		inline = append(slices.Clone(inline), collector)
 	}
 	var docs []config.Document
 	for _, m := range c.Components.Served {
@@ -165,7 +177,7 @@ func (c Cluster) manifestDocuments() ([]config.Document, error) {
 		doc.URLSpec = meta.URL{URL: ManifestURL(c.Gateways[0], m)}
 		docs = append(docs, doc)
 	}
-	for _, m := range append(c.Components.Inline, collector) {
+	for _, m := range inline {
 		doc := k8s.NewKubeInlineManifestConfigV1Alpha1()
 		doc.MetaName = m.Name
 		doc.ManifestSpec = string(m.Bytes)

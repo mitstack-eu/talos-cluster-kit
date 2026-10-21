@@ -61,6 +61,12 @@ cfg, err := nodeconfig.Render(nodeconfig.Cluster{
 }, nodeconfig.Node{})
 ```
 
+Log export is optional. A builder whose cluster has no log receiver leaves
+`Logs` at the zero `components.LogExport`. The configuration then carries no
+Collector and no log destination, and the gateway's `Inputs.Logs` left at zero
+forwards HTTPS alone. `nodeconfig.Render` refuses a `LogExport` with only one
+of its two fields set.
+
 A Cloud cluster renders once with an empty `Node`, because every node boots
 from one snapshot and takes its name from Hetzner's metadata service. A
 dedicated node has no metadata service, so a dedicated cluster renders once per
@@ -76,7 +82,7 @@ control-plane node and changes it in these ways:
 | DNS and time | Every node asks Hetzner's resolvers `185.12.64.1` and `185.12.64.2` and syncs from `ntp1.hetzner.de`, `ntp2.hetzner.com` and `ntp3.hetzner.net`, and Sidero's discovery service is off | `resolverDocument`, `timeSyncDocument` in `nodeconfig/documents.go` |
 | Images | `docker.io`, `ghcr.io`, `public.ecr.aws`, `quay.io` and `registry.k8s.io` go to every gateway's mirror in turn, with no fallback to the public registry | `mirrorDocuments` |
 | Components | Cilium, its policy CRD and Argo CD come from the first gateway over TLS, and the metadata policy and the Collector sit in the configuration | `manifestDocuments` |
-| Logs | Talos sends service and kernel logs to the node-local Collector on `127.0.0.1`, which exports them over OTLP with TLS verified | `adaptV1Alpha1`, `kernelLogDocument`, `components.LogCollector` |
+| Logs | Talos sends service and kernel logs to the node-local Collector on `127.0.0.1`, which exports them over OTLP with TLS verified. A cluster whose `Logs` is the zero `LogExport` runs no Collector and keeps its logs on the node | `adaptV1Alpha1`, `kernelLogDocument`, `components.LogCollector` |
 | Networking | Flannel and kube-proxy are off, since Cilium replaces both, and etcd and the kubelet bind to the private network | `adapt` |
 | Talos API from pods | Only pods in `mitstack-node` may hold a Talos identity, with `os:admin`, `os:etcd:backup` or `os:reader` | `talosAPIAccessDocument` |
 

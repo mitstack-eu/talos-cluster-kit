@@ -1,0 +1,15 @@
+# Keeps every pod on the pod network from Hetzner's metadata service, which
+# serves each server's data. Default deny stays off in both directions, so
+# this policy drops that one address and isolates nothing else.
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: mitstack-deny-hetzner-metadata
+spec:
+  endpointSelector: {}
+  enableDefaultDeny:
+    egress: false
+    ingress: false
+  egressDeny:
+    - toCIDR:
+        - 169.254.169.254/32

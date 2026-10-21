@@ -1,0 +1,98 @@
+# Removes the etcd member of the lost node {{ .Hostname }}, then deletes its
+# Node object. The Talos identity holds os:admin, the only role Talos accepts
+# for a member removal, and the Kubernetes identity may delete that one Node.
+apiVersion: talos.dev/v1alpha1
+kind: ServiceAccount
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+spec:
+  roles:
+    - os:admin
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Name }}
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    resourceNames: [{{ printf "%q" .Hostname }}]
+    verbs: [get, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Name }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Name }}
+    namespace: {{ .Namespace }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      serviceAccountName: {{ .Name }}
+      restartPolicy: Never
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: remove-member
+          image: {{ .Image }}
+          command:
+            - bash
+            - -c
+            - |
+{{ indent 14 .Script }}
+          env:
+            - name: MEMBER_HOSTNAME
+              value: {{ printf "%q" .Hostname }}
+            - name: HOST_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: HOME
+              value: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: talos-secrets
+              mountPath: /var/run/secrets/talos.dev
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: talos-secrets
+          secret:
+            secretName: {{ .Name }}

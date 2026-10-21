@@ -1,0 +1,5 @@
+node/poc-talos4-cp1
+node/poc-talos4-cp2
+node/poc-talos4-cp4
+node/poc-talos4-restore
+node/poc-talos4-restore2

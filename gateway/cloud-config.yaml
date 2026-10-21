@@ -1,0 +1,134 @@
+#cloud-config
+# A cluster's gateway, an Ubuntu 24.04 Cloud server with the only public
+# address of the cluster. It forwards the nodes' DNS, NTP and HTTPS and drops
+# every other flow, records each DNS and NTP packet and each new flow, serves
+# the image mirror and the served manifests over TLS on the private network,
+# and holds the etcd bootstrap script.
+package_update: true
+packages: [docker.io, nftables, tcpdump, conntrack, skopeo, curl]
+write_files:
+  - path: /etc/sysctl.d/90-mitstack-gateway.conf
+    content: |
+      net.ipv4.ip_forward = 1
+  - path: /etc/nftables.conf
+    content: |
+      #!/usr/sbin/nft -f
+      flush ruleset
+      table inet mitstack-gateway {
+        chain input {
+          type filter hook input priority filter; policy drop;
+          iif lo accept
+          ct state established,related accept
+          ip saddr {{ .Network }} ip daddr {{ .Address }} tcp dport 443 accept
+          ip saddr {{ .Network }} icmp type echo-request accept
+        }
+        chain forward {
+          type filter hook forward priority filter; policy drop;
+          ct state established,related accept
+          ip saddr {{ .Network }} ip daddr { {{ .Resolvers }} } meta l4proto { tcp, udp } th dport 53 accept
+          ip saddr {{ .Network }} udp dport 123 accept
+          ip saddr {{ .Network }} tcp dport { {{ .EgressPorts }} } accept
+        }
+      }
+      table ip mitstack-gateway-nat {
+        chain postrouting {
+          type nat hook postrouting priority srcnat;
+          ip saddr {{ .Network }} ip daddr != {{ .Network }} masquerade
+        }
+      }
+  - path: /etc/mitstack-gateway/ca.crt
+    content: |
+{{ indent 6 .CA }}
+  - path: /etc/mitstack-gateway/tls.crt
+    content: |
+{{ indent 6 .Cert }}
+  - path: /etc/mitstack-gateway/tls.key
+    permissions: "0600"
+    content: |
+{{ indent 6 .Key }}
+  - path: /etc/mitstack-gateway/Caddyfile
+    content: |
+      {
+        admin off
+        auto_https off
+      }
+      https://{{ .Address }}:443 {
+        bind {{ .Address }}
+        tls /etc/mitstack-gateway/tls.crt /etc/mitstack-gateway/tls.key
+        @pull method GET HEAD
+        handle /v2/* {
+          reverse_proxy @pull 127.0.0.1:5000
+          respond 405
+        }
+        handle_path /manifests/* {
+          root * /srv/mitstack/manifests
+          file_server
+        }
+        respond 404
+      }
+  - path: /etc/mitstack-gateway/tools.env
+    content: |
+{{ indent 6 .ToolsEnv }}
+  - path: /etc/mitstack-gateway/images.txt
+    content: |
+{{ indent 6 .Images }}
+  - path: /etc/mitstack-gateway/manifests.txt
+    content: |
+{{ indent 6 .Manifests }}
+  - path: /usr/local/bin/mitstack-gateway-prepare
+    permissions: "0755"
+    content: |
+{{ indent 6 .PrepareScript }}
+  - path: /usr/local/bin/mitstack-talos-bootstrap
+    permissions: "0755"
+    content: |
+{{ indent 6 .BootstrapScript }}
+  - path: /etc/systemd/system/mitstack-registry.service
+    content: |
+      [Unit]
+      Description=The image mirror, reachable only from the gateway itself
+      After=docker.service
+      Requires=docker.service
+      [Service]
+      ExecStartPre=-/usr/bin/docker rm -f mitstack-registry
+      ExecStart=/usr/bin/docker run --rm --name mitstack-registry -p 127.0.0.1:5000:5000 -v /var/lib/mitstack-registry:/var/lib/registry {{ .RegistryImage }}
+      Restart=always
+      [Install]
+      WantedBy=multi-user.target
+  - path: /etc/systemd/system/mitstack-caddy.service
+    content: |
+      [Unit]
+      Description=TLS for the mirror and the served manifests on the private network
+      After=docker.service mitstack-registry.service
+      Requires=docker.service
+      [Service]
+      ExecStartPre=-/usr/bin/docker rm -f mitstack-caddy
+      ExecStart=/usr/bin/docker run --rm --name mitstack-caddy --network host -v /etc/mitstack-gateway:/etc/mitstack-gateway:ro -v /srv/mitstack/manifests:/srv/mitstack/manifests:ro {{ .CaddyImage }} caddy run --config /etc/mitstack-gateway/Caddyfile --adapter caddyfile
+      Restart=always
+      [Install]
+      WantedBy=multi-user.target
+  - path: /etc/systemd/system/mitstack-record-dns-ntp.service
+    content: |
+      [Unit]
+      Description=Records every DNS and NTP packet the nodes send
+      [Service]
+      ExecStart=/usr/bin/tcpdump -n -i any -G 86400 -w /var/log/mitstack/dns-ntp-%%Y%%m%%d.pcap src net {{ .Network }} and (port 53 or port 123)
+      Restart=always
+      [Install]
+      WantedBy=multi-user.target
+  - path: /etc/systemd/system/mitstack-record-flows.service
+    content: |
+      [Unit]
+      Description=Records every new flow from the nodes
+      [Service]
+      ExecStart=/bin/sh -c 'exec /usr/sbin/conntrack -E -e NEW -s {{ .Network }} -o timestamp >> /var/log/mitstack/flows.log'
+      Restart=always
+      [Install]
+      WantedBy=multi-user.target
+runcmd:
+  - [mkdir, -p, /var/log/mitstack, /var/lib/mitstack-registry, /srv/mitstack/manifests]
+  - [sysctl, --system]
+  - [systemctl, enable, --now, nftables]
+  - [systemctl, daemon-reload]
+  - [systemctl, enable, --now, mitstack-record-dns-ntp, mitstack-record-flows, mitstack-registry, mitstack-caddy]
+  - [/usr/local/bin/mitstack-gateway-prepare, /etc/mitstack-gateway/tools.env, /etc/mitstack-gateway/images.txt, /etc/mitstack-gateway/manifests.txt, /srv/mitstack/manifests]

@@ -51,11 +51,6 @@ func Manifests(in Inputs) ([]byte, error) {
 	})
 }
 
-// Script returns the script the CronJob runs, for a test or a manual run against a cluster.
-func Script() string {
-	return reportScript
-}
-
 func (in Inputs) validate() error {
 	u, err := url.Parse(in.URL)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {

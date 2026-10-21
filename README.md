@@ -39,7 +39,7 @@ the order a block uses them.
 | `mirror` | Lists every image the nodes pull, each by digest | `List`, `Render` |
 | `gateway` | Renders the cloud-config of the gateway in each location, and mints the cluster's gateway CA and each gateway's certificate | `Render`, `Inputs`, `NewCA`, `CA.Issue`, `ReleaseURL` |
 | `etcd` | Renders the Job that removes a lost node's etcd member and then its Node object, and holds the gateway's script that bootstraps etcd empty or from a snapshot | `RemoveMemberJob`, `BootstrapScript`, `Bootstrap.Args` |
-| `report` | Renders the node report, a CronJob that posts each node, its Talos version, the etcd membership and Argo CD's health to the platform | `Manifests`, `Script` |
+| `report` | Renders the node report, a CronJob that posts each node, its Talos version, the etcd membership and Argo CD's health to the platform | `Manifests` |
 | `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image and the gateway both install | `Env`, `Pin` |
 | `testutil` | Holds the fixtures, fakes and decoders this module's tests and a block's tests share | `NewCluster`, `NewTools`, `Golden` |
 

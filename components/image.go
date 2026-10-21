@@ -26,12 +26,6 @@ func (i Image) Registry() string {
 	return host
 }
 
-// Repository returns the image's path within its registry.
-func (i Image) Repository() string {
-	_, repository, _ := strings.Cut(i.Name, "/")
-	return repository
-}
-
 // imageRefRe matches registry/repository:tag@sha256:digest, with a registry host that holds a dot.
 var imageRefRe = regexp.MustCompile(`^([a-z0-9-]+(?:\.[a-z0-9-]+)+/[a-z0-9._/-]+):([A-Za-z0-9._-]+)@(sha256:[0-9a-f]{64})$`)
 

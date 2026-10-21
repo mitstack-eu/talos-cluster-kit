@@ -1,0 +1,14 @@
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "metadata": {"name": "cluster-root", "namespace": "argocd"},
+      "status": {"health": {"status": "Healthy"}, "sync": {"status": "Synced"}}
+    },
+    {
+      "metadata": {"name": "shop", "namespace": "argocd"},
+      "status": {"health": {"status": "Degraded", "message": "Deployment shop has 0 ready replicas"}, "sync": {"status": "OutOfSync"}}
+    }
+  ]
+}

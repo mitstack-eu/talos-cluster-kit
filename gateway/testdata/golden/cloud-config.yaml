@@ -1,0 +1,346 @@
+#cloud-config
+# A cluster's gateway, an Ubuntu 24.04 Cloud server with the only public
+# address of the cluster. It forwards the nodes' DNS, NTP and HTTPS and drops
+# every other flow, records each DNS and NTP packet and each new flow, serves
+# the image mirror and the served manifests over TLS on the private network,
+# and holds the etcd bootstrap script.
+package_update: true
+packages: [docker.io, nftables, tcpdump, conntrack, skopeo, curl]
+write_files:
+  - path: /etc/sysctl.d/90-mitstack-gateway.conf
+    content: |
+      net.ipv4.ip_forward = 1
+  - path: /etc/nftables.conf
+    content: |
+      #!/usr/sbin/nft -f
+      flush ruleset
+      table inet mitstack-gateway {
+        chain input {
+          type filter hook input priority filter; policy drop;
+          iif lo accept
+          ct state established,related accept
+          ip saddr 10.0.0.0/16 ip daddr 10.0.0.2 tcp dport 443 accept
+          ip saddr 10.0.0.0/16 icmp type echo-request accept
+        }
+        chain forward {
+          type filter hook forward priority filter; policy drop;
+          ct state established,related accept
+          ip saddr 10.0.0.0/16 ip daddr { 185.12.64.1, 185.12.64.2 } meta l4proto { tcp, udp } th dport 53 accept
+          ip saddr 10.0.0.0/16 udp dport 123 accept
+          ip saddr 10.0.0.0/16 tcp dport { 443, 4317 } accept
+        }
+      }
+      table ip mitstack-gateway-nat {
+        chain postrouting {
+          type nat hook postrouting priority srcnat;
+          ip saddr 10.0.0.0/16 ip daddr != 10.0.0.0/16 masquerade
+        }
+      }
+  - path: /etc/mitstack-gateway/ca.crt
+    content: |
+      -----BEGIN CERTIFICATE-----
+      MIIBfDCCASKgAwIBAgIQa62rKe4HLUMJobkZ8YEzmTAKBggqhkjOPQQDAjAeMRww
+      GgYDVQQDExNtaXRzdGFjayBnYXRld2F5IENBMB4XDTI2MTAyMTAwMDAwMFoXDTM2
+      MTAxODAwMDAwMFowHjEcMBoGA1UEAxMTbWl0c3RhY2sgZ2F0ZXdheSBDQTBZMBMG
+      ByqGSM49AgEGCCqGSM49AwEHA0IABNDwkKRuBl30aBC+yTjFcOuhlTmZUqadvxF5
+      5Pfh9CNBMMspzXxZlO3kK4XV4SypusQ+e1CfpIWxT8VxqYAPXaKjQjBAMA4GA1Ud
+      DwEB/wQEAwICBDAPBgNVHRMBAf8EBTADAQH/MB0GA1UdDgQWBBQvU7IhS4gm3Xi/
+      bcSKSSNdHYEgQjAKBggqhkjOPQQDAgNIADBFAiBYFgPaxKKMJ1dYPBzkL35SOyYp
+      3dWub+ybSJltqgI1WAIhAO75/5ADvfGAQ3tfDSGiuad+5lw4VbVMMRHwPiDixmC7
+      -----END CERTIFICATE-----
+  - path: /etc/mitstack-gateway/tls.crt
+    content: |
+      -----BEGIN CERTIFICATE-----
+      MIIBiTCCAS+gAwIBAgIRAM8P1z1gie+EW0f57GAyD9UwCgYIKoZIzj0EAwIwHjEc
+      MBoGA1UEAxMTbWl0c3RhY2sgZ2F0ZXdheSBDQTAeFw0yNjEwMjEwMDAwMDBaFw0z
+      NjEwMTgwMDAwMDBaMBMxETAPBgNVBAMTCDEwLjAuMC4yMFkwEwYHKoZIzj0CAQYI
+      KoZIzj0DAQcDQgAEsPuzfw9pP/e6xrmd2XIUDc5NJM1QYaT1tIvNeRHta4/8S9lC
+      9rPxMfHovAa61/nxwzBKfl9eKn4eEb7926lcw6NZMFcwDgYDVR0PAQH/BAQDAgeA
+      MBMGA1UdJQQMMAoGCCsGAQUFBwMBMB8GA1UdIwQYMBaAFC9TsiFLiCbdeL9txIpJ
+      I10dgSBCMA8GA1UdEQQIMAaHBAoAAAIwCgYIKoZIzj0EAwIDSAAwRQIhAOMr1yFV
+      iqUAQElX1G0hHlROxYIcJ9CK3ehkTvqisOGIAiAHd+1xULNbINq7RO8ldFMobIiC
+      Iv8EPU5M2ZyZ3cOQ/A==
+      -----END CERTIFICATE-----
+  - path: /etc/mitstack-gateway/tls.key
+    permissions: "0600"
+    content: |
+      -----BEGIN EC PRIVATE KEY-----
+      MHcCAQEEIAQvYkcYnsh6jO7jOXCIpQCifHl2y49MfegBJzc/49cNoAoGCCqGSM49
+      AwEHoUQDQgAEsPuzfw9pP/e6xrmd2XIUDc5NJM1QYaT1tIvNeRHta4/8S9lC9rPx
+      MfHovAa61/nxwzBKfl9eKn4eEb7926lcww==
+      -----END EC PRIVATE KEY-----
+  - path: /etc/mitstack-gateway/Caddyfile
+    content: |
+      {
+        admin off
+        auto_https off
+      }
+      https://10.0.0.2:443 {
+        bind 10.0.0.2
+        tls /etc/mitstack-gateway/tls.crt /etc/mitstack-gateway/tls.key
+        @pull method GET HEAD
+        handle /v2/* {
+          reverse_proxy @pull 127.0.0.1:5000
+          respond 405
+        }
+        handle_path /manifests/* {
+          root * /srv/mitstack/manifests
+          file_server
+        }
+        respond 404
+      }
+  - path: /etc/mitstack-gateway/tools.env
+    content: |
+      TALOS_VERSION=v1.14.4
+      TALOSCTL_SHA256=0a69e3f9b682c5cd844b78dae305f6056ceb86c5fcc6913dcea78c527ed97cee
+      KUBERNETES_VERSION=v1.37.1
+      KUBECTL_SHA256=65691ff77eb6fa44c908b77a1082c9f092c3b9733b5cefabec0d1104890e21a8
+  - path: /etc/mitstack-gateway/images.txt
+    content: |
+      docker.io/otel/opentelemetry-collector-contrib:0.163.1@sha256:1175b03003053962012f5a231f5567f66a3e8fdb960c7835c0e48f7aa1555806
+      ghcr.io/mitstack-eu/talos-tools:v0.1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      ghcr.io/siderolabs/kubelet:v1.37.1@sha256:3777bdaaa352e1f425dff9d8868a970923c66d0629bad16f935c41018a83d9d8
+      public.ecr.aws/docker/library/redis:8.2.3-alpine@sha256:08ad0b1d280850169a790dba1393ff7a90aef951fc19632cf4d3ce4f78e679ba
+      quay.io/argoproj/argocd:v3.5.5@sha256:13db7b10db23283b1b36f855046602e18539a8a8204c9f6f039e8896c8897518
+      quay.io/cilium/cilium-envoy:v1.38.6-1791537840-00e749f11f69334c625e53fc1ce2fc6c7f34a51f@sha256:d6c8c0c91954d1885026d82a31b341f37dcd34a4b127fdaf1587e43ddd224cef
+      quay.io/cilium/cilium:v1.19.9@sha256:f3014d42121a04272cb4a5f4f96dbe7836c9a7919990f17e9b6838e8fd4aa33a
+      quay.io/cilium/operator-generic:v1.19.9@sha256:a234406be11ad1bb1d41b111fba2cfe81a099b6c26b2634af95f42f295d35655
+      registry.k8s.io/coredns/coredns:v1.14.7@sha256:7efd3c635b03efd68c4e8398fc45f0d993d0e9ab016f72c1cefb0fd6d01aa286
+      registry.k8s.io/etcd:v3.7.2@sha256:7c6c239825d00e3f6328a69caafd54be92063acf0c2ce78b8394699f52b75dc3
+      registry.k8s.io/kube-apiserver:v1.37.1@sha256:e190f914a6cc21cab9268485d1ae7282fdeab1315ac64b668aa42d732fd1061d
+      registry.k8s.io/kube-controller-manager:v1.37.1@sha256:d470c1b85aebb466e971c06239cc6a31a4ac337a78600cef80375a79a1be1641
+      registry.k8s.io/kube-scheduler:v1.37.1@sha256:b6e2474a6c20309f0df1e7337364281fda95c6a0722259ba7f032a1e177d3f29
+      registry.k8s.io/pause:3.10.2@sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4
+  - path: /etc/mitstack-gateway/manifests.txt
+    content: |
+      cilium.yaml 4f2fa29bfd991b939d8347a9f4b2db673d48c1a5bf6c91beec3ff7f07b4e0d4c https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/cilium/cilium.yaml
+      cilium-policy-crd.yaml 582273fd2b7d7238563ad2976ba36905ba818834ed71c58cad6e51bb4762088b https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/cilium/policy-crd.yaml
+      argocd.yaml bc993195bc6bf46cd93476cca33c978cb33a245f94d8ed8e7186fa4152043ac2 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/argocd/argocd.yaml
+  - path: /usr/local/bin/mitstack-gateway-prepare
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      # Prepares a gateway once its packages are installed: installs the talosctl
+      # and kubectl that tools.env pins after checking their sha256, copies every
+      # image of the mirror list into the local registry by digest, and fetches
+      # every served manifest, refusing one whose sha256 differs from the list.
+      # Usage: prepare.sh <tools.env> <images.txt> <manifests.txt> <manifest dir>
+      #   images.txt holds one name:tag@sha256:digest per line, and manifests.txt
+      #   one "<file name> <sha256> <url>" per line. PREPARE_BIN_DIR names where the
+      #   binaries go, /usr/local/bin by default.
+      # It exists so the nodes pull and fetch only from the gateway, while the
+      # gateway alone reaches the public registries, and only for pinned bytes.
+      set -euo pipefail
+
+      readonly registry=127.0.0.1:5000
+
+      fail() {
+        echo "prepare: $*" >&2
+        exit 1
+      }
+
+      # fetch_checked <url> <sha256> <dest> <mode> writes a download only once its bytes match.
+      fetch_checked() {
+        local tmp
+        tmp=$(mktemp)
+        curl -fsSL --proto '=https' -o "$tmp" "$1"
+        if ! echo "$2  $tmp" | sha256sum -c --quiet - > /dev/null 2>&1; then
+          rm -f "$tmp"
+          fail "$1 does not have sha256 $2"
+        fi
+        install -m "$4" "$tmp" "$3"
+        rm -f "$tmp"
+      }
+
+      install_tools() {
+        local bin_dir=${PREPARE_BIN_DIR:-/usr/local/bin}
+        # shellcheck source=/dev/null
+        . "$1"
+        fetch_checked "https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/talosctl-linux-amd64" "$TALOSCTL_SHA256" "$bin_dir/talosctl" 0755
+        fetch_checked "https://dl.k8s.io/release/${KUBERNETES_VERSION}/bin/linux/amd64/kubectl" "$KUBECTL_SHA256" "$bin_dir/kubectl" 0755
+      }
+
+      # mirror_image <name:tag@digest> copies one image, its digest preserved, under its name and tag.
+      mirror_image() {
+        local ref=$1 name_tag digest
+        name_tag=${ref%@*}
+        digest=${ref##*@}
+        skopeo copy --all --preserve-digests --retry-times 3 --dest-tls-verify=false \
+          "docker://${name_tag%:*}@${digest}" "docker://${registry}/${name_tag}"
+      }
+
+      main() {
+        [ "$#" -eq 4 ] || fail "usage: prepare.sh <tools.env> <images.txt> <manifests.txt> <manifest dir>"
+        install_tools "$1"
+
+        local ref file sha256 url
+        while read -r ref; do
+          if [ -n "$ref" ]; then
+            mirror_image "$ref"
+          fi
+        done < "$2"
+        mkdir -p "$4"
+        while read -r file sha256 url; do
+          if [ -n "$file" ]; then
+            fetch_checked "$url" "$sha256" "$4/$file" 0644
+          fi
+        done < "$3"
+        echo "prepare: the mirror and the manifests are in place"
+      }
+
+      main "$@"
+  - path: /usr/local/bin/mitstack-talos-bootstrap
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      # Starts etcd on a cluster's first control-plane node from the gateway, either
+      # empty or restored from a snapshot. After a restore it deletes every Node
+      # object outside --keep, and on every exit it deletes the admin talosconfig and
+      # the kubeconfig derived from it.
+      # Usage: bootstrap.sh --node <address> --talosconfig <file> [--recover-from <snapshot> --keep <hostname>...]
+      #   BOOTSTRAP_WAIT_ATTEMPTS and BOOTSTRAP_WAIT_SECONDS bound the wait for the
+      #   restored API server, 60 attempts 5 seconds apart by default.
+      # It exists because the bootstrap call accepts only the os:admin role, so the
+      # credential lives on the gateway for this one call and never on a node, and
+      # because a restore onto new servers stalls until the old Node objects go.
+      set -euo pipefail
+
+      node="" talosconfig="" snapshot="" keep=()
+      work=""
+
+      fail() {
+        echo "bootstrap: $*" >&2
+        exit 1
+      }
+
+      usage() {
+        echo "usage: bootstrap.sh --node <address> --talosconfig <file> [--recover-from <snapshot> --keep <hostname>...]" >&2
+        exit 2
+      }
+
+      cleanup() {
+        [ -z "$talosconfig" ] || rm -f "$talosconfig"
+        [ -z "$work" ] || rm -rf "$work"
+      }
+
+      parse_args() {
+        while [ "$#" -gt 0 ]; do
+          case $1 in
+            --node) node=${2:?}; shift 2 ;;
+            --talosconfig) talosconfig=${2:?}; shift 2 ;;
+            --recover-from) snapshot=${2:?}; shift 2 ;;
+            --keep) keep+=("${2:?}"); shift 2 ;;
+            *) usage ;;
+          esac
+        done
+        if [ -z "$node" ] || [ -z "$talosconfig" ]; then
+          usage
+        fi
+        [ -z "$snapshot" ] || [ "${#keep[@]}" -gt 0 ] || fail "a restore needs --keep for each node of the new control plane"
+      }
+
+      talos() {
+        talosctl --talosconfig "$talosconfig" -e "$node" -n "$node" "$@"
+      }
+
+      wait_for_api() {
+        local attempts=${BOOTSTRAP_WAIT_ATTEMPTS:-60} attempt
+        for ((attempt = 1; attempt <= attempts; attempt++)); do
+          if kubectl --kubeconfig "$work/kubeconfig" get nodes -o name > "$work/nodes"; then
+            return 0
+          fi
+          sleep "${BOOTSTRAP_WAIT_SECONDS:-5}"
+        done
+        fail "the restored API server did not answer after $attempts attempts"
+      }
+
+      kept() {
+        local name
+        for name in "${keep[@]}"; do
+          [ "$name" = "$1" ] && return 0
+        done
+        return 1
+      }
+
+      delete_old_nodes() {
+        local name
+        while read -r name; do
+          name=${name#node/}
+          if kept "$name"; then
+            continue
+          fi
+          kubectl --kubeconfig "$work/kubeconfig" delete node "$name"
+          echo "bootstrap: deleted the old Node $name"
+        done < "$work/nodes"
+      }
+
+      main() {
+        trap cleanup EXIT
+        parse_args "$@"
+        [ -f "$talosconfig" ] || fail "no talosconfig at $talosconfig"
+
+        if [ -z "$snapshot" ]; then
+          talos bootstrap
+          echo "bootstrap: started etcd on $node"
+          return 0
+        fi
+
+        [ -f "$snapshot" ] || fail "no snapshot at $snapshot"
+        talos bootstrap --recover-from="$snapshot"
+        echo "bootstrap: restored etcd on $node from $snapshot"
+        work=$(mktemp -d)
+        talos kubeconfig "$work/kubeconfig" --force
+        wait_for_api
+        delete_old_nodes
+      }
+
+      main "$@"
+  - path: /etc/systemd/system/mitstack-registry.service
+    content: |
+      [Unit]
+      Description=The image mirror, reachable only from the gateway itself
+      After=docker.service
+      Requires=docker.service
+      [Service]
+      ExecStartPre=-/usr/bin/docker rm -f mitstack-registry
+      ExecStart=/usr/bin/docker run --rm --name mitstack-registry -p 127.0.0.1:5000:5000 -v /var/lib/mitstack-registry:/var/lib/registry docker.io/library/registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+      Restart=always
+      [Install]
+      WantedBy=multi-user.target
+  - path: /etc/systemd/system/mitstack-caddy.service
+    content: |
+      [Unit]
+      Description=TLS for the mirror and the served manifests on the private network
+      After=docker.service mitstack-registry.service
+      Requires=docker.service
+      [Service]
+      ExecStartPre=-/usr/bin/docker rm -f mitstack-caddy
+      ExecStart=/usr/bin/docker run --rm --name mitstack-caddy --network host -v /etc/mitstack-gateway:/etc/mitstack-gateway:ro -v /srv/mitstack/manifests:/srv/mitstack/manifests:ro docker.io/library/caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d caddy run --config /etc/mitstack-gateway/Caddyfile --adapter caddyfile
+      Restart=always
+      [Install]
+      WantedBy=multi-user.target
+  - path: /etc/systemd/system/mitstack-record-dns-ntp.service
+    content: |
+      [Unit]
+      Description=Records every DNS and NTP packet the nodes send
+      [Service]
+      ExecStart=/usr/bin/tcpdump -n -i any -G 86400 -w /var/log/mitstack/dns-ntp-%%Y%%m%%d.pcap src net 10.0.0.0/16 and (port 53 or port 123)
+      Restart=always
+      [Install]
+      WantedBy=multi-user.target
+  - path: /etc/systemd/system/mitstack-record-flows.service
+    content: |
+      [Unit]
+      Description=Records every new flow from the nodes
+      [Service]
+      ExecStart=/bin/sh -c 'exec /usr/sbin/conntrack -E -e NEW -s 10.0.0.0/16 -o timestamp >> /var/log/mitstack/flows.log'
+      Restart=always
+      [Install]
+      WantedBy=multi-user.target
+runcmd:
+  - [mkdir, -p, /var/log/mitstack, /var/lib/mitstack-registry, /srv/mitstack/manifests]
+  - [sysctl, --system]
+  - [systemctl, enable, --now, nftables]
+  - [systemctl, daemon-reload]
+  - [systemctl, enable, --now, mitstack-record-dns-ntp, mitstack-record-flows, mitstack-registry, mitstack-caddy]
+  - [/usr/local/bin/mitstack-gateway-prepare, /etc/mitstack-gateway/tools.env, /etc/mitstack-gateway/images.txt, /etc/mitstack-gateway/manifests.txt, /srv/mitstack/manifests]

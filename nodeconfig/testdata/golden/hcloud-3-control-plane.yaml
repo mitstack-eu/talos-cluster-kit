@@ -1,0 +1,551 @@
+version: v1alpha1
+debug: false
+persist: true
+machine:
+    type: controlplane
+    token: 06qocr.4vt3jn3oqusyqvtm
+    ca:
+        crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUJQakNCOGFBREFnRUNBaEJJMllCeE14c00yZG1rWHZzZllMamVNQVVHQXl0bGNEQVFNUTR3REFZRFZRUUsKRXdWMFlXeHZjekFlRncweU5qRXdNakV3TURBd01EQmFGdzB6TmpFd01UZ3dNREF3TURCYU1CQXhEakFNQmdOVgpCQW9UQlhSaGJHOXpNQ293QlFZREsyVndBeUVBZGloREV3ekNxd0VuRVZaZGxGZ1RCTisvam15THJGMjFQbG9TCnRwRmdMRWFqWVRCZk1BNEdBMVVkRHdFQi93UUVBd0lDaERBZEJnTlZIU1VFRmpBVUJnZ3JCZ0VGQlFjREFRWUkKS3dZQkJRVUhBd0l3RHdZRFZSMFRBUUgvQkFVd0F3RUIvekFkQmdOVkhRNEVGZ1FVM3hVYVMwbkw5Z0N2d3N1TgpYZkRGT1RTSVk5WXdCUVlESzJWd0EwRUFvTVRSTmpZQW9pM3FFbnVWY0pnRjFvVkdVdDFucVZXeldRazBOU2RHCjlYTEg4MFRQVjFudklsRXc0RkpKSThxQ01EQ3d2SUxuNWJqZi9TWTF4djI5REE9PQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg==
+        key: LS0tLS1CRUdJTiBFRDI1NTE5IFBSSVZBVEUgS0VZLS0tLS0KTUM0Q0FRQXdCUVlESzJWd0JDSUVJQ2FSWE1zQnBKM3h3RWVPUVhWcEtsRzdubFFmaDQ1TFRCSC9Ld3BBVk1JSQotLS0tLUVORCBFRDI1NTE5IFBSSVZBVEUgS0VZLS0tLS0K
+    certSANs:
+        - 10.0.0.3
+        - 10.0.1.3
+        - 10.0.2.3
+    features:
+        diskQuotaSupport: true
+    logging:
+        destinations:
+            - endpoint: tcp://127.0.0.1:5170
+              format: json_lines
+              extraTags:
+                subscription: sub_0123456789ab
+cluster:
+    token: 93lcca.afp74pu3cpomn6oq
+    etcd:
+        ca:
+            crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUJmVENDQVNPZ0F3SUJBZ0lRY3R0cWxrVkxBSVRTVUk3Uk0xTE1nVEFLQmdncWhrak9QUVFEQWpBUE1RMHcKQ3dZRFZRUUtFd1JsZEdOa01CNFhEVEkyTVRBeU1UQXdNREF3TUZvWERUTTJNVEF4T0RBd01EQXdNRm93RHpFTgpNQXNHQTFVRUNoTUVaWFJqWkRCWk1CTUdCeXFHU000OUFnRUdDQ3FHU000OUF3RUhBMElBQkVMUHFqVW1vU1JBCmF0THlySE5SQmZkMC9WN1RhZlE3T1gzWm1kM0hWN0xCYmRGdWhFcUh3dFNyc3FURkNjZGxSYSs4YS90aWhYVTQKMElkd2Y0MFdqQldqWVRCZk1BNEdBMVVkRHdFQi93UUVBd0lDaERBZEJnTlZIU1VFRmpBVUJnZ3JCZ0VGQlFjRApBUVlJS3dZQkJRVUhBd0l3RHdZRFZSMFRBUUgvQkFVd0F3RUIvekFkQmdOVkhRNEVGZ1FVTzcvS1hXZEtmVDVtCmRoc1Y4cll3OFhuMXgyb3dDZ1lJS29aSXpqMEVBd0lEU0FBd1JRSWhBSXYxejVuVmJWV1ZKdHJIMXpXbUllVWcKUGx4cGwvMnBPWDlRUzI2VjJxMjlBaUJVSFFDbEZ3U0dia2FoUE1EclQ0ODRVd00vdFJLeHpPa2FsRmJEUmhBMQpnZz09Ci0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0K
+            key: LS0tLS1CRUdJTiBFQyBQUklWQVRFIEtFWS0tLS0tCk1IY0NBUUVFSUpDblZyeXcvNXFwNldPaERxajNTWmFsQWU0bnhSV0hwdjQrcnJOWnFCaHdvQW9HQ0NxR1NNNDkKQXdFSG9VUURRZ0FFUXMrcU5TYWhKRUJxMHZLc2MxRUY5M1Q5WHROcDlEczVmZG1aM2NkWHNzRnQwVzZFU29mQwoxS3V5cE1VSngyVkZyN3hyKzJLRmRUalFoM0IvalJhTUZRPT0KLS0tLS1FTkQgRUMgUFJJVkFURSBLRVktLS0tLQo=
+        advertisedSubnets:
+            - 10.0.0.0/16
+---
+apiVersion: v1alpha1
+kind: DiscoveryIdentityConfig
+clusterID: IniHXeojFWG5n8S7gy4YIeiCbp1viCxE9fwucTqsvbc=
+clusterSecret: 8u3yYi/OFtDsHdcf7NG73dCnG/C7qAnGVd1ocusyeF4=
+---
+apiVersion: v1alpha1
+kind: VolumeConfig
+name: EPHEMERAL
+mount:
+    secure: true
+---
+apiVersion: v1alpha1
+kind: FilesystemTrimConfig
+interval: 168h0m0s
+---
+apiVersion: v1alpha1
+kind: SecurityProfileConfig
+workloadIsolation: true
+---
+apiVersion: v1alpha1
+kind: KubeClusterConfig
+clusterName: shop
+endpoint: https://10.0.0.3:6443
+---
+apiVersion: v1alpha1
+kind: KubeNodeConfig
+nodeIP:
+    validSubnets:
+        - 10.0.0.0/16
+labels:
+    mitstack.dev/subscription: sub_0123456789ab
+    node-role.kubernetes.io/control-plane: ""
+    node.kubernetes.io/exclude-from-external-load-balancers: ""
+---
+apiVersion: v1alpha1
+kind: KubeletConfig
+image: ghcr.io/siderolabs/kubelet:v1.37.1
+config: {}
+defaultRuntimeSeccompProfileEnabled: true
+---
+apiVersion: v1alpha1
+kind: KubeNetworkConfig
+dnsDomain: cluster.local
+podSubnets:
+    - 10.244.0.0/16
+serviceSubnets:
+    - 10.96.0.0/12
+---
+apiVersion: v1alpha1
+kind: KubeAPIServerCAConfig
+issuingCA:
+    cert: |
+        -----BEGIN CERTIFICATE-----
+        MIIBizCCATCgAwIBAgIRAIvPBHeMoIJkvfEKu+KG2SMwCgYIKoZIzj0EAwIwFTET
+        MBEGA1UEChMKa3ViZXJuZXRlczAeFw0yNjEwMjEwMDAwMDBaFw0zNjEwMTgwMDAw
+        MDBaMBUxEzARBgNVBAoTCmt1YmVybmV0ZXMwWTATBgcqhkjOPQIBBggqhkjOPQMB
+        BwNCAASiZWwIxpmaFiniDdkNCqk0VQ3JdYWt6dDDHZJMcsaBatQ7RFdnlZU821fu
+        JHV3e5HhjUMM1bTull3weR76jpvSo2EwXzAOBgNVHQ8BAf8EBAMCAoQwHQYDVR0l
+        BBYwFAYIKwYBBQUHAwEGCCsGAQUFBwMCMA8GA1UdEwEB/wQFMAMBAf8wHQYDVR0O
+        BBYEFCITout6f5CHAC+WRxZUMupp+6dcMAoGCCqGSM49BAMCA0kAMEYCIQDu4dCc
+        XDAciwV6tmummkTgSdSHef5t/dCfeMxQj/MiwgIhAPyrIBSFaiX/HDqT4rshkJG1
+        t8R3+WdDWH8omgP+K4zn
+        -----END CERTIFICATE-----
+    key: |
+        -----BEGIN EC PRIVATE KEY-----
+        MHcCAQEEIHmM2EORHqIK76DdcdJNbAvEBLuDdY4i0l3BA8Wbo7gyoAoGCCqGSM49
+        AwEHoUQDQgAEomVsCMaZmhYp4g3ZDQqpNFUNyXWFrenQwx2STHLGgWrUO0RXZ5WV
+        PNtX7iR1d3uR4Y1DDNW07pZd8Hke+o6b0g==
+        -----END EC PRIVATE KEY-----
+---
+apiVersion: v1alpha1
+kind: KubePrismConfig
+port: 7445
+---
+apiVersion: v1alpha1
+kind: KubeAggregatorCAConfig
+issuingCA:
+    cert: |
+        -----BEGIN CERTIFICATE-----
+        MIIBXzCCAQWgAwIBAgIQZUs9iZy0HlC/NU1S8PbpQTAKBggqhkjOPQQDAjAAMB4X
+        DTI2MTAyMTAwMDAwMFoXDTM2MTAxODAwMDAwMFowADBZMBMGByqGSM49AgEGCCqG
+        SM49AwEHA0IABCnbeHw1CshNS+QWw7d/xJQ60ElOwCwQmkhxyHmVN3vT4XTYI2SB
+        VyhRHkQpx6shGRjhKpOb/7LWAhybOSlIHQqjYTBfMA4GA1UdDwEB/wQEAwIChDAd
+        BgNVHSUEFjAUBggrBgEFBQcDAQYIKwYBBQUHAwIwDwYDVR0TAQH/BAUwAwEB/zAd
+        BgNVHQ4EFgQUPQ5c3+9N5yKJHJFvJRkRPh+Ie8MwCgYIKoZIzj0EAwIDSAAwRQIg
+        Bn6pW3M3M+GpNgXRd0gai0VO0be9Ot41Em4zm3lpMhYCIQCXBI7X7PxZPJK1pH3/
+        QMPE8etqExxdmMcbeXxK1eM9Hg==
+        -----END CERTIFICATE-----
+    key: |
+        -----BEGIN EC PRIVATE KEY-----
+        MHcCAQEEIKIDLIgPyOycV24UPX6xrm6Fa5wBY6/TlzDHdSgQj6okoAoGCCqGSM49
+        AwEHoUQDQgAEKdt4fDUKyE1L5BbDt3/ElDrQSU7ALBCaSHHIeZU3e9PhdNgjZIFX
+        KFEeRCnHqyEZGOEqk5v/stYCHJs5KUgdCg==
+        -----END EC PRIVATE KEY-----
+---
+apiVersion: v1alpha1
+kind: KubeAdmissionControlConfig
+name: PodSecurity
+configuration:
+    apiVersion: pod-security.admission.config.k8s.io/v1alpha1
+    defaults:
+        audit: restricted
+        audit-version: latest
+        enforce: baseline
+        enforce-version: latest
+        warn: restricted
+        warn-version: latest
+    exemptions:
+        namespaces:
+            - kube-system
+        runtimeClasses: []
+        usernames: []
+    kind: PodSecurityConfiguration
+---
+apiVersion: v1alpha1
+kind: KubeAuditPolicyConfig
+configuration:
+    apiVersion: audit.k8s.io/v1
+    kind: Policy
+    rules:
+        - level: Metadata
+---
+apiVersion: v1alpha1
+kind: KubeAuthenticationConfig
+configuration:
+    anonymous:
+        conditions:
+            - path: /livez
+            - path: /readyz
+            - path: /healthz
+        enabled: true
+    jwt: []
+---
+apiVersion: v1alpha1
+kind: KubeAuthorizerConfig
+name: node
+type: Node
+---
+apiVersion: v1alpha1
+kind: KubeAuthorizerConfig
+name: rbac
+type: RBAC
+---
+apiVersion: v1alpha1
+kind: KubeEtcdEncryptionConfig
+config:
+    resources:
+        - providers:
+            - secretbox:
+                keys:
+                    - name: key2
+                      secret: ZM5l5r862C5UogYEyo3dc7k6pnYVBRUqkQdtD3319lc=
+          resources:
+            - secrets
+---
+apiVersion: v1alpha1
+kind: KubeServiceAccountConfig
+issuer:
+    privateKey: |
+        -----BEGIN RSA PRIVATE KEY-----
+        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
+        -----END RSA PRIVATE KEY-----
+    issuerURL: https://10.0.0.3:6443
+---
+apiVersion: v1alpha1
+kind: KubeAPIServerConfig
+image: registry.k8s.io/kube-apiserver:v1.37.1
+certExtraSANs:
+    - 10.0.0.3
+    - 10.0.1.3
+    - 10.0.2.3
+---
+apiVersion: v1alpha1
+kind: KubeControllerManagerConfig
+image: registry.k8s.io/kube-controller-manager:v1.37.1
+---
+apiVersion: v1alpha1
+kind: KubeSchedulerConfig
+image: registry.k8s.io/kube-scheduler:v1.37.1
+config: {}
+---
+apiVersion: v1alpha1
+kind: KubeProxyConfig
+enabled: false
+image: registry.k8s.io/kube-proxy:v1.37.1
+config: {}
+---
+apiVersion: v1alpha1
+kind: KubeCoreDNSConfig
+enabled: true
+---
+apiVersion: v1alpha1
+kind: ResolverConfig
+nameservers:
+    - address: 185.12.64.1
+    - address: 185.12.64.2
+hostDNS:
+    enabled: true
+    forwardKubeDNSToHost: true
+---
+apiVersion: v1alpha1
+kind: TimeSyncConfig
+ntp:
+    servers:
+        - ntp1.hetzner.de
+        - ntp2.hetzner.com
+        - ntp3.hetzner.net
+---
+apiVersion: v1alpha1
+kind: HostnameConfig
+auto: 'off'
+---
+apiVersion: v1alpha1
+kind: TrustedRootsConfig
+name: mitstack-gateway
+certificates: |
+    -----BEGIN CERTIFICATE-----
+    MIIBfDCCASKgAwIBAgIQa62rKe4HLUMJobkZ8YEzmTAKBggqhkjOPQQDAjAeMRww
+    GgYDVQQDExNtaXRzdGFjayBnYXRld2F5IENBMB4XDTI2MTAyMTAwMDAwMFoXDTM2
+    MTAxODAwMDAwMFowHjEcMBoGA1UEAxMTbWl0c3RhY2sgZ2F0ZXdheSBDQTBZMBMG
+    ByqGSM49AgEGCCqGSM49AwEHA0IABNDwkKRuBl30aBC+yTjFcOuhlTmZUqadvxF5
+    5Pfh9CNBMMspzXxZlO3kK4XV4SypusQ+e1CfpIWxT8VxqYAPXaKjQjBAMA4GA1Ud
+    DwEB/wQEAwICBDAPBgNVHRMBAf8EBTADAQH/MB0GA1UdDgQWBBQvU7IhS4gm3Xi/
+    bcSKSSNdHYEgQjAKBggqhkjOPQQDAgNIADBFAiBYFgPaxKKMJ1dYPBzkL35SOyYp
+    3dWub+ybSJltqgI1WAIhAO75/5ADvfGAQ3tfDSGiuad+5lw4VbVMMRHwPiDixmC7
+    -----END CERTIFICATE-----
+---
+apiVersion: v1alpha1
+kind: KmsgLogConfig
+name: node-local-collector
+url: tcp://127.0.0.1:5171
+---
+apiVersion: v1alpha1
+kind: KubeTalosAPIAccessConfig
+allowedRoles:
+    - os:admin
+    - os:etcd:backup
+    - os:reader
+allowedKubernetesNamespaces:
+    - mitstack-node
+---
+apiVersion: v1alpha1
+kind: RegistryMirrorConfig
+name: docker.io
+endpoints:
+    - url: https://10.0.0.2/v2/docker.io
+      overridePath: true
+    - url: https://10.0.1.2/v2/docker.io
+      overridePath: true
+    - url: https://10.0.2.2/v2/docker.io
+      overridePath: true
+skipFallback: true
+---
+apiVersion: v1alpha1
+kind: RegistryMirrorConfig
+name: ghcr.io
+endpoints:
+    - url: https://10.0.0.2/v2/ghcr.io
+      overridePath: true
+    - url: https://10.0.1.2/v2/ghcr.io
+      overridePath: true
+    - url: https://10.0.2.2/v2/ghcr.io
+      overridePath: true
+skipFallback: true
+---
+apiVersion: v1alpha1
+kind: RegistryMirrorConfig
+name: public.ecr.aws
+endpoints:
+    - url: https://10.0.0.2/v2/public.ecr.aws
+      overridePath: true
+    - url: https://10.0.1.2/v2/public.ecr.aws
+      overridePath: true
+    - url: https://10.0.2.2/v2/public.ecr.aws
+      overridePath: true
+skipFallback: true
+---
+apiVersion: v1alpha1
+kind: RegistryMirrorConfig
+name: quay.io
+endpoints:
+    - url: https://10.0.0.2/v2/quay.io
+      overridePath: true
+    - url: https://10.0.1.2/v2/quay.io
+      overridePath: true
+    - url: https://10.0.2.2/v2/quay.io
+      overridePath: true
+skipFallback: true
+---
+apiVersion: v1alpha1
+kind: RegistryMirrorConfig
+name: registry.k8s.io
+endpoints:
+    - url: https://10.0.0.2/v2/registry.k8s.io
+      overridePath: true
+    - url: https://10.0.1.2/v2/registry.k8s.io
+      overridePath: true
+    - url: https://10.0.2.2/v2/registry.k8s.io
+      overridePath: true
+skipFallback: true
+---
+apiVersion: v1alpha1
+kind: RegistryTLSConfig
+name: 10.0.0.2
+ca: |
+    -----BEGIN CERTIFICATE-----
+    MIIBfDCCASKgAwIBAgIQa62rKe4HLUMJobkZ8YEzmTAKBggqhkjOPQQDAjAeMRww
+    GgYDVQQDExNtaXRzdGFjayBnYXRld2F5IENBMB4XDTI2MTAyMTAwMDAwMFoXDTM2
+    MTAxODAwMDAwMFowHjEcMBoGA1UEAxMTbWl0c3RhY2sgZ2F0ZXdheSBDQTBZMBMG
+    ByqGSM49AgEGCCqGSM49AwEHA0IABNDwkKRuBl30aBC+yTjFcOuhlTmZUqadvxF5
+    5Pfh9CNBMMspzXxZlO3kK4XV4SypusQ+e1CfpIWxT8VxqYAPXaKjQjBAMA4GA1Ud
+    DwEB/wQEAwICBDAPBgNVHRMBAf8EBTADAQH/MB0GA1UdDgQWBBQvU7IhS4gm3Xi/
+    bcSKSSNdHYEgQjAKBggqhkjOPQQDAgNIADBFAiBYFgPaxKKMJ1dYPBzkL35SOyYp
+    3dWub+ybSJltqgI1WAIhAO75/5ADvfGAQ3tfDSGiuad+5lw4VbVMMRHwPiDixmC7
+    -----END CERTIFICATE-----
+---
+apiVersion: v1alpha1
+kind: RegistryTLSConfig
+name: 10.0.1.2
+ca: |
+    -----BEGIN CERTIFICATE-----
+    MIIBfDCCASKgAwIBAgIQa62rKe4HLUMJobkZ8YEzmTAKBggqhkjOPQQDAjAeMRww
+    GgYDVQQDExNtaXRzdGFjayBnYXRld2F5IENBMB4XDTI2MTAyMTAwMDAwMFoXDTM2
+    MTAxODAwMDAwMFowHjEcMBoGA1UEAxMTbWl0c3RhY2sgZ2F0ZXdheSBDQTBZMBMG
+    ByqGSM49AgEGCCqGSM49AwEHA0IABNDwkKRuBl30aBC+yTjFcOuhlTmZUqadvxF5
+    5Pfh9CNBMMspzXxZlO3kK4XV4SypusQ+e1CfpIWxT8VxqYAPXaKjQjBAMA4GA1Ud
+    DwEB/wQEAwICBDAPBgNVHRMBAf8EBTADAQH/MB0GA1UdDgQWBBQvU7IhS4gm3Xi/
+    bcSKSSNdHYEgQjAKBggqhkjOPQQDAgNIADBFAiBYFgPaxKKMJ1dYPBzkL35SOyYp
+    3dWub+ybSJltqgI1WAIhAO75/5ADvfGAQ3tfDSGiuad+5lw4VbVMMRHwPiDixmC7
+    -----END CERTIFICATE-----
+---
+apiVersion: v1alpha1
+kind: RegistryTLSConfig
+name: 10.0.2.2
+ca: |
+    -----BEGIN CERTIFICATE-----
+    MIIBfDCCASKgAwIBAgIQa62rKe4HLUMJobkZ8YEzmTAKBggqhkjOPQQDAjAeMRww
+    GgYDVQQDExNtaXRzdGFjayBnYXRld2F5IENBMB4XDTI2MTAyMTAwMDAwMFoXDTM2
+    MTAxODAwMDAwMFowHjEcMBoGA1UEAxMTbWl0c3RhY2sgZ2F0ZXdheSBDQTBZMBMG
+    ByqGSM49AgEGCCqGSM49AwEHA0IABNDwkKRuBl30aBC+yTjFcOuhlTmZUqadvxF5
+    5Pfh9CNBMMspzXxZlO3kK4XV4SypusQ+e1CfpIWxT8VxqYAPXaKjQjBAMA4GA1Ud
+    DwEB/wQEAwICBDAPBgNVHRMBAf8EBTADAQH/MB0GA1UdDgQWBBQvU7IhS4gm3Xi/
+    bcSKSSNdHYEgQjAKBggqhkjOPQQDAgNIADBFAiBYFgPaxKKMJ1dYPBzkL35SOyYp
+    3dWub+ybSJltqgI1WAIhAO75/5ADvfGAQ3tfDSGiuad+5lw4VbVMMRHwPiDixmC7
+    -----END CERTIFICATE-----
+---
+apiVersion: v1alpha1
+kind: KubeExternalManifestConfig
+name: cilium
+url: https://10.0.0.2/manifests/cilium.yaml
+---
+apiVersion: v1alpha1
+kind: KubeExternalManifestConfig
+name: cilium-policy-crd
+url: https://10.0.0.2/manifests/cilium-policy-crd.yaml
+---
+apiVersion: v1alpha1
+kind: KubeExternalManifestConfig
+name: argocd
+url: https://10.0.0.2/manifests/argocd.yaml
+---
+apiVersion: v1alpha1
+kind: KubeInlineManifestConfig
+name: mitstack-metadata-block
+manifest: |
+    # Keeps every pod on the pod network from Hetzner's metadata service, which
+    # serves each server's data. Default deny stays off in both directions, so
+    # this policy drops that one address and isolates nothing else.
+    apiVersion: cilium.io/v2
+    kind: CiliumClusterwideNetworkPolicy
+    metadata:
+      name: mitstack-deny-hetzner-metadata
+    spec:
+      endpointSelector: {}
+      enableDefaultDeny:
+        egress: false
+        ingress: false
+      egressDeny:
+        - toCIDR:
+            - 169.254.169.254/32
+---
+apiVersion: v1alpha1
+kind: KubeInlineManifestConfig
+name: mitstack-node-logs
+manifest: |
+    # The node-local OpenTelemetry Collector. Talos sends its service and kernel
+    # logs over plain TCP to the loopback address, where this Collector listens on
+    # the host network, so the plain leg never leaves the machine. The Collector
+    # exports over OTLP with TLS, verifying the receiver against the CA below.
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: mitstack-node-logs
+      namespace: kube-system
+    data:
+      ca.crt: |
+        -----BEGIN CERTIFICATE-----
+        MIIBfTCCASOgAwIBAgIRAK9jqTYzeqEbNrSiKKYnJnUwCgYIKoZIzj0EAwIwHjEc
+        MBoGA1UEAxMTbWl0c3RhY2sgZ2F0ZXdheSBDQTAeFw0yNjEwMjEwMDAwMDBaFw0z
+        NjEwMTgwMDAwMDBaMB4xHDAaBgNVBAMTE21pdHN0YWNrIGdhdGV3YXkgQ0EwWTAT
+        BgcqhkjOPQIBBggqhkjOPQMBBwNCAASj/MvZXAaQNrQNViex8nCA1qBHrQgjw6Qt
+        Wn3M5tqT60Z0iV0SMJMtlor/fXmdDk54DPFeRc8PnzxgopFuvbV1o0IwQDAOBgNV
+        HQ8BAf8EBAMCAgQwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUFlwDtGpAiF4n
+        2Vqh4rKhw/dAoPAwCgYIKoZIzj0EAwIDSAAwRQIgXdh7OsfIF18A1ZRr7Z5h9fAv
+        VLfI9Qmhzejn6PODGnsCIQCfiV1evuUQSRT7oVbYcOQ9eQeBBoReIp+l8MSIqugT
+        WQ==
+        -----END CERTIFICATE-----
+      config.yaml: |
+        receivers:
+          tcplog/service:
+            listen_address: 127.0.0.1:5170
+            operators:
+              - type: json_parser
+          tcplog/kernel:
+            listen_address: 127.0.0.1:5171
+            operators:
+              - type: json_parser
+        processors:
+          batch: {}
+        exporters:
+          otlp_grpc:
+            endpoint: otlp.mitstack.dev:4317
+            tls:
+              ca_file: /etc/mitstack-node-logs/ca.crt
+        service:
+          pipelines:
+            logs:
+              receivers: [tcplog/service, tcplog/kernel]
+              processors: [batch]
+              exporters: [otlp_grpc]
+    ---
+    apiVersion: apps/v1
+    kind: DaemonSet
+    metadata:
+      name: mitstack-node-logs
+      namespace: kube-system
+    spec:
+      selector:
+        matchLabels:
+          app.kubernetes.io/name: mitstack-node-logs
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: mitstack-node-logs
+        spec:
+          hostNetwork: true
+          dnsPolicy: ClusterFirstWithHostNet
+          priorityClassName: system-node-critical
+          automountServiceAccountToken: false
+          tolerations:
+            - operator: Exists
+          containers:
+            - name: collector
+              image: docker.io/otel/opentelemetry-collector-contrib:0.163.1@sha256:1175b03003053962012f5a231f5567f66a3e8fdb960c7835c0e48f7aa1555806
+              args: [--config=/etc/mitstack-node-logs/config.yaml]
+              securityContext:
+                runAsNonRoot: true
+                runAsUser: 10001
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              resources:
+                requests: {cpu: 20m, memory: 64Mi}
+                limits: {memory: 256Mi}
+              volumeMounts:
+                - name: config
+                  mountPath: /etc/mitstack-node-logs
+                  readOnly: true
+          volumes:
+            - name: config
+              configMap:
+                name: mitstack-node-logs

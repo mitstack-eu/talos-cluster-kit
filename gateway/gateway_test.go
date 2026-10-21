@@ -1,0 +1,161 @@
+package gateway_test
+
+import (
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/hex"
+	"encoding/pem"
+	"net"
+	"net/netip"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/mitstack-eu/talos-cluster-kit/components"
+	"github.com/mitstack-eu/talos-cluster-kit/gateway"
+	"github.com/mitstack-eu/talos-cluster-kit/testutil"
+)
+
+func inputs(t *testing.T) gateway.Inputs {
+	t.Helper()
+	tools, err := components.ParseImage(testutil.ToolsImage)
+	require.NoError(t, err)
+	return gateway.Inputs{
+		Address:         netip.MustParseAddr("10.0.0.2"),
+		Network:         netip.MustParsePrefix("10.0.0.0/16"),
+		TLS:             testutil.GatewayTLS(t),
+		Components:      components.Default(),
+		ExtraImages:     []components.Image{tools},
+		ManifestBaseURL: gateway.ReleaseURL("v0.1.0"),
+		Logs:            testutil.LogExport(t),
+	}
+}
+
+func TestRender_MatchesTheGoldenCloudConfigWithinHetznersUserDataLimit(t *testing.T) {
+	in := inputs(t)
+
+	got, err := gateway.Render(in)
+
+	require.NoError(t, err)
+	assert.LessOrEqual(t, len(got), gateway.UserDataLimit)
+	require.Len(t, testutil.Documents(t, got), 1, "the cloud-config is not one YAML document")
+	testutil.Golden(t, filepath.Join("testdata", "golden", "cloud-config.yaml"), got)
+}
+
+func TestRender_RefusesAnAddressOutsideTheNetwork(t *testing.T) {
+	in := inputs(t)
+	in.Address = netip.MustParseAddr("192.168.0.2")
+
+	_, err := gateway.Render(in)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "192.168.0.2 is not inside network 10.0.0.0/16")
+}
+
+func TestCAIssue_ServesEachGatewaysAddressUnderTheClustersOneCA(t *testing.T) {
+	now := time.Date(2026, 10, 21, 0, 0, 0, 0, time.UTC)
+	ca, err := gateway.NewCA(now, 10*365*24*time.Hour)
+	require.NoError(t, err)
+	roots := x509.NewCertPool()
+	require.True(t, roots.AppendCertsFromPEM(ca.Cert))
+
+	for _, address := range []string{"10.0.0.2", "10.0.1.2", "10.0.2.2"} {
+		tls, err := ca.Issue(netip.MustParseAddr(address), now, 24*time.Hour)
+
+		require.NoError(t, err)
+		assert.Equal(t, ca.Cert, tls.CA)
+		block, _ := pem.Decode(tls.Cert)
+		require.NotNil(t, block)
+		cert, err := x509.ParseCertificate(block.Bytes)
+		require.NoError(t, err)
+		_, err = cert.Verify(x509.VerifyOptions{Roots: roots, CurrentTime: now.Add(time.Hour), DNSName: address})
+		require.NoError(t, err, "the certificate for %s does not verify under the CA", address)
+		assert.Equal(t, []net.IP{net.ParseIP(address).To4()}, cert.IPAddresses)
+		assert.Equal(t, now.Add(24*time.Hour), cert.NotAfter.UTC())
+	}
+}
+
+// fakeCurl writes "bytes of <url>" to the -o path, so a test knows each download's sha256.
+const fakeCurl = `
+out="" url=""
+while [ "$#" -gt 0 ]; do
+  case $1 in
+    -o) out=$2; shift 2 ;;
+    https://*) url=$1; shift ;;
+    *) shift ;;
+  esac
+done
+printf 'bytes of %s' "$url" > "$out"
+`
+
+func sha256Of(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
+
+// prepareRun is one run of the prepare script the rendered cloud-config carries, against fake curl and skopeo.
+type prepareRun struct {
+	tools *testutil.Tools
+	dir   string
+	out   string
+	err   error
+}
+
+func preparedScript(t *testing.T) string {
+	t.Helper()
+	rendered, err := gateway.Render(inputs(t))
+	require.NoError(t, err)
+	for _, f := range testutil.Field(t, testutil.Documents(t, rendered)[0], "write_files").([]any) {
+		if file := f.(map[string]any); file["path"] == "/usr/local/bin/mitstack-gateway-prepare" {
+			return file["content"].(string)
+		}
+	}
+	require.Fail(t, "the cloud-config carries no prepare script")
+	return ""
+}
+
+func runPrepare(t *testing.T, manifestSHA256 string) prepareRun {
+	t.Helper()
+	script := preparedScript(t)
+	run := prepareRun{tools: testutil.NewTools(t, map[string]string{"curl": fakeCurl, "skopeo": ""}), dir: t.TempDir()}
+	write := func(name, content string) string {
+		path := filepath.Join(run.dir, name)
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+		return path
+	}
+	talosctl := "https://github.com/siderolabs/talos/releases/download/v9.9.9/talosctl-linux-amd64"
+	kubectl := "https://dl.k8s.io/release/v9.9.9/bin/linux/amd64/kubectl"
+	toolsEnv := write("tools.env", "TALOS_VERSION=v9.9.9\nTALOSCTL_SHA256="+sha256Of("bytes of "+talosctl)+
+		"\nKUBERNETES_VERSION=v9.9.9\nKUBECTL_SHA256="+sha256Of("bytes of "+kubectl)+"\n")
+	images := write("images.txt", "quay.io/cilium/cilium:v1.19.9@sha256:f3014d42121a04272cb4a5f4f96dbe7836c9a7919990f17e9b6838e8fd4aa33a\n")
+	manifests := write("manifests.txt", "argocd.yaml "+manifestSHA256+" https://example.test/argocd.yaml\n")
+	require.NoError(t, os.Mkdir(filepath.Join(run.dir, "bin"), 0o755))
+
+	run.out, run.err = testutil.RunBash(t, script, run.tools.Env("PREPARE_BIN_DIR="+filepath.Join(run.dir, "bin")),
+		toolsEnv, images, manifests, filepath.Join(run.dir, "manifests"))
+	return run
+}
+
+func TestPrepareScript_InstallsThePinnedToolsMirrorsByDigestAndFetchesTheManifests(t *testing.T) {
+	run := runPrepare(t, sha256Of("bytes of https://example.test/argocd.yaml"))
+
+	require.NoError(t, run.err, run.out)
+	assert.FileExists(t, filepath.Join(run.dir, "bin", "talosctl"))
+	assert.FileExists(t, filepath.Join(run.dir, "bin", "kubectl"))
+	assert.FileExists(t, filepath.Join(run.dir, "manifests", "argocd.yaml"))
+	assert.Contains(t, run.tools.Calls(t), "skopeo copy --all --preserve-digests --retry-times 3 --dest-tls-verify=false "+
+		"docker://quay.io/cilium/cilium@sha256:f3014d42121a04272cb4a5f4f96dbe7836c9a7919990f17e9b6838e8fd4aa33a "+
+		"docker://127.0.0.1:5000/quay.io/cilium/cilium:v1.19.9")
+}
+
+func TestPrepareScript_RefusesAManifestWhoseBytesDifferFromItsPin(t *testing.T) {
+	run := runPrepare(t, sha256Of("other bytes"))
+
+	require.Error(t, run.err)
+	assert.Contains(t, run.out, "https://example.test/argocd.yaml does not have sha256")
+	assert.NoFileExists(t, filepath.Join(run.dir, "manifests", "argocd.yaml"))
+}

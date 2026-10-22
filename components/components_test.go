@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
+	"github.com/mitstack-eu/talos-cluster-kit/mirror"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 	"github.com/mitstack-eu/talos-cluster-kit/tools"
 )
@@ -31,6 +32,50 @@ func TestImages_NamesEveryImageOfTheDefaultSetOnceByTagAndDigest(t *testing.T) {
 	for _, name := range []string{"quay.io/cilium/cilium", "quay.io/argoproj/argocd", "ghcr.io/siderolabs/kubelet", "docker.io/otel/opentelemetry-collector-contrib"} {
 		assert.True(t, slices.ContainsFunc(images, func(i components.Image) bool { return i.Name == name }), "the set pulls no %s", name)
 	}
+}
+
+func TestDefault_RunsKyvernoWithBothPoliciesAndCloudNativePGWithTheDatabaseSlicePolicy(t *testing.T) {
+	set := components.Default()
+
+	images, err := mirror.List(set)
+
+	require.NoError(t, err)
+	var served, inline []string
+	for _, m := range set.Served {
+		served = append(served, m.Name)
+	}
+	for _, m := range set.Inline {
+		inline = append(inline, m.Name)
+	}
+	assert.Subset(t, served, []string{"kyverno", "cloudnative-pg"})
+	assert.Subset(t, inline, []string{"mitstack-require-app-label", "mitstack-generate-default-deny", "cloudnative-pg-namespace", "mitstack-database-slices"})
+	for _, name := range []string{
+		"ghcr.io/kyverno/kyverno", "ghcr.io/kyverno/kyvernopre", "ghcr.io/kyverno/background-controller",
+		"ghcr.io/kyverno/cleanup-controller", "ghcr.io/kyverno/reports-controller",
+		"ghcr.io/cloudnative-pg/cloudnative-pg", "ghcr.io/cloudnative-pg/postgresql", "ghcr.io/cloudnative-pg/pgbouncer",
+	} {
+		assert.True(t, slices.ContainsFunc(images, func(i components.Image) bool { return i.Name == name && i.Digest != "" }),
+			"the mirror list holds no %s by digest", name)
+	}
+}
+
+func TestImages_NamesTheDefaultImageAnOperatorsConfigurationNames(t *testing.T) {
+	const postgres = "ghcr.io/cloudnative-pg/postgresql:18.6-system-trixie@sha256:f7e00138159bb45d70b624ba25e446924cb3ed1bf366d13e936c3f81b914064e"
+	set := components.Set{Inline: []components.Manifest{{Name: "operator", Bytes: []byte("data:\n  POSTGRES_IMAGE_NAME: " + postgres + "\n")}}}
+
+	images, err := set.Images()
+
+	require.NoError(t, err)
+	assert.True(t, slices.ContainsFunc(images, func(i components.Image) bool { return i.Ref() == postgres }), "images: %v", images)
+}
+
+func TestImages_RefusesAnOperatorsDefaultImageWithoutADigest(t *testing.T) {
+	set := components.Set{Inline: []components.Manifest{{Name: "operator", Bytes: []byte("data:\n  PGBOUNCER_IMAGE_NAME: ghcr.io/cloudnative-pg/pgbouncer:1.25.2\n")}}}
+
+	_, err := set.Images()
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ghcr.io/cloudnative-pg/pgbouncer:1.25.2")
 }
 
 func TestDefault_PinsTheReleasesToolsEnvInstalls(t *testing.T) {

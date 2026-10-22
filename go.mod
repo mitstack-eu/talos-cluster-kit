@@ -5,6 +5,7 @@ go 1.26.10
 require (
 	github.com/siderolabs/talos/pkg/machinery v1.14.4
 	github.com/stretchr/testify v1.12.1
+	github.com/yuin/gopher-lua v1.1.2
 	go.yaml.in/yaml/v4 v4.0.0-rc.6
 )
 

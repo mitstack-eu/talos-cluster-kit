@@ -448,6 +448,16 @@ name: argocd
 url: https://10.0.0.2/manifests/argocd.yaml
 ---
 apiVersion: v1alpha1
+kind: KubeExternalManifestConfig
+name: kyverno
+url: https://10.0.0.2/manifests/kyverno.yaml
+---
+apiVersion: v1alpha1
+kind: KubeExternalManifestConfig
+name: cloudnative-pg
+url: https://10.0.0.2/manifests/cloudnative-pg.yaml
+---
+apiVersion: v1alpha1
 kind: KubeInlineManifestConfig
 name: mitstack-metadata-block
 manifest: |
@@ -466,6 +476,149 @@ manifest: |
       egressDeny:
         - toCIDR:
             - 169.254.169.254/32
+---
+apiVersion: v1alpha1
+kind: KubeInlineManifestConfig
+name: mitstack-require-app-label
+manifest: |
+    apiVersion: policies.kyverno.io/v1
+    kind: ValidatingPolicy
+    metadata:
+      name: mitstack-require-app-label
+      annotations:
+        mitstack.dev/standard: NSA and CISA Kubernetes Hardening Guide
+    spec:
+      validationActions: [Deny]
+      autogen:
+        podControllers:
+          controllers: [deployments, statefulsets, daemonsets, jobs, cronjobs, replicasets]
+      matchConstraints:
+        resourceRules:
+        - apiGroups: [""]
+          apiVersions: ["v1"]
+          operations: ["CREATE", "UPDATE"]
+          resources: ["pods"]
+        namespaceSelector:
+          matchExpressions:
+          - key: kubernetes.io/metadata.name
+            operator: NotIn
+            values: [kube-system, kube-public, kube-node-lease, argocd, kyverno, cnpg-system, mitstack-node]
+      validations:
+      - expression: 'object.metadata.?labels[?"mitstack.dev/app"].orValue("") != ""'
+        message: "mitstack-require-app-label: every pod must carry a non-empty mitstack.dev/app label, which the app's network policies select it by"
+---
+apiVersion: v1alpha1
+kind: KubeInlineManifestConfig
+name: mitstack-generate-default-deny
+manifest: |
+    apiVersion: policies.kyverno.io/v1
+    kind: GeneratingPolicy
+    metadata:
+      name: mitstack-generate-default-deny
+      annotations:
+        mitstack.dev/standard: CIS Kubernetes Benchmark 5.3.2
+    spec:
+      evaluation:
+        synchronize:
+          enabled: true
+        generateExisting:
+          enabled: true
+      matchConstraints:
+        resourceRules:
+        - apiGroups: [""]
+          apiVersions: ["v1"]
+          operations: ["CREATE", "UPDATE"]
+          resources: ["namespaces"]
+      matchConditions:
+      - name: not-a-system-namespace
+        expression: "!(object.metadata.name in ['kube-system', 'kube-public', 'kube-node-lease', 'argocd', 'kyverno', 'cnpg-system', 'mitstack-node'])"
+      variables:
+      - name: namespace
+        expression: "string(object.metadata.name)"
+      - name: defaultDeny
+        expression: >-
+          [{
+            "apiVersion": dyn("networking.k8s.io/v1"),
+            "kind": dyn("NetworkPolicy"),
+            "metadata": dyn({"name": "mitstack-default-deny", "namespace": variables.namespace}),
+            "spec": dyn({"podSelector": {}, "policyTypes": ["Ingress", "Egress"]})
+          }]
+      generate:
+      - expression: generator.Apply(variables.namespace, variables.defaultDeny)
+---
+apiVersion: v1alpha1
+kind: KubeInlineManifestConfig
+name: cloudnative-pg-namespace
+manifest: |
+    # The namespace the CloudNativePG operator runs in. Its pod meets the
+    # restricted Pod Security Standard, so the namespace enforces it.
+    apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: cnpg-system
+      labels:
+        pod-security.kubernetes.io/enforce: restricted
+        pod-security.kubernetes.io/enforce-version: latest
+---
+apiVersion: v1alpha1
+kind: KubeInlineManifestConfig
+name: mitstack-database-slices
+manifest: |
+    apiVersion: cilium.io/v2
+    kind: CiliumClusterwideNetworkPolicy
+    metadata:
+      name: mitstack-database-slices
+    specs:
+    - description: "A Postgres instance in a database slice reaches the API server and the other instances, and admits the operator on 8000 and every slice on 5432."
+      endpointSelector:
+        matchLabels:
+          k8s:io.cilium.k8s.namespace.labels.mitstack.dev/database-slice: "true"
+          k8s:cnpg.io/podRole: instance
+      egress:
+      - toEntities: [kube-apiserver]
+      - toEndpoints:
+        - matchLabels:
+            k8s:io.cilium.k8s.namespace.labels.mitstack.dev/database-slice: "true"
+            k8s:cnpg.io/podRole: instance
+        toPorts:
+        - ports: [{port: "5432", protocol: TCP}]
+      ingress:
+      - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: cnpg-system
+            k8s:app.kubernetes.io/name: cloudnative-pg
+        toPorts:
+        - ports: [{port: "8000", protocol: TCP}]
+      - fromEndpoints:
+        - matchExpressions:
+          - {key: k8s:io.cilium.k8s.namespace.labels.mitstack.dev/subscription, operator: Exists}
+        toPorts:
+        - ports: [{port: "5432", protocol: TCP}]
+    - description: "A CloudNativePG Job in a database slice, such as initdb or join, reaches the API server and the instances on 5432."
+      endpointSelector:
+        matchLabels:
+          k8s:io.cilium.k8s.namespace.labels.mitstack.dev/database-slice: "true"
+        matchExpressions:
+        - {key: k8s:cnpg.io/jobRole, operator: Exists}
+      egress:
+      - toEntities: [kube-apiserver]
+      - toEndpoints:
+        - matchLabels:
+            k8s:io.cilium.k8s.namespace.labels.mitstack.dev/database-slice: "true"
+            k8s:cnpg.io/podRole: instance
+        toPorts:
+        - ports: [{port: "5432", protocol: TCP}]
+    - description: "A pod in any slice reaches the Postgres instances of a database slice on 5432."
+      endpointSelector:
+        matchExpressions:
+        - {key: k8s:io.cilium.k8s.namespace.labels.mitstack.dev/subscription, operator: Exists}
+      egress:
+      - toEndpoints:
+        - matchLabels:
+            k8s:io.cilium.k8s.namespace.labels.mitstack.dev/database-slice: "true"
+            k8s:cnpg.io/podRole: instance
+        toPorts:
+        - ports: [{port: "5432", protocol: TCP}]
 ---
 apiVersion: v1alpha1
 kind: KubeInlineManifestConfig

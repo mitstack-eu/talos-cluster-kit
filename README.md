@@ -39,7 +39,7 @@ the order a block uses them.
 | `mirror` | Lists every image the nodes pull, each by digest | `List`, `Render` |
 | `gateway` | Renders the cloud-config of the gateway in each location, and mints the cluster's gateway CA and each gateway's certificate | `Render`, `Inputs`, `NewCA`, `CA.Issue`, `ReleaseURL` |
 | `etcd` | Renders the Job that removes a lost node's etcd member and then its Node object, and holds the gateway's script that bootstraps etcd empty or from a snapshot | `RemoveMemberJob`, `BootstrapScript`, `Bootstrap.Args` |
-| `report` | Renders the node report, a CronJob that posts each node, its Talos version, the etcd membership, Argo CD's health and CloudNativePG's clusters, databases and roles to the platform | `Manifests` |
+| `report` | Renders the node report, a CronJob that posts each node, its Talos version, the etcd membership, Argo CD's health and CloudNativePG's clusters, databases and roles to the platform, with a `checks` member declaring which of the platform verdict's checks it carries | `Manifests` |
 | `openbaoinit` | Renders OpenBao's init Job, which the hosting set carries: it initialises a hosting cluster's OpenBao once, commits the root token and recovery key to the cluster repository as PGP messages, then writes the policy each slice's External Secrets reads with | `Manifests`, `Inputs`, `InitFile` |
 | `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image and the gateway both install, and names the tools image a release published | `Env`, `Pin`, `Image` |
 | `testutil` | Holds the fixtures, fakes and decoders this module's tests and a block's tests share | `NewCluster`, `NewTools`, `Golden` |

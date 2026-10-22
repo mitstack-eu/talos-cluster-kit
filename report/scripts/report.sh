@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Reads the cluster and posts the node report to the platform: each node with
 # its Talos version and readiness, the etcd membership, the health and sync
-# status of every Argo CD Application, and CloudNativePG's clusters, databases
-# and roles.
+# status of every Argo CD Application, CloudNativePG's clusters, databases and
+# roles, and a checks member naming none of the verdict's checks, which these reads do not carry.
 # Usage: REPORT_URL=<https url> SUBSCRIPTION_ID=<id> HOST_IP=<this pod's node> report.sh
 #   REPORT_TOKEN_FILE names the bearer token's file, /var/run/mitstack/token by default.
 # It exists so the platform sees a cluster it never dials into, as ADR 0072
@@ -76,7 +76,8 @@ body() {
         health: (.status.health.status // "Unknown"),
         sync: (.status.sync.status // "Unknown")
       }]},
-      cloudNativePG: cloudnative_pg_read
+      cloudNativePG: cloudnative_pg_read,
+      checks: {contract: "node-report/v1", names: []}
     }'
 }
 

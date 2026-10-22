@@ -1,0 +1,22 @@
+crds:
+  enabled: true
+podLabels:
+  mitstack.dev/app: cert-manager
+image:
+  tag: v1.21.2@sha256:70f532fd9cfde0b09d55687200942399d89838bc2d5d5b45152eb799a15912b8
+webhook:
+  podLabels:
+    mitstack.dev/app: cert-manager-webhook
+  image:
+    tag: v1.21.2@sha256:a60e2dac46dbb8a7f3df95c54ce941012f54c2fe022f0ee55aaa1ab40ed957ae
+cainjector:
+  podLabels:
+    mitstack.dev/app: cert-manager-cainjector
+  image:
+    tag: v1.21.2@sha256:c85268c64f2e0e76684bf5fe8906caff34b82523561c6affe0fae3546bd87562
+# The check is a Helm hook, and Talos applies manifests with no hooks to run it.
+startupapicheck:
+  enabled: false
+acmesolver:
+  image:
+    tag: v1.21.2@sha256:699b40d622211ab7accad8a21b04c5fbaa1841ef7a12621e8de492dbe27b2503

@@ -1,0 +1,9 @@
+# OpenBao's static seal reads this 32-byte key from the file the StatefulSet mounts at /openbao/seal/key.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: openbao-seal-key
+  namespace: openbao
+type: Opaque
+data:
+  key: {{ .Key }}

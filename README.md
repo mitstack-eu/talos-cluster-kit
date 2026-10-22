@@ -33,7 +33,7 @@ the order a block uses them.
 
 | Package | What it does | Main entry points |
 |---|---|---|
-| `components` | Holds the pinned component set: Cilium, the custom resource definition (CRD) of Cilium's cluster-wide policy, Argo CD, the policy that keeps pods from Hetzner's metadata service at `169.254.169.254`, Kyverno with its two admission policies, the CloudNativePG operator with the database-slice policy, and the node-local OpenTelemetry Collector | `Default`, `Set.Images`, `LogCollector`, `ParseImage` |
+| `components` | Holds the pinned component set: Cilium, the custom resource definition (CRD) of Cilium's cluster-wide policy, Argo CD, the policy that keeps pods from Hetzner's metadata service at `169.254.169.254`, Kyverno with its two admission policies, the CloudNativePG operator with the database-slice policy, and the node-local OpenTelemetry Collector. It also holds the boot set of a cluster that hosts the platform | `Default`, `Hosting`, `Set.Images`, `LogCollector`, `ParseImage` |
 | `nodeconfig` | Renders a control-plane node's machine configuration with Talos's own `machinery` module and validates it against Talos's schema | `Render`, `Cluster`, `Node`, `NewSecrets`, `ParseSecrets`, `Secrets.AdminTalosconfig` |
 | `image` | Runs imager, Sidero Labs' open-source image builder, with the `hcloud` or the `metal` profile, and discards its output | `Run`, `Build` |
 | `mirror` | Lists every image the nodes pull, each by digest | `List`, `Render` |
@@ -86,6 +86,7 @@ control-plane node and changes it in these ways:
 | Networking | Flannel and kube-proxy are off, since Cilium replaces both, and etcd and the kubelet bind to the private network | `adapt` |
 | Default route | A Cloud node keeps DHCP on `eth0` and routes everything outside the network through Hetzner's router at the network's first address. The block's network route of `0.0.0.0/0` then carries that traffic to the gateway. Hetzner's DHCP gives the node no default route, and Talos runs no default DHCP on a link that has a `LinkConfig` | `routeDocuments` |
 | Talos API from pods | Only pods in `mitstack-node` may hold a Talos identity, with `os:admin`, `os:etcd:backup` or `os:reader` | `talosAPIAccessDocument` |
+| User volumes | Each user volume the set names, such as OpenBao's in the hosting set, is a directory Talos mounts at `/var/mnt/<name>` | `userVolumeDocuments` |
 
 The configuration holds every key of the cluster, its certificate
 authorities included, but no admin client certificate. Talos's etcd
@@ -121,6 +122,119 @@ mitstack-eu/cluster-bases, the repository of pinned third-party manifests.
 Argo CD's built-in health check reads a Postgres switchover, failover,
 upgrade or configuration change as Degraded. The kit's `argocd-cm` reads each
 of those as Progressing, since CloudNativePG passes through them on its own.
+
+## How a cluster that hosts the platform boots
+
+A cluster that runs mitstack's own control plane must start its secret store,
+External Secrets and its web entry point before Argo CD or the platform runs.
+`components.Hosting` returns that boot set. It is the default set with six
+more charts and the manifests that join them, and a block opts in by passing
+it as `Cluster.Components`. A cluster built from `components.Default` renders
+the same bytes it always did, and the golden files in
+`nodeconfig/testdata/golden/` and `gateway/testdata/golden/` prove it.
+
+The block mints the inputs and the kit checks them. `Hosting` refuses a seal
+key that is not 32 bytes, a certificate of another key, an App key not sealed
+to that key pair, and anything but three distinct node names.
+
+```go
+set, err := components.Hosting(components.HostingInputs{
+	SealKey:              sealKey,      // 32 random bytes
+	SealedSecretsKeyPEM:  keyPEM,       // the RSA key Sealed Secrets opens with, PKCS #1 PEM
+	SealedSecretsCertPEM: certPEM,      // its self-signed certificate, which the block seals to
+	SealedAppKey:         sealedAppKey, // the SealedSecret github-app-key in mitstack-node
+	Nodes:                []string{"shop-node-fsn1", "shop-node-nbg1", "shop-node-hel1"},
+})
+```
+
+### What the hosting set runs
+
+Each chart renders from a version pinned with the sha256 its repository's
+`index.yaml` publishes. Every image is named by digest, and `mirror.List`
+returns each one for the gateway's mirror.
+
+| Component | What it does here | Values |
+|---|---|---|
+| OpenBao 2.7.1 | Three Raft members, one per node. The listener serves TLS 1.3 only, with the certificate cert-manager issues, and reloads it when it is renewed. The static seal reads its key from `/openbao/seal/key` | `components/render/openbao-values.yaml` |
+| cert-manager v1.21.2 | Issues OpenBao's serving certificate from OpenBao's own authority, and the External Secrets webhook's certificate | `components/render/cert-manager-values.yaml` |
+| trust-manager v0.25.0 | Copies that authority into the ConfigMap `openbao-ca`, under `ca.crt`, in every namespace | `components/render/trust-manager-values.yaml` |
+| External Secrets v2.11.0 | Copies values from OpenBao into Kubernetes Secrets | `components/render/external-secrets-values.yaml` |
+| Sealed Secrets 0.40.0 | Opens a `SealedSecret` with the block's key pair, and never mints or renews a key | `components/render/sealed-secrets-values.yaml` |
+| Traefik v3.7.13 | Serves web traffic on NodePorts 30080 and 30081, with one pod on every node | `components/render/traefik-values.yaml` |
+
+The authority and the certificates sit in `components/hosting/tls.yaml`. A
+`SecretStore`, the External Secrets object that names a store, verifies
+OpenBao through its Vault provider's `caProvider`, as in this example:
+
+```yaml
+caProvider:
+  type: ConfigMap
+  name: openbao-ca
+  key: ca.crt
+```
+
+### Where each secret lives
+
+The gateway serves every served manifest to every node over the private
+network. A served manifest therefore holds no Secret and no private key, and
+each secret the block passes in sits in an inline manifest. An inline manifest
+travels inside the machine configuration, which already holds every key of
+the cluster.
+
+| Inline manifest | What it holds | Template |
+|---|---|---|
+| `mitstack-openbao-seal-key` | The Secret `openbao-seal-key` with the 32-byte seal key | `components/hosting/seal-key.yaml` |
+| `mitstack-sealed-secrets-key` | The key pair, labelled as Sealed Secrets' active key | `components/hosting/sealed-secrets-key.yaml` |
+| `mitstack-sealed-app-key` | The `SealedSecret` that opens to the hosting GitHub App's key | `components/hosting/sealed-app-key.yaml` |
+| `mitstack-openbao-storage` | OpenBao's StorageClass and the local volume of each member | `components/hosting/storage.yaml` |
+
+Talos creates each object of a manifest once and never edits it afterwards. A
+new seal key or key pair therefore reaches a running cluster only through
+OpenBao's and Sealed Secrets' own rotation, and never through a new render.
+
+### Where OpenBao keeps its data
+
+Each node keeps its member's Raft data on the Talos user volume `openbao`,
+which Talos mounts at `/var/mnt/openbao`. A Cloud server has one disk, and the
+partition Talos calls `EPHEMERAL` spans all of it. The volume is therefore a
+directory on `EPHEMERAL`, which needs no free space on the disk.
+
+OpenBao starts before any storage provisioner could run. The StorageClass
+`openbao-local` provisions nothing, and each member's claim binds a local
+volume that is pinned to one named node, so a member keeps its node and its
+data. Talos documents that a node's local data is lost with its machine, which
+is why OpenBao runs three members and Raft carries the data.
+
+### Which flows the hosting namespaces allow
+
+Kyverno gives each hosting namespace `mitstack-default-deny` and refuses a pod
+without `mitstack.dev/app`, as it does every app namespace. Every pod of the
+hosting set carries that label. The Cilium policy `mitstack-hosting-flows` in
+`components/hosting/flows.yaml` names each flow the set needs.
+
+| Pods | What the policy allows |
+|---|---|
+| cert-manager and trust-manager | Calls to the API server, and the API server's calls to their webhooks |
+| External Secrets | Calls to the API server, to cluster DNS and to OpenBao on 8200, and the API server's calls to its webhook |
+| OpenBao | Calls between members on 8200 and 8201, to the API server and to cluster DNS, and External Secrets' calls on 8200 |
+| Traefik | Web traffic from outside the cluster on its two ports, calls to the API server, and calls to the app slices |
+
+### The documentation the hosting set follows
+
+| Page | What the set takes from it |
+|---|---|
+| [Talos: inlineManifests and extraManifests](https://docs.siderolabs.com/kubernetes-guides/advanced-guides/inlinemanifests) | A served manifest is fetched from its URL, an inline one lives in the configuration, and Talos only creates objects |
+| [Talos: User Volumes](https://docs.siderolabs.com/talos/v1.14/configure-your-talos-cluster/storage-and-disk-management/disk-management/user) | A user volume mounts at `/var/mnt/<name>`, and a `directory` volume lives on `EPHEMERAL` |
+| [Talos: disk layout](https://docs.siderolabs.com/talos/v1.14/configure-your-talos-cluster/storage-and-disk-management/disk-management/layout) | `EPHEMERAL` takes all unallocated space by default |
+| [Talos: Local Storage](https://docs.siderolabs.com/kubernetes-guides/csi/local-storage) | Local storage is lost when its machine fails |
+| [OpenBao: TCP listener](https://openbao.org/docs/configuration/listener/tcp/) | TLS is on unless `tls_disable` is set, and `tls_auto_reload` picks up a renewed certificate |
+| [OpenBao: Integrated Storage (Raft)](https://openbao.org/docs/configuration/storage/raft/) | `path`, `retry_join` with `leader_ca_cert_file`, and the node ID from `BAO_RAFT_NODE_ID` |
+| [OpenBao: static seal](https://openbao.org/docs/configuration/seal/static/) | The key is 32 bytes, read through `file://` |
+| [cert-manager: CA](https://cert-manager.io/docs/configuration/ca/) and [SelfSigned](https://cert-manager.io/docs/configuration/selfsigned/) issuers | A self-signed root bootstraps the CA issuer |
+| [trust-manager](https://cert-manager.io/docs/trust/trust-manager/) | A `Bundle` reads Secrets in its trust namespace and writes a ConfigMap to every namespace |
+| [External Secrets: HashiCorp Vault provider](https://external-secrets.io/latest/provider/hashicorp-vault/) | A private CA is named through `caProvider` or `caBundle` |
+| [Sealed Secrets: bring your own certificates](https://github.com/bitnami/sealed-secrets/blob/main/docs/bring-your-own-certificates.md) | The controller uses each key pair in its namespace that carries the active label |
+| [Traefik chart values](https://github.com/traefik/traefik-helm-chart/blob/master/traefik/VALUES.md) | `deployment.kind`, `ports.web.nodePort`, `ports.websecure.nodePort` and `service.spec` |
 
 ## Why the image build discards its output
 

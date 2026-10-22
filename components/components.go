@@ -45,6 +45,8 @@ type Set struct {
 	Inline []Manifest
 	// TalosImages are the images Talos itself pulls for the Kubernetes control plane and the kubelet.
 	TalosImages []Image
+	// UserVolumes are the Talos user volumes the set's components keep data on, each mounted at UserVolumePath.
+	UserVolumes []string
 }
 
 var (
@@ -93,9 +95,9 @@ func Default() Set {
 	}
 }
 
-// imageLineRe matches a manifest's image field, or an operator's default image such as CloudNativePG's
-// POSTGRES_IMAGE_NAME, with its reference in group 1.
-var imageLineRe = regexp.MustCompile(`(?m)^[ \t]*(?:- )?(?:image|[A-Z][A-Z_]*_IMAGE_NAME):[ \t]*"?([^"\s]+)"?[ \t]*$`)
+// imageLineRe matches a manifest's image field, an operator's default image such as CloudNativePG's
+// POSTGRES_IMAGE_NAME, or an image flag such as cert-manager's --acme-http01-solver-image, with its reference in group 1.
+var imageLineRe = regexp.MustCompile(`(?m)^[ \t]*(?:- )?(?:(?:image|[A-Z][A-Z_]*_IMAGE_NAME):[ \t]*|--[a-z0-9-]+-image=)"?([^"\s]+)"?[ \t]*$`)
 
 // Images returns every image the set and the node-local Collector pull, sorted by reference with each listed once.
 func (s Set) Images() ([]Image, error) {

@@ -1,0 +1,38 @@
+image:
+  tag: v3.7.13@sha256:24841fe2de7304c149343d877d2923b4c8800a38ba015dea9174c23b20e344a0
+# One pod on every node, so each location's load balancer reaches a local Traefik and the Service keeps the client's address.
+deployment:
+  kind: DaemonSet
+  podLabels:
+    mitstack.dev/app: traefik
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 0
+    maxUnavailable: 1
+ports:
+  web:
+    nodePort: 30080
+  websecure:
+    nodePort: 30081
+  metrics: null
+metrics:
+  prometheus: null
+service:
+  spec:
+    type: NodePort
+    externalTrafficPolicy: Local
+ingressClass:
+  enabled: true
+  name: traefik
+podSecurityContext:
+  runAsUser: 65532
+  runAsGroup: 65532
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]

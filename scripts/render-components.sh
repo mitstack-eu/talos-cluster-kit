@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Renders the component set every Talos cluster starts with into
 # components/: Cilium from its chart, the CRD of Cilium's cluster-wide policy
-# from Cilium's source, and Argo CD and Kyverno from their charts. With --check it fails
-# when a committed file differs from a fresh render or names an image by
-# anything but a digest.
+# from Cilium's source, and Argo CD and Kyverno from their charts. It renders
+# the hosting set's six charts too: OpenBao, cert-manager, trust-manager,
+# External Secrets, Sealed Secrets and Traefik. With --check it fails when a
+# committed file differs from a fresh render or names an image by anything but
+# a digest.
 # Usage: scripts/render-components.sh [--check]
 #   HELM names the helm binary, helm on PATH by default; CI pins v3.18.6.
 # It exists so the manifests a node applies are reviewable bytes that come
@@ -23,6 +25,17 @@ readonly argocd_chart_url="https://github.com/argoproj/argo-helm/releases/downlo
 readonly kyverno_chart_version=3.9.1
 readonly kyverno_chart_sha256=7b7fe51a431b5b133b0ce7eb9dcb222b6a37fb967c163223cf480054ad14d752
 readonly kyverno_chart_url="https://kyverno.github.io/kyverno/kyverno-${kyverno_chart_version}.tgz"
+
+# Each hosting chart is name, version, the sha256 its repository's index.yaml publishes, URL, namespace, and whether
+# the render creates that namespace.
+readonly hosting_charts=(
+  "openbao 0.30.2 53a55a9e53e28656b8d4b1264a549116267391eb2652735a855cd94fec461c9f https://github.com/openbao/openbao-helm/releases/download/openbao-0.30.2/openbao-0.30.2.tgz openbao create"
+  "cert-manager v1.21.2 73a56e1728edd6c99f1f31082618c3259d279a76b7ebd3d4bdc5475c2442d34a https://charts.jetstack.io/charts/cert-manager-v1.21.2.tgz cert-manager create"
+  "trust-manager v0.25.0 b271163e34fdf5c0894e56e568f3616c0db3a02d7ea5a8f9bcfd42f9f3e111f0 https://charts.jetstack.io/charts/trust-manager-v0.25.0.tgz cert-manager -"
+  "external-secrets 2.11.0 8199b42fe80b871c6a86233a80bb14f599fd6e1e6462c1216d836577f845e161 https://github.com/external-secrets/external-secrets/releases/download/helm-chart-2.11.0/external-secrets-2.11.0.tgz external-secrets create"
+  "sealed-secrets 2.20.0 6092d219c697f3c9ae3a386ba24bfdd86877c5e2fc8892e2af8a810145b990ef https://github.com/bitnami/sealed-secrets/releases/download/helm-v2.20.0/sealed-secrets-2.20.0.tgz kube-system -"
+  "traefik 41.6.1 1e65d46bae0ba0baef460a1d82686b50f156372865a3d7d8a85b51c3855b2ef9 https://traefik.github.io/charts/traefik/traefik-41.6.1.tgz traefik create"
+)
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 readonly root
@@ -100,6 +113,25 @@ render_kyverno() {
   } > "$work/kyverno.yaml"
 }
 
+# render_hosting_chart <name> <version> <sha256> <url> <namespace> <create|-> renders one hosting chart with the CRDs in
+# its crds/ folder, which helm template leaves out by default, and without its tests, which Talos would run as
+# ordinary pods.
+render_hosting_chart() {
+  fetch "$4" "$3" "$work/$1.tgz"
+  {
+    header "the $1 $2 chart"
+    if [ "$6" = create ]; then
+      printf -- '---\napiVersion: v1\nkind: Namespace\nmetadata:\n  name: %s\n' "$5"
+    fi
+    "$helm" template "$1" "$work/$1.tgz" \
+      --include-crds \
+      --namespace "$5" \
+      --kube-version "$kube_version" \
+      --skip-tests \
+      --values "$root/components/render/$1-values.yaml"
+  } > "$work/$1.yaml"
+}
+
 # compare <fresh> <committed> fails when the committed file differs from the fresh render.
 compare() {
   if ! diff -q "$2" "$1" > /dev/null; then
@@ -126,6 +158,13 @@ main() {
   refuse_undigested "$work/kyverno.yaml" render-components
 
   local pairs=("cilium.yaml:components/cilium/cilium.yaml" "policy-crd.yaml:components/cilium/policy-crd.yaml" "argocd.yaml:components/argocd/argocd.yaml" "kyverno.yaml:components/kyverno/kyverno.yaml")
+  local chart name version sha256 url namespace create
+  for chart in "${hosting_charts[@]}"; do
+    read -r name version sha256 url namespace create <<< "$chart"
+    render_hosting_chart "$name" "$version" "$sha256" "$url" "$namespace" "$create"
+    refuse_undigested "$work/$name.yaml" render-components
+    pairs+=("$name.yaml:components/$name/$name.yaml")
+  done
   local pair failed=0
   for pair in "${pairs[@]}"; do
     if $check; then

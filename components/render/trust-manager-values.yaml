@@ -1,0 +1,12 @@
+crds:
+  enabled: true
+image:
+  tag: v0.25.0@sha256:0521921c2a46d14d0417336b20bcde69215ef3164f2977cc939d53c6e5224a17
+defaultPackage:
+  enabled: false
+app:
+  podLabels:
+    mitstack.dev/app: trust-manager
+  # trust-manager reads Secrets only here, where cert-manager keeps OpenBao's authority.
+  trust:
+    namespace: openbao

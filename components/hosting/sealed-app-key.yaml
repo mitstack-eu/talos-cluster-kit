@@ -1,0 +1,18 @@
+# The hosting GitHub App's key, sealed in the strict scope to the boot key pair, so only this cluster opens it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Namespace }}
+---
+apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+spec:
+  encryptedData:
+    {{ .Item }}: {{ .Sealed }}
+  template:
+    metadata:
+      name: {{ .Name }}
+      namespace: {{ .Namespace }}

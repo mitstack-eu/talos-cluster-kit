@@ -1,0 +1,83 @@
+global:
+  tlsDisable: false
+injector:
+  enabled: false
+server:
+  image:
+    registry: quay.io
+    repository: openbao/openbao
+    tag: 2.7.1@sha256:6d2b93856e3fcf7b18ad855a0b51eaba474dc8b79cf554379ea32034797d2acf
+  extraLabels:
+    mitstack.dev/app: openbao
+  extraEnvironmentVars:
+    BAO_CACERT: /openbao/tls/ca.crt
+  statefulSet:
+    securityContext:
+      pod:
+        runAsNonRoot: true
+        runAsUser: 100
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      container:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+  # Each member's claim binds the local volume the hosting set pins to one node, so a member keeps its node and its data.
+  dataStorage:
+    size: 10Gi
+    storageClass: openbao-local
+  volumes:
+    - name: seal-key
+      secret:
+        secretName: openbao-seal-key
+        defaultMode: 0440
+    - name: tls
+      secret:
+        secretName: openbao-tls
+        defaultMode: 0440
+  volumeMounts:
+    - name: seal-key
+      mountPath: /openbao/seal
+      readOnly: true
+    - name: tls
+      mountPath: /openbao/tls
+      readOnly: true
+  ha:
+    enabled: true
+    replicas: 3
+    apiAddr: https://$(HOSTNAME).openbao-internal:8200
+    raft:
+      enabled: true
+      setNodeId: true
+      config: |
+        ui = false
+        listener "tcp" {
+          address = "[::]:8200"
+          cluster_address = "[::]:8201"
+          tls_cert_file = "/openbao/tls/tls.crt"
+          tls_key_file = "/openbao/tls/tls.key"
+          tls_min_version = "tls13"
+          tls_auto_reload = true
+        }
+        storage "raft" {
+          path = "/openbao/data"
+          retry_join {
+            leader_api_addr = "https://openbao-0.openbao-internal:8200"
+            leader_ca_cert_file = "/openbao/tls/ca.crt"
+          }
+          retry_join {
+            leader_api_addr = "https://openbao-1.openbao-internal:8200"
+            leader_ca_cert_file = "/openbao/tls/ca.crt"
+          }
+          retry_join {
+            leader_api_addr = "https://openbao-2.openbao-internal:8200"
+            leader_ca_cert_file = "/openbao/tls/ca.crt"
+          }
+        }
+        seal "static" {
+          current_key_id = "mitstack-seal-1"
+          current_key = "file:///openbao/seal/key"
+        }
+        service_registration "kubernetes" {}

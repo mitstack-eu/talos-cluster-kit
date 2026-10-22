@@ -11,3 +11,45 @@ redis:
 configs:
   cm:
     resource.customizations.health.argoproj.io_Application: 'local h=obj.status and obj.status.health or {} return {status=h.status or "Progressing",message=h.message or ""}'
+    # Argo CD's built-in check reads a switchover, a failover, an upgrade and a configuration change as Degraded,
+    # though CloudNativePG passes through each on its own, so here they read Progressing.
+    resource.customizations.health.postgresql.cnpg.io_Cluster: |
+      local phases = {
+        ["Cluster in healthy state"] = "Healthy",
+        ["Setting up primary"] = "Progressing",
+        ["Creating a new replica"] = "Progressing",
+        ["Upgrading cluster"] = "Progressing",
+        ["Waiting for the instances to become active"] = "Progressing",
+        ["Promoting to primary cluster"] = "Progressing",
+        ["Switchover in progress"] = "Progressing",
+        ["Failing over"] = "Progressing",
+        ["Upgrading Postgres major version"] = "Progressing",
+        ["Online upgrade in progress"] = "Progressing",
+        ["Applying configuration"] = "Progressing",
+        ["Primary instance is being restarted in-place"] = "Progressing",
+        ["Primary instance is being restarted without a switchover"] = "Progressing",
+        ["Cluster upgrade delayed"] = "Degraded",
+        ["Waiting for user action"] = "Degraded",
+        ["Cluster cannot execute instance online upgrade due to missing architecture binary"] = "Degraded",
+        ["Unable to create required cluster objects"] = "Suspended",
+        ["Cluster cannot proceed to reconciliation due to an unknown plugin being required"] = "Suspended",
+        ["Cluster has incomplete or invalid image catalog"] = "Suspended",
+        ["Cluster is unrecoverable and needs manual intervention"] = "Suspended",
+      }
+      local annotations = obj.metadata and obj.metadata.annotations or {}
+      if annotations["cnpg.io/reconciliationLoop"] == "disabled" then
+        return {status = "Suspended", message = "Cluster reconciliation is suspended"}
+      end
+      local status = obj.status or {}
+      for _, condition in ipairs(status.conditions or {}) do
+        if condition.type == "cnpg.io/hibernation" then
+          if condition.status == "True" then
+            return {status = "Suspended", message = condition.message}
+          end
+          return {status = "Degraded", message = condition.message}
+        end
+      end
+      if status.conditions == nil then
+        return {status = "Progressing", message = status.phaseReason}
+      end
+      return {status = phases[status.phase] or "Unknown", message = status.phaseReason}

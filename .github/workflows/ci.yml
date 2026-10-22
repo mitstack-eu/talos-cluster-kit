@@ -1,8 +1,8 @@
 # Module CI: the repository's one workflow.
 #
 # Every event runs the Go suites, the check that each vendored component
-# matches a fresh render of its pinned chart, shellcheck over every script, and
-# a build of the tools image. A pull request also runs the board key gate.
+# matches a fresh render of its pinned chart, the Kyverno policy tests,
+# shellcheck over every script, and a build of the tools image. A pull request also runs the board key gate.
 #
 # Once all of them pass on a push to main, the release job releases the
 # version .github/version names, unless that tag exists already, and the
@@ -64,6 +64,19 @@ jobs:
 
       - name: Check every component against a fresh render
         run: scripts/render-components.sh --check
+
+      - name: Install the Kyverno CLI v1.19.1
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl -fsSL -o kyverno-cli.tar.gz \
+            https://github.com/kyverno/kyverno/releases/download/v1.19.1/kyverno-cli_v1.19.1_linux_x86_64.tar.gz
+          echo "b38228f367fc0fdc2b08f4c83ea50ac5f16c60ff8d62d76a66157c33c47b70ae  kyverno-cli.tar.gz" | sha256sum -c -
+          tar -xzf kyverno-cli.tar.gz kyverno
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Test the admission policies
+        run: kyverno test components/admission/tests
 
       - name: shellcheck
         run: shellcheck -x scripts/*.sh scripts/lib/*.sh etcd/scripts/*.sh gateway/scripts/*.sh report/scripts/*.sh

@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
+	"github.com/mitstack-eu/talos-cluster-kit/mirror"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 	"github.com/mitstack-eu/talos-cluster-kit/tools"
 )
@@ -31,6 +32,31 @@ func TestImages_NamesEveryImageOfTheDefaultSetOnceByTagAndDigest(t *testing.T) {
 	for _, name := range []string{"quay.io/cilium/cilium", "quay.io/argoproj/argocd", "ghcr.io/siderolabs/kubelet", "docker.io/otel/opentelemetry-collector-contrib"} {
 		assert.True(t, slices.ContainsFunc(images, func(i components.Image) bool { return i.Name == name }), "the set pulls no %s", name)
 	}
+}
+
+func TestDefault_RunsKyvernoWithBothPoliciesAndCloudNativePGWithTheDatabaseSlicePolicy(t *testing.T) {
+	images, err := mirror.List(components.Default())
+
+	require.NoError(t, err)
+	for _, name := range []string{"kyverno", "mitstack-require-app-label", "mitstack-generate-default-deny", "cloudnative-pg", "cloudnative-pg-namespace", "mitstack-database-slices"} {
+		manifest(t, name)
+	}
+	for _, name := range []string{
+		"ghcr.io/kyverno/kyverno", "ghcr.io/kyverno/kyvernopre", "ghcr.io/kyverno/background-controller",
+		"ghcr.io/kyverno/cleanup-controller", "ghcr.io/kyverno/reports-controller",
+		"ghcr.io/cloudnative-pg/cloudnative-pg", "ghcr.io/cloudnative-pg/postgresql", "ghcr.io/cloudnative-pg/pgbouncer",
+	} {
+		assert.True(t, slices.ContainsFunc(images, func(i components.Image) bool { return i.Name == name }), "the mirror list holds no %s", name)
+	}
+}
+
+func TestImages_RefusesAnOperatorsDefaultImageWithoutADigest(t *testing.T) {
+	set := components.Set{Inline: []components.Manifest{{Name: "operator", Bytes: []byte("data:\n  PGBOUNCER_IMAGE_NAME: ghcr.io/cloudnative-pg/pgbouncer:1.25.2\n")}}}
+
+	_, err := set.Images()
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ghcr.io/cloudnative-pg/pgbouncer:1.25.2")
 }
 
 func TestDefault_PinsTheReleasesToolsEnvInstalls(t *testing.T) {

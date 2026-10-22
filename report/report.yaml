@@ -1,6 +1,6 @@
 # The node report: a CronJob that reads the cluster with the Talos os:reader
-# role and a Kubernetes identity that may only read Nodes and Applications,
-# and posts the result to the platform. It also creates the one namespace
+# role and a Kubernetes identity that may only read Nodes, Applications and
+# CloudNativePG's objects, and posts the result to the platform. It also creates the one namespace
 # whose pods may hold a Talos identity.
 apiVersion: v1
 kind: Namespace
@@ -32,6 +32,9 @@ rules:
     verbs: [get, list]
   - apiGroups: [argoproj.io]
     resources: [applications]
+    verbs: [get, list]
+  - apiGroups: [postgresql.cnpg.io]
+    resources: [clusters, databases, databaseroles]
     verbs: [get, list]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

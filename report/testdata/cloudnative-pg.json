@@ -1,0 +1,27 @@
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "apiVersion": "postgresql.cnpg.io/v1",
+      "kind": "Cluster",
+      "metadata": {"name": "shared", "namespace": "app-pg", "labels": {"mitstack.dev/subscription": "sub_pg0123456789"}},
+      "spec": {"instances": 2},
+      "status": {"phase": "Cluster in healthy state", "instances": 2, "readyInstances": 2}
+    },
+    {
+      "apiVersion": "postgresql.cnpg.io/v1",
+      "kind": "Database",
+      "metadata": {"name": "shop", "namespace": "app-pg", "labels": {"mitstack.dev/subscription": "sub_shop01234567"}},
+      "spec": {"cluster": {"name": "shared"}, "name": "shop", "owner": "shop"},
+      "status": {"applied": true}
+    },
+    {
+      "apiVersion": "postgresql.cnpg.io/v1",
+      "kind": "DatabaseRole",
+      "metadata": {"name": "shop", "namespace": "app-pg"},
+      "spec": {"cluster": {"name": "shared"}, "name": "shop"},
+      "status": {"applied": false, "message": "role \"shop\" cannot be created: the cluster is not ready"}
+    }
+  ]
+}

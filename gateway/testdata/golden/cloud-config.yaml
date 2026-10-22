@@ -103,6 +103,14 @@ write_files:
   - path: /etc/mitstack-gateway/images.txt
     content: |
       docker.io/otel/opentelemetry-collector-contrib:0.163.1@sha256:1175b03003053962012f5a231f5567f66a3e8fdb960c7835c0e48f7aa1555806
+      ghcr.io/cloudnative-pg/cloudnative-pg:1.30.1@sha256:923c267ec29636db3bee20f993d0ec4973fa22998e1adad37da79e4d32b5bc07
+      ghcr.io/cloudnative-pg/pgbouncer:1.25.2@sha256:b15c428057d1ffbc19fb70496911a5f1a47066dcc1315bf794f4e85ade29e2e5
+      ghcr.io/cloudnative-pg/postgresql:18.6-system-trixie@sha256:f7e00138159bb45d70b624ba25e446924cb3ed1bf366d13e936c3f81b914064e
+      ghcr.io/kyverno/background-controller:v1.19.1@sha256:8f1e9143373a27578cafc2d28d2c66ba0926c63b4c77e63de8d2fdd4a122859f
+      ghcr.io/kyverno/cleanup-controller:v1.19.1@sha256:67a48e62a8d8f8120c86914ff822b90017c54054c7b64ef8a1555645e9d9761e
+      ghcr.io/kyverno/kyverno:v1.19.1@sha256:b31d8511ae5fd6010e2a01ea72ebae08eb82fa51d91af14a1d9fe989949b4edb
+      ghcr.io/kyverno/kyvernopre:v1.19.1@sha256:c25c47461f06f2845a48c319ae86fbbc1730a7b9ed5b701889c9dc1f9ee94b09
+      ghcr.io/kyverno/reports-controller:v1.19.1@sha256:c0eee97b9b44a0dd35805d56b358fa52548480f79d4944602b9609538eccd64c
       ghcr.io/mitstack-eu/talos-tools:v0.1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
       ghcr.io/siderolabs/kubelet:v1.37.1@sha256:3777bdaaa352e1f425dff9d8868a970923c66d0629bad16f935c41018a83d9d8
       public.ecr.aws/docker/library/redis:8.2.3-alpine@sha256:08ad0b1d280850169a790dba1393ff7a90aef951fc19632cf4d3ce4f78e679ba
@@ -120,7 +128,9 @@ write_files:
     content: |
       cilium.yaml 4f2fa29bfd991b939d8347a9f4b2db673d48c1a5bf6c91beec3ff7f07b4e0d4c https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/cilium/cilium.yaml
       cilium-policy-crd.yaml 582273fd2b7d7238563ad2976ba36905ba818834ed71c58cad6e51bb4762088b https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/cilium/policy-crd.yaml
-      argocd.yaml bc993195bc6bf46cd93476cca33c978cb33a245f94d8ed8e7186fa4152043ac2 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/argocd/argocd.yaml
+      argocd.yaml fb411045350cff6403ef713a067f92d7c88e0527e6ca9c8bd115886f8c4aa17b https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/argocd/argocd.yaml
+      kyverno.yaml 7f93b0957f04a348f03d6c0cdff833dd6e1eb4b9becc8481ffc2ca5ab65b2902 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/kyverno/kyverno.yaml
+      cloudnative-pg.yaml 6c62fe77193f3e9dbd1073cf81bc9271ab041f39097bf855417b8488d8eb8561 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/cloudnative-pg/cloudnative-pg.yaml
   - path: /usr/local/bin/mitstack-gateway-prepare
     permissions: "0755"
     content: |

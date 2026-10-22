@@ -304,6 +304,46 @@ data:
   exec.enabled: "false"
   resource.customizations.health.argoproj.io_Application: local h=obj.status and obj.status.health or {} return {status=h.status or "Progressing",message=h.message
     or ""}
+  resource.customizations.health.postgresql.cnpg.io_Cluster: |
+    local phases = {
+      ["Cluster in healthy state"] = "Healthy",
+      ["Setting up primary"] = "Progressing",
+      ["Creating a new replica"] = "Progressing",
+      ["Upgrading cluster"] = "Progressing",
+      ["Waiting for the instances to become active"] = "Progressing",
+      ["Promoting to primary cluster"] = "Progressing",
+      ["Switchover in progress"] = "Progressing",
+      ["Failing over"] = "Progressing",
+      ["Upgrading Postgres major version"] = "Progressing",
+      ["Online upgrade in progress"] = "Progressing",
+      ["Applying configuration"] = "Progressing",
+      ["Primary instance is being restarted in-place"] = "Progressing",
+      ["Primary instance is being restarted without a switchover"] = "Progressing",
+      ["Cluster upgrade delayed"] = "Degraded",
+      ["Waiting for user action"] = "Degraded",
+      ["Cluster cannot execute instance online upgrade due to missing architecture binary"] = "Degraded",
+      ["Unable to create required cluster objects"] = "Suspended",
+      ["Cluster cannot proceed to reconciliation due to an unknown plugin being required"] = "Suspended",
+      ["Cluster has incomplete or invalid image catalog"] = "Suspended",
+      ["Cluster is unrecoverable and needs manual intervention"] = "Suspended",
+    }
+    local annotations = obj.metadata and obj.metadata.annotations or {}
+    if annotations["cnpg.io/reconciliationLoop"] == "disabled" then
+      return {status = "Suspended", message = "Cluster reconciliation is suspended"}
+    end
+    local status = obj.status or {}
+    for _, condition in ipairs(status.conditions or {}) do
+      if condition.type == "cnpg.io/hibernation" then
+        if condition.status == "True" then
+          return {status = "Suspended", message = condition.message}
+        end
+        return {status = "Degraded", message = condition.message}
+      end
+    end
+    if status.conditions == nil then
+      return {status = "Progressing", message = status.phaseReason}
+    end
+    return {status = phases[status.phase] or "Unknown", message = status.phaseReason}
   resource.customizations.ignoreResourceUpdates.ConfigMap: |
     jqPathExpressions:
       # Ignore the cluster-autoscaler status
@@ -32626,7 +32666,7 @@ spec:
     metadata:
       annotations:
         checksum/cmd-params: 53cfc3aa5e92c7b4386c14a2855ad5ee722740d7b21f53fc0e2d076c0889f91f
-        checksum/cm: f968c3da505af427a4ad2f24998201a78611fdf97c54c4a9ee2a001807d5edb1
+        checksum/cm: e9897e106ce2cce9e25a3c012e3b8075c99d5cb597c9c3a356c1c343d7589ed6
       labels:
         helm.sh/chart: argo-cd-10.10.5
         app.kubernetes.io/name: argocd-repo-server
@@ -33060,7 +33100,7 @@ spec:
     metadata:
       annotations:
         checksum/cmd-params: 53cfc3aa5e92c7b4386c14a2855ad5ee722740d7b21f53fc0e2d076c0889f91f
-        checksum/cm: f968c3da505af427a4ad2f24998201a78611fdf97c54c4a9ee2a001807d5edb1
+        checksum/cm: e9897e106ce2cce9e25a3c012e3b8075c99d5cb597c9c3a356c1c343d7589ed6
       labels:
         helm.sh/chart: argo-cd-10.10.5
         app.kubernetes.io/name: argocd-server
@@ -33619,7 +33659,7 @@ spec:
     metadata:
       annotations:
         checksum/cmd-params: 53cfc3aa5e92c7b4386c14a2855ad5ee722740d7b21f53fc0e2d076c0889f91f
-        checksum/cm: f968c3da505af427a4ad2f24998201a78611fdf97c54c4a9ee2a001807d5edb1
+        checksum/cm: e9897e106ce2cce9e25a3c012e3b8075c99d5cb597c9c3a356c1c343d7589ed6
       labels:
         helm.sh/chart: argo-cd-10.10.5
         app.kubernetes.io/name: argocd-application-controller

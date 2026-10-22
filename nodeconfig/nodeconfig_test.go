@@ -171,6 +171,28 @@ func TestRender_GivesACloudNodeADefaultRouteThroughHetznersRouterAndKeepsDHCPOnI
 	}
 }
 
+func TestRender_GivesAHostingClusterOpenBaosUserVolumeAndADefaultClusterNone(t *testing.T) {
+	hosting, err := components.Hosting(testutil.HostingInputs(t))
+	require.NoError(t, err)
+	cluster := testutil.NewCluster(t, testutil.WithLocations(3))
+	cluster.Components = hosting
+	plain, err := nodeconfig.Render(testutil.NewCluster(t, testutil.WithLocations(3)), nodeconfig.Node{})
+	require.NoError(t, err)
+
+	got, err := nodeconfig.Render(cluster, nodeconfig.Node{})
+
+	require.NoError(t, err)
+	docs := testutil.Documents(t, got)
+	assert.Equal(t, []map[string]any{{"apiVersion": "v1alpha1", "kind": "UserVolumeConfig", "name": components.OpenBaoVolume, "volumeType": "directory"}},
+		testutil.Kind(docs, "UserVolumeConfig"))
+	var inline []any
+	for _, doc := range testutil.Kind(docs, "KubeInlineManifestConfig") {
+		inline = append(inline, doc["name"])
+	}
+	assert.Subset(t, inline, []any{"mitstack-openbao-seal-key", "mitstack-sealed-secrets-key", "mitstack-sealed-app-key", "mitstack-openbao-storage"})
+	assert.Empty(t, testutil.Kind(testutil.Documents(t, plain), "UserVolumeConfig"))
+}
+
 func TestRender_CarriesNoAdminClientCertificate(t *testing.T) {
 	cluster := testutil.NewCluster(t)
 

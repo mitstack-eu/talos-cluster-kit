@@ -10,6 +10,7 @@ import (
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/mirror"
+	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 )
 
 func TestList_AddsTheExtraImagesOnceInOrder(t *testing.T) {
@@ -38,4 +39,16 @@ func TestList_RefusesAnImageFromARegistryNoNodeSendsToTheMirror(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "registry.gitlab.com")
+}
+
+func TestList_HoldsEveryImageTheHostingSetPullsByDigest(t *testing.T) {
+	set, err := components.Hosting(testutil.HostingInputs(t))
+	require.NoError(t, err)
+
+	images, err := mirror.List(set)
+
+	require.NoError(t, err)
+	for _, ref := range testutil.HostingImages {
+		assert.Contains(t, string(mirror.Render(images)), ref+"\n")
+	}
 }

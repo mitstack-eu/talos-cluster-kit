@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/siderolabs/talos/pkg/machinery/config/config"
+	"github.com/siderolabs/talos/pkg/machinery/config/types/block"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/cri"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/k8s"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/meta"
@@ -16,6 +17,7 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/config/types/security"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/v1alpha1"
 	"github.com/siderolabs/talos/pkg/machinery/nethelpers"
+	blockres "github.com/siderolabs/talos/pkg/machinery/resources/block"
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
 )
@@ -87,7 +89,21 @@ func (c Cluster) documents(n Node) ([]config.Document, error) {
 	}
 	docs = append(docs, talosAPIAccessDocument())
 	docs = append(docs, c.mirrorDocuments()...)
+	docs = append(docs, c.userVolumeDocuments()...)
 	return append(docs, manifests...), nil
+}
+
+// userVolumeDocuments give each user volume the set keeps data on a directory on EPHEMERAL, since a Cloud server has
+// one disk and EPHEMERAL spans all of it, leaving no free space for a partition of its own.
+func (c Cluster) userVolumeDocuments() []config.Document {
+	var docs []config.Document
+	for _, name := range c.Components.UserVolumes {
+		doc := block.NewUserVolumeConfigV1Alpha1()
+		doc.MetaName = name
+		doc.VolumeType = new(blockres.VolumeTypeDirectory)
+		docs = append(docs, doc)
+	}
+	return docs
 }
 
 func resolverDocument() config.Document {

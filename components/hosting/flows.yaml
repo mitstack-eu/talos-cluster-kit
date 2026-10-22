@@ -1,0 +1,83 @@
+# Each hosting namespace starts from mitstack-default-deny, so these name the only flows its pods make or take.
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: mitstack-hosting-flows
+specs:
+- description: "cert-manager, its CA injector and trust-manager reach the API server, which reaches their webhooks."
+  endpointSelector:
+    matchLabels:
+      k8s:io.kubernetes.pod.namespace: cert-manager
+  egress:
+  - toEntities: [kube-apiserver]
+  ingress:
+  - fromEntities: [kube-apiserver]
+    toPorts:
+    - ports: [{port: "10250", protocol: TCP}, {port: "6443", protocol: TCP}]
+- description: "External Secrets reaches the API server and OpenBao, and the API server reaches its webhook."
+  endpointSelector:
+    matchLabels:
+      k8s:io.kubernetes.pod.namespace: external-secrets
+  egress:
+  - toEntities: [kube-apiserver]
+  - toEndpoints:
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: kube-system
+        k8s:k8s-app: kube-dns
+    toPorts:
+    - ports: [{port: "53", protocol: UDP}, {port: "53", protocol: TCP}]
+  - toEndpoints:
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: openbao
+        k8s:app.kubernetes.io/name: openbao
+    toPorts:
+    - ports: [{port: "8200", protocol: TCP}]
+  ingress:
+  - fromEntities: [kube-apiserver]
+    toPorts:
+    - ports: [{port: "10250", protocol: TCP}]
+- description: "OpenBao's members reach each other and the API server, and External Secrets reaches their API."
+  endpointSelector:
+    matchLabels:
+      k8s:io.kubernetes.pod.namespace: openbao
+      k8s:app.kubernetes.io/name: openbao
+  egress:
+  - toEntities: [kube-apiserver]
+  - toEndpoints:
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: kube-system
+        k8s:k8s-app: kube-dns
+    toPorts:
+    - ports: [{port: "53", protocol: UDP}, {port: "53", protocol: TCP}]
+  - toEndpoints:
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: openbao
+        k8s:app.kubernetes.io/name: openbao
+    toPorts:
+    - ports: [{port: "8200", protocol: TCP}, {port: "8201", protocol: TCP}]
+  ingress:
+  - fromEndpoints:
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: openbao
+        k8s:app.kubernetes.io/name: openbao
+    toPorts:
+    - ports: [{port: "8200", protocol: TCP}, {port: "8201", protocol: TCP}]
+  - fromEndpoints:
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: external-secrets
+        k8s:app.kubernetes.io/name: external-secrets
+    toPorts:
+    - ports: [{port: "8200", protocol: TCP}]
+- description: "Traefik takes web traffic from the load balancers on its NodePorts, reaches the API server, and reaches the app slices."
+  endpointSelector:
+    matchLabels:
+      k8s:io.kubernetes.pod.namespace: traefik
+  ingress:
+  - fromEntities: [world]
+    toPorts:
+    - ports: [{port: "8000", protocol: TCP}, {port: "8443", protocol: TCP}]
+  egress:
+  - toEntities: [kube-apiserver]
+  - toEndpoints:
+    - matchExpressions:
+      - {key: k8s:io.cilium.k8s.namespace.labels.mitstack.dev/subscription, operator: Exists}

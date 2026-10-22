@@ -13,7 +13,8 @@ The component set is the manifests every Talos cluster starts with.
 The table lists its files. `scripts/render-components.sh` writes the first
 four from pinned sources, each checked against a published sha256, and refuses
 any image that is not named by digest. The CloudNativePG files are copied from
-a release, and the rest are written by hand.
+a release, and the rest are written by hand. The hosting set's files follow in
+a second table.
 
 | File | Source | What it runs |
 |---|---|---|
@@ -27,9 +28,24 @@ a release, and the rest are written by hand.
 | `components/metadata/metadata-block.yaml` | Written by hand | The policy that drops pod traffic to `169.254.169.254` and isolates nothing else |
 | `components/logs/collector.yaml` | Written by hand, as a template `components.LogCollector` fills | The node-local OpenTelemetry Collector on the host network |
 
+`components.Hosting` adds these files for a cluster that hosts the platform.
+The script renders each chart with its CRDs and without its tests, and pins
+each chart with the sha256 its repository's `index.yaml` publishes.
+
+| File | Source | What it runs |
+|---|---|---|
+| `components/openbao/openbao.yaml` | The openbao 0.30.2 chart with `components/render/openbao-values.yaml` | OpenBao 2.7.1 in namespace `openbao`: three Raft members on TLS with the static seal |
+| `components/cert-manager/cert-manager.yaml` | The cert-manager v1.21.2 chart with `components/render/cert-manager-values.yaml`, its startup check off | cert-manager in namespace `cert-manager` |
+| `components/trust-manager/trust-manager.yaml` | The trust-manager v0.25.0 chart with `components/render/trust-manager-values.yaml` | trust-manager in namespace `cert-manager`, reading Secrets only in `openbao` |
+| `components/external-secrets/external-secrets.yaml` | The external-secrets 2.11.0 chart with `components/render/external-secrets-values.yaml` | External Secrets in namespace `external-secrets`, its webhook certificate from cert-manager |
+| `components/sealed-secrets/sealed-secrets.yaml` | The sealed-secrets 2.20.0 chart with `components/render/sealed-secrets-values.yaml` | The Sealed Secrets controller in `kube-system`, with key renewal off |
+| `components/traefik/traefik.yaml` | The traefik 41.6.1 chart with `components/render/traefik-values.yaml` | Traefik on every node in namespace `traefik`, on NodePorts 30080 and 30081 |
+| `components/hosting/tls.yaml`, `components/hosting/flows.yaml` | Written by hand | OpenBao's authority and certificate, its trust bundle, and the flows the hosting namespaces allow |
+| `components/hosting/seal-key.yaml`, `sealed-secrets-key.yaml`, `sealed-app-key.yaml`, `storage.yaml` | Written by hand, as templates `components.Hosting` fills | The inline manifests that carry the block's secrets and OpenBao's volumes |
+
 mitstack-eu/cluster-bases is the repository of pinned third-party manifests
 the k3s blocks copy from. It holds CloudNativePG, which the kit copies, and
-none of the four charts the script renders. The kit renders those the way
+none of the charts the script renders. The kit renders those the way
 cluster-bases renders its own, with a pinned chart, a values file and a check.
 To change one, edit its values file or the script's pin, then render again:
 

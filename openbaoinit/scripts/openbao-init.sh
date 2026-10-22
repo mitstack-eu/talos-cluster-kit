@@ -51,8 +51,8 @@ token_header() {
   fi
 }
 
-# bao sends one request to OpenBao, verified against the cluster's authority, and prints the body of a 2xx answer.
-# The root token, once there is one, reaches curl as a header on stdin.
+# bao prints the body of OpenBao's 2xx answer to one request, verified against the cluster's authority, and hands curl
+# the root token, once there is one, as a header on stdin.
 bao() {
   local method=$1 path=$2 data=${3-} answer
   local args=(-sS --proto '=https' --tlsv1.2 --cacert "$MITSTACK_OPENBAO_CA" --connect-timeout 5 --max-time 30
@@ -133,17 +133,15 @@ encrypt() {
   gpg --batch --quiet --armor --recipient-file "$MITSTACK_RECIPIENT_FILE" --encrypt
 }
 
-# armor wraps the binary PGP message on stdin in ASCII armor with no CRC24 footer, which RFC 9580 section 6.1 says
-# not to generate.
+# armor wraps the binary PGP message on stdin in ASCII armor without the CRC24 footer RFC 9580 section 6.1 says not to add.
 armor() {
   printf -- '-----BEGIN PGP MESSAGE-----\n\n'
   openssl base64
   printf -- '-----END PGP MESSAGE-----\n'
 }
 
-# initialise initialises OpenBao with one recovery share encrypted to the recipient key, sets root, and prints the
-# contents of openbao-init.asc. An init whose answer is lost leaves no root token, so it stops on finding OpenBao
-# initialised after a failed attempt.
+# initialise initialises OpenBao with one recovery share encrypted to the recipient key, and sets root and messages, the
+# contents of openbao-init.asc; it stops on finding OpenBao initialised after a failed init, whose root token is lost.
 initialise() {
   local recipient request answer token_message recovery_message
   recipient=$(gpg --batch --quiet --dearmor < "$MITSTACK_RECIPIENT_FILE" | openssl base64 -A) ||
@@ -189,8 +187,7 @@ commit() {
   fi
 }
 
-# enable enables the secrets engine or auth method at path unless sys/<kind> lists it, since a lost answer may hide
-# that an earlier try did.
+# enable enables a secrets engine or auth method unless sys/<kind> lists it, since a lost answer may hide an earlier try.
 enable() {
   local kind=$1 path=$2 request=$3 listed
   listed=$(bao GET "sys/$kind") || return 1
@@ -204,8 +201,7 @@ kubernetes_accessor() {
   bao GET sys/auth | jq -er '(.data // .)["kubernetes/"].accessor // empty | select(test("^[A-Za-z0-9_-]+$"))'
 }
 
-# reader_policy prints the policy app-secrets-reader for the auth method's accessor, which lets a token read only the
-# apps path named for the namespace of the service account it logged in with.
+# reader_policy prints app-secrets-reader, which lets a token read only the apps path named for its service account's namespace.
 reader_policy() {
   local namespace="{{identity.entity.aliases.$1.metadata.service_account_namespace}}" policy
   printf -v policy 'path "kv/data/apps/%s/*" {\n  capabilities = ["read"]\n}\npath "kv/metadata/apps/%s/*" {\n  capabilities = ["read", "list"]\n}\n' \
@@ -249,7 +245,6 @@ main() {
   retry "committing $INIT_FILE" commit "$messages"
   say "committed $INIT_FILE to $MITSTACK_REPOSITORY"
   set_up
-  root=""
   say "enabled kv and Kubernetes auth, and wrote the policy app-secrets-reader"
 }
 

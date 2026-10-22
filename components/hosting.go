@@ -124,7 +124,7 @@ func Hosting(in HostingInputs) (Set, error) {
 }
 
 // inlineManifests renders the manifests that hold in's secrets, with sealed the App key's checked sealed value, OpenBao's
-// volumes, which name in's nodes, and OpenBao's init Job, which mounts the App key and so follows its manifest.
+// volumes, which name in's nodes, and OpenBao's init Job, which mounts the App key.
 func (in HostingInputs) inlineManifests(sealed string) ([]Manifest, error) {
 	parts := []struct {
 		name, path string

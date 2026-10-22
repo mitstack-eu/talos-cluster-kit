@@ -101,7 +101,7 @@ that log to check the order of the calls.
 | `TestReport_WhoseCloudNativePGReadFailsStillCarriesItsNodesAndApplications` | A failed CloudNativePG read is reported with its exit status and stderr, beside the nodes and Applications | A fake kubectl that refuses only that read |
 | `TestDefault_RunsKyvernoWithBothPoliciesAndCloudNativePGWithTheDatabaseSlicePolicy` | The set carries Kyverno, both policies, CloudNativePG and the slice policy, and the mirror holds each of their images by digest | The default set and its mirror list |
 | `TestDatabaseSlicesPolicy_GrantsEachPodExactlyItsAllows` | A slice's Postgres instance, a CloudNativePG Job, an app pod, a pod outside a database slice and a system pod each get exactly their allows | Cilium's view of each pod's labels |
-| `TestArgoCD_ReadsACloudNativePGClusterPassingThroughAPhaseAsProgressing` | The `argocd-cm` health check reads each phase CloudNativePG passes through as Progressing | The check run in gopher-lua, the Lua runtime Argo CD embeds |
+| `TestArgoCD_ReadsACloudNativePGClusterPassingThroughAPhaseAsProgressingAndAStuckOneAsDegraded` | The `argocd-cm` health check reads each phase CloudNativePG passes through as Progressing, and a cluster waiting for its user as Degraded | The check run in gopher-lua, the Lua runtime Argo CD embeds |
 | `TestPrepareScript_RefusesAManifestWhoseBytesDifferFromItsPin` | The gateway installs no manifest whose sha256 differs from the list, and stops | Fake curl and skopeo |
 
 The fixtures in `testutil/testdata/` are throwaway keys made for these tests:

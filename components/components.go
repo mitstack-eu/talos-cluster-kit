@@ -70,10 +70,8 @@ var (
 	databaseSlicesPolicy []byte
 )
 
-// Default returns the component set at the pinned versions: Cilium with the CRD of its cluster-wide policy,
-// Argo CD, the policy that keeps pods from Hetzner's metadata service, Kyverno with the policies that require
-// the mitstack.dev/app label and deny each app namespace's traffic by default, and the CloudNativePG operator
-// with the policy that opens a database slice's Postgres to the other slices.
+// Default returns the component set at the pinned versions, from Cilium and Argo CD to Kyverno's admission
+// policies and the CloudNativePG operator.
 func Default() Set {
 	return Set{
 		Versions: PinnedVersions,

@@ -259,10 +259,11 @@ exchanges it for a one-hour installation token, as GitHub's App guide shows.
 The script talks only to `openbao-0`, the member OpenBao's Helm guide says to
 initialise. The other two members join it through Raft, OpenBao's replicated
 storage, and a member that has not joined yet still reads as uninitialised.
-Talking to one member keeps the script from initialising a second store. Each request verifies OpenBao against the cluster's own authority. The
-script first encrypts a test message to the recipient key, and stops before it
-sends anything when gpg cannot encrypt to it. It then reads the store's state,
-and reads `openbao-init.asc` with an App token that may only read contents.
+Talking to one member keeps the script from initialising a second store. Each
+request verifies OpenBao against the cluster's own authority. The script first
+encrypts a test message to the recipient key, and stops before it sends
+anything when gpg cannot encrypt to it. It then reads the store's state, and
+reads `openbao-init.asc` with an App token that may only read contents.
 
 | OpenBao | `openbao-init.asc` | What the Job does |
 |---|---|---|

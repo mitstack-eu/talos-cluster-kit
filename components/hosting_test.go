@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
+	"fmt"
 	"regexp"
 	"slices"
 	"strings"
@@ -86,9 +87,9 @@ func TestHosting_ListensOnlyOnTLSKeepsRaftOnTheUserVolumeAndUnsealsWithAStaticKe
 	volumes := testutil.Kind(testutil.Documents(t, setManifest(t, set.Inline, "mitstack-openbao-storage").Bytes), "PersistentVolume")
 	require.Len(t, volumes, components.OpenBaoMembers)
 	for i, pv := range volumes {
-		assert.Equal(t, "/var/mnt/"+components.OpenBaoVolume, testutil.Field(t, pv, "spec", "local", "path"))
+		assert.Equal(t, "/var/mnt/openbao", testutil.Field(t, pv, "spec", "local", "path"))
 		assert.Equal(t, "openbao-local", testutil.Field(t, pv, "spec", "storageClassName"))
-		assert.Equal(t, "data-openbao-"+string(rune('0'+i)), testutil.Field(t, pv, "spec", "claimRef", "name"))
+		assert.Equal(t, fmt.Sprintf("data-openbao-%d", i), testutil.Field(t, pv, "spec", "claimRef", "name"))
 		node := testutil.Field(t, pv, "spec", "nodeAffinity", "required", "nodeSelectorTerms", "0", "matchExpressions", "0", "values", "0")
 		assert.Equal(t, testutil.HostingNodes[i], node)
 	}

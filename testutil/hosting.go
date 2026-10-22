@@ -13,6 +13,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,13 +28,21 @@ const AppKey = "-----BEGIN RSA PRIVATE KEY-----\nfixture-github-app-key-for-test
 // HostingNodes are the fixture cluster's three node names.
 var HostingNodes = []string{"shop-node-fsn1", "shop-node-nbg1", "shop-node-hel1"}
 
+// hostingKeyPair is minted once per test binary, since an RSA key takes the longest of any fixture to make.
+var hostingKeyPair struct {
+	sync.Once
+	key             *rsa.PrivateKey
+	keyPEM, certPEM []byte
+}
+
 // HostingInputs returns throwaway hosting inputs: a seal key, a Sealed Secrets key pair and AppKey sealed to it.
 func HostingInputs(t *testing.T) components.HostingInputs {
 	t.Helper()
 	sealKey := make([]byte, components.SealKeyBytes)
 	_, err := rand.Read(sealKey)
 	require.NoError(t, err)
-	key, keyPEM, certPEM := SealedSecretsKeyPair(t)
+	hostingKeyPair.Do(func() { hostingKeyPair.key, hostingKeyPair.keyPEM, hostingKeyPair.certPEM = SealedSecretsKeyPair(t) })
+	key, keyPEM, certPEM := hostingKeyPair.key, hostingKeyPair.keyPEM, hostingKeyPair.certPEM
 	return components.HostingInputs{
 		SealKey:              sealKey,
 		SealedSecretsKeyPEM:  keyPEM,

@@ -142,6 +142,35 @@ func TestRender_UsesHetznersResolversAndTimeServersInPlaceOfTalosDefaults(t *tes
 	assert.Empty(t, testutil.Kind(docs, "DiscoveryServiceConfig"), "the configuration still reaches Sidero's discovery service")
 }
 
+func TestRender_GivesACloudNodeADefaultRouteThroughHetznersRouterAndKeepsDHCPOnItsLink(t *testing.T) {
+	cases := []struct {
+		name      string
+		profile   nodeconfig.Profile
+		hostname  string
+		wantLinks []map[string]any
+		wantDHCP  []map[string]any
+	}{
+		{
+			name: "a Cloud node, whose only link is on the private network", profile: nodeconfig.HCloud,
+			wantLinks: []map[string]any{{"apiVersion": "v1alpha1", "kind": "LinkConfig", "name": "eth0", "routes": []any{map[string]any{"gateway": "10.0.0.1"}}}},
+			wantDHCP:  []map[string]any{{"apiVersion": "v1alpha1", "kind": "DHCPv4Config", "name": "eth0"}},
+		},
+		{name: "a dedicated node, whose addresses its own trial decides", profile: nodeconfig.Metal, hostname: "cp-fsn1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cluster := testutil.NewCluster(t, testutil.WithProfile(tc.profile))
+
+			got, err := nodeconfig.Render(cluster, nodeconfig.Node{Hostname: tc.hostname})
+
+			require.NoError(t, err)
+			docs := testutil.Documents(t, got)
+			assert.Equal(t, tc.wantLinks, testutil.Kind(docs, "LinkConfig"))
+			assert.Equal(t, tc.wantDHCP, testutil.Kind(docs, "DHCPv4Config"))
+		})
+	}
+}
+
 func TestRender_CarriesNoAdminClientCertificate(t *testing.T) {
 	cluster := testutil.NewCluster(t)
 

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"net"
 	"net/netip"
@@ -59,6 +60,69 @@ func TestRender_WithNoLogReceiverForwardsHTTPSAloneAndChangesNothingElse(t *test
 
 	require.NoError(t, err)
 	assert.Equal(t, strings.Replace(string(withReceiver), withLogPort, httpsAlone, 1), string(got))
+}
+
+func TestRender_LeavesTheFirewallToNftablesAndRunsEveryContainerOnTheHostNetwork(t *testing.T) {
+	var daemon map[string]any
+	require.NoError(t, json.Unmarshal([]byte(writtenFile(t, "/etc/docker/daemon.json")), &daemon))
+	assert.Equal(t, map[string]any{"iptables": false, "ip6tables": false, "bridge": "none"}, daemon,
+		"Docker writes iptables rules, which the gateway's flush ruleset deletes")
+	assert.True(t, strings.HasPrefix(writtenFile(t, "/etc/nftables.conf"), "#!/usr/sbin/nft -f\nflush ruleset\n"))
+
+	for _, unit := range []string{"mitstack-registry", "mitstack-caddy"} {
+		start := execStart(t, writtenFile(t, "/etc/systemd/system/"+unit+".service"))
+		assert.Contains(t, start, " --network host ", "%s runs off the host network", unit)
+		assert.NotRegexp(t, `\s(-p|--publish)\s`, start, "%s publishes a port, which needs Docker's rules", unit)
+	}
+	assert.Contains(t, execStart(t, writtenFile(t, "/etc/systemd/system/mitstack-registry.service")),
+		" -e REGISTRY_HTTP_ADDR=127.0.0.1:5000 ", "the registry listens beyond the gateway's loopback")
+}
+
+func TestRender_SendsMirrorPullsToTheRegistryAndRefusesEveryOtherMethod(t *testing.T) {
+	caddyfile := writtenFile(t, "/etc/mitstack-gateway/Caddyfile")
+
+	assert.Contains(t, caddyfile, "@pull method GET HEAD\n")
+	assert.NotContains(t, caddyfile, "handle /v2/*", "a handle block runs respond before reverse_proxy, so every pull answers 405")
+	var block []string
+	inRoute := false
+	for line := range strings.Lines(caddyfile) {
+		line = strings.TrimSpace(line)
+		switch {
+		case line == "route /v2/* {":
+			inRoute = true
+		case inRoute && line == "}":
+			inRoute = false
+		case inRoute && !strings.HasPrefix(line, "#"):
+			block = append(block, line)
+		}
+	}
+	assert.Equal(t, []string{"reverse_proxy @pull 127.0.0.1:5000", "respond 405"}, block,
+		"the /v2/ route does not try the registry for a pull before refusing")
+}
+
+// writtenFile is the content the rendered cloud-config writes to path.
+func writtenFile(t *testing.T, path string) string {
+	t.Helper()
+	rendered, err := gateway.Render(inputs(t))
+	require.NoError(t, err)
+	for _, f := range testutil.Field(t, testutil.Documents(t, rendered)[0], "write_files").([]any) {
+		if file := f.(map[string]any); file["path"] == path {
+			return file["content"].(string)
+		}
+	}
+	require.Fail(t, "the cloud-config writes no "+path)
+	return ""
+}
+
+func execStart(t *testing.T, unit string) string {
+	t.Helper()
+	for line := range strings.Lines(unit) {
+		if rest, ok := strings.CutPrefix(line, "ExecStart="); ok {
+			return rest
+		}
+	}
+	require.Fail(t, "the unit has no ExecStart", unit)
+	return ""
 }
 
 func TestRender_RefusesAnAddressOutsideTheNetwork(t *testing.T) {
@@ -120,22 +184,9 @@ type prepareRun struct {
 	err   error
 }
 
-func preparedScript(t *testing.T) string {
-	t.Helper()
-	rendered, err := gateway.Render(inputs(t))
-	require.NoError(t, err)
-	for _, f := range testutil.Field(t, testutil.Documents(t, rendered)[0], "write_files").([]any) {
-		if file := f.(map[string]any); file["path"] == "/usr/local/bin/mitstack-gateway-prepare" {
-			return file["content"].(string)
-		}
-	}
-	require.Fail(t, "the cloud-config carries no prepare script")
-	return ""
-}
-
 func runPrepare(t *testing.T, manifestSHA256 string) prepareRun {
 	t.Helper()
-	script := preparedScript(t)
+	script := writtenFile(t, "/usr/local/bin/mitstack-gateway-prepare")
 	run := prepareRun{tools: testutil.NewTools(t, map[string]string{"curl": fakeCurl, "skopeo": ""}), dir: t.TempDir()}
 	write := func(name, content string) string {
 		path := filepath.Join(run.dir, name)

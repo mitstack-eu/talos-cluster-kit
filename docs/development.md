@@ -40,6 +40,12 @@ scripts/render-components.sh
 CI then runs the same script with `--check`, which fails when a committed file
 differs from a fresh render.
 
+Talos applies each manifest of the set once, creating every object that does
+not exist yet and leaving an existing one as it is. A change to a component or
+a policy therefore reaches only a cluster built from the release that carries
+it. On a new cluster, the first pass skips each object whose CRD is not yet
+registered, such as the Kyverno policies, and Talos applies it on a later pass.
+
 cluster-bases is private, so CI cannot fetch from it. A newer CloudNativePG
 comes in by copying both files from a newer cluster-bases release and setting
 the blob ids that `git rev-parse <tag>:cloudnative-pg/<file>` answers there in

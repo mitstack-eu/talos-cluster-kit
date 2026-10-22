@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -249,6 +250,7 @@ func TestHosting_RefusesInputsItCannotBoot(t *testing.T) {
 		"an App key in another namespace": {func(in *components.HostingInputs) {
 			in.SealedAppKey = bytes.Replace(in.SealedAppKey, []byte("namespace: "+components.SealedAppKeyNamespace), []byte("namespace: default"), 1)
 		}, "want bitnami.com/v1alpha1 SealedSecret mitstack-node/github-app-key"},
+		"an init Job image named by tag alone": {func(in *components.HostingInputs) { in.Init.ToolsImage = "ghcr.io/x/tools:v1" }, "OpenBao's init Job: tools image"},
 		"an App key file with a second object": {func(in *components.HostingInputs) {
 			in.SealedAppKey = append(in.SealedAppKey, []byte("---\napiVersion: v1\nkind: Secret\n")...)
 		}, "more than one document"},
@@ -281,11 +283,14 @@ func TestHosting_ServesOpenBaoACertificateForEveryAddressItsMembersAndClientsDia
 	for _, name := range testutil.Field(t, cert, "spec", "dnsNames").([]any) {
 		patterns = append(patterns, "^"+strings.ReplaceAll(regexp.QuoteMeta(name.(string)), `\*`, `[a-z0-9-]+`)+"$")
 	}
-	hosts := []string{"openbao.openbao.svc"}
+	_, initEnv := initJob(t, set)
+	initAddr, err := url.Parse(initEnv["MITSTACK_OPENBAO_ADDR"])
+	require.NoError(t, err)
+	hosts := []string{"openbao.openbao.svc", initAddr.Hostname()}
 	for _, m := range regexp.MustCompile(`leader_api_addr = "https://([^:"]+):8200"`).FindAllStringSubmatch(config, -1) {
 		hosts = append(hosts, m[1])
 	}
-	require.Len(t, hosts, 1+components.OpenBaoMembers)
+	require.Len(t, hosts, 2+components.OpenBaoMembers)
 	for _, host := range hosts {
 		assert.True(t, slices.ContainsFunc(patterns, func(p string) bool { return regexp.MustCompile(p).MatchString(host) }), "the certificate does not name %s", host)
 	}
@@ -294,6 +299,39 @@ func TestHosting_ServesOpenBaoACertificateForEveryAddressItsMembersAndClientsDia
 	assert.Equal(t, map[string]any{"name": "openbao-ca", "key": "tls.crt"}, testutil.Field(t, bundle, "spec", "sources", "0", "secret"))
 	assert.Equal(t, "ca.crt", testutil.Field(t, bundle, "spec", "target", "configMap", "key"))
 	assert.Contains(t, string(setManifest(t, set.Served, "trust-manager").Bytes), `"--trust-namespace=openbao"`)
+}
+
+// initJob returns the init Job's pod as Cilium labels it, and its container's environment, from the hosting set.
+func initJob(t *testing.T, set components.Set) (testutil.CiliumEndpoint, map[string]string) {
+	t.Helper()
+	job := namedDocument(t, setManifest(t, set.Inline, "mitstack-openbao-init"), "Job", "mitstack-openbao-init")
+	labels := map[string]string{}
+	for k, v := range testutil.Field(t, job, "spec", "template", "metadata", "labels").(map[string]any) {
+		labels[k] = v.(string)
+	}
+	env := testutil.ContainerEnv(t, testutil.Field(t, job, "spec", "template", "spec", "containers", "0"))
+	return testutil.Endpoint(testutil.Field(t, job, "metadata", "namespace").(string), nil, labels), env
+}
+
+func TestHosting_LetsTheInitJobReachOnlyClusterDNSOpenBaoAndGitHubsAPIAndOpenBaoTakeItsCalls(t *testing.T) {
+	set := hostingSet(t, testutil.HostingInputs(t))
+	initPod, env := initJob(t, set)
+	github := strings.TrimPrefix(env["MITSTACK_GITHUB_API_URL"], "https://")
+	policy := namedDocument(t, setManifest(t, set.Served, "mitstack-hosting-flows"), "CiliumClusterwideNetworkPolicy", "mitstack-hosting-flows")
+	pods := map[string]testutil.CiliumEndpoint{
+		"cluster DNS":  testutil.Endpoint("kube-system", nil, map[string]string{"k8s-app": "kube-dns"}),
+		"OpenBao":      testutil.Endpoint("openbao", nil, map[string]string{"app.kubernetes.io/name": "openbao", "component": "server"}),
+		"the init Job": initPod,
+	}
+
+	initFlows, openBaoFlows := testutil.Grants(t, policy, pods, "the init Job"), testutil.Grants(t, policy, pods, "OpenBao")
+
+	assert.Equal(t, []string{
+		"egress to " + github + " on 443/TCP",
+		"egress with OpenBao on 8200/TCP",
+		"egress with cluster DNS on 53/UDP 53/TCP through the DNS proxy",
+	}, initFlows, "the init Job's flows")
+	assert.Contains(t, openBaoFlows, "ingress with the init Job on 8200/TCP", "OpenBao refuses the init Job's calls")
 }
 
 func TestHosting_ServesTraefikOnNodePorts30080And30081OnEveryNode(t *testing.T) {

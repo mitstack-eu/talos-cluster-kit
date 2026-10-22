@@ -1,12 +1,9 @@
-# The tools image the etcd member removal and the node report run in: bash,
-# curl, jq, talosctl and kubectl, each binary checked against the sha256 that
-# tools.env pins, the same file the gateway installs its binaries from.
-# The kit's release job pushes and signs it, and tools.Image names it.
+# Each binary is checked against the sha256 tools.env pins, the file the gateway installs the same binaries from.
 FROM docker.io/library/alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
 
 COPY tools.env /tmp/tools.env
 
-RUN apk add --no-cache bash ca-certificates curl jq \
+RUN apk add --no-cache bash ca-certificates curl gpg jq openssl \
  && . /tmp/tools.env \
  && curl -fsSL --proto '=https' -o /usr/local/bin/talosctl "https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/talosctl-linux-amd64" \
  && echo "${TALOSCTL_SHA256}  /usr/local/bin/talosctl" | sha256sum -c - \

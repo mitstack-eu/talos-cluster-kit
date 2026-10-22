@@ -36,7 +36,7 @@ specs:
   - fromEntities: [kube-apiserver]
     toPorts:
     - ports: [{port: "10250", protocol: TCP}]
-- description: "OpenBao's members reach each other and the API server, and External Secrets reaches their API."
+- description: "OpenBao's members reach each other and the API server, and External Secrets and the init Job reach their API."
   endpointSelector:
     matchLabels:
       k8s:io.kubernetes.pod.namespace: openbao
@@ -68,6 +68,37 @@ specs:
         k8s:app.kubernetes.io/name: external-secrets
     toPorts:
     - ports: [{port: "8200", protocol: TCP}]
+  - fromEndpoints:
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: mitstack-node
+        k8s:app.kubernetes.io/name: mitstack-openbao-init
+    toPorts:
+    - ports: [{port: "8200", protocol: TCP}]
+- description: "OpenBao's init Job looks names up through Cilium's DNS proxy, reaches OpenBao, and reaches GitHub's API, which the gateway forwards."
+  endpointSelector:
+    matchLabels:
+      k8s:io.kubernetes.pod.namespace: mitstack-node
+      k8s:app.kubernetes.io/name: mitstack-openbao-init
+  egress:
+  - toEndpoints:
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: kube-system
+        k8s:k8s-app: kube-dns
+    toPorts:
+    - ports: [{port: "53", protocol: UDP}, {port: "53", protocol: TCP}]
+      rules:
+        dns:
+        - matchPattern: "*"
+  - toEndpoints:
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: openbao
+        k8s:app.kubernetes.io/name: openbao
+    toPorts:
+    - ports: [{port: "8200", protocol: TCP}]
+  - toFQDNs:
+    - matchName: api.github.com
+    toPorts:
+    - ports: [{port: "443", protocol: TCP}]
 - description: "Traefik takes web traffic from the load balancers on its NodePorts, reaches the API server, and reaches the app slices."
   endpointSelector:
     matchLabels:

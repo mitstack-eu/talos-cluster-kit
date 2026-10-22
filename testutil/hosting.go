@@ -1,6 +1,7 @@
 package testutil
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -13,13 +14,19 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	"os/exec"
+	"regexp"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/ProtonMail/go-crypto/openpgp"
+	"github.com/ProtonMail/go-crypto/openpgp/armor"
 	"github.com/stretchr/testify/require"
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
+	"github.com/mitstack-eu/talos-cluster-kit/openbaoinit"
 )
 
 // AppKey is the fixture GitHub App key HostingInputs seals; nothing accepts it.
@@ -38,7 +45,6 @@ var HostingImages = []string{
 	"docker.io/traefik:v3.7.13@sha256:24841fe2de7304c149343d877d2923b4c8800a38ba015dea9174c23b20e344a0",
 }
 
-// HostingNodes are the fixture cluster's three node names.
 var HostingNodes = []string{"shop-node-fsn1", "shop-node-nbg1", "shop-node-hel1"}
 
 // hostingKeyPair is minted once per test binary, since an RSA key takes the longest of any fixture to make.
@@ -48,7 +54,7 @@ var hostingKeyPair struct {
 	keyPEM, certPEM []byte
 }
 
-// HostingInputs returns throwaway hosting inputs: a seal key, a Sealed Secrets key pair and AppKey sealed to it.
+// HostingInputs returns throwaway hosting inputs: a seal key, a Sealed Secrets key pair, AppKey sealed to it and InitInputs.
 func HostingInputs(t *testing.T) components.HostingInputs {
 	t.Helper()
 	sealKey := make([]byte, components.SealKeyBytes)
@@ -62,7 +68,96 @@ func HostingInputs(t *testing.T) components.HostingInputs {
 		SealedSecretsCertPEM: certPEM,
 		SealedAppKey:         SealedAppKey(t, &key.PublicKey, AppKey),
 		Nodes:                HostingNodes,
+		Init:                 InitInputs(t),
 	}
+}
+
+const (
+	InitRepository     = "mitstack-eu/shop-cluster"
+	InitAppID          = "1234567"
+	InitInstallationID = "89012345"
+)
+
+// InitInputs returns throwaway inputs for OpenBao's init Job, encrypting to Recipient's key.
+func InitInputs(t *testing.T) openbaoinit.Inputs {
+	t.Helper()
+	_, armored := Recipient(t)
+	return openbaoinit.Inputs{
+		ToolsImage:     ToolsImage,
+		Repository:     InitRepository,
+		AppID:          InitAppID,
+		InstallationID: InitInstallationID,
+		Recipient:      armored,
+	}
+}
+
+// recipientKey is minted once per test binary, since an OpenPGP key takes about as long to make as an RSA one.
+var recipientKey struct {
+	sync.Once
+	entity  *openpgp.Entity
+	armored []byte
+}
+
+// Recipient returns a throwaway OpenPGP key, which decrypts what the init Job encrypts, and its armored public key.
+func Recipient(t *testing.T) (*openpgp.Entity, []byte) {
+	t.Helper()
+	recipientKey.Do(func() {
+		entity, err := openpgp.NewEntity("Shop cluster owner", "fixture", "owner@example.com", nil)
+		require.NoError(t, err)
+		recipientKey.entity, recipientKey.armored = entity, ArmoredPublicKey(t, entity)
+	})
+	return recipientKey.entity, recipientKey.armored
+}
+
+// ArmoredPublicKey returns the ASCII-armored public key of entity, as `gpg --armor --export` writes one.
+func ArmoredPublicKey(t *testing.T, entity *openpgp.Entity) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	w, err := armor.Encode(&out, openpgp.PublicKeyType, nil)
+	require.NoError(t, err)
+	require.NoError(t, entity.Serialize(w))
+	require.NoError(t, w.Close())
+	return append(out.Bytes(), '\n')
+}
+
+// RecipientDecryptions returns what gpg, holding Recipient's private key, decrypts each armored PGP message in file to.
+func RecipientDecryptions(t *testing.T, file string) []string {
+	t.Helper()
+	owner, _ := Recipient(t)
+	home := t.TempDir()
+	gpg := func(stdin string, args ...string) string {
+		cmd := exec.Command("gpg", append([]string{"--batch", "--quiet", "--homedir", home}, args...)...)
+		cmd.Stdin = strings.NewReader(stdin)
+		out, err := cmd.Output()
+		require.NoError(t, err, "gpg %v", args)
+		return string(out)
+	}
+	gpg(string(ArmoredPrivateKey(t, owner, openpgp.PrivateKeyType)), "--import")
+	var plain []string
+	for _, m := range regexp.MustCompile(`(?s)-----BEGIN PGP MESSAGE-----\n.*?-----END PGP MESSAGE-----\n`).FindAllString(file, -1) {
+		plain = append(plain, gpg(m, "--decrypt"))
+	}
+	return plain
+}
+
+// ArmoredPrivateKey returns entity's private key armored under blockType, which gpg writes as openpgp.PrivateKeyType.
+func ArmoredPrivateKey(t *testing.T, entity *openpgp.Entity, blockType string) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	w, err := armor.Encode(&out, blockType, nil)
+	require.NoError(t, err)
+	require.NoError(t, entity.SerializePrivate(w, nil))
+	require.NoError(t, w.Close())
+	return out.Bytes()
+}
+
+// SignOnlyRecipient returns Recipient's armored public key without its encryption subkey, so nothing encrypts to it.
+func SignOnlyRecipient(t *testing.T) []byte {
+	t.Helper()
+	entity, _ := Recipient(t)
+	signOnly := *entity
+	signOnly.Subkeys = nil
+	return ArmoredPublicKey(t, &signOnly)
 }
 
 // SealedSecretsKeyPair mints a throwaway RSA key and the self-signed certificate Sealed Secrets seals to.

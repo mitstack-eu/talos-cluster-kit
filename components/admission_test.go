@@ -54,84 +54,15 @@ func TestAdmission_ExemptsTheSameSystemNamespacesInBothPoliciesAndKyvernosWebhoo
 	assert.Subset(t, labelExempt, []string{"kube-system", "argocd", "kyverno", "cnpg-system", nodeconfig.TalosAPINamespace})
 }
 
-// ciliumEndpoint is a pod as Cilium labels it: its own labels under k8s:, its namespace's under io.cilium.k8s.namespace.labels.
-type ciliumEndpoint map[string]string
-
-func endpoint(namespace string, namespaceLabels, podLabels map[string]string) ciliumEndpoint {
-	e := ciliumEndpoint{"k8s:io.kubernetes.pod.namespace": namespace}
-	for k, v := range namespaceLabels {
-		e["k8s:io.cilium.k8s.namespace.labels."+k] = v
-	}
-	for k, v := range podLabels {
-		e["k8s:"+k] = v
-	}
-	return e
-}
-
-// selectedBy evaluates matchLabels and the Exists operator, the only selector forms the policy uses.
-func (e ciliumEndpoint) selectedBy(t *testing.T, selector any) bool {
-	t.Helper()
-	labels, _ := testutil.Field(t, selector, "matchLabels").(map[string]any)
-	for k, v := range labels {
-		if e[k] != v {
-			return false
-		}
-	}
-	expressions, _ := testutil.Field(t, selector, "matchExpressions").([]any)
-	for _, x := range expressions {
-		require.Equal(t, "Exists", testutil.Field(t, x, "operator"), "the policy uses an operator this test does not evaluate")
-		if _, has := e[testutil.Field(t, x, "key").(string)]; !has {
-			return false
-		}
-	}
-	return true
-}
-
-var sliceEndpoints = map[string]ciliumEndpoint{
-	"instance": endpoint("app-pg", map[string]string{"mitstack.dev/database-slice": "true", "mitstack.dev/subscription": "sub-pg"},
+var sliceEndpoints = map[string]testutil.CiliumEndpoint{
+	"instance": testutil.Endpoint("app-pg", map[string]string{"mitstack.dev/database-slice": "true", "mitstack.dev/subscription": "sub-pg"},
 		map[string]string{"cnpg.io/cluster": "shared", "cnpg.io/podRole": "instance", "mitstack.dev/app": "postgres"}),
-	"job": endpoint("app-pg", map[string]string{"mitstack.dev/database-slice": "true", "mitstack.dev/subscription": "sub-pg"},
+	"job": testutil.Endpoint("app-pg", map[string]string{"mitstack.dev/database-slice": "true", "mitstack.dev/subscription": "sub-pg"},
 		map[string]string{"cnpg.io/cluster": "shared", "cnpg.io/jobRole": "initdb", "mitstack.dev/app": "postgres"}),
-	"app": endpoint("app-a1", map[string]string{"mitstack.dev/subscription": "sub-a1"}, map[string]string{"mitstack.dev/app": "shop"}),
-	"instance outside a database slice": endpoint("app-b2", map[string]string{"mitstack.dev/subscription": "sub-b2"},
+	"app": testutil.Endpoint("app-a1", map[string]string{"mitstack.dev/subscription": "sub-a1"}, map[string]string{"mitstack.dev/app": "shop"}),
+	"instance outside a database slice": testutil.Endpoint("app-b2", map[string]string{"mitstack.dev/subscription": "sub-b2"},
 		map[string]string{"cnpg.io/cluster": "own", "cnpg.io/podRole": "instance", "mitstack.dev/app": "own"}),
-	"operator": endpoint("cnpg-system", nil, map[string]string{"app.kubernetes.io/name": "cloudnative-pg", "mitstack.dev/app": "cloudnative-pg"}),
-}
-
-// grants lists what the policy allows the pod named, as "<direction> with <peer> on <port>" or "<direction> to entity <entity>".
-func grants(t *testing.T, policy map[string]any, pod string) []string {
-	t.Helper()
-	var got []string
-	for _, spec := range policy["specs"].([]any) {
-		if !sliceEndpoints[pod].selectedBy(t, testutil.Field(t, spec, "endpointSelector")) {
-			continue
-		}
-		for direction, peers := range map[string]string{"egress": "toEndpoints", "ingress": "fromEndpoints"} {
-			rules, _ := testutil.Field(t, spec, direction).([]any)
-			for _, rule := range rules {
-				r := rule.(map[string]any)
-				var ports string
-				if _, ok := r["toPorts"]; ok {
-					p := testutil.Field(t, r, "toPorts", "0", "ports", "0").(map[string]any)
-					ports = fmt.Sprintf("%v/%v", p["port"], p["protocol"])
-				}
-				entities, _ := r["toEntities"].([]any)
-				for _, entity := range entities {
-					got = append(got, fmt.Sprintf("%s to entity %v", direction, entity))
-				}
-				selectors, _ := r[peers].([]any)
-				for _, s := range selectors {
-					for peer, e := range sliceEndpoints {
-						if e.selectedBy(t, s) {
-							got = append(got, fmt.Sprintf("%s with %s on %s", direction, peer, ports))
-						}
-					}
-				}
-			}
-		}
-	}
-	slices.Sort(got)
-	return slices.Compact(got)
+	"operator": testutil.Endpoint("cnpg-system", nil, map[string]string{"app.kubernetes.io/name": "cloudnative-pg", "mitstack.dev/app": "cloudnative-pg"}),
 }
 
 func TestDatabaseSlicesPolicy_GrantsEachPodExactlyItsAllows(t *testing.T) {
@@ -148,7 +79,7 @@ func TestDatabaseSlicesPolicy_GrantsEachPodExactlyItsAllows(t *testing.T) {
 		"operator":                          nil,
 	} {
 		t.Run(pod, func(t *testing.T) {
-			assert.Equal(t, want, grants(t, policy, pod))
+			assert.Equal(t, want, testutil.Grants(t, policy, sliceEndpoints, pod))
 		})
 	}
 }

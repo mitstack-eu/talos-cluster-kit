@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -78,7 +79,6 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// Documents decodes every YAML document in data into a map.
 func Documents(t *testing.T, data []byte) []map[string]any {
 	t.Helper()
 	var docs []map[string]any
@@ -125,4 +125,13 @@ func Field(t *testing.T, doc any, path ...string) any {
 		}
 	}
 	return node
+}
+
+func ContainerEnv(t *testing.T, container any) map[string]string {
+	t.Helper()
+	env := map[string]string{}
+	for _, e := range Field(t, container, "env").([]any) {
+		env[Field(t, e, "name").(string)] = fmt.Sprint(Field(t, e, "value"))
+	}
+	return env
 }

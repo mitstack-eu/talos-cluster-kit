@@ -42,13 +42,14 @@ func TestList_RefusesAnImageFromARegistryNoNodeSendsToTheMirror(t *testing.T) {
 }
 
 func TestList_HoldsEveryImageTheHostingSetPullsByDigest(t *testing.T) {
-	set, err := components.Hosting(testutil.HostingInputs(t))
+	in := testutil.HostingInputs(t)
+	set, err := components.Hosting(in)
 	require.NoError(t, err)
 
 	images, err := mirror.List(set)
 
 	require.NoError(t, err)
-	for _, ref := range testutil.HostingImages {
+	for _, ref := range append(slices.Clone(testutil.HostingImages), in.Init.ToolsImage) {
 		assert.Contains(t, string(mirror.Render(images)), ref+"\n")
 	}
 }

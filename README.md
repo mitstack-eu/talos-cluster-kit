@@ -235,19 +235,30 @@ hosting set carries that label. The Cilium policy `mitstack-hosting-flows` in
 
 ### How OpenBao is initialised
 
-OpenBao starts uninitialised, and its root token and recovery key must reach
-the owner without anyone typing them or opening a route into the cluster. The
-init Job does that through Git. It runs `openbaoinit/scripts/openbao-init.sh`
-in the tools image, in `mitstack-node`, because that is where the App key's
-`SealedSecret` opens. The pod mounts the Secret that opens to, and Kubernetes
-starts none of its containers until that Secret exists.
+OpenBao starts uninitialised. Its first init returns the root token, which
+holds every right in the store, and a recovery key, which OpenBao asks for
+before it regenerates a root token. Both must reach the owner, mitstack's
+operator, without anyone typing them or opening a route into the cluster.
+
+The init Job sends them through Git. It commits them to the cluster
+repository, the GitHub repository the block creates for each cluster and Argo
+CD applies, as `openbao-init.asc` at its top. Each is a PGP message to the
+recipient key, the OpenPGP public key the block passes as
+`openbaoSealKeyRecipient`. The owner keeps that key's private half, so only the
+owner can read the file.
+
+The Job runs `openbaoinit/scripts/openbao-init.sh` in the tools image, in
+`mitstack-node`, because that is where the `SealedSecret` `github-app-key`
+opens. The pod mounts the Secret that `SealedSecret` opens to, holding the
+hosting GitHub App's key, and Kubernetes starts none of its containers until
+that Secret exists. The script mints each GitHub token from that key.
 
 The script talks to `openbao-0`, the member OpenBao's Helm guide initialises,
 so a member that has not yet joined Raft is never initialised as a second
 store. Each request verifies OpenBao against the cluster's own authority. The
-script first encrypts a probe to the recipient key, and stops before it sends
-anything when gpg cannot encrypt to it. It then reads the store's state and the
-repository's `openbao-init.asc`, with an App token that may only read.
+script first encrypts a test message to the recipient key, and stops before it
+sends anything when gpg cannot encrypt to it. It then reads the store's state,
+and reads `openbao-init.asc` with an App token that may only read contents.
 
 | OpenBao | `openbao-init.asc` | What the Job does |
 |---|---|---|
@@ -256,12 +267,14 @@ repository's `openbao-init.asc`, with an App token that may only read.
 | Initialised | Absent | Exits 1 and says the root token and recovery key are lost |
 | Uninitialised | Committed | Exits 1 before the init, since the file may open another store |
 
-The init asks for one recovery share with a threshold of one, and passes the
-recipient's binary key as `recovery_pgp_keys`. OpenBao returns the recovery key
-as a binary PGP message, which the script armors without the CRC24 footer that
-RFC 9580 says not to add. The script encrypts the root token to the same
-recipient with gpg. It commits both as `openbao-init.asc` with an App token
-that may only write contents, before any request carries the root token:
+The init asks for the recovery key whole, as one share with a threshold of
+one, and passes the recipient's binary key as `recovery_pgp_keys`. OpenBao then
+returns the recovery key already encrypted, as a binary PGP message. The script
+turns that into ASCII armor, the text form between the `BEGIN` and `END` lines
+below, and leaves out the CRC24 checksum line that RFC 9580 says not to add.
+It encrypts the root token to the same recipient with gpg. It commits both
+with an App token that may write contents, before any request carries the root
+token:
 
 ```text
 OpenBao root token:
@@ -278,7 +291,8 @@ With the root token, the script enables the KV v2 mount `kv` and Kubernetes
 auth, and points that auth method at the API server. It then reads the method's
 accessor from `GET /v1/sys/auth`, because the accessor exists only once the
 method is enabled. It writes the read-only policy `app-secrets-reader` with
-that accessor in place, as in this example:
+that accessor in place. In this example `auth_kubernetes_f1e2d3c4` stands for
+the accessor OpenBao generates:
 
 ```hcl
 path "kv/data/apps/{{identity.entity.aliases.auth_kubernetes_f1e2d3c4.metadata.service_account_namespace}}/*" {
@@ -296,9 +310,10 @@ service account can log in with this policy until a role names it.
 The root token lives in the script's memory alone. curl reads each header that
 carries a token from its standard input, so no token appears in a process's
 arguments, and the script never prints one. The script retries each step while
-its pod lives. A pod lost after the commit leaves the setup unfinished, and a
-new pod finds the file and changes nothing. The owner then holds the root
-token in `openbao-init.asc` to finish it.
+its pod lives. A pod lost after the commit may leave the mount, the auth method,
+its configuration or the policy unwritten, and a new pod finds the file and
+changes nothing. The owner then decrypts the root token from
+`openbao-init.asc` and writes whichever of the four is missing.
 
 ### The documentation the hosting set follows
 

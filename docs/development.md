@@ -42,7 +42,7 @@ each chart with the sha256 its repository's `index.yaml` publishes.
 | `components/traefik/traefik.yaml` | The traefik 41.6.1 chart with `components/render/traefik-values.yaml` | Traefik on every node in namespace `traefik`, on NodePorts 30080 and 30081 |
 | `components/hosting/tls.yaml`, `components/hosting/flows.yaml` | Written by hand | OpenBao's authority and certificate, its trust bundle, and the flows the hosting namespaces allow |
 | `components/hosting/seal-key.yaml`, `sealed-secrets-key.yaml`, `sealed-app-key.yaml`, `storage.yaml` | Written by hand, as templates `components.Hosting` fills | The inline manifests that carry the block's secrets and OpenBao's volumes |
-| `openbaoinit/openbao-init.yaml` | Written by hand, as a template `openbaoinit.Manifests` fills | OpenBao's init Job in `mitstack-node`, and the ConfigMap with the recipient's public key |
+| `openbaoinit/openbao-init.yaml` | Written by hand, as a template `openbaoinit.Manifests` fills | OpenBao's init Job in `mitstack-node`, and the ConfigMap with the public key the Job encrypts the root token and recovery key to, `openbaoSealKeyRecipient` |
 
 mitstack-eu/cluster-bases is the repository of pinned third-party manifests
 the k3s blocks copy from. It holds CloudNativePG, which the kit copies, and
@@ -128,7 +128,7 @@ that log to check the order of the calls.
 | `TestDatabaseSlicesPolicy_GrantsEachPodExactlyItsAllows` | A slice's Postgres instance, a CloudNativePG Job, an app pod, a pod outside a database slice and a system pod each get exactly their allows | Cilium's view of each pod's labels |
 | `TestArgoCD_ReadsACloudNativePGClusterPassingThroughAPhaseAsProgressingAndAStuckOneAsDegraded` | The `argocd-cm` health check reads each phase CloudNativePG passes through as Progressing, and a cluster waiting for its user as Degraded | The check run in gopher-lua, the Lua runtime Argo CD embeds |
 | `TestInit_CommitsTheKeysAsPGPMessagesBeforeAnyRequestCarriesTheRootTokenThenWritesTheReadPolicyOnTheAccessorItRead` | One init with `recovery_pgp_keys`, both keys only as PGP messages gpg reads, the commit before any request with the root token, no plain key in a log, and the policy on the accessor read from `sys/auth` | Fake OpenBao and GitHub APIs over TLS, and the real gpg and openssl |
-| `TestInit_OnAStoreInitialisedWithItsInitFileCommittedWritesNothing` | An initialised store whose file is committed gets no write, and the check's token may only read | The same fakes |
+| `TestInit_OnAStoreInitialisedWithItsInitFileCommittedWritesNothing` | An initialised store whose file is committed gets no write, and the token the script mints to read the file may only read | The same fakes |
 | `TestInit_StopsBeforeInitialisingWhenItCannotHandTheKeysBack` | A recipient gpg cannot encrypt to, a store initialised without the file, and a file already committed for an uninitialised store each stop the script with that state named | The same fakes |
 | `TestHosting_LetsTheInitJobReachOnlyClusterDNSOpenBaoAndGitHubsAPIAndOpenBaoTakeItsCalls` | The init Job's pod may reach cluster DNS, OpenBao on 8200 and `api.github.com` on 443 and nothing else, and OpenBao takes its calls | Cilium's view of each pod's labels |
 | `TestPrepareScript_RefusesAManifestWhoseBytesDifferFromItsPin` | The gateway installs no manifest whose sha256 differs from the list, and stops | Fake curl and skopeo |

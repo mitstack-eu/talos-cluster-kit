@@ -302,7 +302,7 @@ func TestHosting_ServesOpenBaoACertificateForEveryAddressItsMembersAndClientsDia
 }
 
 // initJob returns the init Job's pod as Cilium labels it, and its container's environment, from the hosting set.
-func initJob(t *testing.T, set components.Set) (ciliumEndpoint, map[string]string) {
+func initJob(t *testing.T, set components.Set) (testutil.CiliumEndpoint, map[string]string) {
 	t.Helper()
 	job := namedDocument(t, setManifest(t, set.Inline, "mitstack-openbao-init"), "Job", "mitstack-openbao-init")
 	labels, env := map[string]string{}, map[string]string{}
@@ -312,7 +312,7 @@ func initJob(t *testing.T, set components.Set) (ciliumEndpoint, map[string]strin
 	for _, e := range testutil.Field(t, job, "spec", "template", "spec", "containers", "0", "env").([]any) {
 		env[testutil.Field(t, e, "name").(string)] = fmt.Sprint(testutil.Field(t, e, "value"))
 	}
-	return endpoint(testutil.Field(t, job, "metadata", "namespace").(string), nil, labels), env
+	return testutil.Endpoint(testutil.Field(t, job, "metadata", "namespace").(string), nil, labels), env
 }
 
 func TestHosting_LetsTheInitJobReachOnlyClusterDNSOpenBaoAndGitHubsAPIAndOpenBaoTakeItsCalls(t *testing.T) {
@@ -320,13 +320,13 @@ func TestHosting_LetsTheInitJobReachOnlyClusterDNSOpenBaoAndGitHubsAPIAndOpenBao
 	initPod, env := initJob(t, set)
 	github := strings.TrimPrefix(env["MITSTACK_GITHUB_API_URL"], "https://")
 	policy := namedDocument(t, setManifest(t, set.Served, "mitstack-hosting-flows"), "CiliumClusterwideNetworkPolicy", "mitstack-hosting-flows")
-	pods := map[string]ciliumEndpoint{
-		"cluster DNS":  endpoint("kube-system", nil, map[string]string{"k8s-app": "kube-dns"}),
-		"OpenBao":      endpoint("openbao", nil, map[string]string{"app.kubernetes.io/name": "openbao", "component": "server"}),
+	pods := map[string]testutil.CiliumEndpoint{
+		"cluster DNS":  testutil.Endpoint("kube-system", nil, map[string]string{"k8s-app": "kube-dns"}),
+		"OpenBao":      testutil.Endpoint("openbao", nil, map[string]string{"app.kubernetes.io/name": "openbao", "component": "server"}),
 		"the init Job": initPod,
 	}
 
-	initFlows, openBaoFlows := grants(t, policy, pods, "the init Job"), grants(t, policy, pods, "OpenBao")
+	initFlows, openBaoFlows := testutil.Grants(t, policy, pods, "the init Job"), testutil.Grants(t, policy, pods, "OpenBao")
 
 	assert.Equal(t, []string{
 		"egress to " + github + " on 443/TCP",

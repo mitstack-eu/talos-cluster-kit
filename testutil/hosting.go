@@ -14,6 +14,9 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	"os/exec"
+	"regexp"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -42,7 +45,6 @@ var HostingImages = []string{
 	"docker.io/traefik:v3.7.13@sha256:24841fe2de7304c149343d877d2923b4c8800a38ba015dea9174c23b20e344a0",
 }
 
-// HostingNodes are the fixture cluster's three node names.
 var HostingNodes = []string{"shop-node-fsn1", "shop-node-nbg1", "shop-node-hel1"}
 
 // hostingKeyPair is minted once per test binary, since an RSA key takes the longest of any fixture to make.
@@ -52,8 +54,7 @@ var hostingKeyPair struct {
 	keyPEM, certPEM []byte
 }
 
-// HostingInputs returns throwaway hosting inputs: a seal key, a Sealed Secrets key pair and AppKey sealed to it, and
-// InitInputs for OpenBao's init Job.
+// HostingInputs returns throwaway hosting inputs: a seal key, a Sealed Secrets key pair, AppKey sealed to it and InitInputs.
 func HostingInputs(t *testing.T) components.HostingInputs {
 	t.Helper()
 	sealKey := make([]byte, components.SealKeyBytes)
@@ -71,7 +72,6 @@ func HostingInputs(t *testing.T) components.HostingInputs {
 	}
 }
 
-// The fixture cluster repository and the hosting GitHub App installed on it.
 const (
 	InitRepository     = "mitstack-eu/shop-cluster"
 	InitAppID          = "1234567"
@@ -120,8 +120,27 @@ func ArmoredPublicKey(t *testing.T, entity *openpgp.Entity) []byte {
 	return append(out.Bytes(), '\n')
 }
 
-// ArmoredPrivateKey returns entity's private key armored under blockType, which `gpg --armor --export-secret-keys`
-// writes as openpgp.PrivateKeyType.
+// RecipientDecryptions returns what gpg, holding Recipient's private key, decrypts each armored PGP message in file to.
+func RecipientDecryptions(t *testing.T, file string) []string {
+	t.Helper()
+	owner, _ := Recipient(t)
+	home := t.TempDir()
+	gpg := func(stdin string, args ...string) string {
+		cmd := exec.Command("gpg", append([]string{"--batch", "--quiet", "--homedir", home}, args...)...)
+		cmd.Stdin = strings.NewReader(stdin)
+		out, err := cmd.Output()
+		require.NoError(t, err, "gpg %v", args)
+		return string(out)
+	}
+	gpg(string(ArmoredPrivateKey(t, owner, openpgp.PrivateKeyType)), "--import")
+	var plain []string
+	for _, m := range regexp.MustCompile(`(?s)-----BEGIN PGP MESSAGE-----\n.*?-----END PGP MESSAGE-----\n`).FindAllString(file, -1) {
+		plain = append(plain, gpg(m, "--decrypt"))
+	}
+	return plain
+}
+
+// ArmoredPrivateKey returns entity's private key armored under blockType, which gpg writes as openpgp.PrivateKeyType.
 func ArmoredPrivateKey(t *testing.T, entity *openpgp.Entity, blockType string) []byte {
 	t.Helper()
 	var out bytes.Buffer

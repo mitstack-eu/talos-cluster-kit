@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -55,100 +54,15 @@ func TestAdmission_ExemptsTheSameSystemNamespacesInBothPoliciesAndKyvernosWebhoo
 	assert.Subset(t, labelExempt, []string{"kube-system", "argocd", "kyverno", "cnpg-system", nodeconfig.TalosAPINamespace})
 }
 
-// ciliumEndpoint is a pod as Cilium labels it: its own labels under k8s:, its namespace's under io.cilium.k8s.namespace.labels.
-type ciliumEndpoint map[string]string
-
-func endpoint(namespace string, namespaceLabels, podLabels map[string]string) ciliumEndpoint {
-	e := ciliumEndpoint{"k8s:io.kubernetes.pod.namespace": namespace}
-	for k, v := range namespaceLabels {
-		e["k8s:io.cilium.k8s.namespace.labels."+k] = v
-	}
-	for k, v := range podLabels {
-		e["k8s:"+k] = v
-	}
-	return e
-}
-
-// selectedBy evaluates matchLabels and the Exists operator, the only selector forms the policy uses.
-func (e ciliumEndpoint) selectedBy(t *testing.T, selector any) bool {
-	t.Helper()
-	labels, _ := testutil.Field(t, selector, "matchLabels").(map[string]any)
-	for k, v := range labels {
-		if e[k] != v {
-			return false
-		}
-	}
-	expressions, _ := testutil.Field(t, selector, "matchExpressions").([]any)
-	for _, x := range expressions {
-		require.Equal(t, "Exists", testutil.Field(t, x, "operator"), "the policy uses an operator this test does not evaluate")
-		if _, has := e[testutil.Field(t, x, "key").(string)]; !has {
-			return false
-		}
-	}
-	return true
-}
-
-var sliceEndpoints = map[string]ciliumEndpoint{
-	"instance": endpoint("app-pg", map[string]string{"mitstack.dev/database-slice": "true", "mitstack.dev/subscription": "sub-pg"},
+var sliceEndpoints = map[string]testutil.CiliumEndpoint{
+	"instance": testutil.Endpoint("app-pg", map[string]string{"mitstack.dev/database-slice": "true", "mitstack.dev/subscription": "sub-pg"},
 		map[string]string{"cnpg.io/cluster": "shared", "cnpg.io/podRole": "instance", "mitstack.dev/app": "postgres"}),
-	"job": endpoint("app-pg", map[string]string{"mitstack.dev/database-slice": "true", "mitstack.dev/subscription": "sub-pg"},
+	"job": testutil.Endpoint("app-pg", map[string]string{"mitstack.dev/database-slice": "true", "mitstack.dev/subscription": "sub-pg"},
 		map[string]string{"cnpg.io/cluster": "shared", "cnpg.io/jobRole": "initdb", "mitstack.dev/app": "postgres"}),
-	"app": endpoint("app-a1", map[string]string{"mitstack.dev/subscription": "sub-a1"}, map[string]string{"mitstack.dev/app": "shop"}),
-	"instance outside a database slice": endpoint("app-b2", map[string]string{"mitstack.dev/subscription": "sub-b2"},
+	"app": testutil.Endpoint("app-a1", map[string]string{"mitstack.dev/subscription": "sub-a1"}, map[string]string{"mitstack.dev/app": "shop"}),
+	"instance outside a database slice": testutil.Endpoint("app-b2", map[string]string{"mitstack.dev/subscription": "sub-b2"},
 		map[string]string{"cnpg.io/cluster": "own", "cnpg.io/podRole": "instance", "mitstack.dev/app": "own"}),
-	"operator": endpoint("cnpg-system", nil, map[string]string{"app.kubernetes.io/name": "cloudnative-pg", "mitstack.dev/app": "cloudnative-pg"}),
-}
-
-// ports lists a rule's ports as "<port>/<protocol>", and names the DNS proxy when the rule sends DNS through it.
-func ports(t *testing.T, rule map[string]any) string {
-	t.Helper()
-	var got []string
-	toPorts, _ := rule["toPorts"].([]any)
-	for _, tp := range toPorts {
-		for _, p := range testutil.Field(t, tp, "ports").([]any) {
-			got = append(got, fmt.Sprintf("%v/%v", testutil.Field(t, p, "port"), testutil.Field(t, p, "protocol")))
-		}
-		if l7, _ := testutil.Field(t, tp, "rules").(map[string]any); l7["dns"] != nil {
-			got = append(got, "through the DNS proxy")
-		}
-	}
-	return strings.Join(got, " ")
-}
-
-// grants lists what the policy allows the pod named in endpoints, as "<direction> with <peer> on <ports>",
-// "<direction> to entity <entity>" or "egress to <DNS name> on <ports>".
-func grants(t *testing.T, policy map[string]any, endpoints map[string]ciliumEndpoint, pod string) []string {
-	t.Helper()
-	var got []string
-	for _, spec := range policy["specs"].([]any) {
-		if !endpoints[pod].selectedBy(t, testutil.Field(t, spec, "endpointSelector")) {
-			continue
-		}
-		for direction, peers := range map[string]string{"egress": "toEndpoints", "ingress": "fromEndpoints"} {
-			rules, _ := testutil.Field(t, spec, direction).([]any)
-			for _, rule := range rules {
-				r := rule.(map[string]any)
-				entities, _ := r["toEntities"].([]any)
-				for _, entity := range entities {
-					got = append(got, fmt.Sprintf("%s to entity %v", direction, entity))
-				}
-				names, _ := r["toFQDNs"].([]any)
-				for _, name := range names {
-					got = append(got, fmt.Sprintf("egress to %v on %s", testutil.Field(t, name, "matchName"), ports(t, r)))
-				}
-				selectors, _ := r[peers].([]any)
-				for _, s := range selectors {
-					for peer, e := range endpoints {
-						if e.selectedBy(t, s) {
-							got = append(got, fmt.Sprintf("%s with %s on %s", direction, peer, ports(t, r)))
-						}
-					}
-				}
-			}
-		}
-	}
-	slices.Sort(got)
-	return slices.Compact(got)
+	"operator": testutil.Endpoint("cnpg-system", nil, map[string]string{"app.kubernetes.io/name": "cloudnative-pg", "mitstack.dev/app": "cloudnative-pg"}),
 }
 
 func TestDatabaseSlicesPolicy_GrantsEachPodExactlyItsAllows(t *testing.T) {
@@ -165,7 +79,7 @@ func TestDatabaseSlicesPolicy_GrantsEachPodExactlyItsAllows(t *testing.T) {
 		"operator":                          nil,
 	} {
 		t.Run(pod, func(t *testing.T) {
-			assert.Equal(t, want, grants(t, policy, sliceEndpoints, pod))
+			assert.Equal(t, want, testutil.Grants(t, policy, sliceEndpoints, pod))
 		})
 	}
 }

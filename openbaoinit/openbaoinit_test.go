@@ -17,7 +17,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -219,7 +218,6 @@ func certificatePEM(s *httptest.Server) []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: s.Certificate().Raw})
 }
 
-// rendered returns the documents Manifests renders for the fixture inputs, and the Job's pod template.
 func rendered(t *testing.T) ([]map[string]any, map[string]any) {
 	t.Helper()
 	out, err := openbaoinit.Manifests(testutil.InitInputs(t))
@@ -230,15 +228,6 @@ func rendered(t *testing.T) ([]map[string]any, map[string]any) {
 	return docs, testutil.Field(t, jobs[0], "spec", "template").(map[string]any)
 }
 
-func envOf(t *testing.T, container any) map[string]string {
-	t.Helper()
-	env := map[string]string{}
-	for _, e := range testutil.Field(t, container, "env").([]any) {
-		env[testutil.Field(t, e, "name").(string)] = fmt.Sprint(testutil.Field(t, e, "value"))
-	}
-	return env
-}
-
 // run runs the rendered script in the Job's environment, its files, recipient key and addresses swapped for the fakes'.
 func (f *fakes) run(t *testing.T, recipient []byte) (string, error) {
 	t.Helper()
@@ -246,7 +235,7 @@ func (f *fakes) run(t *testing.T, recipient []byte) (string, error) {
 	container := testutil.Field(t, pod, "spec", "containers", "0")
 	dir := t.TempDir()
 	appKey := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(f.appKey)})
-	env := envOf(t, container)
+	env := testutil.ContainerEnv(t, container)
 	for k, v := range map[string]string{
 		"PATH": os.Getenv("PATH"), "HOME": dir, "GNUPGHOME": filepath.Join(dir, "gnupg"),
 		"MITSTACK_OPENBAO_ADDR": f.bao.URL, "MITSTACK_GITHUB_API_URL": f.github.URL,
@@ -272,27 +261,8 @@ func (f *fakes) run(t *testing.T, recipient []byte) (string, error) {
 	return out.String(), err
 }
 
-// decryptions returns what gpg decrypts each armored PGP message in file to, in order.
-func decryptions(t *testing.T, owner *openpgp.Entity, file string) []string {
-	t.Helper()
-	home := t.TempDir()
-	gpg := func(stdin string, args ...string) string {
-		cmd := exec.Command("gpg", append([]string{"--batch", "--quiet", "--homedir", home}, args...)...)
-		cmd.Stdin = strings.NewReader(stdin)
-		out, err := cmd.Output()
-		require.NoError(t, err, "gpg %v", args)
-		return string(out)
-	}
-	gpg(string(testutil.ArmoredPrivateKey(t, owner, openpgp.PrivateKeyType)), "--import")
-	var plain []string
-	for _, m := range regexp.MustCompile(`(?s)-----BEGIN PGP MESSAGE-----\n.*?-----END PGP MESSAGE-----\n`).FindAllString(file, -1) {
-		plain = append(plain, gpg(m, "--decrypt"))
-	}
-	return plain
-}
-
 func TestInit_CommitsTheKeysAsPGPMessagesBeforeAnyRequestCarriesTheRootTokenThenWritesTheReadPolicyOnTheAccessorItRead(t *testing.T) {
-	owner, recipient := testutil.Recipient(t)
+	_, recipient := testutil.Recipient(t)
 	f := newFakes(t)
 
 	out, err := f.run(t, recipient)
@@ -308,7 +278,7 @@ func TestInit_CommitsTheKeysAsPGPMessagesBeforeAnyRequestCarriesTheRootTokenThen
 		"the init must ask for one recovery share of threshold one and a plain root token")
 	committed := f.files[openbaoinit.InitFile]
 	assert.Regexp(t, `^OpenBao root token:\n-----BEGIN PGP MESSAGE-----\n(?s:.*)\n-----END PGP MESSAGE-----\nOpenBao recovery key:\n-----BEGIN PGP MESSAGE-----\n(?s:.*)\n-----END PGP MESSAGE-----\n$`, committed)
-	assert.Equal(t, []string{fakeRootToken, fakeRecoveryKey}, decryptions(t, owner, committed), "gpg must read the root token, then the recovery key")
+	assert.Equal(t, []string{fakeRootToken, fakeRecoveryKey}, testutil.RecipientDecryptions(t, committed), "gpg must read the root token, then the recovery key")
 	commit := slices.IndexFunc(calls, func(c call) bool { return c.method == http.MethodPut && c.path == contentsPath })
 	require.GreaterOrEqual(t, commit, 0, "the script never committed %s:\n%s", openbaoinit.InitFile, out)
 	firstRoot := slices.IndexFunc(calls, func(c call) bool { return c.root })
@@ -341,7 +311,7 @@ func TestInit_CommitsTheKeysAsPGPMessagesBeforeAnyRequestCarriesTheRootTokenThen
 }
 
 func TestInit_CommitsTheRootTokenWhenTheInitsAnswerHoldsNoReadableRecoveryKey(t *testing.T) {
-	owner, recipient := testutil.Recipient(t)
+	_, recipient := testutil.Recipient(t)
 	for name, recoveryKeys := range map[string]string{"missing": "", "malformed": `,"recovery_keys_base64":["not base64!"]`} {
 		t.Run(name, func(t *testing.T) {
 			f := newFakes(t)
@@ -351,7 +321,7 @@ func TestInit_CommitsTheRootTokenWhenTheInitsAnswerHoldsNoReadableRecoveryKey(t 
 
 			require.Error(t, err, "the script exited 0 with the recovery key %s:\n%s", name, out)
 			assert.Contains(t, out, "the answer to the init holds no readable recovery key")
-			assert.Equal(t, []string{fakeRootToken}, decryptions(t, owner, f.files[openbaoinit.InitFile]), "the root token is lost:\n%s", out)
+			assert.Equal(t, []string{fakeRootToken}, testutil.RecipientDecryptions(t, f.files[openbaoinit.InitFile]), "the root token is lost:\n%s", out)
 			assert.NotContains(t, out, fakeRootToken, "the script printed the root token")
 		})
 	}
@@ -417,7 +387,7 @@ func TestManifests_RunsTheScriptAsAJobInTheAppKeysNamespaceThatMountsTheKeyTheRe
 	docs, pod := rendered(t)
 
 	container := testutil.Field(t, pod, "spec", "containers", "0").(map[string]any)
-	env := envOf(t, container)
+	env := testutil.ContainerEnv(t, container)
 
 	assert.Equal(t, openbaoinit.AppKeyNamespace, testutil.Field(t, testutil.Kind(docs, "Job")[0], "metadata", "namespace"))
 	assert.NotEmpty(t, testutil.Field(t, pod, "metadata", "labels", "mitstack.dev/app"), "the admission policy refuses a pod without mitstack.dev/app")

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Reads the cluster and posts the node report to the platform: each node with
-# its Talos version and readiness, the etcd membership, and the health and
-# sync status of every Argo CD Application.
+# its Talos version and readiness, the etcd membership, the health and sync
+# status of every Argo CD Application, and CloudNativePG's clusters, databases
+# and roles.
 # Usage: REPORT_URL=<https url> SUBSCRIPTION_ID=<id> HOST_IP=<this pod's node> report.sh
 #   REPORT_TOKEN_FILE names the bearer token's file, /var/run/mitstack/token by default.
 # It exists so the platform sees a cluster it never dials into, as ADR 0072
@@ -20,6 +21,15 @@ collect() {
   kubectl get nodes -o json > "$work/nodes.json"
   kubectl get applications.argoproj.io -n argocd -o json > "$work/applications.json"
   talosctl -n "$HOST_IP" etcd members > "$work/members.txt"
+  read_cloudnative_pg
+}
+
+# read_cloudnative_pg keeps its exit status and stderr, so a failed read is reported beside the reads above.
+read_cloudnative_pg() {
+  local status=0
+  kubectl get clusters.postgresql.cnpg.io,databases.postgresql.cnpg.io,databaseroles.postgresql.cnpg.io -A -o json \
+    > "$work/cloudnative-pg.json" 2> "$work/cloudnative-pg.err" || status=$?
+  echo "$status" > "$work/cloudnative-pg.status"
 }
 
 # body prints the report; a member line is NODE ID HOSTNAME PEER-URLS CLIENT-URLS LEARNER.
@@ -29,9 +39,25 @@ body() {
     --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --slurpfile nodes "$work/nodes.json" \
     --slurpfile applications "$work/applications.json" \
-    --rawfile members "$work/members.txt" '
+    --rawfile members "$work/members.txt" \
+    --rawfile cnpg "$work/cloudnative-pg.json" \
+    --rawfile cnpg_err "$work/cloudnative-pg.err" \
+    --rawfile cnpg_status "$work/cloudnative-pg.status" '
     def talos_version: (.status.nodeInfo.osImage // "") | (try capture("^Talos \\((?<v>[^)]+)\\)").v catch null);
     def ready: [.status.conditions[]? | select(.type == "Ready") | .status == "True"] | any;
+    def cloudnative_pg: {
+      namespace: .metadata.namespace, kind: .kind, name: .metadata.name,
+      subscription: (.metadata.labels["mitstack.dev/subscription"] // null)
+    } + if .kind == "Cluster" then
+      {phase: .status.phase, instances: .status.instances, readyInstances: .status.readyInstances}
+    else
+      {applied: .status.applied, message: (.status.message // null | if . then .[0:256] else . end)}
+    end;
+    def cloudnative_pg_read: ($cnpg_status | tonumber) as $status |
+      if $status != 0 then {exitStatus: $status, stderr: $cnpg_err[-1024:]}
+      else try ($cnpg | fromjson | [.items[] | cloudnative_pg])
+        catch {exitStatus: 0, stderr: "kubectl exited 0, and its output is not the CloudNativePG objects this report reads"}
+      end;
     {
       subscriptionId: $subscription,
       reportedAt: $at,
@@ -49,7 +75,8 @@ body() {
         name: .metadata.name,
         health: (.status.health.status // "Unknown"),
         sync: (.status.sync.status // "Unknown")
-      }]}
+      }]},
+      cloudNativePG: cloudnative_pg_read
     }'
 }
 

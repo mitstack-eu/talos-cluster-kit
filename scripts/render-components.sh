@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Renders the component set every Talos cluster starts with into
 # components/: Cilium from its chart, the CRD of Cilium's cluster-wide policy
-# from Cilium's source, and Argo CD from its chart. With --check it fails
+# from Cilium's source, and Argo CD and Kyverno from their charts. With --check it fails
 # when a committed file differs from a fresh render or names an image by
 # anything but a digest.
 # Usage: scripts/render-components.sh [--check]
@@ -19,6 +19,10 @@ readonly cilium_crd_url="https://raw.githubusercontent.com/cilium/cilium/v${cili
 readonly argocd_chart_version=10.10.5
 readonly argocd_chart_sha256=ba6447eeed42bc41d1f0527721047b236304e97669a7b6286d02be4a1644ba7a
 readonly argocd_chart_url="https://github.com/argoproj/argo-helm/releases/download/argo-cd-${argocd_chart_version}/argo-cd-${argocd_chart_version}.tgz"
+
+readonly kyverno_chart_version=3.9.1
+readonly kyverno_chart_sha256=7b7fe51a431b5b133b0ce7eb9dcb222b6a37fb967c163223cf480054ad14d752
+readonly kyverno_chart_url="https://kyverno.github.io/kyverno/kyverno-${kyverno_chart_version}.tgz"
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 readonly root
@@ -81,6 +85,21 @@ render_argocd() {
   } > "$work/argocd.yaml"
 }
 
+# render_kyverno prepends the namespace, since the chart creates none, and
+# leaves out the chart's tests, which pull an image by tag alone.
+render_kyverno() {
+  fetch "$kyverno_chart_url" "$kyverno_chart_sha256" "$work/kyverno.tgz"
+  {
+    header "the kyverno ${kyverno_chart_version} chart"
+    printf -- '---\napiVersion: v1\nkind: Namespace\nmetadata:\n  name: kyverno\n'
+    "$helm" template kyverno "$work/kyverno.tgz" \
+      --namespace kyverno \
+      --kube-version "$kube_version" \
+      --skip-tests \
+      --values "$root/components/render/kyverno-values.yaml"
+  } > "$work/kyverno.yaml"
+}
+
 # compare <fresh> <committed> fails when the committed file differs from the fresh render.
 compare() {
   if ! diff -q "$2" "$1" > /dev/null; then
@@ -101,10 +120,12 @@ main() {
   render_cilium
   render_cilium_crd
   render_argocd
+  render_kyverno
   refuse_undigested "$work/cilium.yaml" render-components
   refuse_undigested "$work/argocd.yaml" render-components
+  refuse_undigested "$work/kyverno.yaml" render-components
 
-  local pairs=("cilium.yaml:components/cilium/cilium.yaml" "policy-crd.yaml:components/cilium/policy-crd.yaml" "argocd.yaml:components/argocd/argocd.yaml")
+  local pairs=("cilium.yaml:components/cilium/cilium.yaml" "policy-crd.yaml:components/cilium/policy-crd.yaml" "argocd.yaml:components/argocd/argocd.yaml" "kyverno.yaml:components/kyverno/kyverno.yaml")
   local pair failed=0
   for pair in "${pairs[@]}"; do
     if $check; then

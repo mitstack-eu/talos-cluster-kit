@@ -10,24 +10,28 @@ Back to [the README](../README.md).
 ## Where the component set comes from
 
 The component set is the manifests every Talos cluster starts with.
-The table lists its five files. `scripts/render-components.sh` writes the
-first three from pinned sources, each checked against a published sha256, and
-refuses any image that is not named by digest. The last two are written by
-hand.
+The table lists its files. `scripts/render-components.sh` writes the first
+four from pinned sources, each checked against a published sha256, and refuses
+any image that is not named by digest. The CloudNativePG files are copied from
+a release, and the rest are written by hand.
 
 | File | Source | What it runs |
 |---|---|---|
 | `components/cilium/cilium.yaml` | The cilium 1.19.9 chart with `components/render/cilium-values.yaml` | Cilium as the network plugin and in place of kube-proxy, with Hubble off so the chart mints no key |
 | `components/cilium/policy-crd.yaml` | Cilium v1.19.9's `CiliumClusterwideNetworkPolicy` CRD | The CRD the metadata policy needs before Cilium's operator starts |
-| `components/argocd/argocd.yaml` | The argo-cd 10.10.5 chart with `components/render/argocd-values.yaml`, Dex off | Argo CD v3.5.5 in namespace `argocd` |
+| `components/argocd/argocd.yaml` | The argo-cd 10.10.5 chart with `components/render/argocd-values.yaml`, Dex off | Argo CD v3.5.5 in namespace `argocd`, with a health check that reads a CloudNativePG Cluster passing through a switchover, failover, upgrade or configuration change as Progressing |
+| `components/kyverno/kyverno.yaml` | The kyverno 3.9.1 chart with `components/render/kyverno-values.yaml`, its tests and Helm hooks off | Kyverno v1.19.1 in namespace `kyverno`, its images from `ghcr.io` and its webhooks skipping the system namespaces |
+| `components/cloudnative-pg/cloudnative-pg.yaml`, `components/cloudnative-pg/namespace.yaml` | Copied from mitstack-eu/cluster-bases v0.4.0 | The CloudNativePG 1.30.1 operator in namespace `cnpg-system`, with its default Postgres and PgBouncer images by digest |
+| `components/admission/policies/` | Written by hand | The Kyverno policies that require the `mitstack.dev/app` label and give each app namespace `mitstack-default-deny` |
+| `components/network-policies/mitstack-database-slices.yaml` | Written by hand | The Cilium policy that opens a database slice's Postgres instances to each other, the operator and the app slices |
 | `components/metadata/metadata-block.yaml` | Written by hand | The policy that drops pod traffic to `169.254.169.254` and isolates nothing else |
 | `components/logs/collector.yaml` | Written by hand, as a template `components.LogCollector` fills | The node-local OpenTelemetry Collector on the host network |
 
-mitstack-eu/cluster-bases, the repository of pinned third-party manifests the
-k3s blocks copy from, holds none of the first three today. The kit renders
-them the way cluster-bases renders its own charts, with a pinned chart, a
-values file and a check. To change one, edit its values file or the script's
-pin, then render again:
+mitstack-eu/cluster-bases is the repository of pinned third-party manifests
+the k3s blocks copy from. It holds CloudNativePG, which the kit copies, and
+none of the four charts the script renders. The kit renders those the way
+cluster-bases renders its own, with a pinned chart, a values file and a check.
+To change one, edit its values file or the script's pin, then render again:
 
 ```bash
 scripts/render-components.sh
@@ -35,6 +39,18 @@ scripts/render-components.sh
 
 CI then runs the same script with `--check`, which fails when a committed file
 differs from a fresh render.
+
+cluster-bases is private, so CI cannot fetch from it. A newer CloudNativePG
+comes in by copying both files from a newer cluster-bases release and setting
+the blob ids that `git rev-parse <tag>:cloudnative-pg/<file>` answers there in
+`TestCloudNativePG_IsClusterBasesV040sComponentByteForByte`.
+
+Each admission policy has a `kyverno test` case under
+`components/admission/tests/`, which CI runs with the Kyverno CLI v1.19.1:
+
+```bash
+kyverno test components/admission/tests
+```
 
 The Talos images, such as the kubelet and the API server, are not in any
 manifest. `pinnedTalosImages` in `components/image.go` lists them with the
@@ -50,7 +66,7 @@ code embeds it with `go:embed`.
 | `etcd/scripts/remove-member.sh` | The member removal Job, inline in its command | Looks up the lost node's etcd member, removes it, then deletes the Node | `etcd/etcd_test.go` |
 | `etcd/scripts/bootstrap.sh` | The gateway, as `mitstack-talos-bootstrap` | Bootstraps etcd, or restores it and deletes the old Node objects, then deletes the admin talosconfig | `etcd/etcd_test.go` |
 | `gateway/scripts/prepare.sh` | The gateway, once at first boot | Installs talosctl and kubectl, copies each image into the local registry by digest, and fetches each served manifest | `gateway/gateway_test.go` |
-| `report/scripts/report.sh` | The node report's CronJob, inline in its command | Reads the nodes, the etcd members and the Argo CD Applications, and posts the report | `report/report_test.go` |
+| `report/scripts/report.sh` | The node report's CronJob, inline in its command | Reads the nodes, the etcd members, the Argo CD Applications and CloudNativePG's objects, and posts the report | `report/report_test.go` |
 | `scripts/render-components.sh` | A workstation and CI | Renders the component set | The `components` CI job |
 
 The member removal Job and the node report run in the tools image that
@@ -82,6 +98,10 @@ that log to check the order of the calls.
 | `TestRemoveMemberJob_RemovesTheEtcdMemberBeforeDeletingItsNode` | The member goes before its Node, and a failed removal keeps the Node | Fake talosctl and kubectl |
 | `TestBootstrapScript_RestoresFromTheSnapshotThenDeletesTheOldNodes` | The restore bootstraps from the snapshot, deletes every Node outside `--keep`, and deletes the talosconfig | Fake talosctl and kubectl |
 | `TestReport_PostsEachNodeWithItsTalosVersionTheEtcdMembershipAndArgoCDsHealth` | The report carries each node, its Talos version, the members and each Application's health | Fake talosctl and kubectl, and a local HTTPS server playing the platform |
+| `TestReport_WhoseCloudNativePGReadFailsStillCarriesItsNodesAndApplications` | A failed CloudNativePG read is reported with its exit status and stderr, beside the nodes and Applications | A fake kubectl that refuses only that read |
+| `TestDefault_RunsKyvernoWithBothPoliciesAndCloudNativePGWithTheDatabaseSlicePolicy` | The set carries Kyverno, both policies, CloudNativePG and the slice policy, and the mirror holds each of their images by digest | The default set and its mirror list |
+| `TestDatabaseSlicesPolicy_GrantsEachPodExactlyItsAllows` | A slice's Postgres instance, a CloudNativePG Job, an app pod, a pod outside a database slice and a system pod each get exactly their allows | Cilium's view of each pod's labels |
+| `TestArgoCD_ReadsACloudNativePGClusterPassingThroughAPhaseAsProgressing` | The `argocd-cm` health check reads each phase CloudNativePG passes through as Progressing | The check run in gopher-lua, the Lua runtime Argo CD embeds |
 | `TestPrepareScript_RefusesAManifestWhoseBytesDifferFromItsPin` | The gateway installs no manifest whose sha256 differs from the list, and stops | Fake curl and skopeo |
 
 The fixtures in `testutil/testdata/` are throwaway keys made for these tests:

@@ -33,13 +33,13 @@ the order a block uses them.
 
 | Package | What it does | Main entry points |
 |---|---|---|
-| `components` | Holds the pinned component set: Cilium, the custom resource definition (CRD) of Cilium's cluster-wide policy, Argo CD, the policy that keeps pods from Hetzner's metadata service at `169.254.169.254`, and the node-local OpenTelemetry Collector | `Default`, `Set.Images`, `LogCollector`, `ParseImage` |
+| `components` | Holds the pinned component set: Cilium, the custom resource definition (CRD) of Cilium's cluster-wide policy, Argo CD, the policy that keeps pods from Hetzner's metadata service at `169.254.169.254`, Kyverno with its two admission policies, the CloudNativePG operator with the database-slice policy, and the node-local OpenTelemetry Collector | `Default`, `Set.Images`, `LogCollector`, `ParseImage` |
 | `nodeconfig` | Renders a control-plane node's machine configuration with Talos's own `machinery` module and validates it against Talos's schema | `Render`, `Cluster`, `Node`, `NewSecrets`, `ParseSecrets`, `Secrets.AdminTalosconfig` |
 | `image` | Runs imager, Sidero Labs' open-source image builder, with the `hcloud` or the `metal` profile, and discards its output | `Run`, `Build` |
 | `mirror` | Lists every image the nodes pull, each by digest | `List`, `Render` |
 | `gateway` | Renders the cloud-config of the gateway in each location, and mints the cluster's gateway CA and each gateway's certificate | `Render`, `Inputs`, `NewCA`, `CA.Issue`, `ReleaseURL` |
 | `etcd` | Renders the Job that removes a lost node's etcd member and then its Node object, and holds the gateway's script that bootstraps etcd empty or from a snapshot | `RemoveMemberJob`, `BootstrapScript`, `Bootstrap.Args` |
-| `report` | Renders the node report, a CronJob that posts each node, its Talos version, the etcd membership and Argo CD's health to the platform | `Manifests` |
+| `report` | Renders the node report, a CronJob that posts each node, its Talos version, the etcd membership, Argo CD's health and CloudNativePG's clusters, databases and roles to the platform | `Manifests` |
 | `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image and the gateway both install, and names the tools image a release published | `Env`, `Pin`, `Image` |
 | `testutil` | Holds the fixtures, fakes and decoders this module's tests and a block's tests share | `NewCluster`, `NewTools`, `Golden` |
 
@@ -81,7 +81,7 @@ control-plane node and changes it in these ways:
 |---|---|---|
 | DNS and time | Every node asks Hetzner's resolvers `185.12.64.1` and `185.12.64.2` and syncs from `ntp1.hetzner.de`, `ntp2.hetzner.com` and `ntp3.hetzner.net`, and Sidero's discovery service is off | `resolverDocument`, `timeSyncDocument` in `nodeconfig/documents.go` |
 | Images | `docker.io`, `ghcr.io`, `public.ecr.aws`, `quay.io` and `registry.k8s.io` go to every gateway's mirror in turn, with no fallback to the public registry | `mirrorDocuments` |
-| Components | Cilium, its policy CRD and Argo CD come from the first gateway over TLS, and the metadata policy and the Collector sit in the configuration | `manifestDocuments` |
+| Components | Cilium, its policy CRD, Argo CD, Kyverno and the CloudNativePG operator come from the first gateway over TLS. The metadata policy, the two admission policies, the `cnpg-system` namespace, the database-slice policy and the Collector sit in the configuration | `manifestDocuments` |
 | Logs | Talos sends service and kernel logs to the node-local Collector on `127.0.0.1`, which exports them over OTLP with TLS verified. A cluster whose `Logs` is the zero `LogExport` runs no Collector and keeps its logs on the node | `adaptV1Alpha1`, `kernelLogDocument`, `components.LogCollector` |
 | Networking | Flannel and kube-proxy are off, since Cilium replaces both, and etcd and the kubelet bind to the private network | `adapt` |
 | Default route | A Cloud node keeps DHCP on `eth0` and routes everything outside the network through Hetzner's router at the network's first address. The block's network route of `0.0.0.0/0` then carries that traffic to the gateway. Hetzner's DHCP gives the node no default route, and Talos runs no default DHCP on a link that has a `LinkConfig` | `routeDocuments` |
@@ -92,6 +92,35 @@ authorities included, but no admin client certificate. Talos's etcd
 bootstrap accepts only `os:admin`, its full-rights role, so the gateway runs
 it once with a short-lived talosconfig from `Secrets.AdminTalosconfig` and
 deletes that file on exit.
+
+## How a cluster isolates each app
+
+Every cluster runs Kyverno, an admission controller that checks each object
+the API server is asked to create. Two of its policies apply to every
+namespace outside the system namespaces, which are `kube-system`,
+`kube-public`, `kube-node-lease`, `argocd`, `kyverno`, `cnpg-system` and
+`mitstack-node`.
+
+| Policy | What it does | File |
+|---|---|---|
+| `mitstack-require-app-label` | Refuses a pod without a non-empty `mitstack.dev/app` label, which an app's network policies select its pods by | `components/admission/policies/mitstack-require-app-label.yaml` |
+| `mitstack-generate-default-deny` | Gives each namespace, new or existing, the NetworkPolicy `mitstack-default-deny`, which blocks every connection its pods make or take until an app's own policy allows it | `components/admission/policies/mitstack-generate-default-deny.yaml` |
+
+Kyverno's webhooks skip the same system namespaces, so a Kyverno outage
+cannot stop a system pod, such as the node report in `mitstack-node`.
+
+The CloudNativePG operator in `cnpg-system` runs the Postgres clusters an app
+keeps its data in. A namespace labelled `mitstack.dev/database-slice=true` is
+a database slice. The Cilium policy `mitstack-database-slices` lets that
+slice's Postgres instances reach the API server and each other, and admits
+the operator on port 8000 and every app slice on port 5432. A pod in any other
+namespace gains none of those allows.
+
+The CloudNativePG manifests are a byte-for-byte copy of release v0.4.0 of
+mitstack-eu/cluster-bases, the repository of pinned third-party manifests.
+Argo CD's built-in health check reads a Postgres switchover, failover,
+upgrade or configuration change as Degraded. The kit's `argocd-cm` reads each
+of those as Progressing, since CloudNativePG passes through them on its own.
 
 ## Why the image build discards its output
 

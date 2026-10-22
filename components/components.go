@@ -56,10 +56,24 @@ var (
 	argoCDManifest []byte
 	//go:embed metadata/metadata-block.yaml
 	metadataBlockManifest []byte
+	//go:embed kyverno/kyverno.yaml
+	kyvernoManifest []byte
+	//go:embed admission/policies/mitstack-require-app-label.yaml
+	requireAppLabelPolicy []byte
+	//go:embed admission/policies/mitstack-generate-default-deny.yaml
+	generateDefaultDenyPolicy []byte
+	//go:embed cloudnative-pg/cloudnative-pg.yaml
+	cloudNativePGManifest []byte
+	//go:embed cloudnative-pg/namespace.yaml
+	cloudNativePGNamespace []byte
+	//go:embed network-policies/mitstack-database-slices.yaml
+	databaseSlicesPolicy []byte
 )
 
 // Default returns the component set at the pinned versions: Cilium with the CRD of its cluster-wide policy,
-// Argo CD, and the policy that keeps pods from Hetzner's metadata service.
+// Argo CD, the policy that keeps pods from Hetzner's metadata service, Kyverno with the policies that require
+// the mitstack.dev/app label and deny each app namespace's traffic by default, and the CloudNativePG operator
+// with the policy that opens a database slice's Postgres to the other slices.
 func Default() Set {
 	return Set{
 		Versions: PinnedVersions,
@@ -67,16 +81,23 @@ func Default() Set {
 			{Name: "cilium", Path: "components/cilium/cilium.yaml", Bytes: ciliumManifest},
 			{Name: "cilium-policy-crd", Path: "components/cilium/policy-crd.yaml", Bytes: policyCRDManifest},
 			{Name: "argocd", Path: "components/argocd/argocd.yaml", Bytes: argoCDManifest},
+			{Name: "kyverno", Path: "components/kyverno/kyverno.yaml", Bytes: kyvernoManifest},
+			{Name: "cloudnative-pg", Path: "components/cloudnative-pg/cloudnative-pg.yaml", Bytes: cloudNativePGManifest},
 		},
 		Inline: []Manifest{
 			{Name: "mitstack-metadata-block", Path: "components/metadata/metadata-block.yaml", Bytes: metadataBlockManifest},
+			{Name: "mitstack-require-app-label", Path: "components/admission/policies/mitstack-require-app-label.yaml", Bytes: requireAppLabelPolicy},
+			{Name: "mitstack-generate-default-deny", Path: "components/admission/policies/mitstack-generate-default-deny.yaml", Bytes: generateDefaultDenyPolicy},
+			{Name: "cloudnative-pg-namespace", Path: "components/cloudnative-pg/namespace.yaml", Bytes: cloudNativePGNamespace},
+			{Name: "mitstack-database-slices", Path: "components/network-policies/mitstack-database-slices.yaml", Bytes: databaseSlicesPolicy},
 		},
 		TalosImages: pinnedTalosImages,
 	}
 }
 
-// imageLineRe matches a manifest's image field with its reference in group 1.
-var imageLineRe = regexp.MustCompile(`(?m)^\s*(?:- )?image:\s*"?([^"\s]+)"?\s*$`)
+// imageLineRe matches a manifest's image field, or an operator's default image such as CloudNativePG's
+// POSTGRES_IMAGE_NAME, with its reference in group 1.
+var imageLineRe = regexp.MustCompile(`(?m)^[ \t]*(?:- )?(?:image|[A-Z][A-Z_]*_IMAGE_NAME):[ \t]*"?([^"\s]+)"?[ \t]*$`)
 
 // Images returns every image the set and the node-local Collector pull, sorted by reference with each listed once.
 func (s Set) Images() ([]Image, error) {

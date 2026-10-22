@@ -44,7 +44,8 @@ type Cluster struct {
 	Profile        Profile
 	Components     components.Set
 	Secrets        *Secrets
-	// Network is the cluster's own Hetzner private network, which etcd and the kubelet bind to.
+	// Network is the cluster's own Hetzner private network, which etcd and the kubelet bind to. On the HCloud profile
+	// the block gives it a route of 0.0.0.0/0 to a gateway, since a Cloud node's default route leads there.
 	Network netip.Prefix
 	// APIAddresses are the private load balancers that carry the Kubernetes API, one per location, the first of
 	// them the control-plane endpoint, and the API server's certificate names them all.

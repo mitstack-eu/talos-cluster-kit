@@ -81,6 +81,7 @@ func (c Cluster) documents(n Node) ([]config.Document, error) {
 		return nil, err
 	}
 	docs := []config.Document{resolverDocument(), timeSyncDocument(), hostnameDocument(n), c.trustedRootsDocument()}
+	docs = append(docs, c.routeDocuments()...)
 	if !c.Logs.IsZero() {
 		docs = append(docs, kernelLogDocument())
 	}
@@ -96,6 +97,26 @@ func resolverDocument() config.Document {
 	}
 	doc.ResolverHostDNS = network.HostDNSConfig{HostDNSEnabled: new(true), HostDNSForwardKubeDNSToHost: new(true)}
 	return doc
+}
+
+// cloudLink is a Cloud node's one interface, on the cluster's private network, since the node has no public one.
+const cloudLink = "eth0"
+
+// routeDocuments give a Cloud node the default route Hetzner's DHCP leaves out, through Hetzner's router, which the
+// network's own route sends on to the gateway.
+func (c Cluster) routeDocuments() []config.Document {
+	if c.Profile != HCloud {
+		return nil
+	}
+	link := network.NewLinkConfigV1Alpha1(cloudLink)
+	link.LinkRoutes = []network.RouteConfig{{RouteGateway: meta.Addr{Addr: c.router()}}}
+	// A LinkConfig stops Talos's default DHCP on its link, so without this the node loses its address.
+	return []config.Document{link, network.NewDHCPv4ConfigV1Alpha1(cloudLink)}
+}
+
+// router is the network's first address, which Hetzner's router answers on in every Cloud network.
+func (c Cluster) router() netip.Addr {
+	return c.Network.Masked().Addr().Next()
 }
 
 func timeSyncDocument() config.Document {

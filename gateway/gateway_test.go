@@ -75,7 +75,7 @@ func TestRender_LeavesTheFirewallToNftablesAndRunsEveryContainerOnTheHostNetwork
 		assert.NotRegexp(t, `\s(-p|--publish)\s`, start, "%s publishes a port, which needs Docker's rules", unit)
 	}
 	assert.Contains(t, execStart(t, writtenFile(t, "/etc/systemd/system/mitstack-registry.service")),
-		" -e REGISTRY_HTTP_ADDR=127.0.0.1:5000 ", "the registry listens beyond the gateway's loopback")
+		" -e REGISTRY_HTTP_ADDR=127.0.0.1:5000 ", "on the host network the registry must be told to bind 127.0.0.1:5000 alone")
 }
 
 func TestRender_SendsMirrorPullsToTheRegistryAndRefusesEveryOtherMethod(t *testing.T) {

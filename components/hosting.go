@@ -13,6 +13,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"slices"
 	"text/template"
@@ -94,10 +95,11 @@ var (
 // trust-manager, External Secrets, Sealed Secrets and Traefik. Every manifest that holds one of in's secrets is inline,
 // since the gateway serves its manifests to every node.
 func Hosting(in HostingInputs) (Set, error) {
-	if err := in.validate(); err != nil {
+	sealed, err := in.validate()
+	if err != nil {
 		return Set{}, fmt.Errorf("the hosting set: %w", err)
 	}
-	inline, err := in.inlineManifests()
+	inline, err := in.inlineManifests(sealed)
 	if err != nil {
 		return Set{}, fmt.Errorf("the hosting set: %w", err)
 	}
@@ -117,11 +119,9 @@ func Hosting(in HostingInputs) (Set, error) {
 	return set, nil
 }
 
-func (in HostingInputs) inlineManifests() ([]Manifest, error) {
-	sealed, err := readSealedAppKey(in.SealedAppKey)
-	if err != nil {
-		return nil, err
-	}
+// inlineManifests renders the manifests that hold in's secrets, with sealed the App key's checked sealed value, and
+// OpenBao's volumes, which name in's nodes.
+func (in HostingInputs) inlineManifests(sealed string) ([]Manifest, error) {
 	parts := []struct {
 		name, path string
 		t          *template.Template
@@ -145,7 +145,8 @@ func (in HostingInputs) inlineManifests() ([]Manifest, error) {
 	return manifests, nil
 }
 
-func (in HostingInputs) validate() error {
+// validate returns the sealed value of in's App key once every input is one the set can boot from.
+func (in HostingInputs) validate() (string, error) {
 	var errs []error
 	if len(in.SealKey) != SealKeyBytes {
 		errs = append(errs, fmt.Errorf("the seal key is %d bytes, want %d", len(in.SealKey), SealKeyBytes))
@@ -153,8 +154,14 @@ func (in HostingInputs) validate() error {
 	key, err := sealedSecretsKeyPair(in.SealedSecretsKeyPEM, in.SealedSecretsCertPEM)
 	if err != nil {
 		errs = append(errs, err)
-	} else if err := opensSealedAppKey(key, in.SealedAppKey); err != nil {
+	}
+	sealed, err := readSealedAppKey(in.SealedAppKey)
+	if err != nil {
 		errs = append(errs, err)
+	} else if key != nil {
+		if err := opens(key, sealed); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	if len(in.Nodes) != OpenBaoMembers {
 		errs = append(errs, fmt.Errorf("%d nodes are named, want one for each of OpenBao's %d members", len(in.Nodes), OpenBaoMembers))
@@ -167,7 +174,7 @@ func (in HostingInputs) validate() error {
 	if len(slices.Compact(slices.Sorted(slices.Values(in.Nodes)))) != len(in.Nodes) {
 		errs = append(errs, errors.New("a node is named twice"))
 	}
-	return errors.Join(errs...)
+	return sealed, errors.Join(errs...)
 }
 
 // sealedSecretsKeyPair returns keyPEM's RSA key once certPEM is shown to certify it.
@@ -215,7 +222,7 @@ func readSealedAppKey(manifest []byte) (string, error) {
 		return "", fmt.Errorf("the sealed App key is not YAML: %w", err)
 	}
 	var extra any
-	if dec.Decode(&extra) == nil {
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
 		return "", errors.New("the sealed App key holds more than one document")
 	}
 	if s.APIVersion != "bitnami.com/v1alpha1" || s.Kind != "SealedSecret" || s.Metadata.Name != SealedAppKeyName || s.Metadata.Namespace != SealedAppKeyNamespace {
@@ -229,13 +236,9 @@ func readSealedAppKey(manifest []byte) (string, error) {
 	return sealed, nil
 }
 
-// opensSealedAppKey fails unless key opens the App key's sealed value as the controller does: a length-prefixed
-// RSA-OAEP session key labelled with the SealedSecret's namespace and name, then AES-GCM with a zero nonce.
-func opensSealedAppKey(key *rsa.PrivateKey, manifest []byte) error {
-	sealed, err := readSealedAppKey(manifest)
-	if err != nil {
-		return err
-	}
+// opens fails unless key opens the App key's sealed value as the controller does: a length-prefixed RSA-OAEP session
+// key labelled with the SealedSecret's namespace and name, then AES-GCM with a zero nonce.
+func opens(key *rsa.PrivateKey, sealed string) error {
 	raw, err := base64.StdEncoding.DecodeString(sealed)
 	if err != nil || len(raw) < 2 || len(raw) < 2+int(binary.BigEndian.Uint16(raw)) {
 		return errors.New("the sealed App key's value is not a sealed value")

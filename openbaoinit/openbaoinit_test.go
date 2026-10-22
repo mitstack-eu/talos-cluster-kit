@@ -310,6 +310,7 @@ func TestInit_CommitsTheKeysAsPGPMessagesBeforeAnyRequestCarriesTheRootTokenThen
 	assert.Regexp(t, `^OpenBao root token:\n-----BEGIN PGP MESSAGE-----\n(?s:.*)\n-----END PGP MESSAGE-----\nOpenBao recovery key:\n-----BEGIN PGP MESSAGE-----\n(?s:.*)\n-----END PGP MESSAGE-----\n$`, committed)
 	assert.Equal(t, []string{fakeRootToken, fakeRecoveryKey}, decryptions(t, owner, committed), "gpg must read the root token, then the recovery key")
 	commit := slices.IndexFunc(calls, func(c call) bool { return c.method == http.MethodPut && c.path == contentsPath })
+	require.GreaterOrEqual(t, commit, 0, "the script never committed %s:\n%s", openbaoinit.InitFile, out)
 	firstRoot := slices.IndexFunc(calls, func(c call) bool { return c.root })
 	require.GreaterOrEqual(t, firstRoot, 0, "no request carried the root token, so nothing was set up")
 	assert.Less(t, commit, firstRoot, "%s %s carried the root token before %s was committed", calls[firstRoot].method, calls[firstRoot].path, openbaoinit.InitFile)
@@ -368,7 +369,7 @@ func TestInit_OnAStoreInitialisedWithItsInitFileCommittedWritesNothing(t *testin
 	assert.Contains(t, out, "holds "+openbaoinit.InitFile+", and this Job no longer holds the root token, so it changes nothing")
 	for _, c := range f.callsSoFar() {
 		if c.method == http.MethodPost && c.path == tokensPath {
-			assert.JSONEq(t, `{"repositories":["shop-cluster"],"permissions":{"contents":"read"}}`, c.body, "the check asked for a token that may write")
+			assert.JSONEq(t, `{"repositories":["shop-cluster"],"permissions":{"contents":"read"}}`, c.body, "the check must ask for a token that may only read")
 		} else {
 			assert.Equal(t, http.MethodGet, c.method, "the script wrote %s %s to %s", c.method, c.path, c.server)
 		}

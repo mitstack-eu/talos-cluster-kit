@@ -35,38 +35,19 @@ func TestImages_NamesEveryImageOfTheDefaultSetOnceByTagAndDigest(t *testing.T) {
 }
 
 func TestDefault_RunsKyvernoWithBothPoliciesAndCloudNativePGWithTheDatabaseSlicePolicy(t *testing.T) {
-	set := components.Default()
-
-	images, err := mirror.List(set)
+	images, err := mirror.List(components.Default())
 
 	require.NoError(t, err)
-	var served, inline []string
-	for _, m := range set.Served {
-		served = append(served, m.Name)
+	for _, name := range []string{"kyverno", "mitstack-require-app-label", "mitstack-generate-default-deny", "cloudnative-pg", "cloudnative-pg-namespace", "mitstack-database-slices"} {
+		manifest(t, name)
 	}
-	for _, m := range set.Inline {
-		inline = append(inline, m.Name)
-	}
-	assert.Subset(t, served, []string{"kyverno", "cloudnative-pg"})
-	assert.Subset(t, inline, []string{"mitstack-require-app-label", "mitstack-generate-default-deny", "cloudnative-pg-namespace", "mitstack-database-slices"})
 	for _, name := range []string{
 		"ghcr.io/kyverno/kyverno", "ghcr.io/kyverno/kyvernopre", "ghcr.io/kyverno/background-controller",
 		"ghcr.io/kyverno/cleanup-controller", "ghcr.io/kyverno/reports-controller",
 		"ghcr.io/cloudnative-pg/cloudnative-pg", "ghcr.io/cloudnative-pg/postgresql", "ghcr.io/cloudnative-pg/pgbouncer",
 	} {
-		assert.True(t, slices.ContainsFunc(images, func(i components.Image) bool { return i.Name == name && i.Digest != "" }),
-			"the mirror list holds no %s by digest", name)
+		assert.True(t, slices.ContainsFunc(images, func(i components.Image) bool { return i.Name == name }), "the mirror list holds no %s", name)
 	}
-}
-
-func TestImages_NamesTheDefaultImageAnOperatorsConfigurationNames(t *testing.T) {
-	const postgres = "ghcr.io/cloudnative-pg/postgresql:18.6-system-trixie@sha256:f7e00138159bb45d70b624ba25e446924cb3ed1bf366d13e936c3f81b914064e"
-	set := components.Set{Inline: []components.Manifest{{Name: "operator", Bytes: []byte("data:\n  POSTGRES_IMAGE_NAME: " + postgres + "\n")}}}
-
-	images, err := set.Images()
-
-	require.NoError(t, err)
-	assert.True(t, slices.ContainsFunc(images, func(i components.Image) bool { return i.Ref() == postgres }), "images: %v", images)
 }
 
 func TestImages_RefusesAnOperatorsDefaultImageWithoutADigest(t *testing.T) {

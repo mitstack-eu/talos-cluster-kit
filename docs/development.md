@@ -95,8 +95,8 @@ code embeds it with `go:embed`.
 
 The member removal Job, the node report and OpenBao's init Job run in the
 tools image that `tools/Dockerfile` builds: bash, curl, jq, gpg, openssl,
-talosctl and kubectl on Alpine 3.22. `tools/tools.env` pins both binaries with their sha256, and the
-Dockerfile and the gateway's `prepare.sh` both install from it, so the image
+talosctl and kubectl on Alpine 3.22. `tools/tools.env` pins both binaries
+with their sha256, and the Dockerfile and the gateway's `prepare.sh` both install from it, so the image
 and the gateway run the same binaries. Each release pushes and signs that
 image and names it in `tools.Image`, which a block passes to
 `etcd.RemoveMemberJob`, `report.Manifests`, `openbaoinit.Inputs` and the
@@ -135,7 +135,8 @@ that log to check the order of the calls.
 
 The fixtures in `testutil/testdata/` are throwaway keys made for these tests:
 a Talos secrets bundle, a gateway CA with its certificate and key, and a log
-receiver's CA. The script tests need `bash`, `curl`, `jq`, `gpg` and `openssl` on `PATH`.
+receiver's CA. The script tests need `bash`, `curl`, `jq`, `gpg` and
+`openssl` on `PATH`.
 
 ```bash
 go test -race ./...

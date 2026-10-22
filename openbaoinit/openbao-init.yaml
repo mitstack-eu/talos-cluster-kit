@@ -1,12 +1,7 @@
 # OpenBao's init Job, in the namespace the hosting GitHub App's key opens in: it initialises OpenBao once, commits the
 # root token and the recovery key to the cluster repository as PGP messages to the recipient key, and only then sets
-# OpenBao up with the root token it holds in memory. components/hosting/sealed-app-key.yaml declares the namespace too,
-# and Talos creates only what is missing, so neither manifest relies on the order Talos applies them in.
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: {{ .Namespace }}
----
+# OpenBao up with the root token it holds in memory. The namespace comes from components/hosting/sealed-app-key.yaml,
+# which the hosting set always carries beside this manifest.
 apiVersion: v1
 kind: ConfigMap
 metadata:

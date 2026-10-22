@@ -16,6 +16,7 @@ set -euo pipefail
 readonly INIT_FILE=openbao-init.asc
 WAIT=${MITSTACK_RETRY_SECONDS:-10}
 root=""
+recovery_lost=""
 
 say() {
   echo "openbao-init: $*" >&2
@@ -154,10 +155,27 @@ initialise() {
     say "retrying the init in ${WAIT}s"
     sleep "$WAIT"
   done
-  root=$(printf '%s' "$answer" | jq -er .root_token)
+  root=$(printf '%s' "$answer" | jq -er .root_token) ||
+    fail "the answer to the init holds no root token, so the root token and recovery key are lost"
   token_message=$(retry "encrypting the root token" seal_root)
-  recovery_message=$(printf '%s' "$answer" | jq -er '.recovery_keys_base64[0]' | openssl base64 -d -A | armor)
-  messages="OpenBao root token:"$'\n'"$token_message"$'\n'"OpenBao recovery key:"$'\n'"$recovery_message"$'\n'
+  messages="OpenBao root token:"$'\n'"$token_message"$'\n'
+  if recovery_message=$(printf '%s' "$answer" | recovery_message); then
+    messages+="OpenBao recovery key:"$'\n'"$recovery_message"$'\n'
+  else
+    recovery_lost=true
+    messages+="OpenBao recovery key: lost, since the answer to the init held none that could be read"$'\n'
+    say "the answer to the init holds no readable recovery key; committing the root token alone"
+  fi
+}
+
+# recovery_message armors the one recovery key in the init's answer on stdin, and fails unless it is a base64 binary
+# PGP message, whose first octet has its top bit set as RFC 9580 section 4.2 requires of every packet.
+recovery_message() {
+  local key
+  key=$(jq -er '.recovery_keys_base64 | if type == "array" and length == 1 then .[0] else empty end
+    | strings | select(test("^[A-Za-z0-9+/]+={0,2}$"))') || return 1
+  [ "$(printf '%s' "$key" | openssl base64 -d -A | od -An -N1 -tu1 | tr -d ' ')" -ge 128 ] 2> /dev/null || return 1
+  printf '%s' "$key" | openssl base64 -d -A | armor
 }
 
 seal_root() {
@@ -246,6 +264,8 @@ main() {
   say "committed $INIT_FILE to $MITSTACK_REPOSITORY"
   set_up
   say "enabled kv and Kubernetes auth, and wrote the policy app-secrets-reader"
+  [ -z "$recovery_lost" ] ||
+    fail "the answer to the init holds no readable recovery key, so $INIT_FILE holds the root token alone and the recovery key is lost"
 }
 
 main "$@"

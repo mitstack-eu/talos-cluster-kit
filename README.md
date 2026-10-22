@@ -287,6 +287,12 @@ OpenBao recovery key:
 -----END PGP MESSAGE-----
 ```
 
+Nothing between the init and the commit can stop the script, since the commit
+is the only copy of the root token. A recovery key in the answer that is
+missing, or is not one base64 PGP message, is replaced by a line saying it is
+lost. The script then commits the root token alone, finishes the setup, and
+exits 1 naming the lost recovery key.
+
 With the root token, the script enables the KV v2 mount `kv` and Kubernetes
 auth, and points that auth method at the API server. It then reads the method's
 accessor from `GET /v1/sys/auth`, because the accessor exists only once the
@@ -307,9 +313,9 @@ A token that logged in with a service account in namespace `shop` can then
 read only `kv/data/apps/shop/*`. The Job writes no Kubernetes auth role, so no
 service account can log in with this policy until a role names it.
 
-The root token lives in the script's memory alone. curl reads each header that
-carries a token from its standard input, so no token appears in a process's
-arguments, and the script never prints one. The script retries each step while
+The root token lives in the script's memory alone. The script hands curl each
+header that carries a token on curl's standard input, through the shell's
+builtin `printf`, and never prints a token. The script retries each step while
 its pod lives. A pod lost after the commit may leave the mount, the auth method,
 its configuration or the policy unwritten, and a new pod finds the file and
 changes nothing. The owner then decrypts the root token from

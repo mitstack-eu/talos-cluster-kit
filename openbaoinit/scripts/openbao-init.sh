@@ -1,16 +1,9 @@
 #!/usr/bin/env bash
-# Initialises a hosting cluster's OpenBao once, commits its root token and
-# recovery key to the cluster repository as openbao-init.asc, each a PGP
-# message to the recipient key, and only then sets OpenBao up with the root
-# token: the kv mount, Kubernetes auth, and the policy app-secrets-reader that
-# lets each namespace read only its own apps path. A store already initialised
-# is left as it is.
-# Usage: openbao-init.sh, with the variables main names set, as the Job
-#   mitstack-openbao-init sets them; MITSTACK_RETRY_SECONDS paces each retry.
-# It exists so OpenBao's keys leave the cluster only as PGP messages, through
-# Git, with no route in and no running platform, as ADR 0089 requires. The
-# root token lives in this process's memory alone, and reaches no file,
-# argument or log.
+# Initialises a hosting cluster's OpenBao once, commits its root token and recovery key to the cluster repository
+# as openbao-init.asc, each a PGP message to the recipient key, then sets up kv, Kubernetes auth and app-secrets-reader.
+# Usage: openbao-init.sh, with the variables main names set as the Job mitstack-openbao-init sets them.
+# It exists so OpenBao's keys leave the cluster only as PGP messages through Git, as ADR 0089 requires, while the root
+# token stays in this process's memory.
 set -euo pipefail
 
 readonly INIT_FILE=openbao-init.asc
@@ -37,7 +30,6 @@ retry() {
   done
 }
 
-# status and body split an answer that curl printed with -w '\n%{http_code}' after the body.
 status() {
   printf '%s' "${1##*$'\n'}"
 }
@@ -52,8 +44,7 @@ token_header() {
   fi
 }
 
-# bao prints the body of OpenBao's 2xx answer to one request, verified against the cluster's authority, and hands curl
-# the root token, once there is one, as a header on stdin.
+# bao hands curl the root token, once there is one, as a header on stdin, and prints the body of a 2xx answer.
 bao() {
   local method=$1 path=$2 data=${3-} answer
   local args=(-sS --proto '=https' --tlsv1.2 --cacert "$MITSTACK_OPENBAO_CA" --connect-timeout 5 --max-time 30
@@ -96,7 +87,7 @@ app_jwt() {
   printf '%s.%s.%s' "$header" "$claims" "$signature"
 }
 
-# app_token prints a one-hour installation token that may only read, or only write, the cluster repository's contents.
+# app_token mints a one-hour installation token scoped to the cluster repository's contents, to read or to write.
 app_token() {
   local access=$1 jwt request answer
   jwt=$(app_jwt) || return 1
@@ -110,12 +101,10 @@ app_token() {
   body "$answer" | jq -er .token
 }
 
-# init_file prints the cluster repository's openbao-init.asc as it is stored, a newline and the status of the read.
 init_file() {
   github GET "$MITSTACK_GITHUB_API_URL/repos/$MITSTACK_REPOSITORY/contents/$INIT_FILE" "$1" -H 'Accept: application/vnd.github.raw+json'
 }
 
-# init_file_state prints committed or absent, read with a token that may only read the repository.
 init_file_state() {
   local token answer
   token=$(app_token read) && answer=$(init_file "$token") || return 1
@@ -141,8 +130,7 @@ armor() {
   printf -- '-----END PGP MESSAGE-----\n'
 }
 
-# initialise initialises OpenBao with one recovery share encrypted to the recipient key, and sets root and messages, the
-# contents of openbao-init.asc; it stops on finding OpenBao initialised after a failed init, whose root token is lost.
+# initialise sets root and messages; it stops if a failed init left OpenBao initialised, since that root token is lost.
 initialise() {
   local recipient request answer token_message recovery_message
   recipient=$(gpg --batch --quiet --dearmor < "$MITSTACK_RECIPIENT_FILE" | openssl base64 -A) ||
@@ -168,8 +156,7 @@ initialise() {
   fi
 }
 
-# recovery_message armors the one recovery key in the init's answer on stdin, and fails unless it is a base64 binary
-# PGP message, whose first octet has its top bit set as RFC 9580 section 4.2 requires of every packet.
+# recovery_message fails unless the answer holds one base64 PGP message, whose first octet has its top bit set (RFC 9580).
 recovery_message() {
   local key
   key=$(jq -er '.recovery_keys_base64 | if type == "array" and length == 1 then .[0] else empty end

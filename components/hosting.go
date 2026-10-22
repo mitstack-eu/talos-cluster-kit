@@ -25,40 +25,30 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/openbaoinit"
 )
 
-// OpenBaoVolume is the Talos user volume each node keeps its OpenBao member's Raft data on.
 const OpenBaoVolume = "openbao"
 
 // OpenBaoMembers is how many Raft members OpenBao runs, one per node, since a user volume's data is lost with its machine.
 const OpenBaoMembers = 3
 
-// SealKeyBytes is the length of the key OpenBao's static seal takes, an AES-256-GCM-96 key.
 const SealKeyBytes = 32
 
-// The SealedSecret the hosting GitHub App's key is sealed into, in kubeseal's strict scope, which OpenBao's init Job
-// mounts.
 const (
 	SealedAppKeyNamespace = openbaoinit.AppKeyNamespace
 	SealedAppKeyName      = openbaoinit.AppKeySecret
 	SealedAppKeyItem      = openbaoinit.AppKeyItem
 )
 
-// UserVolumePath is where Talos mounts the user volume name on every node.
 func UserVolumePath(name string) string {
 	return "/var/mnt/" + name
 }
 
-// HostingInputs are the secrets a cluster that hosts the platform boots with, and the nodes that keep OpenBao's data.
 type HostingInputs struct {
-	// SealKey is the key OpenBao's static seal unseals with, SealKeyBytes long.
 	SealKey []byte
 	// SealedSecretsKeyPEM and SealedSecretsCertPEM are the RSA key pair Sealed Secrets opens with, as PKCS #1 and X.509 PEM.
 	SealedSecretsKeyPEM, SealedSecretsCertPEM []byte
-	// SealedAppKey is the SealedSecret manifest that opens to the hosting GitHub App's key, sealed to that pair.
-	SealedAppKey []byte
-	// Nodes are the cluster's node names, one for each OpenBao member.
-	Nodes []string
-	// Init is what OpenBao's init Job needs.
-	Init openbaoinit.Inputs
+	SealedAppKey                              []byte
+	Nodes                                     []string
+	Init                                      openbaoinit.Inputs
 }
 
 var (
@@ -95,9 +85,7 @@ var (
 	storage          = tmpl.Must("OpenBao's volumes", storageTemplate)
 )
 
-// Hosting returns the default set with the boot set of a cluster that hosts the platform on top: OpenBao and its init
-// Job, cert-manager, trust-manager, External Secrets, Sealed Secrets and Traefik. Every manifest that holds one of in's
-// secrets is inline, since the gateway serves its manifests to every node.
+// Hosting renders every manifest that holds one of in's secrets inline, since the gateway serves its manifests to every node.
 func Hosting(in HostingInputs) (Set, error) {
 	sealed, err := in.validate()
 	if err != nil {
@@ -123,8 +111,6 @@ func Hosting(in HostingInputs) (Set, error) {
 	return set, nil
 }
 
-// inlineManifests renders the manifests that hold in's secrets, with sealed the App key's checked sealed value, OpenBao's
-// volumes, which name in's nodes, and OpenBao's init Job, which mounts the App key.
 func (in HostingInputs) inlineManifests(sealed string) ([]Manifest, error) {
 	parts := []struct {
 		name, path string
@@ -153,7 +139,6 @@ func (in HostingInputs) inlineManifests(sealed string) ([]Manifest, error) {
 	return append(manifests, Manifest{Name: "mitstack-openbao-init", Path: "openbaoinit/openbao-init.yaml", Bytes: initJob}), nil
 }
 
-// validate returns the sealed value of in's App key once every input is one the set can boot from.
 func (in HostingInputs) validate() (string, error) {
 	var errs []error
 	if len(in.SealKey) != SealKeyBytes {
@@ -185,7 +170,6 @@ func (in HostingInputs) validate() (string, error) {
 	return sealed, errors.Join(errs...)
 }
 
-// sealedSecretsKeyPair returns keyPEM's RSA key once certPEM is shown to certify it.
 func sealedSecretsKeyPair(keyPEM, certPEM []byte) (*rsa.PrivateKey, error) {
 	keyBlock, _ := pem.Decode(keyPEM)
 	certBlock, _ := pem.Decode(certPEM)
@@ -206,7 +190,6 @@ func sealedSecretsKeyPair(keyPEM, certPEM []byte) (*rsa.PrivateKey, error) {
 	return key, nil
 }
 
-// sealedSecret is the part of a SealedSecret the hosting set reads.
 type sealedSecret struct {
 	APIVersion string `yaml:"apiVersion"`
 	Kind       string `yaml:"kind"`
@@ -221,8 +204,7 @@ type sealedSecret struct {
 
 var encryptedDataRe = regexp.MustCompile(`^[A-Za-z0-9+/]+=*$`)
 
-// readSealedAppKey returns the sealed value of the App key's one SealedSecret, which is all the set renders of it,
-// since Talos applies inline manifests with cluster-admin rights.
+// readSealedAppKey renders nothing of the file but its one sealed value, since Talos applies inline manifests as cluster-admin.
 func readSealedAppKey(manifest []byte) (string, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(manifest))
 	var s sealedSecret
@@ -244,8 +226,7 @@ func readSealedAppKey(manifest []byte) (string, error) {
 	return sealed, nil
 }
 
-// opens fails unless key opens the App key's sealed value as the controller does: a length-prefixed RSA-OAEP session
-// key labelled with the SealedSecret's namespace and name, then AES-GCM with a zero nonce.
+// opens decrypts as the controller does: a length-prefixed RSA-OAEP session key labelled namespace/name, then AES-GCM.
 func opens(key *rsa.PrivateKey, sealed string) error {
 	raw, err := base64.StdEncoding.DecodeString(sealed)
 	if err != nil || len(raw) < 2 || len(raw) < 2+int(binary.BigEndian.Uint16(raw)) {

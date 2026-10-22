@@ -1,14 +1,10 @@
-# Module CI: the repository's one workflow.
-#
 # Every event runs the Go suites, the check that each vendored component
 # matches a fresh render of its pinned chart, the Kyverno policy tests,
 # shellcheck over every script, and a build of the tools image. A pull request also runs the board key gate.
-#
 # Once all of them pass on a push to main, the release job releases the
 # version .github/version names, unless that tag exists already, and the
 # record delivery job records the push's board keys on Plain. A block takes a
 # change only by requiring a newer tag in its go.mod.
-#
 # A release pushes the tools image to the public package
 # ghcr.io/mitstack-eu/talos-cluster-kit-tools and signs its digest keyless.
 # A digest cannot sit in the commit its image is built from, so the job tags

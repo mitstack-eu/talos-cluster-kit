@@ -1,8 +1,4 @@
-# The tools image the etcd member removal, the node report and OpenBao's init
-# Job run in: bash, curl, jq, gpg and openssl from Alpine, and talosctl and
-# kubectl, each binary checked against the sha256 that tools.env pins, the
-# same file the gateway installs its binaries from.
-# The kit's release job pushes and signs it, and tools.Image names it.
+# Each binary is checked against the sha256 tools.env pins, the file the gateway installs the same binaries from.
 FROM docker.io/library/alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
 
 COPY tools.env /tmp/tools.env

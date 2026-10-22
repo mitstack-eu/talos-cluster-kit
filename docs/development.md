@@ -75,6 +75,9 @@ that log to check the order of the calls.
 | `TestRender_MatchesTheGoldenConfiguration` | The configuration for one and three control-plane nodes on the `hcloud` and the `metal` profile matches its recording | `nodeconfig/testdata/golden/` |
 | `TestRender_PullsEveryImageOfTheComponentSetFromEveryGatewaysMirror` | Every image the set names, and every image the configuration names, comes from a mirror with no fallback | The mirror list |
 | `TestRender_UsesHetznersResolversAndTimeServersInPlaceOfTalosDefaults` | Hetzner's resolvers and time servers replace Talos's | The rendered documents |
+| `TestRender_GivesACloudNodeADefaultRouteThroughHetznersRouterAndKeepsDHCPOnItsLink` | A Cloud node routes through `10.0.0.1` and keeps its DHCP address, and a dedicated node gets neither document | The rendered documents |
+| `TestRender_LeavesTheFirewallToNftablesAndRunsEveryContainerOnTheHostNetwork` | Docker writes no firewall rule, and the mirror and Caddy publish no port through Docker | The rendered cloud-config |
+| `TestRender_SendsMirrorPullsToTheRegistryAndRefusesEveryOtherMethod` | The Caddyfile tries the registry for a GET or HEAD before it answers 405 | The rendered Caddyfile |
 | `TestRun_KeepsEveryKeyOfTheEmbeddedConfigurationOutOfTheBuildOutput` | No key of the fixture secrets reaches the build's log or error, on success or failure | A fake imager that prints the whole configuration, as imager does |
 | `TestRemoveMemberJob_RemovesTheEtcdMemberBeforeDeletingItsNode` | The member goes before its Node, and a failed removal keeps the Node | Fake talosctl and kubectl |
 | `TestBootstrapScript_RestoresFromTheSnapshotThenDeletesTheOldNodes` | The restore bootstraps from the snapshot, deletes every Node outside `--keep`, and deletes the talosconfig | Fake talosctl and kubectl |

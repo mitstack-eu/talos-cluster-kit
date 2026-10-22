@@ -3,10 +3,14 @@
 # address of the cluster. It forwards the nodes' DNS, NTP and HTTPS and drops
 # every other flow, records each DNS and NTP packet and each new flow, serves
 # the image mirror and the served manifests over TLS on the private network,
-# and holds the etcd bootstrap script.
+# and holds the etcd bootstrap script. nftables.conf is its whole firewall:
+# Docker writes no rule and runs every container on the host network.
 package_update: true
 packages: [docker.io, nftables, tcpdump, conntrack, skopeo, curl]
 write_files:
+  - path: /etc/docker/daemon.json
+    content: |
+      {"iptables": false, "ip6tables": false, "bridge": "none"}
   - path: /etc/sysctl.d/90-mitstack-gateway.conf
     content: |
       net.ipv4.ip_forward = 1
@@ -79,7 +83,8 @@ write_files:
         bind 10.0.0.2
         tls /etc/mitstack-gateway/tls.crt /etc/mitstack-gateway/tls.key
         @pull method GET HEAD
-        handle /v2/* {
+        # route runs its directives as written, where handle would run respond before reverse_proxy.
+        route /v2/* {
           reverse_proxy @pull 127.0.0.1:5000
           respond 405
         }
@@ -303,7 +308,7 @@ write_files:
       Requires=docker.service
       [Service]
       ExecStartPre=-/usr/bin/docker rm -f mitstack-registry
-      ExecStart=/usr/bin/docker run --rm --name mitstack-registry -p 127.0.0.1:5000:5000 -v /var/lib/mitstack-registry:/var/lib/registry docker.io/library/registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+      ExecStart=/usr/bin/docker run --rm --name mitstack-registry --network host -e REGISTRY_HTTP_ADDR=127.0.0.1:5000 -v /var/lib/mitstack-registry:/var/lib/registry docker.io/library/registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
       Restart=always
       [Install]
       WantedBy=multi-user.target

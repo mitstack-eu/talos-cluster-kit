@@ -305,13 +305,11 @@ func TestHosting_ServesOpenBaoACertificateForEveryAddressItsMembersAndClientsDia
 func initJob(t *testing.T, set components.Set) (testutil.CiliumEndpoint, map[string]string) {
 	t.Helper()
 	job := namedDocument(t, setManifest(t, set.Inline, "mitstack-openbao-init"), "Job", "mitstack-openbao-init")
-	labels, env := map[string]string{}, map[string]string{}
+	labels := map[string]string{}
 	for k, v := range testutil.Field(t, job, "spec", "template", "metadata", "labels").(map[string]any) {
 		labels[k] = v.(string)
 	}
-	for _, e := range testutil.Field(t, job, "spec", "template", "spec", "containers", "0", "env").([]any) {
-		env[testutil.Field(t, e, "name").(string)] = fmt.Sprint(testutil.Field(t, e, "value"))
-	}
+	env := testutil.ContainerEnv(t, testutil.Field(t, job, "spec", "template", "spec", "containers", "0"))
 	return testutil.Endpoint(testutil.Field(t, job, "metadata", "namespace").(string), nil, labels), env
 }
 

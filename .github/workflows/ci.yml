@@ -41,7 +41,7 @@ jobs:
       - name: go vet
         run: go vet ./...
 
-      # The script suites run bash, curl and jq from the runner's image.
+      # The script suites run bash, curl, jq, gpg and openssl from the runner's image.
       - name: go test
         run: go test -race ./...
 
@@ -79,7 +79,7 @@ jobs:
         run: kyverno test components/admission/tests
 
       - name: shellcheck
-        run: shellcheck -x scripts/*.sh scripts/lib/*.sh etcd/scripts/*.sh gateway/scripts/*.sh report/scripts/*.sh
+        run: shellcheck -x scripts/*.sh scripts/lib/*.sh etcd/scripts/*.sh gateway/scripts/*.sh report/scripts/*.sh openbaoinit/scripts/*.sh
 
   tools-image:
     name: tools image
@@ -98,6 +98,8 @@ jobs:
           docker run --rm talos-tools:ci bash --version
           docker run --rm talos-tools:ci jq --version
           docker run --rm talos-tools:ci curl --version
+          docker run --rm talos-tools:ci gpg --version
+          docker run --rm talos-tools:ci openssl version
           docker run --rm talos-tools:ci talosctl version --client --short
           docker run --rm talos-tools:ci kubectl version --client
 

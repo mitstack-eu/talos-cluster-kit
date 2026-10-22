@@ -22,6 +22,7 @@ import (
 
 	"github.com/mitstack-eu/talos-cluster-kit/internal/check"
 	"github.com/mitstack-eu/talos-cluster-kit/internal/tmpl"
+	"github.com/mitstack-eu/talos-cluster-kit/openbaoinit"
 )
 
 // OpenBaoVolume is the Talos user volume each node keeps its OpenBao member's Raft data on.
@@ -33,11 +34,12 @@ const OpenBaoMembers = 3
 // SealKeyBytes is the length of the key OpenBao's static seal takes, an AES-256-GCM-96 key.
 const SealKeyBytes = 32
 
-// The SealedSecret the hosting GitHub App's key is sealed into, in kubeseal's strict scope.
+// The SealedSecret the hosting GitHub App's key is sealed into, in kubeseal's strict scope, which OpenBao's init Job
+// mounts.
 const (
-	SealedAppKeyNamespace = "mitstack-node"
-	SealedAppKeyName      = "github-app-key"
-	SealedAppKeyItem      = "private-key"
+	SealedAppKeyNamespace = openbaoinit.AppKeyNamespace
+	SealedAppKeyName      = openbaoinit.AppKeySecret
+	SealedAppKeyItem      = openbaoinit.AppKeyItem
 )
 
 // UserVolumePath is where Talos mounts the user volume name on every node.
@@ -55,6 +57,8 @@ type HostingInputs struct {
 	SealedAppKey []byte
 	// Nodes are the cluster's node names, one for each OpenBao member.
 	Nodes []string
+	// Init is what OpenBao's init Job needs.
+	Init openbaoinit.Inputs
 }
 
 var (
@@ -91,9 +95,9 @@ var (
 	storage          = tmpl.Must("OpenBao's volumes", storageTemplate)
 )
 
-// Hosting returns the default set with the boot set of a cluster that hosts the platform on top: OpenBao, cert-manager,
-// trust-manager, External Secrets, Sealed Secrets and Traefik. Every manifest that holds one of in's secrets is inline,
-// since the gateway serves its manifests to every node.
+// Hosting returns the default set with the boot set of a cluster that hosts the platform on top: OpenBao and its init
+// Job, cert-manager, trust-manager, External Secrets, Sealed Secrets and Traefik. Every manifest that holds one of in's
+// secrets is inline, since the gateway serves its manifests to every node.
 func Hosting(in HostingInputs) (Set, error) {
 	sealed, err := in.validate()
 	if err != nil {
@@ -119,8 +123,8 @@ func Hosting(in HostingInputs) (Set, error) {
 	return set, nil
 }
 
-// inlineManifests renders the manifests that hold in's secrets, with sealed the App key's checked sealed value, and
-// OpenBao's volumes, which name in's nodes.
+// inlineManifests renders the manifests that hold in's secrets, with sealed the App key's checked sealed value, OpenBao's
+// volumes, which name in's nodes, and OpenBao's init Job, which mounts the App key and so follows its manifest.
 func (in HostingInputs) inlineManifests(sealed string) ([]Manifest, error) {
 	parts := []struct {
 		name, path string
@@ -142,7 +146,11 @@ func (in HostingInputs) inlineManifests(sealed string) ([]Manifest, error) {
 		}
 		manifests = append(manifests, Manifest{Name: p.name, Path: p.path, Bytes: out})
 	}
-	return manifests, nil
+	initJob, err := openbaoinit.Manifests(in.Init)
+	if err != nil {
+		return nil, fmt.Errorf("OpenBao's init Job: %w", err)
+	}
+	return append(manifests, Manifest{Name: "mitstack-openbao-init", Path: "openbaoinit/openbao-init.yaml", Bytes: initJob}), nil
 }
 
 // validate returns the sealed value of in's App key once every input is one the set can boot from.

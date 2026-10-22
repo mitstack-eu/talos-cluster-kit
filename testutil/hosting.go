@@ -120,6 +120,26 @@ func ArmoredPublicKey(t *testing.T, entity *openpgp.Entity) []byte {
 	return append(out.Bytes(), '\n')
 }
 
+// ArmoredPrivateKey returns the ASCII-armored private key of entity, as `gpg --armor --export-secret-keys` writes one.
+func ArmoredPrivateKey(t *testing.T, entity *openpgp.Entity) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	w, err := armor.Encode(&out, openpgp.PrivateKeyType, nil)
+	require.NoError(t, err)
+	require.NoError(t, entity.SerializePrivate(w, nil))
+	require.NoError(t, w.Close())
+	return out.Bytes()
+}
+
+// SignOnlyRecipient returns Recipient's armored public key without its encryption subkey, so nothing encrypts to it.
+func SignOnlyRecipient(t *testing.T) []byte {
+	t.Helper()
+	entity, _ := Recipient(t)
+	signOnly := *entity
+	signOnly.Subkeys = nil
+	return ArmoredPublicKey(t, &signOnly)
+}
+
 // SealedSecretsKeyPair mints a throwaway RSA key and the self-signed certificate Sealed Secrets seals to.
 func SealedSecretsKeyPair(t *testing.T) (*rsa.PrivateKey, []byte, []byte) {
 	t.Helper()

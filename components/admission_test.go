@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -98,32 +99,48 @@ var sliceEndpoints = map[string]ciliumEndpoint{
 	"operator": endpoint("cnpg-system", nil, map[string]string{"app.kubernetes.io/name": "cloudnative-pg", "mitstack.dev/app": "cloudnative-pg"}),
 }
 
-// grants lists what the policy allows the pod named, as "<direction> with <peer> on <port>" or "<direction> to entity <entity>".
-func grants(t *testing.T, policy map[string]any, pod string) []string {
+// ports lists a rule's ports as "<port>/<protocol>", and names the DNS proxy when the rule sends DNS through it.
+func ports(t *testing.T, rule map[string]any) string {
+	t.Helper()
+	var got []string
+	toPorts, _ := rule["toPorts"].([]any)
+	for _, tp := range toPorts {
+		for _, p := range testutil.Field(t, tp, "ports").([]any) {
+			got = append(got, fmt.Sprintf("%v/%v", testutil.Field(t, p, "port"), testutil.Field(t, p, "protocol")))
+		}
+		if l7, _ := testutil.Field(t, tp, "rules").(map[string]any); l7["dns"] != nil {
+			got = append(got, "through the DNS proxy")
+		}
+	}
+	return strings.Join(got, " ")
+}
+
+// grants lists what the policy allows the pod named in endpoints, as "<direction> with <peer> on <ports>",
+// "<direction> to entity <entity>" or "egress to <DNS name> on <ports>".
+func grants(t *testing.T, policy map[string]any, endpoints map[string]ciliumEndpoint, pod string) []string {
 	t.Helper()
 	var got []string
 	for _, spec := range policy["specs"].([]any) {
-		if !sliceEndpoints[pod].selectedBy(t, testutil.Field(t, spec, "endpointSelector")) {
+		if !endpoints[pod].selectedBy(t, testutil.Field(t, spec, "endpointSelector")) {
 			continue
 		}
 		for direction, peers := range map[string]string{"egress": "toEndpoints", "ingress": "fromEndpoints"} {
 			rules, _ := testutil.Field(t, spec, direction).([]any)
 			for _, rule := range rules {
 				r := rule.(map[string]any)
-				var ports string
-				if _, ok := r["toPorts"]; ok {
-					p := testutil.Field(t, r, "toPorts", "0", "ports", "0").(map[string]any)
-					ports = fmt.Sprintf("%v/%v", p["port"], p["protocol"])
-				}
 				entities, _ := r["toEntities"].([]any)
 				for _, entity := range entities {
 					got = append(got, fmt.Sprintf("%s to entity %v", direction, entity))
 				}
+				names, _ := r["toFQDNs"].([]any)
+				for _, name := range names {
+					got = append(got, fmt.Sprintf("egress to %v on %s", testutil.Field(t, name, "matchName"), ports(t, r)))
+				}
 				selectors, _ := r[peers].([]any)
 				for _, s := range selectors {
-					for peer, e := range sliceEndpoints {
+					for peer, e := range endpoints {
 						if e.selectedBy(t, s) {
-							got = append(got, fmt.Sprintf("%s with %s on %s", direction, peer, ports))
+							got = append(got, fmt.Sprintf("%s with %s on %s", direction, peer, ports(t, r)))
 						}
 					}
 				}
@@ -148,7 +165,7 @@ func TestDatabaseSlicesPolicy_GrantsEachPodExactlyItsAllows(t *testing.T) {
 		"operator":                          nil,
 	} {
 		t.Run(pod, func(t *testing.T) {
-			assert.Equal(t, want, grants(t, policy, pod))
+			assert.Equal(t, want, grants(t, policy, sliceEndpoints, pod))
 		})
 	}
 }

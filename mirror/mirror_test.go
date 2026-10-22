@@ -42,18 +42,6 @@ func TestList_RefusesAnImageFromARegistryNoNodeSendsToTheMirror(t *testing.T) {
 }
 
 func TestList_HoldsEveryImageTheHostingSetPullsByDigest(t *testing.T) {
-	set, err := components.Hosting(testutil.HostingInputs(t))
-	require.NoError(t, err)
-
-	images, err := mirror.List(set)
-
-	require.NoError(t, err)
-	for _, ref := range testutil.HostingImages {
-		assert.Contains(t, string(mirror.Render(images)), ref+"\n")
-	}
-}
-
-func TestList_HoldsTheOpenBaoInitJobsImageByDigestForTheHostingSet(t *testing.T) {
 	in := testutil.HostingInputs(t)
 	set, err := components.Hosting(in)
 	require.NoError(t, err)
@@ -61,5 +49,7 @@ func TestList_HoldsTheOpenBaoInitJobsImageByDigestForTheHostingSet(t *testing.T)
 	images, err := mirror.List(set)
 
 	require.NoError(t, err)
-	assert.Contains(t, string(mirror.Render(images)), in.Init.ToolsImage+"\n", "the gateway's mirror lacks the init Job's image")
+	for _, ref := range append(slices.Clone(testutil.HostingImages), in.Init.ToolsImage) {
+		assert.Contains(t, string(mirror.Render(images)), ref+"\n")
+	}
 }

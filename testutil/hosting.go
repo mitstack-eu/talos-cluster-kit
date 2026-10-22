@@ -1,6 +1,7 @@
 package testutil
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -17,9 +18,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ProtonMail/go-crypto/openpgp"
+	"github.com/ProtonMail/go-crypto/openpgp/armor"
 	"github.com/stretchr/testify/require"
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
+	"github.com/mitstack-eu/talos-cluster-kit/openbaoinit"
 )
 
 // AppKey is the fixture GitHub App key HostingInputs seals; nothing accepts it.
@@ -48,7 +52,8 @@ var hostingKeyPair struct {
 	keyPEM, certPEM []byte
 }
 
-// HostingInputs returns throwaway hosting inputs: a seal key, a Sealed Secrets key pair and AppKey sealed to it.
+// HostingInputs returns throwaway hosting inputs: a seal key, a Sealed Secrets key pair and AppKey sealed to it, and
+// InitInputs for OpenBao's init Job.
 func HostingInputs(t *testing.T) components.HostingInputs {
 	t.Helper()
 	sealKey := make([]byte, components.SealKeyBytes)
@@ -62,7 +67,57 @@ func HostingInputs(t *testing.T) components.HostingInputs {
 		SealedSecretsCertPEM: certPEM,
 		SealedAppKey:         SealedAppKey(t, &key.PublicKey, AppKey),
 		Nodes:                HostingNodes,
+		Init:                 InitInputs(t),
 	}
+}
+
+// The fixture cluster repository and the hosting GitHub App installed on it.
+const (
+	InitRepository     = "mitstack-eu/shop-cluster"
+	InitAppID          = "1234567"
+	InitInstallationID = "89012345"
+)
+
+// InitInputs returns throwaway inputs for OpenBao's init Job, encrypting to Recipient's key.
+func InitInputs(t *testing.T) openbaoinit.Inputs {
+	t.Helper()
+	_, armored := Recipient(t)
+	return openbaoinit.Inputs{
+		ToolsImage:     ToolsImage,
+		Repository:     InitRepository,
+		AppID:          InitAppID,
+		InstallationID: InitInstallationID,
+		Recipient:      armored,
+	}
+}
+
+// recipientKey is minted once per test binary, since an OpenPGP key takes about as long to make as an RSA one.
+var recipientKey struct {
+	sync.Once
+	entity  *openpgp.Entity
+	armored []byte
+}
+
+// Recipient returns a throwaway OpenPGP key, which decrypts what the init Job encrypts, and its armored public key.
+func Recipient(t *testing.T) (*openpgp.Entity, []byte) {
+	t.Helper()
+	recipientKey.Do(func() {
+		entity, err := openpgp.NewEntity("Shop cluster owner", "fixture", "owner@example.com", nil)
+		require.NoError(t, err)
+		recipientKey.entity, recipientKey.armored = entity, ArmoredPublicKey(t, entity)
+	})
+	return recipientKey.entity, recipientKey.armored
+}
+
+// ArmoredPublicKey returns the ASCII-armored public key of entity, as `gpg --armor --export` writes one.
+func ArmoredPublicKey(t *testing.T, entity *openpgp.Entity) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	w, err := armor.Encode(&out, openpgp.PublicKeyType, nil)
+	require.NoError(t, err)
+	require.NoError(t, entity.Serialize(w))
+	require.NoError(t, w.Close())
+	return append(out.Bytes(), '\n')
 }
 
 // SealedSecretsKeyPair mints a throwaway RSA key and the self-signed certificate Sealed Secrets seals to.

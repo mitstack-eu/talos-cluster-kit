@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
+	"github.com/mitstack-eu/talos-cluster-kit/openbaoinit"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 )
 
@@ -255,6 +257,8 @@ func TestHosting_RefusesInputsItCannotBoot(t *testing.T) {
 		"two nodes":              {func(in *components.HostingInputs) { in.Nodes = in.Nodes[:2] }, "2 nodes are named, want one for each of OpenBao's 3 members"},
 		"a node named twice":     {func(in *components.HostingInputs) { in.Nodes = []string{"a", "b", "a"} }, "a node is named twice"},
 		"a node name with a dot": {func(in *components.HostingInputs) { in.Nodes = []string{"a", "b", "c.d"} }, `"c.d" is not a DNS-1123 label`},
+		"an init Job image named by tag alone": {func(in *components.HostingInputs) { in.Init.ToolsImage = "ghcr.io/mitstack-eu/talos-tools:v0.1.0" },
+			"OpenBao's init Job: tools image"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -281,11 +285,14 @@ func TestHosting_ServesOpenBaoACertificateForEveryAddressItsMembersAndClientsDia
 	for _, name := range testutil.Field(t, cert, "spec", "dnsNames").([]any) {
 		patterns = append(patterns, "^"+strings.ReplaceAll(regexp.QuoteMeta(name.(string)), `\*`, `[a-z0-9-]+`)+"$")
 	}
-	hosts := []string{"openbao.openbao.svc"}
+	_, initEnv := initJob(t, set)
+	initAddr, err := url.Parse(initEnv["MITSTACK_OPENBAO_ADDR"])
+	require.NoError(t, err)
+	hosts := []string{"openbao.openbao.svc", initAddr.Hostname()}
 	for _, m := range regexp.MustCompile(`leader_api_addr = "https://([^:"]+):8200"`).FindAllStringSubmatch(config, -1) {
 		hosts = append(hosts, m[1])
 	}
-	require.Len(t, hosts, 1+components.OpenBaoMembers)
+	require.Len(t, hosts, 2+components.OpenBaoMembers)
 	for _, host := range hosts {
 		assert.True(t, slices.ContainsFunc(patterns, func(p string) bool { return regexp.MustCompile(p).MatchString(host) }), "the certificate does not name %s", host)
 	}
@@ -294,6 +301,110 @@ func TestHosting_ServesOpenBaoACertificateForEveryAddressItsMembersAndClientsDia
 	assert.Equal(t, map[string]any{"name": "openbao-ca", "key": "tls.crt"}, testutil.Field(t, bundle, "spec", "sources", "0", "secret"))
 	assert.Equal(t, "ca.crt", testutil.Field(t, bundle, "spec", "target", "configMap", "key"))
 	assert.Contains(t, string(setManifest(t, set.Served, "trust-manager").Bytes), `"--trust-namespace=openbao"`)
+}
+
+// initJob returns the init Job's pod as Cilium labels it, and its container's environment, from the hosting set.
+func initJob(t *testing.T, set components.Set) (ciliumEndpoint, map[string]string) {
+	t.Helper()
+	job := namedDocument(t, setManifest(t, set.Inline, "mitstack-openbao-init"), "Job", "mitstack-openbao-init")
+	labels := map[string]string{}
+	for k, v := range testutil.Field(t, job, "spec", "template", "metadata", "labels").(map[string]any) {
+		labels[k] = v.(string)
+	}
+	env := map[string]string{}
+	for _, e := range testutil.Field(t, job, "spec", "template", "spec", "containers", "0", "env").([]any) {
+		env[testutil.Field(t, e, "name").(string)] = fmt.Sprint(testutil.Field(t, e, "value"))
+	}
+	return endpoint(testutil.Field(t, job, "metadata", "namespace").(string), nil, labels), env
+}
+
+// flows lists what the hosting flows policy lets pod do, as "<direction> with <peer> on <ports>", "egress to
+// <name> on <ports>" for a DNS name, or "<direction> with entity <entity>", where peers names the pods it knows.
+func flows(t *testing.T, set components.Set, pod ciliumEndpoint, peers map[string]ciliumEndpoint) []string {
+	t.Helper()
+	policy := namedDocument(t, setManifest(t, set.Served, "mitstack-hosting-flows"), "CiliumClusterwideNetworkPolicy", "mitstack-hosting-flows")
+	var got []string
+	for _, spec := range policy["specs"].([]any) {
+		if !pod.selectedBy(t, testutil.Field(t, spec, "endpointSelector")) {
+			continue
+		}
+		for direction, peerField := range map[string]string{"egress": "toEndpoints", "ingress": "fromEndpoints"} {
+			rules, _ := testutil.Field(t, spec, direction).([]any)
+			for _, rule := range rules {
+				r := rule.(map[string]any)
+				var ports []string
+				toPorts, _ := r["toPorts"].([]any)
+				for _, tp := range toPorts {
+					for _, p := range testutil.Field(t, tp, "ports").([]any) {
+						ports = append(ports, fmt.Sprintf("%v/%v", testutil.Field(t, p, "port"), testutil.Field(t, p, "protocol")))
+					}
+					if l7, _ := testutil.Field(t, tp, "rules").(map[string]any); l7["dns"] != nil {
+						ports = append(ports, "through the DNS proxy")
+					}
+				}
+				on := strings.Join(ports, " ")
+				entities, _ := r["toEntities"].([]any)
+				entities = append(entities, func() []any { e, _ := r["fromEntities"].([]any); return e }()...)
+				for _, entity := range entities {
+					got = append(got, fmt.Sprintf("%s with entity %v", direction, entity))
+				}
+				names, _ := r["toFQDNs"].([]any)
+				for _, n := range names {
+					got = append(got, fmt.Sprintf("egress to %v on %s", testutil.Field(t, n, "matchName"), on))
+				}
+				selectors, _ := r[peerField].([]any)
+				for _, s := range selectors {
+					for name, peer := range peers {
+						if peer.selectedBy(t, s) {
+							got = append(got, fmt.Sprintf("%s with %s on %s", direction, name, on))
+						}
+					}
+				}
+			}
+		}
+	}
+	slices.Sort(got)
+	return got
+}
+
+func TestHosting_LetsTheInitJobReachOnlyClusterDNSOpenBaoAndGitHubsAPIAndOpenBaoTakeItsCalls(t *testing.T) {
+	set := hostingSet(t, testutil.HostingInputs(t))
+	initPod, env := initJob(t, set)
+	github, err := url.Parse(env["MITSTACK_GITHUB_API_URL"])
+	require.NoError(t, err)
+	openbao := endpoint("openbao", nil, map[string]string{"app.kubernetes.io/name": "openbao", "app.kubernetes.io/instance": "openbao", "component": "server"})
+	peers := map[string]ciliumEndpoint{
+		"cluster DNS":  endpoint("kube-system", nil, map[string]string{"k8s-app": "kube-dns"}),
+		"OpenBao":      openbao,
+		"the init Job": initPod,
+	}
+
+	initFlows, openBaoFlows := flows(t, set, initPod, peers), flows(t, set, openbao, peers)
+
+	assert.Equal(t, []string{
+		"egress to " + github.Hostname() + " on 443/TCP",
+		"egress with OpenBao on 8200/TCP",
+		"egress with cluster DNS on 53/UDP 53/TCP through the DNS proxy",
+	}, initFlows, "the init Job's flows")
+	assert.Contains(t, openBaoFlows, "ingress with the init Job on 8200/TCP", "OpenBao refuses the init Job's calls")
+}
+
+func TestHosting_CarriesOpenBaosInitJobInlineAfterTheAppKeyItMounts(t *testing.T) {
+	in := testutil.HostingInputs(t)
+	want, err := openbaoinit.Manifests(in.Init)
+	require.NoError(t, err)
+
+	set := hostingSet(t, in)
+
+	assert.Equal(t, string(want), string(setManifest(t, set.Inline, "mitstack-openbao-init").Bytes))
+	names := make([]string, 0, len(set.Inline))
+	for _, m := range set.Inline {
+		names = append(names, m.Name)
+	}
+	assert.Greater(t, slices.Index(names, "mitstack-openbao-init"), slices.Index(names, "mitstack-sealed-app-key"), "inline manifests %v", names)
+	for _, m := range set.Served {
+		assert.NotEqual(t, "mitstack-openbao-init", m.Name, "the gateway serves the init Job")
+	}
 }
 
 func TestHosting_ServesTraefikOnNodePorts30080And30081OnEveryNode(t *testing.T) {

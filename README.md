@@ -237,25 +237,29 @@ hosting set carries that label. The Cilium policy `mitstack-hosting-flows` in
 
 OpenBao starts uninitialised. Its first init returns the root token, which
 holds every right in the store, and a recovery key, which OpenBao asks for
-before it regenerates a root token. Both must reach the owner, mitstack's
-operator, without anyone typing them or opening a route into the cluster.
+before it regenerates a root token. Both must reach the owner, the person who
+runs mitstack and keeps its keys, without anyone typing them or opening a route
+into the cluster.
 
 The init Job sends them through Git. It commits them to the cluster
 repository, the GitHub repository the block creates for each cluster and Argo
 CD applies, as `openbao-init.asc` at its top. Each is a PGP message to the
-recipient key, the OpenPGP public key the block passes as
-`openbaoSealKeyRecipient`. The owner keeps that key's private half, so only the
-owner can read the file.
+recipient key, the owner's OpenPGP public key, which the block's parameter
+`openbaoSealKeyRecipient` names and the block passes as `Init.Recipient`. It is
+a different key from OpenBao's seal key. The owner keeps its private half, so
+only the owner can read the file.
 
 The Job runs `openbaoinit/scripts/openbao-init.sh` in the tools image, in
 `mitstack-node`, because that is where the `SealedSecret` `github-app-key`
 opens. The pod mounts the Secret that `SealedSecret` opens to, holding the
 hosting GitHub App's key, and Kubernetes starts none of its containers until
-that Secret exists. The script mints each GitHub token from that key.
+that Secret exists. The script signs a short-lived JWT with that key and
+exchanges it for a one-hour installation token, as GitHub's App guide shows.
 
-The script talks to `openbao-0`, the member OpenBao's Helm guide initialises,
-so a member that has not yet joined Raft is never initialised as a second
-store. Each request verifies OpenBao against the cluster's own authority. The
+The script talks only to `openbao-0`, the member OpenBao's Helm guide says to
+initialise. The other two members join it through Raft, OpenBao's replicated
+storage, and a member that has not joined yet still reads as uninitialised.
+Talking to one member keeps the script from initialising a second store. Each request verifies OpenBao against the cluster's own authority. The
 script first encrypts a test message to the recipient key, and stops before it
 sends anything when gpg cannot encrypt to it. It then reads the store's state,
 and reads `openbao-init.asc` with an App token that may only read contents.
@@ -287,11 +291,13 @@ OpenBao recovery key:
 -----END PGP MESSAGE-----
 ```
 
-Nothing between the init and the commit can stop the script, since the commit
-is the only copy of the root token. A recovery key in the answer that is
-missing, or is not one base64 PGP message, is replaced by a line saying it is
-lost. The script then commits the root token alone, finishes the setup, and
-exits 1 naming the lost recovery key.
+No answer OpenBao gives to the init can stop the script before the commit,
+since the commit is the only copy of the root token. A recovery key in the
+answer that is missing, or is not one base64 PGP message, is replaced by a line
+saying it is lost. The script then commits the root token alone, finishes the
+setup, and exits 1 naming the lost recovery key. A pod killed between the init
+and the commit still loses both keys, and the next pod stops on finding the
+store initialised with no file.
 
 With the root token, the script enables the KV v2 mount `kv` and Kubernetes
 auth, and points that auth method at the API server. It then reads the method's

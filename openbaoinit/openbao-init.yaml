@@ -1,7 +1,4 @@
-# OpenBao's init Job, in the namespace the hosting GitHub App's key opens in: it initialises OpenBao once, commits the
-# root token and the recovery key to the cluster repository as PGP messages to the recipient key, and only then sets
-# OpenBao up with the root token it holds in memory. The namespace comes from components/hosting/sealed-app-key.yaml,
-# which the hosting set always carries beside this manifest.
+# OpenBao's init Job, whose namespace components/hosting/sealed-app-key.yaml creates, since the hosting set carries both.
 apiVersion: v1
 kind: ConfigMap
 metadata:

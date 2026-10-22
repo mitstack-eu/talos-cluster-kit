@@ -120,11 +120,12 @@ func ArmoredPublicKey(t *testing.T, entity *openpgp.Entity) []byte {
 	return append(out.Bytes(), '\n')
 }
 
-// ArmoredPrivateKey returns the ASCII-armored private key of entity, as `gpg --armor --export-secret-keys` writes one.
-func ArmoredPrivateKey(t *testing.T, entity *openpgp.Entity) []byte {
+// ArmoredPrivateKey returns entity's private key armored under blockType, which `gpg --armor --export-secret-keys`
+// writes as openpgp.PrivateKeyType.
+func ArmoredPrivateKey(t *testing.T, entity *openpgp.Entity, blockType string) []byte {
 	t.Helper()
 	var out bytes.Buffer
-	w, err := armor.Encode(&out, openpgp.PrivateKeyType, nil)
+	w, err := armor.Encode(&out, blockType, nil)
 	require.NoError(t, err)
 	require.NoError(t, entity.SerializePrivate(w, nil))
 	require.NoError(t, w.Close())

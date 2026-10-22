@@ -55,9 +55,11 @@ type fakes struct {
 	mu          sync.Mutex
 	calls       []call
 	initialised bool
-	enabled     map[string]bool
-	files       map[string]string
-	bao, github *httptest.Server
+	// recoveryKeys, when set, replaces the init answer's recovery_keys_base64 member, comma first, or drops it when empty.
+	recoveryKeys *string
+	enabled      map[string]bool
+	files        map[string]string
+	bao, github  *httptest.Server
 }
 
 func newFakes(t *testing.T) *fakes {
@@ -135,7 +137,11 @@ func (f *fakes) initialise(w http.ResponseWriter, c call) {
 	_, _ = io.WriteString(plain, fakeRecoveryKey)
 	require.NoError(f.t, plain.Close())
 	f.initialised = true
-	reply(w, http.StatusOK, fmt.Sprintf(`{"root_token":%q,"recovery_keys_base64":[%q]}`, fakeRootToken, base64.StdEncoding.EncodeToString(sealed.Bytes())))
+	recovery := fmt.Sprintf(`,"recovery_keys_base64":[%q]`, base64.StdEncoding.EncodeToString(sealed.Bytes()))
+	if f.recoveryKeys != nil {
+		recovery = *f.recoveryKeys
+	}
+	reply(w, http.StatusOK, fmt.Sprintf(`{"root_token":%q%s}`, fakeRootToken, recovery))
 }
 
 // serveGitHub mints a token for a JWT the App's key signed, and serves openbao-init.asc raw to a token it minted.
@@ -277,7 +283,7 @@ func decryptions(t *testing.T, owner *openpgp.Entity, file string) []string {
 		require.NoError(t, err, "gpg %v", args)
 		return string(out)
 	}
-	gpg(string(testutil.ArmoredPrivateKey(t, owner)), "--import")
+	gpg(string(testutil.ArmoredPrivateKey(t, owner, openpgp.PrivateKeyType)), "--import")
 	var plain []string
 	for _, m := range regexp.MustCompile(`(?s)-----BEGIN PGP MESSAGE-----\n.*?-----END PGP MESSAGE-----\n`).FindAllString(file, -1) {
 		plain = append(plain, gpg(m, "--decrypt"))
@@ -331,6 +337,23 @@ func TestInit_CommitsTheKeysAsPGPMessagesBeforeAnyRequestCarriesTheRootTokenThen
 		"GET /v1/sys/auth ",
 		"POST /v1/sys/policies/acl/app-secrets-reader " + string(policy),
 	}, setUp, "the setup sent these requests with the root token")
+}
+
+func TestInit_CommitsTheRootTokenWhenTheInitsAnswerHoldsNoReadableRecoveryKey(t *testing.T) {
+	owner, recipient := testutil.Recipient(t)
+	for name, recoveryKeys := range map[string]string{"missing": "", "malformed": `,"recovery_keys_base64":["not base64!"]`} {
+		t.Run(name, func(t *testing.T) {
+			f := newFakes(t)
+			f.recoveryKeys = &recoveryKeys
+
+			out, err := f.run(t, recipient)
+
+			require.Error(t, err, "the script exited 0 with the recovery key %s:\n%s", name, out)
+			assert.Contains(t, out, "the answer to the init holds no readable recovery key")
+			assert.Equal(t, []string{fakeRootToken}, decryptions(t, owner, f.files[openbaoinit.InitFile]), "the root token is lost:\n%s", out)
+			assert.NotContains(t, out, fakeRootToken, "the script printed the root token")
+		})
+	}
 }
 
 func TestInit_OnAStoreInitialisedWithItsInitFileCommittedWritesNothing(t *testing.T) {
@@ -427,13 +450,19 @@ func TestManifests_RefusesInputsTheJobCannotRunWith(t *testing.T) {
 		change func(*openbaoinit.Inputs)
 		want   string
 	}{
-		"a tools image named by tag alone":     {func(in *openbaoinit.Inputs) { in.ToolsImage = "ghcr.io/x/tools:v1" }, "tools image"},
-		"a repository with no owner":           {func(in *openbaoinit.Inputs) { in.Repository = "shop-cluster" }, `repository "shop-cluster" is not owner/name`},
-		"an App id that is not a number":       {func(in *openbaoinit.Inputs) { in.AppID = "Iv1.abc" }, `GitHub App id "Iv1.abc" is not a number`},
-		"an installation id that is empty":     {func(in *openbaoinit.Inputs) { in.InstallationID = "" }, `installation id "" is not a number`},
-		"a recipient that is not a key":        {func(in *openbaoinit.Inputs) { in.Recipient = []byte("not a key") }, "the recipient is not an armored OpenPGP public key"},
-		"a recipient that cannot encrypt":      {func(in *openbaoinit.Inputs) { in.Recipient = testutil.SignOnlyRecipient(t) }, "has no key that can encrypt"},
-		"a recipient given as its private key": {func(in *openbaoinit.Inputs) { in.Recipient = testutil.ArmoredPrivateKey(t, owner) }, "is not an armored OpenPGP public key"},
+		"a tools image named by tag alone": {func(in *openbaoinit.Inputs) { in.ToolsImage = "ghcr.io/x/tools:v1" }, "tools image"},
+		"a repository with no owner":       {func(in *openbaoinit.Inputs) { in.Repository = "shop-cluster" }, `repository "shop-cluster" is not owner/name`},
+		"an App id that is not a number":   {func(in *openbaoinit.Inputs) { in.AppID = "Iv1.abc" }, `GitHub App id "Iv1.abc" is not a number`},
+		"an installation id that is empty": {func(in *openbaoinit.Inputs) { in.InstallationID = "" }, `installation id "" is not a number`},
+		"a recipient that is not a key":    {func(in *openbaoinit.Inputs) { in.Recipient = []byte("not a key") }, "the recipient is not an armored OpenPGP public key"},
+		"a recipient that cannot encrypt":  {func(in *openbaoinit.Inputs) { in.Recipient = testutil.SignOnlyRecipient(t) }, "has no key that can encrypt"},
+		"a recipient given as its private key": {func(in *openbaoinit.Inputs) {
+			in.Recipient = testutil.ArmoredPrivateKey(t, owner, openpgp.PrivateKeyType)
+		}, "is not an armored OpenPGP public key"},
+		"a private key under a public key header": {func(in *openbaoinit.Inputs) {
+			in.Recipient = testutil.ArmoredPrivateKey(t, owner, openpgp.PublicKeyType)
+		},
+			"is not an armored OpenPGP public key"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

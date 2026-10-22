@@ -139,6 +139,17 @@ func TestReport_ListsCloudNativePGsClustersDatabasesAndRoles(t *testing.T) {
 	}, posted.body["cloudNativePG"])
 }
 
+func TestReport_DeclaresItsNodeReportContractAndCarriesNoneOfTheVerdictsChecks(t *testing.T) {
+	for name, kubectl := range map[string]string{"every read answers": fakeKubectl, "the CloudNativePG read fails": failingCloudNativePGKubectl} {
+		t.Run(name, func(t *testing.T) {
+			_, posted, out, err := runReport(t, kubectl)
+
+			require.NoError(t, err, out)
+			assert.Equal(t, map[string]any{"contract": "node-report/v1", "names": []any{}}, posted.body["checks"])
+		})
+	}
+}
+
 func TestReport_WhoseCloudNativePGReadFailsStillCarriesItsNodesAndApplications(t *testing.T) {
 	_, posted, out, err := runReport(t, failingCloudNativePGKubectl)
 

@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Posts the node report: each node's Talos version and readiness, the etcd members, how each node's STATE and EPHEMERAL
-# are encrypted, each Argo CD Application's health, CloudNativePG's objects, the objects labelled mitstack.dev/subscription with the kinds it read whole, the API server's
-# key set as jwks, and a checks member naming none of the verdict's checks.
+# Posts the node report: nodes, etcd members, each node's STATE and EPHEMERAL encryption, Argo CD's health,
+# CloudNativePG's objects, the objects labelled mitstack.dev/subscription, the API server's key set and a checks member.
 # When a read or the body fails or times out, it posts a report whose error names it instead, then exits non-zero.
 # Usage: REPORT_URL=<https url> SUBSCRIPTION_ID=<id> HOST_IP=<this pod's node> [REPORT_TOKEN_FILE=/var/run/mitstack/token] [REPORT_READ_SECONDS=25] report.sh
 # It exists so the platform sees a cluster it never dials into, as ADR 0072 requires, with os:reader and no Secret right.
@@ -9,8 +8,7 @@ set -euo pipefail
 
 # Eight limits of 25 seconds, their 5-second kill grace and the post's 20 fit the Job's activeDeadlineSeconds of 270.
 limit=${REPORT_READ_SECONDS:-25}
-# Each kind as kubectl --show-kind names it, which is how a block names the objects it creates. The report holds no
-# Secret right, so secret is never one of them.
+# Kinds as kubectl --show-kind names them, as blocks name their objects; never secret, as the report holds no Secret right.
 subscription_kinds=(namespace serviceaccount service resourcequota limitrange deployment.apps
   ingress.networking.k8s.io networkpolicy.networking.k8s.io role.rbac.authorization.k8s.io
   rolebinding.rbac.authorization.k8s.io application.argoproj.io appproject.argoproj.io
@@ -168,7 +166,8 @@ body() {
       }]},
       systemVolumes: beside($volumes_status; $volumes_err;
         "talosctl exited 0, and its output is not the volume statuses this report reads";
-        $volumes | fromjson | [.[] | select(.metadata.id == "STATE" or .metadata.id == "EPHEMERAL") | system_volume]),
+        $volumes | fromjson | [.[] | select(.metadata.id == "STATE" or .metadata.id == "EPHEMERAL") | system_volume]
+          | if . == [] then error("no STATE or EPHEMERAL") else . end),
       argocd: {applications: [$applications[0].items[] | {
         name: .metadata.name,
         health: (.status.health.status // "Unknown"),

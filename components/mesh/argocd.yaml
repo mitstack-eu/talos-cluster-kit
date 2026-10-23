@@ -1,0 +1,63 @@
+# Argo CD's chart admits each call to the repo server and Redis on its own port, and in the mesh that call arrives on
+# ztunnel's port 15008, so these admit 15008 from the same pods.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mitstack-argocd-repo-server-mesh
+  namespace: argocd
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: argocd
+      app.kubernetes.io/name: argocd-repo-server
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/instance: argocd
+          app.kubernetes.io/name: argocd-server
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/instance: argocd
+          app.kubernetes.io/name: argocd-application-controller
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/instance: argocd
+          app.kubernetes.io/name: argocd-notifications-controller
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/instance: argocd
+          app.kubernetes.io/name: argocd-applicationset-controller
+    ports:
+    - port: 15008
+      protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mitstack-argocd-redis-mesh
+  namespace: argocd
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: argocd
+      app.kubernetes.io/name: argocd-redis
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/instance: argocd
+          app.kubernetes.io/name: argocd-server
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/instance: argocd
+          app.kubernetes.io/name: argocd-repo-server
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/instance: argocd
+          app.kubernetes.io/name: argocd-application-controller
+    ports:
+    - port: 15008
+      protocol: TCP

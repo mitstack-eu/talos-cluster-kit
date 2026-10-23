@@ -3,7 +3,7 @@ kind: CiliumClusterwideNetworkPolicy
 metadata:
   name: mitstack-database-slices
 specs:
-- description: "A Postgres instance in a database slice reaches the API server and the other instances, and admits the operator on 8000 and every slice on 5432."
+- description: "A Postgres instance in a database slice reaches the API server and the other instances, and admits the operator on 8000 and every slice on 5432, each also on 15008, the port a mesh call arrives on."
   endpointSelector:
     matchLabels:
       k8s:io.cilium.k8s.namespace.labels.mitstack.dev/database-slice: "true"
@@ -15,20 +15,20 @@ specs:
         k8s:io.cilium.k8s.namespace.labels.mitstack.dev/database-slice: "true"
         k8s:cnpg.io/podRole: instance
     toPorts:
-    - ports: [{port: "5432", protocol: TCP}]
+    - ports: [{port: "5432", protocol: TCP}, {port: "15008", protocol: TCP}]
   ingress:
   - fromEndpoints:
     - matchLabels:
         k8s:io.kubernetes.pod.namespace: cnpg-system
         k8s:app.kubernetes.io/name: cloudnative-pg
     toPorts:
-    - ports: [{port: "8000", protocol: TCP}]
+    - ports: [{port: "8000", protocol: TCP}, {port: "15008", protocol: TCP}]
   - fromEndpoints:
     - matchExpressions:
       - {key: k8s:io.cilium.k8s.namespace.labels.mitstack.dev/subscription, operator: Exists}
     toPorts:
-    - ports: [{port: "5432", protocol: TCP}]
-- description: "A CloudNativePG Job in a database slice, such as initdb or join, reaches the API server and the instances on 5432."
+    - ports: [{port: "5432", protocol: TCP}, {port: "15008", protocol: TCP}]
+- description: "A CloudNativePG Job in a database slice, such as initdb or join, reaches the API server and the instances on 5432 or 15008."
   endpointSelector:
     matchLabels:
       k8s:io.cilium.k8s.namespace.labels.mitstack.dev/database-slice: "true"
@@ -41,8 +41,8 @@ specs:
         k8s:io.cilium.k8s.namespace.labels.mitstack.dev/database-slice: "true"
         k8s:cnpg.io/podRole: instance
     toPorts:
-    - ports: [{port: "5432", protocol: TCP}]
-- description: "A pod in any slice reaches the Postgres instances of a database slice on 5432."
+    - ports: [{port: "5432", protocol: TCP}, {port: "15008", protocol: TCP}]
+- description: "A pod in any slice reaches the Postgres instances of a database slice on 5432 or 15008."
   endpointSelector:
     matchExpressions:
     - {key: k8s:io.cilium.k8s.namespace.labels.mitstack.dev/subscription, operator: Exists}
@@ -52,4 +52,4 @@ specs:
         k8s:io.cilium.k8s.namespace.labels.mitstack.dev/database-slice: "true"
         k8s:cnpg.io/podRole: instance
     toPorts:
-    - ports: [{port: "5432", protocol: TCP}]
+    - ports: [{port: "5432", protocol: TCP}, {port: "15008", protocol: TCP}]

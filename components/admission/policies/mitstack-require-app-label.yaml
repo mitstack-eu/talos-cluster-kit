@@ -19,7 +19,7 @@ spec:
       matchExpressions:
       - key: kubernetes.io/metadata.name
         operator: NotIn
-        values: [kube-system, kube-public, kube-node-lease, argocd, kyverno, cnpg-system, mitstack-node]
+        values: [kube-system, kube-public, kube-node-lease, argocd, kyverno, cnpg-system, mitstack-node, istio-system]
   validations:
   - expression: 'object.metadata.?labels[?"mitstack.dev/app"].orValue("") != ""'
     message: "mitstack-require-app-label: every pod must carry a non-empty mitstack.dev/app label, which the app's network policies select it by"

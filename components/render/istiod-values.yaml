@@ -1,0 +1,5 @@
+profile: ambient
+image: docker.io/istio/pilot:1.30.7-distroless@sha256:337c5423c9b235855aadca8762f1ac3f0ce584833e49c50176382382099ff201
+global:
+  # Without the injector's templates istiod injects no sidecar, so every pod's identity comes from ztunnel alone.
+  omitSidecarInjectorConfigMap: true

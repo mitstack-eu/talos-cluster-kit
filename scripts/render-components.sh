@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Renders the component set every Talos cluster starts with into
 # components/: Cilium from its chart, the CRD of Cilium's cluster-wide policy
-# from Cilium's source, and Argo CD, Kyverno and the local path provisioner
-# from their charts. It renders the hosting set's six charts too: OpenBao,
+# from Cilium's source, Argo CD, Kyverno and the local path provisioner from
+# their charts, and Istio's ambient mesh from its base, istiod, cni and
+# ztunnel charts. It renders the hosting set's six charts too: OpenBao,
 # cert-manager, trust-manager, External Secrets, Sealed Secrets and Traefik.
 # With --check it fails when a committed file differs from a fresh render or
 # names an image by anything but a digest.
@@ -32,6 +33,15 @@ readonly local_path_version=0.0.37
 readonly local_path_commit=49b2be8e26d6d34c9afaa21fa33108d2e82f8955
 readonly local_path_archive_sha256=2b95efae90cd01de97dd9809739d24b0ad2ccaded6e86e308f71733b690b3de8
 readonly local_path_archive_url="https://github.com/rancher/local-path-provisioner/archive/${local_path_commit}.tar.gz"
+
+readonly istio_version=1.30.7
+# Each Istio chart is chart, file and the sha256 the repository's index.yaml publishes, in the order a node applies them.
+readonly istio_charts=(
+  "base istio-base 0c025584cd86f193cdd7bbca8a68b39024f4e5ca800ccb04db4fa316158c72ec"
+  "istiod istiod d84a9599a2a192858b2fde4a3c3ff6b86fe61fcc83101f98314026a003036404"
+  "cni istio-cni 368eedb1df10bafb7e7692c1dde45960f667bba0f3152a9969057b268dc55cb0"
+  "ztunnel ztunnel 8cd723328d4ea980c47859f60e448e42df8b675cc7b1f0194ab9778136b0e09a"
+)
 
 # Each hosting chart is name, version, the sha256 its repository's index.yaml publishes, URL, namespace, and whether
 # the render creates that namespace.
@@ -133,6 +143,22 @@ render_local_path() {
   } > "$work/local-path-provisioner.yaml"
 }
 
+# render_istio_chart <chart> <file> <sha256> renders one Istio chart into istio-system. The base chart comes first and
+# creates the namespace at the privileged Pod Security level, since ztunnel and the CNI agent change each pod's network.
+render_istio_chart() {
+  fetch "https://istio-release.storage.googleapis.com/charts/$1-${istio_version}.tgz" "$3" "$work/$2.tgz"
+  {
+    header "the istio $1 ${istio_version} chart"
+    if [ "$1" = base ]; then
+      printf -- '---\napiVersion: v1\nkind: Namespace\nmetadata:\n  name: istio-system\n  labels:\n    pod-security.kubernetes.io/enforce: privileged\n'
+    fi
+    "$helm" template "$2" "$work/$2.tgz" \
+      --namespace istio-system \
+      --kube-version "$kube_version" \
+      --values "$root/components/render/$2-values.yaml"
+  } > "$work/$2.yaml"
+}
+
 # render_hosting_chart <name> <version> <sha256> <url> <namespace> <create|-> renders one hosting chart with the CRDs in
 # its crds/ folder, which helm template leaves out by default, and without its tests, which Talos would run as
 # ordinary pods.
@@ -180,7 +206,13 @@ main() {
   refuse_undigested "$work/local-path-provisioner.yaml" render-components
 
   local pairs=("cilium.yaml:components/cilium/cilium.yaml" "policy-crd.yaml:components/cilium/policy-crd.yaml" "argocd.yaml:components/argocd/argocd.yaml" "kyverno.yaml:components/kyverno/kyverno.yaml" "local-path-provisioner.yaml:components/local-path-provisioner/local-path-provisioner.yaml")
-  local chart name version sha256 url namespace create
+  local chart name file version sha256 url namespace create
+  for chart in "${istio_charts[@]}"; do
+    read -r name file sha256 <<< "$chart"
+    render_istio_chart "$name" "$file" "$sha256"
+    refuse_undigested "$work/$file.yaml" render-components
+    pairs+=("$file.yaml:components/istio/$file.yaml")
+  done
   for chart in "${hosting_charts[@]}"; do
     read -r name version sha256 url namespace create <<< "$chart"
     render_hosting_chart "$name" "$version" "$sha256" "$url" "$namespace" "$create"

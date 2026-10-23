@@ -1,0 +1,38 @@
+# The API server holds no workload identity, so the operator's webhook port alone takes its calls without one.
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: mitstack-cloudnative-pg-webhook
+  namespace: cnpg-system
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cloudnative-pg
+  mtls:
+    mode: STRICT
+  portLevelMtls:
+    9443:
+      mode: PERMISSIVE
+---
+# Cilium sees a mesh call only on ztunnel's port 15008, so the ports it names for an instance are kept here: Postgres on
+# 5432, and the instance manager on 8000 for the operator alone.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: mitstack-database-instance-ports
+  namespace: istio-system
+spec:
+  selector:
+    matchLabels:
+      cnpg.io/podRole: instance
+  action: DENY
+  rules:
+  - to:
+    - operation:
+        notPorts: ["5432", "8000"]
+  - from:
+    - source:
+        notPrincipals: ["cluster.local/ns/cnpg-system/sa/cloudnative-pg"]
+    to:
+    - operation:
+        ports: ["8000"]

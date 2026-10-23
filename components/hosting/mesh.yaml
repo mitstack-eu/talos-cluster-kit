@@ -1,0 +1,87 @@
+# The API server and a web client outside the cluster hold no workload identity, so the ports they call alone take a
+# call without one: each webhook's port, and Traefik's two web ports.
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: mitstack-cert-manager-webhook
+  namespace: cert-manager
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: webhook
+      app.kubernetes.io/instance: cert-manager
+  mtls:
+    mode: STRICT
+  portLevelMtls:
+    10250:
+      mode: PERMISSIVE
+---
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: mitstack-trust-manager-webhook
+  namespace: cert-manager
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: trust-manager
+  mtls:
+    mode: STRICT
+  portLevelMtls:
+    6443:
+      mode: PERMISSIVE
+---
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: mitstack-external-secrets-webhook
+  namespace: external-secrets
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: external-secrets-webhook
+  mtls:
+    mode: STRICT
+  portLevelMtls:
+    10250:
+      mode: PERMISSIVE
+---
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: mitstack-traefik-web
+  namespace: traefik
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: traefik
+  mtls:
+    mode: STRICT
+  portLevelMtls:
+    8000:
+      mode: PERMISSIVE
+    8443:
+      mode: PERMISSIVE
+---
+# Cilium sees a mesh call only on ztunnel's port 15008, so the ports it names for OpenBao are kept here: the API on 8200,
+# and the members' own port 8201 for the members alone.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: mitstack-openbao-ports
+  namespace: openbao
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: openbao
+  action: DENY
+  rules:
+  - to:
+    - operation:
+        notPorts: ["8200", "8201"]
+  - from:
+    - source:
+        notPrincipals: ["cluster.local/ns/openbao/sa/openbao"]
+    to:
+    - operation:
+        ports: ["8201"]

@@ -1,0 +1,14 @@
+# Istio's CNI agent rewrites the source of the kubelet's health probes to 169.254.7.127, which Cilium does not read as
+# the node, so a default-deny namespace would drop them. Default deny stays off, so this opens that one source alone.
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: mitstack-ambient-probes
+spec:
+  endpointSelector: {}
+  enableDefaultDeny:
+    egress: false
+    ingress: false
+  ingress:
+  - fromCIDR:
+    - 169.254.7.127/32

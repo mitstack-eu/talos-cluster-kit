@@ -33,7 +33,7 @@ the order a block uses them.
 
 | Package | What it does | Main entry points |
 |---|---|---|
-| `components` | Holds the pinned component set: Cilium, the custom resource definition (CRD) of Cilium's cluster-wide policy, Argo CD, the policy that keeps pods from Hetzner's metadata service at `169.254.169.254`, Kyverno with its two admission policies, the CloudNativePG operator with the database-slice policy, the local path provisioner behind the default StorageClass, and the node-local OpenTelemetry Collector. It also holds the boot set of a cluster that hosts the platform | `Default`, `Hosting`, `Set.Images`, `LogCollector`, `ParseImage` |
+| `components` | Holds the pinned component set: Cilium, the custom resource definition (CRD) of Cilium's cluster-wide policy, Argo CD, the policy that keeps pods from Hetzner's metadata service at `169.254.169.254`, Istio's ambient mesh with its mesh-wide mutual TLS policy, Kyverno with its four admission policies, the CloudNativePG operator with the database-slice policy, the local path provisioner behind the default StorageClass, and the node-local OpenTelemetry Collector. It also holds the boot set of a cluster that hosts the platform | `Default`, `Hosting`, `Set.Images`, `LogCollector`, `ParseImage` |
 | `nodeconfig` | Renders a control-plane node's machine configuration with Talos's own `machinery` module and validates it against Talos's schema | `Render`, `Cluster`, `Node`, `NewSecrets`, `ParseSecrets`, `Secrets.AdminTalosconfig` |
 | `image` | Runs imager, Sidero Labs' open-source image builder, with the `hcloud` or the `metal` profile, and discards its output | `Run`, `Build` |
 | `mirror` | Lists every image the nodes pull, each by digest | `List`, `Render` |
@@ -83,7 +83,7 @@ control-plane node and changes it in these ways:
 |---|---|---|
 | DNS and time | Every node asks Hetzner's resolvers `185.12.64.1` and `185.12.64.2` and syncs from `ntp1.hetzner.de`, `ntp2.hetzner.com` and `ntp3.hetzner.net`, and Sidero's discovery service is off | `resolverDocument`, `timeSyncDocument` in `nodeconfig/documents.go` |
 | Images | `docker.io`, `ghcr.io`, `public.ecr.aws`, `quay.io` and `registry.k8s.io` go to every gateway's mirror in turn, with no fallback to the public registry | `mirrorDocuments` |
-| Components | Cilium, its policy CRD, Argo CD, Kyverno, the CloudNativePG operator and the local path provisioner come from the first gateway over TLS. The metadata policy, the two admission policies, the `cnpg-system` and `local-path-storage` namespaces, the database-slice policy, the provisioner's flow policy and the Collector sit in the configuration | `manifestDocuments` |
+| Components | Cilium, its policy CRD, Argo CD, Kyverno, the CloudNativePG operator, the local path provisioner and Istio's four charts come from the first gateway over TLS. The metadata policy, the four admission policies, the `cnpg-system` and `local-path-storage` namespaces, the database-slice policy, the provisioner's flow policy, the mesh's policies and the Collector sit in the configuration | `manifestDocuments` |
 | Logs | Talos sends service and kernel logs to the node-local Collector on `127.0.0.1`, which exports them over OTLP with TLS verified. A cluster whose `Logs` is the zero `LogExport` runs no Collector and keeps its logs on the node | `adaptV1Alpha1`, `kernelLogDocument`, `components.LogCollector` |
 | Networking | Flannel and kube-proxy are off, since Cilium replaces both, and etcd and the kubelet bind to the private network | `adapt` |
 | Default route | A Cloud node keeps DHCP on `eth0` and routes everything outside the network through Hetzner's router at the network's first address. The block's network route of `0.0.0.0/0` then carries that traffic to the gateway. Hetzner's DHCP gives the node no default route, and Talos runs no default DHCP on a link that has a `LinkConfig` | `routeDocuments` |
@@ -141,15 +141,17 @@ report carries no proof.
 ## How a cluster isolates each app
 
 Every cluster runs Kyverno, an admission controller that checks each object
-the API server is asked to create. Two of its policies apply to every
+the API server is asked to create. Four of its policies apply to every
 namespace outside the system namespaces, which are `kube-system`,
-`kube-public`, `kube-node-lease`, `argocd`, `kyverno`, `cnpg-system` and
-`mitstack-node`.
+`kube-public`, `kube-node-lease`, `argocd`, `kyverno`, `cnpg-system`,
+`mitstack-node` and `istio-system`.
 
 | Policy | What it does | File |
 |---|---|---|
 | `mitstack-require-app-label` | Refuses a pod without a non-empty `mitstack.dev/app` label, which an app's network policies select its pods by | `components/admission/policies/mitstack-require-app-label.yaml` |
 | `mitstack-generate-default-deny` | Gives each namespace, new or existing, the NetworkPolicy `mitstack-default-deny`, which blocks every connection its pods make or take until an app's own policy allows it | `components/admission/policies/mitstack-generate-default-deny.yaml` |
+| `mitstack-require-mesh` | Refuses a pod on the host network and a pod annotated `sidecar.istio.io/status`, the two kinds of pod the mesh leaves out | `components/admission/policies/mitstack-require-mesh.yaml` |
+| `mitstack-require-strict-mtls` | Refuses a PeerAuthentication, Istio's policy for which calls a pod takes, that lets a pod or one of its ports take a call with no workload identity. The hosting set's four exceptions, named in the policy, are the only ones admitted | `components/admission/policies/mitstack-require-strict-mtls.yaml` |
 
 Kyverno's webhooks skip the same system namespaces, so a Kyverno outage
 cannot stop a system pod, such as the node report in `mitstack-node`.
@@ -159,13 +161,79 @@ keeps its data in. A namespace labelled `mitstack.dev/database-slice=true` is
 a database slice. The Cilium policy `mitstack-database-slices` lets that
 slice's Postgres instances reach the API server and each other, and admits
 the operator on port 8000 and every app slice on port 5432. A pod in any other
-namespace gains none of those allows.
+namespace gains none of those allows. Each of those flows also admits port
+15008, where a call arrives inside the mesh, as
+[the next section](#how-every-call-between-pods-proves-who-makes-it) explains.
 
 The CloudNativePG manifests are a byte-for-byte copy of release v0.4.0 of
 mitstack-eu/cluster-bases, the repository of pinned third-party manifests.
 Argo CD's built-in health check reads a Postgres switchover, failover,
 upgrade or configuration change as Degraded. The kit's `argocd-cm` reads each
 of those as Progressing, since CloudNativePG passes through them on its own.
+
+## How every call between pods proves who makes it
+
+ADR 0095 requires that every call between services carries mutual TLS with a
+workload identity, and that a call without one is refused. A network policy
+decides which pod may reach which by its address and labels, so it cannot tell
+a real caller from a pod that took over that address. A certificate tied to
+the caller's service account can. The ADR asked for Cilium's own mutual
+authentication if it was ready, and a mesh otherwise. Cilium v1.19 documents
+that feature as an incomplete beta that authenticates once per pair of
+identities, so the kit runs Istio 1.30.7 in ambient mode.
+
+Ambient mode adds no container to your pods. Each node runs ztunnel, a proxy
+that holds a certificate for every pod on the node and wraps each TCP call
+between two pods in mutual TLS, sent to port 15008 of the pod it calls. The
+certificate names the pod's service account as a SPIFFE identity, such as
+`spiffe://cluster.local/ns/app-shop/sa/default`. istiod, Istio's control
+plane, issues it from a root it creates inside the cluster. Each certificate
+lasts 24 hours, and ztunnel asks for a new one when half of that has passed.
+
+| Part | What it does | File |
+|---|---|---|
+| Istio's four charts | Run istiod, the CNI agent and ztunnel in `istio-system`, a namespace at the privileged Pod Security level | `components/istio/` |
+| The CNI agent's settings | Put every pod in the mesh, whatever its labels, except the pods of `kube-system`, `istio-system` and `kyverno` and a pod on the host network | `components/render/istio-cni-values.yaml` |
+| `default` in `istio-system` | The mesh-wide PeerAuthentication in `STRICT` mode, so a pod refuses any call that presents no workload certificate | `components/mesh/strict-mtls.yaml` |
+| `mitstack-ambient-probes` | Admits the kubelet's health probes, which the CNI agent sends from `169.254.7.127`, into every pod | `components/mesh/probes.yaml` |
+| `mitstack-database-instance-ports` | Keeps every caller but the operator off a Postgres instance's port 8000, and everyone off its ports other than 5432 and 8000 | `components/mesh/cloudnative-pg.yaml` |
+| Argo CD's mesh policies | Admit port 15008 between the same Argo CD pods the chart's own network policies admit | `components/mesh/argocd.yaml` |
+
+istiod injects no sidecar, because `components/render/istiod-values.yaml`
+leaves out the injector's templates. A pod with a sidecar would sit outside
+ambient mode, and `mitstack-require-mesh` refuses a pod that claims one.
+
+Cilium still decides which pods may talk, but a call inside the mesh reaches
+it only as port 15008. Every Cilium policy that admits a call between two
+pods on a named port therefore admits 15008 from the same peers. Where the
+port itself matters, an Istio AuthorizationPolicy keeps it, such as
+`mitstack-database-instance-ports` for a Postgres instance.
+
+Two kinds of caller hold no workload identity. The API server calls each
+admission webhook, and a web client outside the cluster calls Traefik.
+A PeerAuthentication with a port-level exception lets that port alone take a
+call without an identity, and the Cilium policies still decide who reaches it.
+
+| PeerAuthentication | Port that takes a call without an identity | Who calls it |
+|---|---|---|
+| `cnpg-system/mitstack-cloudnative-pg-webhook` | 9443 on the CloudNativePG operator | The API server |
+| `cert-manager/mitstack-cert-manager-webhook` | 10250 on cert-manager's webhook, in the hosting set | The API server |
+| `cert-manager/mitstack-trust-manager-webhook` | 6443 on trust-manager, in the hosting set | The API server |
+| `external-secrets/mitstack-external-secrets-webhook` | 10250 on the External Secrets webhook, in the hosting set | The API server |
+| `traefik/mitstack-traefik-web` | 8000 and 8443 on Traefik, in the hosting set | Web clients, through the load balancers |
+
+Cilium's Istio page asks for two settings when Cilium replaces kube-proxy.
+`cni.exclusive: false` keeps the CNI configuration Istio chains after
+Cilium's, and `socketLB.hostNamespaceOnly: true` leaves a pod's service calls
+for ztunnel to see. `components/render/cilium-values.yaml` sets both.
+
+You can read the certificate a pod holds from the ztunnel on its node, whose
+admin port lists each certificate with its serial number and expiry:
+
+```bash
+kubectl -n istio-system port-forward pod/<ztunnel-pod-on-the-node> 15000:15000 &
+curl -s localhost:15000/config_dump | jq '.certificates'
+```
 
 ## Where a claim keeps its data
 
@@ -354,6 +422,13 @@ hosting set carries that label. The Cilium policy `mitstack-hosting-flows` in
 | OpenBao's init Job | Lookups through Cilium's DNS proxy, calls to OpenBao on 8200, and calls to `api.github.com` on 443, which the gateway forwards |
 | Traefik | Web traffic from outside the cluster on its two ports, calls to the API server, and calls to the app slices |
 
+Each flow between two pods on a named port also admits port 15008, where the
+call arrives inside the mesh. The AuthorizationPolicy `mitstack-openbao-ports`
+in `components/hosting/mesh.yaml` keeps the ports themselves: OpenBao takes
+calls on 8200, and on 8201 from its own members alone. The same file holds the
+hosting set's four port-level exceptions that
+[the mesh section](#how-every-call-between-pods-proves-who-makes-it) lists.
+
 ### How OpenBao is initialised
 
 OpenBao starts uninitialised. Its first init returns the root token, which
@@ -473,6 +548,11 @@ changes nothing. The owner then decrypts the root token from
 | [RFC 9580 section 6.1](https://www.rfc-editor.org/rfc/rfc9580#section-6.1) | ASCII armor should carry no CRC24 footer |
 | [GnuPG: key-related options](https://www.gnupg.org/documentation/manuals/gnupg/GPG-Key-related-Options.html) and [commands](https://www.gnupg.org/documentation/manuals/gnupg/Operational-GPG-Commands.html) | `--recipient-file` encrypts to the one key in a file, and `--dearmor` unpacks an armored key |
 | [Cilium: DNS-based policy](https://docs.cilium.io/en/v1.19/security/policy/layer3/#dns-based) | `toFQDNs` learns a name's addresses from DNS answers that pass Cilium's DNS proxy |
+| [Cilium: mutual authentication](https://docs.cilium.io/en/v1.19/network/servicemesh/mutual-authentication/mutual-authentication/) and [ztunnel encryption](https://docs.cilium.io/en/v1.19/security/network/encryption-ztunnel/) | Both are beta, and mutual authentication caches one handshake per pair of identities |
+| [Cilium: Istio integration](https://docs.cilium.io/en/v1.19/network/servicemesh/istio/) | With kube-proxy replaced, ambient mode needs `socketLB.hostNamespaceOnly: true` and `cni.exclusive: false` |
+| [Istio: ambient platform prerequisites](https://istio.io/v1.30/docs/ambient/install/platform-prerequisites/) | Under a Cilium default-deny policy, the kubelet's probes need a policy admitting `169.254.7.127/32`, and BPF masquerading stays off |
+| [Istio: ambient and network policy](https://istio.io/v1.30/docs/ambient/usage/networkpolicy/) | A call inside the mesh arrives on port 15008, so a policy that admits a port must admit 15008 too |
+| [Istio: PeerAuthentication](https://istio.io/v1.30/docs/reference/config/security/peer_authentication/) | `STRICT` in the root namespace binds the whole mesh, and `portLevelMtls` needs a selector |
 | [curl: `--header`](https://curl.se/docs/manpage.html#-H) | `-H @-` reads headers from standard input |
 | [cert-manager: CA](https://cert-manager.io/docs/configuration/ca/) and [SelfSigned](https://cert-manager.io/docs/configuration/selfsigned/) issuers | A self-signed root bootstraps the CA issuer |
 | [trust-manager](https://cert-manager.io/docs/trust/trust-manager/) | A `Bundle` reads Secrets in its trust namespace and writes a ConfigMap to every namespace |

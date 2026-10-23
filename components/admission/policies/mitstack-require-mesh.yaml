@@ -1,0 +1,27 @@
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: mitstack-require-mesh
+  annotations:
+    mitstack.dev/standard: ADR 0095, mutual TLS with a workload identity
+spec:
+  validationActions: [Deny]
+  autogen:
+    podControllers:
+      controllers: [deployments, statefulsets, daemonsets, jobs, cronjobs, replicasets]
+  matchConstraints:
+    resourceRules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      operations: ["CREATE", "UPDATE"]
+      resources: ["pods"]
+    namespaceSelector:
+      matchExpressions:
+      - key: kubernetes.io/metadata.name
+        operator: NotIn
+        values: [kube-system, kube-public, kube-node-lease, argocd, kyverno, cnpg-system, mitstack-node, istio-system]
+  validations:
+  - expression: '!object.spec.?hostNetwork.orValue(false)'
+    message: "mitstack-require-mesh: a pod on the host network stays outside the mesh, so it would take calls that carry no workload identity"
+  - expression: '!object.metadata.?annotations[?"sidecar.istio.io/status"].hasValue()'
+    message: "mitstack-require-mesh: Istio leaves a pod annotated sidecar.istio.io/status outside the mesh, so it would take calls that carry no workload identity"

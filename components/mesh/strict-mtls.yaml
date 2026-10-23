@@ -1,0 +1,10 @@
+# In istio-system with no selector, this is the mesh-wide policy: every pod in the mesh refuses a call that presents
+# no workload certificate.
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: istio-system
+spec:
+  mtls:
+    mode: STRICT

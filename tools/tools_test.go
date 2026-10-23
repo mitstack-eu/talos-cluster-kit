@@ -17,6 +17,8 @@ func TestPin_ReadsEachBinarysPinAndNothingForAnUnknownName(t *testing.T) {
 		{name: "KUBERNETES_VERSION", want: `^v\d+\.\d+\.\d+$`},
 		{name: "TALOSCTL_SHA256", want: `^[0-9a-f]{64}$`},
 		{name: "KUBECTL_SHA256", want: `^[0-9a-f]{64}$`},
+		{name: "JQ_VERSION", want: `^jq-\d+\.\d+\.\d+$`},
+		{name: "JQ_SHA256", want: `^[0-9a-f]{64}$`},
 		{name: "HELM_VERSION", want: `^$`},
 	}
 	for _, tc := range cases {

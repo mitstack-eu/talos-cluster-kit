@@ -88,11 +88,12 @@ func renderedScript(t *testing.T, url string) string {
 	return testutil.Field(t, cronJobs[0], "spec", "jobTemplate", "spec", "template", "spec", "containers", "0", "command", "2").(string)
 }
 
-// runReport runs the rendered report against kubectl and returns what the fake platform received.
+// runReport runs the rendered report against kubectl with the tools image's jq and returns what the fake platform received.
 func runReport(t *testing.T, kubectl string) (*testutil.Tools, *postedReport, string, error) {
 	t.Helper()
 	server, posted := fakePlatform(t)
 	tools := testutil.NewTools(t, map[string]string{"talosctl": fakeTalosctl, "kubectl": kubectl})
+	tools.AddImageJq(t)
 	token := filepath.Join(t.TempDir(), "token")
 	require.NoError(t, os.WriteFile(token, []byte("report-token-fixture"), 0o600))
 
@@ -178,6 +179,26 @@ func TestReport_WhoseCloudNativePGReadFailsStillCarriesItsNodesAndApplications(t
 		"exitStatus": float64(1),
 		"stderr":     "error: the server does not have a resource type \"clusters\"\n",
 	}, posted.body["cloudNativePG"])
+}
+
+func TestReport_HandsTheCloudNativePGExitStatusToTheToolsImagesJqAsANumber(t *testing.T) {
+	cases := map[string]struct {
+		kubectl string
+		want    func(t *testing.T, read any)
+	}{
+		"the read exits 0": {fakeKubectl, func(t *testing.T, read any) { assert.Len(t, read, 3) }},
+		"the read exits 1": {failingCloudNativePGKubectl, func(t *testing.T, read any) {
+			assert.Equal(t, float64(1), testutil.Field(t, read, "exitStatus"))
+		}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, posted, out, err := runReport(t, tc.kubectl)
+
+			require.NoError(t, err, out)
+			tc.want(t, posted.body["cloudNativePG"])
+		})
+	}
 }
 
 func TestManifests_LetsTheReportListCloudNativePGsClustersDatabasesAndRoles(t *testing.T) {

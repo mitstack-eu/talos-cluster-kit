@@ -4,6 +4,7 @@ package testutil
 import (
 	"encoding/base64"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -92,6 +93,11 @@ func NewCluster(t *testing.T, opts ...ClusterOption) nodeconfig.Cluster {
 		Network:        netip.MustParsePrefix("10.0.0.0/16"),
 		GatewayCA:      ReadTestdata(t, "gateway-ca.pem"),
 		Logs:           LogExport(t),
+		ServiceAccountIssuer: &url.URL{
+			Scheme: "https",
+			Host:   "mitstack-oidc-7kq2m4xw3pa3hd6rz5tn2cjvle.s3.eu-central-1.amazonaws.com",
+			Path:   "/sub_0123456789ab",
+		},
 	}
 	WithLocations(1)(&c)
 	for _, opt := range opts {

@@ -30,7 +30,6 @@ func Testdata(t *testing.T, name string) string {
 	return filepath.Join(filepath.Dir(file), "testdata", name)
 }
 
-// ReadTestdata returns the bytes of a file in this package's testdata directory.
 func ReadTestdata(t *testing.T, name string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(Testdata(t, name))
@@ -38,7 +37,6 @@ func ReadTestdata(t *testing.T, name string) []byte {
 	return data
 }
 
-// Secrets returns the fixture cluster's throwaway secrets.
 func Secrets(t *testing.T) *nodeconfig.Secrets {
 	t.Helper()
 	s, err := nodeconfig.ParseSecrets(ReadTestdata(t, "secrets.yaml"))
@@ -56,16 +54,13 @@ func GatewayTLS(t *testing.T) gateway.TLS {
 	}
 }
 
-// LogExport returns the fixture log receiver.
 func LogExport(t *testing.T) components.LogExport {
 	t.Helper()
 	return components.LogExport{Endpoint: "otlp.mitstack.dev:4317", CA: ReadTestdata(t, "logs-ca.pem")}
 }
 
-// ClusterOption changes one field of the fixture cluster.
 type ClusterOption func(*nodeconfig.Cluster)
 
-// WithProfile sets the cluster's imager profile.
 func WithProfile(p nodeconfig.Profile) ClusterOption {
 	return func(c *nodeconfig.Cluster) { c.Profile = p }
 }
@@ -106,8 +101,7 @@ func NewCluster(t *testing.T, opts ...ClusterOption) nodeconfig.Cluster {
 	return c
 }
 
-// SecretValues returns every key, token and certificate-authority key in the fixture secrets, base64 and decoded,
-// so a test can prove none of them reaches a log.
+// SecretValues returns every key and token of the fixture secrets, base64 and decoded, to prove none reaches a log.
 func SecretValues(t *testing.T) []string {
 	t.Helper()
 	var bundle map[string]any
@@ -118,7 +112,6 @@ func SecretValues(t *testing.T) []string {
 	return values
 }
 
-// collectSecrets walks the bundle and keeps each value under a key, token or secret field.
 func collectSecrets(node any, field string, values *[]string) {
 	switch v := node.(type) {
 	case map[string]any:

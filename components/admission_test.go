@@ -49,7 +49,9 @@ func TestAdmission_ExemptsTheSameSystemNamespacesInEveryPolicyAndKyvernosWebhook
 	assert.Equal(t, fmt.Sprint(labelExempt), fmt.Sprint(generateExempt), "the default-deny generator exempts other namespaces than the label policy")
 	assert.Equal(t, fmt.Sprint(labelExempt), fmt.Sprint(webhooks.NamespaceSelector.MatchExpressions[0].Values), "Kyverno's webhooks exempt other namespaces than the label policy")
 	for _, policy := range []string{"mitstack-require-mesh", "mitstack-require-strict-mtls"} {
-		assert.Equal(t, labelExempt, kyvernoExempt(t, policy), "%s exempts other namespaces than the label policy", policy)
+		doc := testutil.Documents(t, manifest(t, policy).Bytes)[0]
+		exempt := testutil.Field(t, doc, "spec", "matchConstraints", "namespaceSelector", "matchExpressions", "0", "values")
+		assert.Equal(t, labelExempt, exempt, "%s exempts other namespaces than the label policy", policy)
 	}
 	assert.Subset(t, labelExempt, []string{"kube-system", "argocd", "kyverno", "cnpg-system", "istio-system", nodeconfig.TalosAPINamespace})
 }

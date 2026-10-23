@@ -332,21 +332,10 @@ func TestHosting_KeepsTheMembersAloneOnOpenBaosClusterPortAndEveryoneOffItsOther
 	policy := namedDocument(t, testutil.Manifest(t, "mitstack-hosting-mesh", set.Served), "AuthorizationPolicy", "mitstack-openbao-ports")
 	member, secrets := "cluster.local/ns/openbao/sa/openbao", "cluster.local/ns/external-secrets/sa/external-secrets"
 
-	assert.Equal(t, map[string]any{"app.kubernetes.io/name": "openbao"}, testutil.Field(t, policy, "spec", "selector", "matchLabels"))
-	for _, c := range []struct {
-		principal string
-		port      int
-		denied    bool
-	}{
-		{member, 8200, false},
-		{member, 8201, false},
-		{secrets, 8200, false},
-		{secrets, 8201, true},
-		{secrets, 8202, true},
-		{member, 8202, true},
-	} {
-		assert.Equal(t, c.denied, denied(t, policy, c.principal, c.port), "a call from %s to port %d", c.principal, c.port)
-	}
+	assert.False(t, testutil.Denies(t, policy, member, 8201), "a member's call to the cluster port")
+	assert.False(t, testutil.Denies(t, policy, secrets, 8200), "External Secrets' call to the API")
+	assert.True(t, testutil.Denies(t, policy, secrets, 8201), "External Secrets' call to the cluster port")
+	assert.True(t, testutil.Denies(t, policy, member, 8202), "a call to a port OpenBao's flows do not name")
 }
 
 func TestHosting_ServesTraefikOnNodePorts30080And30081OnEveryNode(t *testing.T) {

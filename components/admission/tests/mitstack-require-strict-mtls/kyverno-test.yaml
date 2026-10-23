@@ -1,0 +1,32 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: mitstack-require-strict-mtls
+policies:
+- ../../policies/mitstack-require-strict-mtls.yaml
+resources:
+- accepted.yaml
+- refused.yaml
+results:
+- isValidatingPolicy: true
+  policy: mitstack-require-strict-mtls
+  kind: PeerAuthentication
+  resources:
+  - accepted-require-strict-mtls
+  - accepted-require-strict-mtls-ports
+  result: pass
+- isValidatingPolicy: true
+  policy: mitstack-require-strict-mtls
+  kind: PeerAuthentication
+  resources:
+  - refused-require-strict-mtls-permissive
+  - refused-require-strict-mtls-disable
+  - refused-require-strict-mtls-port
+  - mitstack-admission-probe/mitstack-traefik-web
+  result: fail
+- isValidatingPolicy: true
+  policy: mitstack-require-strict-mtls
+  kind: PeerAuthentication
+  resources:
+  - traefik/mitstack-traefik-web
+  result: skip

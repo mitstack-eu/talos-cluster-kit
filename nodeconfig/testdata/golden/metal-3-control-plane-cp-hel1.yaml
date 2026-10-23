@@ -458,6 +458,26 @@ name: local-path-provisioner
 url: https://10.0.0.2/manifests/local-path-provisioner.yaml
 ---
 apiVersion: v1alpha1
+kind: KubeExternalManifestConfig
+name: istio-base
+url: https://10.0.0.2/manifests/istio-base.yaml
+---
+apiVersion: v1alpha1
+kind: KubeExternalManifestConfig
+name: istiod
+url: https://10.0.0.2/manifests/istiod.yaml
+---
+apiVersion: v1alpha1
+kind: KubeExternalManifestConfig
+name: istio-cni
+url: https://10.0.0.2/manifests/istio-cni.yaml
+---
+apiVersion: v1alpha1
+kind: KubeExternalManifestConfig
+name: ztunnel
+url: https://10.0.0.2/manifests/ztunnel.yaml
+---
+apiVersion: v1alpha1
 kind: KubeInlineManifestConfig
 name: mitstack-metadata-block
 manifest: |
@@ -502,7 +522,7 @@ manifest: |
           matchExpressions:
           - key: kubernetes.io/metadata.name
             operator: NotIn
-            values: [kube-system, kube-public, kube-node-lease, argocd, kyverno, cnpg-system, mitstack-node]
+            values: [kube-system, kube-public, kube-node-lease, argocd, kyverno, cnpg-system, mitstack-node, istio-system]
       validations:
       - expression: 'object.metadata.?labels[?"mitstack.dev/app"].orValue("") != ""'
         message: "mitstack-require-app-label: every pod must carry a non-empty mitstack.dev/app label, which the app's network policies select it by"
@@ -531,7 +551,7 @@ manifest: |
           resources: ["namespaces"]
       matchConditions:
       - name: not-a-system-namespace
-        expression: "!(object.metadata.name in ['kube-system', 'kube-public', 'kube-node-lease', 'argocd', 'kyverno', 'cnpg-system', 'mitstack-node'])"
+        expression: "!(object.metadata.name in ['kube-system', 'kube-public', 'kube-node-lease', 'argocd', 'kyverno', 'cnpg-system', 'mitstack-node', 'istio-system'])"
       variables:
       - name: namespace
         expression: "string(object.metadata.name)"
@@ -569,7 +589,7 @@ manifest: |
     metadata:
       name: mitstack-database-slices
     specs:
-    - description: "A Postgres instance in a database slice reaches the API server and the other instances, and admits the operator on 8000 and every slice on 5432."
+    - description: "A Postgres instance in a database slice reaches the API server and the other instances, and admits the operator on 8000 and every slice on 5432, each also on 15008, the port a mesh call arrives on."
       endpointSelector:
         matchLabels:
           k8s:io.cilium.k8s.namespace.labels.mitstack.dev/database-slice: "true"
@@ -581,20 +601,20 @@ manifest: |
             k8s:io.cilium.k8s.namespace.labels.mitstack.dev/database-slice: "true"
             k8s:cnpg.io/podRole: instance
         toPorts:
-        - ports: [{port: "5432", protocol: TCP}]
+        - ports: [{port: "5432", protocol: TCP}, {port: "15008", protocol: TCP}]
       ingress:
       - fromEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: cnpg-system
             k8s:app.kubernetes.io/name: cloudnative-pg
         toPorts:
-        - ports: [{port: "8000", protocol: TCP}]
+        - ports: [{port: "8000", protocol: TCP}, {port: "15008", protocol: TCP}]
       - fromEndpoints:
         - matchExpressions:
           - {key: k8s:io.cilium.k8s.namespace.labels.mitstack.dev/subscription, operator: Exists}
         toPorts:
-        - ports: [{port: "5432", protocol: TCP}]
-    - description: "A CloudNativePG Job in a database slice, such as initdb or join, reaches the API server and the instances on 5432."
+        - ports: [{port: "5432", protocol: TCP}, {port: "15008", protocol: TCP}]
+    - description: "A CloudNativePG Job in a database slice, such as initdb or join, reaches the API server and the instances on 5432 or 15008."
       endpointSelector:
         matchLabels:
           k8s:io.cilium.k8s.namespace.labels.mitstack.dev/database-slice: "true"
@@ -607,8 +627,8 @@ manifest: |
             k8s:io.cilium.k8s.namespace.labels.mitstack.dev/database-slice: "true"
             k8s:cnpg.io/podRole: instance
         toPorts:
-        - ports: [{port: "5432", protocol: TCP}]
-    - description: "A pod in any slice reaches the Postgres instances of a database slice on 5432."
+        - ports: [{port: "5432", protocol: TCP}, {port: "15008", protocol: TCP}]
+    - description: "A pod in any slice reaches the Postgres instances of a database slice on 5432 or 15008."
       endpointSelector:
         matchExpressions:
         - {key: k8s:io.cilium.k8s.namespace.labels.mitstack.dev/subscription, operator: Exists}
@@ -618,7 +638,7 @@ manifest: |
             k8s:io.cilium.k8s.namespace.labels.mitstack.dev/database-slice: "true"
             k8s:cnpg.io/podRole: instance
         toPorts:
-        - ports: [{port: "5432", protocol: TCP}]
+        - ports: [{port: "5432", protocol: TCP}, {port: "15008", protocol: TCP}]
 ---
 apiVersion: v1alpha1
 kind: KubeInlineManifestConfig
@@ -649,6 +669,222 @@ manifest: |
           k8s:io.kubernetes.pod.namespace: local-path-storage
       egress:
       - toEntities: [kube-apiserver]
+---
+apiVersion: v1alpha1
+kind: KubeInlineManifestConfig
+name: mitstack-strict-mtls
+manifest: |
+    # In istio-system with no selector, this is the mesh-wide policy: every pod in the mesh refuses a call that presents
+    # no workload certificate.
+    apiVersion: security.istio.io/v1
+    kind: PeerAuthentication
+    metadata:
+      name: default
+      namespace: istio-system
+    spec:
+      mtls:
+        mode: STRICT
+---
+apiVersion: v1alpha1
+kind: KubeInlineManifestConfig
+name: mitstack-ambient-probes
+manifest: |
+    # Istio's CNI agent rewrites the source of the kubelet's health probes to 169.254.7.127, which Cilium does not read as
+    # the node, so a default-deny namespace would drop them. Default deny stays off, so this opens that one source alone.
+    apiVersion: cilium.io/v2
+    kind: CiliumClusterwideNetworkPolicy
+    metadata:
+      name: mitstack-ambient-probes
+    spec:
+      endpointSelector: {}
+      enableDefaultDeny:
+        egress: false
+        ingress: false
+      ingress:
+      - fromCIDR:
+        - 169.254.7.127/32
+---
+apiVersion: v1alpha1
+kind: KubeInlineManifestConfig
+name: mitstack-mesh-cloudnative-pg
+manifest: |
+    # The API server holds no workload identity, so the operator's webhook port alone takes its calls without one.
+    apiVersion: security.istio.io/v1
+    kind: PeerAuthentication
+    metadata:
+      name: mitstack-cloudnative-pg-webhook
+      namespace: cnpg-system
+    spec:
+      selector:
+        matchLabels:
+          app.kubernetes.io/name: cloudnative-pg
+      mtls:
+        mode: STRICT
+      portLevelMtls:
+        9443:
+          mode: PERMISSIVE
+    ---
+    # Cilium sees a mesh call only on ztunnel's port 15008, so the ports it names for an instance are kept here: Postgres on
+    # 5432, and the instance manager on 8000 for the operator alone.
+    apiVersion: security.istio.io/v1
+    kind: AuthorizationPolicy
+    metadata:
+      name: mitstack-database-instance-ports
+      namespace: istio-system
+    spec:
+      selector:
+        matchLabels:
+          cnpg.io/podRole: instance
+      action: DENY
+      rules:
+      - to:
+        - operation:
+            notPorts: ["5432", "8000"]
+      - from:
+        - source:
+            notPrincipals: ["cluster.local/ns/cnpg-system/sa/cloudnative-pg"]
+        to:
+        - operation:
+            ports: ["8000"]
+---
+apiVersion: v1alpha1
+kind: KubeInlineManifestConfig
+name: mitstack-mesh-argocd
+manifest: |
+    # Argo CD's chart admits each call to the repo server and Redis on its own port, and in the mesh that call arrives on
+    # ztunnel's port 15008, so these admit 15008 from the same pods.
+    apiVersion: networking.k8s.io/v1
+    kind: NetworkPolicy
+    metadata:
+      name: mitstack-argocd-repo-server-mesh
+      namespace: argocd
+    spec:
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/instance: argocd
+          app.kubernetes.io/name: argocd-repo-server
+      policyTypes: [Ingress]
+      ingress:
+      - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: argocd
+              app.kubernetes.io/name: argocd-server
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: argocd
+              app.kubernetes.io/name: argocd-application-controller
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: argocd
+              app.kubernetes.io/name: argocd-notifications-controller
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: argocd
+              app.kubernetes.io/name: argocd-applicationset-controller
+        ports:
+        - port: 15008
+          protocol: TCP
+    ---
+    apiVersion: networking.k8s.io/v1
+    kind: NetworkPolicy
+    metadata:
+      name: mitstack-argocd-redis-mesh
+      namespace: argocd
+    spec:
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/instance: argocd
+          app.kubernetes.io/name: argocd-redis
+      policyTypes: [Ingress]
+      ingress:
+      - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: argocd
+              app.kubernetes.io/name: argocd-server
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: argocd
+              app.kubernetes.io/name: argocd-repo-server
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: argocd
+              app.kubernetes.io/name: argocd-application-controller
+        ports:
+        - port: 15008
+          protocol: TCP
+---
+apiVersion: v1alpha1
+kind: KubeInlineManifestConfig
+name: mitstack-require-mesh
+manifest: |
+    apiVersion: policies.kyverno.io/v1
+    kind: ValidatingPolicy
+    metadata:
+      name: mitstack-require-mesh
+      annotations:
+        mitstack.dev/standard: ADR 0095, mutual TLS with a workload identity
+    spec:
+      validationActions: [Deny]
+      autogen:
+        podControllers:
+          controllers: [deployments, statefulsets, daemonsets, jobs, cronjobs, replicasets]
+      matchConstraints:
+        resourceRules:
+        - apiGroups: [""]
+          apiVersions: ["v1"]
+          operations: ["CREATE", "UPDATE"]
+          resources: ["pods"]
+        namespaceSelector:
+          matchExpressions:
+          - key: kubernetes.io/metadata.name
+            operator: NotIn
+            values: [kube-system, kube-public, kube-node-lease, argocd, kyverno, cnpg-system, mitstack-node, istio-system]
+      validations:
+      - expression: '!object.spec.?hostNetwork.orValue(false)'
+        message: "mitstack-require-mesh: a pod on the host network stays outside the mesh, so it would take calls that carry no workload identity"
+      - expression: '!object.metadata.?annotations[?"sidecar.istio.io/status"].hasValue()'
+        message: "mitstack-require-mesh: Istio leaves a pod annotated sidecar.istio.io/status outside the mesh, so it would take calls that carry no workload identity"
+---
+apiVersion: v1alpha1
+kind: KubeInlineManifestConfig
+name: mitstack-require-strict-mtls
+manifest: |
+    apiVersion: policies.kyverno.io/v1
+    kind: ValidatingPolicy
+    metadata:
+      name: mitstack-require-strict-mtls
+      annotations:
+        mitstack.dev/standard: ADR 0095, mutual TLS with a workload identity
+    spec:
+      validationActions: [Deny]
+      matchConstraints:
+        resourceRules:
+        - apiGroups: ["security.istio.io"]
+          apiVersions: ["*"]
+          operations: ["CREATE", "UPDATE"]
+          resources: ["peerauthentications"]
+        namespaceSelector:
+          matchExpressions:
+          - key: kubernetes.io/metadata.name
+            operator: NotIn
+            values: [kube-system, kube-public, kube-node-lease, argocd, kyverno, cnpg-system, mitstack-node, istio-system]
+      # The hosting set's own policies open only the ports the API server and outside web clients call.
+      matchConditions:
+      - name: not-one-of-the-hosting-sets-own
+        expression: >-
+          !(object.metadata.namespace + "/" + object.metadata.name in [
+            "cert-manager/mitstack-cert-manager-webhook", "cert-manager/mitstack-trust-manager-webhook",
+            "external-secrets/mitstack-external-secrets-webhook", "traefik/mitstack-traefik-web"])
+      variables:
+      - name: plain
+        expression: '["PERMISSIVE", "DISABLE"]'
+      validations:
+      - expression: '!(object.spec.?mtls.?mode.orValue("UNSET") in variables.plain)'
+        message: "mitstack-require-strict-mtls: a PeerAuthentication may not let a pod take calls that carry no workload identity"
+      - expression: 'object.spec.?portLevelMtls.orValue({}).all(port, !(object.spec.portLevelMtls[port].?mode.orValue("UNSET") in variables.plain))'
+        message: "mitstack-require-strict-mtls: a PeerAuthentication may not let a pod's port take calls that carry no workload identity"
 ---
 apiVersion: v1alpha1
 kind: KubeInlineManifestConfig

@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: refused-require-mesh-host-network
+  namespace: mitstack-admission-probe
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: refused-require-mesh-host-network
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: refused-require-mesh-host-network
+        mitstack.dev/app: probe
+    spec:
+      hostNetwork: true
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: app
+        image: ghcr.io/mitstack-eu/probe@sha256:0000000000000000000000000000000000000000000000000000000000000000
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: [ALL]
+        resources:
+          limits:
+            cpu: 100m
+            memory: 64Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: refused-require-mesh-sidecar-marker
+  namespace: mitstack-admission-probe
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: refused-require-mesh-sidecar-marker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: refused-require-mesh-sidecar-marker
+        mitstack.dev/app: probe
+      annotations:
+        sidecar.istio.io/status: '{"containers":["istio-proxy"]}'
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: app
+        image: ghcr.io/mitstack-eu/probe@sha256:0000000000000000000000000000000000000000000000000000000000000000
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: [ALL]
+        resources:
+          limits:
+            cpu: 100m
+            memory: 64Mi

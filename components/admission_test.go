@@ -31,7 +31,7 @@ func namedDocument(t *testing.T, m components.Manifest, kind, name string) map[s
 	return docs[i]
 }
 
-func TestAdmission_ExemptsTheSameSystemNamespacesInBothPoliciesAndKyvernosWebhooks(t *testing.T) {
+func TestAdmission_ExemptsTheSameSystemNamespacesInEveryPolicyAndKyvernosWebhooks(t *testing.T) {
 	label := testutil.Documents(t, manifest(t, "mitstack-require-app-label").Bytes)[0]
 	generate := testutil.Documents(t, manifest(t, "mitstack-generate-default-deny").Bytes)[0]
 	kyvernoConfig := namedDocument(t, manifest(t, "kyverno"), "ConfigMap", "kyverno")
@@ -48,7 +48,10 @@ func TestAdmission_ExemptsTheSameSystemNamespacesInBothPoliciesAndKyvernosWebhoo
 
 	assert.Equal(t, fmt.Sprint(labelExempt), fmt.Sprint(generateExempt), "the default-deny generator exempts other namespaces than the label policy")
 	assert.Equal(t, fmt.Sprint(labelExempt), fmt.Sprint(webhooks.NamespaceSelector.MatchExpressions[0].Values), "Kyverno's webhooks exempt other namespaces than the label policy")
-	assert.Subset(t, labelExempt, []string{"kube-system", "argocd", "kyverno", "cnpg-system", nodeconfig.TalosAPINamespace})
+	for _, policy := range []string{"mitstack-require-mesh", "mitstack-require-strict-mtls"} {
+		assert.Equal(t, labelExempt, kyvernoExempt(t, policy), "%s exempts other namespaces than the label policy", policy)
+	}
+	assert.Subset(t, labelExempt, []string{"kube-system", "argocd", "kyverno", "cnpg-system", "istio-system", nodeconfig.TalosAPINamespace})
 }
 
 var sliceEndpoints = map[string]testutil.CiliumEndpoint{
@@ -66,13 +69,13 @@ func TestDatabaseSlicesPolicy_GrantsEachPodExactlyItsAllows(t *testing.T) {
 	policy := namedDocument(t, manifest(t, "mitstack-database-slices"), "CiliumClusterwideNetworkPolicy", "mitstack-database-slices")
 	for pod, want := range map[string][]string{
 		"instance": {
-			"egress to entity kube-apiserver", "egress with instance on 5432/TCP", "ingress with app on 5432/TCP",
-			"ingress with instance on 5432/TCP", "ingress with instance outside a database slice on 5432/TCP",
-			"ingress with job on 5432/TCP", "ingress with operator on 8000/TCP",
+			"egress to entity kube-apiserver", "egress with instance on 5432/TCP 15008/TCP", "ingress with app on 5432/TCP 15008/TCP",
+			"ingress with instance on 5432/TCP 15008/TCP", "ingress with instance outside a database slice on 5432/TCP 15008/TCP",
+			"ingress with job on 5432/TCP 15008/TCP", "ingress with operator on 8000/TCP 15008/TCP",
 		},
-		"job":                               {"egress to entity kube-apiserver", "egress with instance on 5432/TCP"},
-		"app":                               {"egress with instance on 5432/TCP"},
-		"instance outside a database slice": {"egress with instance on 5432/TCP"},
+		"job":                               {"egress to entity kube-apiserver", "egress with instance on 5432/TCP 15008/TCP"},
+		"app":                               {"egress with instance on 5432/TCP 15008/TCP"},
+		"instance outside a database slice": {"egress with instance on 5432/TCP 15008/TCP"},
 		"operator":                          nil,
 	} {
 		t.Run(pod, func(t *testing.T) {

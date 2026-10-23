@@ -236,6 +236,30 @@ func TestRender_GivesEveryClusterADefaultStorageClassThatProvisionsOnItsNodesUse
 	}
 }
 
+func TestRender_RunsTheMeshAndItsAdmissionPoliciesOnEveryProfileAndSize(t *testing.T) {
+	for _, profile := range []nodeconfig.Profile{nodeconfig.HCloud, nodeconfig.Metal} {
+		for _, nodes := range []int{1, 3} {
+			t.Run(fmt.Sprintf("%s with %d nodes", profile, nodes), func(t *testing.T) {
+				cluster := testutil.NewCluster(t, testutil.WithProfile(profile), testutil.WithLocations(nodes))
+				node := nodeconfig.Node{}
+				if profile == nodeconfig.Metal {
+					node.Hostname = "cp-fsn1"
+				}
+
+				got, err := nodeconfig.Render(cluster, node)
+
+				require.NoError(t, err)
+				docs := testutil.Documents(t, got)
+				assert.Subset(t, documentNames(testutil.Kind(docs, "KubeExternalManifestConfig")), []any{"istio-base", "istiod", "istio-cni", "ztunnel"},
+					"no node fetches the mesh")
+				assert.Subset(t, documentNames(testutil.Kind(docs, "KubeInlineManifestConfig")),
+					[]any{"mitstack-strict-mtls", "mitstack-ambient-probes", "mitstack-require-mesh", "mitstack-require-strict-mtls"},
+					"the configuration carries no mesh-wide STRICT policy or no admission policy for it")
+			})
+		}
+	}
+}
+
 func documentNames(docs []map[string]any) []any {
 	var names []any
 	for _, doc := range docs {

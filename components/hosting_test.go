@@ -321,10 +321,32 @@ func TestHosting_LetsTheInitJobReachOnlyClusterDNSOpenBaoAndGitHubsAPIAndOpenBao
 
 	assert.Equal(t, []string{
 		"egress to " + github + " on 443/TCP",
-		"egress with OpenBao on 8200/TCP",
+		"egress with OpenBao on 8200/TCP 15008/TCP",
 		"egress with cluster DNS on 53/UDP 53/TCP through the DNS proxy",
 	}, initFlows, "the init Job's flows")
-	assert.Contains(t, openBaoFlows, "ingress with the init Job on 8200/TCP", "OpenBao refuses the init Job's calls")
+	assert.Contains(t, openBaoFlows, "ingress with the init Job on 8200/TCP 15008/TCP", "OpenBao refuses the init Job's calls")
+}
+
+func TestHosting_KeepsTheMembersAloneOnOpenBaosClusterPortAndEveryoneOffItsOtherPorts(t *testing.T) {
+	set := hostingSet(t, testutil.HostingInputs(t))
+	policy := namedDocument(t, testutil.Manifest(t, "mitstack-hosting-mesh", set.Served), "AuthorizationPolicy", "mitstack-openbao-ports")
+	member, secrets := "cluster.local/ns/openbao/sa/openbao", "cluster.local/ns/external-secrets/sa/external-secrets"
+
+	assert.Equal(t, map[string]any{"app.kubernetes.io/name": "openbao"}, testutil.Field(t, policy, "spec", "selector", "matchLabels"))
+	for _, c := range []struct {
+		principal string
+		port      int
+		denied    bool
+	}{
+		{member, 8200, false},
+		{member, 8201, false},
+		{secrets, 8200, false},
+		{secrets, 8201, true},
+		{secrets, 8202, true},
+		{member, 8202, true},
+	} {
+		assert.Equal(t, c.denied, denied(t, policy, c.principal, c.port), "a call from %s to port %d", c.principal, c.port)
+	}
 }
 
 func TestHosting_ServesTraefikOnNodePorts30080And30081OnEveryNode(t *testing.T) {

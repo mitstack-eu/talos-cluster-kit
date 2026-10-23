@@ -59,7 +59,7 @@ cfg, err := nodeconfig.Render(nodeconfig.Cluster{
 	Gateways:             []netip.Addr{netip.MustParseAddr("10.0.0.2")},
 	GatewayCA:            gatewayCA.Cert, // from gateway.NewCA
 	Logs:                 components.LogExport{Endpoint: "otlp.mitstack.dev:4317", CA: receiverCA}, // the log receiver's CA
-	ServiceAccountIssuer: issuer, // https://mitstack-oidc-7kq2m4xw3pa3hd6rz5tn2cjvle.s3.eu-central-1.amazonaws.com/sub_0123456789ab
+	ServiceAccountIssuer: issuer, // the block's public issuer, such as https://mitstack-oidc-7kq2m4xw3pa3hd6rz5tn2cjvle.s3.eu-central-1.amazonaws.com/sub_0123456789ab
 }, nodeconfig.Node{})
 ```
 
@@ -109,18 +109,29 @@ query.
 The API server serves both documents itself, at
 `/.well-known/openid-configuration` and `/openid/v1/jwks`, but only on the
 cluster's private network. The block therefore passes a public issuer, such as
-an S3 bucket's URL, as `Cluster.ServiceAccountIssuer`. The node report then
-carries the API server's key set as its `jwks` member, and the platform
-publishes it under that issuer.
+an S3 bucket's URL, as `Cluster.ServiceAccountIssuer`. `adapt` in
+`nodeconfig/documents.go` writes it as the `issuerURL` of Talos's
+`KubeServiceAccountConfig`, which Talos passes the API server as
+`--service-account-issuer`. The node report, `report/scripts/report.sh`, reads
+the API server's key set and posts it as its `jwks` member. The platform then
+publishes that key set under the issuer.
 
-Kubernetes serves the discovery endpoints only for an https issuer with no
-query or fragment, as its
+Kubernetes serves the discovery endpoints only for an issuer that complies
+with
+[OpenID Connect Discovery](https://openid.net/specs/openid-connect-discovery-1_0.html),
+which asks for a "URL using the https scheme with no query or fragment
+components". Its
 [service account issuer discovery](https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/#service-account-issuer-discovery)
-page says, which is why `Render` refuses any other issuer. The report reads
-the key set as the service account it already runs as, because Kubernetes binds
-the `system:service-account-issuer-discovery` role to every service account by
-default. A cluster keeps the signing key it was built with, so the report
-carries no proof of a key change.
+page says so, and `checkIssuer` in `nodeconfig/nodeconfig.go` refuses any
+other issuer for that reason. The report reads the key set as the service
+account it already runs as, because Kubernetes binds the
+`system:service-account-issuer-discovery` role to every service account by
+default.
+
+The platform keeps the first key set a cluster reports. It takes a different
+one only with a proof signed by a key it already holds. A cluster keeps the
+signing key it was built with, so its key set never changes and the report
+carries no such proof.
 
 ## How a cluster isolates each app
 

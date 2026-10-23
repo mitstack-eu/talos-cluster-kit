@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -18,7 +19,8 @@ import (
 )
 
 const (
-	cloudNativePGRead = "get clusters.postgresql.cnpg.io,databases.postgresql.cnpg.io,databaseroles.postgresql.cnpg.io -A -o json"
+	reportToken       = "report-token-fixture"
+	cloudNativePGRead ="get clusters.postgresql.cnpg.io,databases.postgresql.cnpg.io,databaseroles.postgresql.cnpg.io -A -o json"
 	keySetRead        = "get --raw /openid/v1/jwks"
 )
 
@@ -46,9 +48,12 @@ esac
 `
 )
 
-// postedReport is what the fake platform received.
+// postedReport is what the fake platform last received, and how many reports it took.
 type postedReport struct {
+	mu            sync.Mutex
+	posts         int
 	authorization string
+	raw           []byte
 	body          map[string]any
 }
 
@@ -56,8 +61,12 @@ func fakePlatform(t *testing.T) (*httptest.Server, *postedReport) {
 	t.Helper()
 	posted := &postedReport{}
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posted.mu.Lock()
+		defer posted.mu.Unlock()
+		posted.posts++
 		posted.authorization = r.Header.Get("Authorization")
 		data, err := io.ReadAll(r.Body)
+		posted.raw = data
 		if err == nil {
 			err = json.Unmarshal(data, &posted.body)
 		}
@@ -91,15 +100,23 @@ func renderedScript(t *testing.T, url string) string {
 // runReport runs the rendered report against kubectl with the tools image's jq and returns what the fake platform received.
 func runReport(t *testing.T, kubectl string) (*testutil.Tools, *postedReport, string, error) {
 	t.Helper()
+	return runReportWith(t, map[string]string{"talosctl": fakeTalosctl, "kubectl": kubectl})
+}
+
+// runReportWith runs the rendered report against the given fakes, with env added to the report's own.
+func runReportWith(t *testing.T, fakes map[string]string, env ...string) (*testutil.Tools, *postedReport, string, error) {
+	t.Helper()
 	server, posted := fakePlatform(t)
-	tools := testutil.NewTools(t, map[string]string{"talosctl": fakeTalosctl, "kubectl": kubectl})
+	tools := testutil.NewTools(t, fakes)
 	tools.AddImageJq(t)
 	token := filepath.Join(t.TempDir(), "token")
-	require.NoError(t, os.WriteFile(token, []byte("report-token-fixture"), 0o600))
+	require.NoError(t, os.WriteFile(token, []byte(reportToken), 0o600))
 
-	out, err := testutil.RunBash(t, renderedScript(t, server.URL), tools.Env(
-		"REPORT_URL="+server.URL, "SUBSCRIPTION_ID=sub_0123456789ab", "HOST_IP=10.0.0.6",
-		"REPORT_TOKEN_FILE="+token, "CURL_CA_BUNDLE="+writeServerCA(t, server)))
+	out, err := testutil.RunBash(t, renderedScript(t, server.URL), tools.Env(append([]string{
+		"REPORT_URL=" + server.URL, "SUBSCRIPTION_ID=sub_0123456789ab", "HOST_IP=10.0.0.6",
+		"REPORT_TOKEN_FILE=" + token, "CURL_CA_BUNDLE=" + writeServerCA(t, server)}, env...)...))
+	posted.mu.Lock()
+	defer posted.mu.Unlock()
 	return tools, posted, out, err
 }
 

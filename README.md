@@ -150,8 +150,8 @@ namespace outside the system namespaces, which are `kube-system`,
 |---|---|---|
 | `mitstack-require-app-label` | Refuses a pod without a non-empty `mitstack.dev/app` label, which an app's network policies select its pods by | `components/admission/policies/mitstack-require-app-label.yaml` |
 | `mitstack-generate-default-deny` | Gives each namespace, new or existing, the NetworkPolicy `mitstack-default-deny`, which blocks every connection its pods make or take until an app's own policy allows it | `components/admission/policies/mitstack-generate-default-deny.yaml` |
-| `mitstack-require-mesh` | Refuses a pod on the host network and a pod annotated `sidecar.istio.io/status`, the two kinds of pod the mesh leaves out | `components/admission/policies/mitstack-require-mesh.yaml` |
-| `mitstack-require-strict-mtls` | Refuses a PeerAuthentication, Istio's policy for which calls a pod takes, that lets a pod or one of its ports take a call with no workload identity. The hosting set's four exceptions, named in the policy, are the only ones it admits. The operator's exception in the default set sits in `cnpg-system`, which the policy skips | `components/admission/policies/mitstack-require-strict-mtls.yaml` |
+| `mitstack-require-mesh` | Refuses a pod on the host network and a pod annotated `sidecar.istio.io/status`, the two kinds of pod the mesh leaves out. [The mesh section](#how-every-call-between-pods-proves-who-makes-it) explains the mesh | `components/admission/policies/mitstack-require-mesh.yaml` |
+| `mitstack-require-strict-mtls` | Refuses a PeerAuthentication, Istio's policy for which calls a pod takes, that lets a pod or one of its ports take a call with no workload identity. It admits by name only the four exceptions of the hosting set, the extra components a cluster that hosts the platform runs. The CloudNativePG operator's exception sits in `cnpg-system`, which the policy skips | `components/admission/policies/mitstack-require-strict-mtls.yaml` |
 
 Kyverno's webhooks skip the same system namespaces, so a Kyverno outage
 cannot stop a system pod, such as the node report in `mitstack-node`.
@@ -186,7 +186,8 @@ identities, so this module runs Istio 1.30.7 in ambient mode.
 Ambient mode adds no container to your pods. Each node runs ztunnel, a proxy
 that holds a certificate for every pod on the node and wraps each TCP call
 between two pods in mutual TLS, sent to port 15008 of the pod it calls. The
-certificate names the pod's service account as a SPIFFE identity, such as
+certificate names the pod's service account as a SPIFFE identity, the
+standard URI form for naming a workload in a certificate, such as
 `spiffe://cluster.local/ns/app-shop/sa/default`. istiod, Istio's control
 plane, issues it from a root it creates inside the cluster. Each certificate
 lasts 24 hours, and ztunnel asks for a new one when half of that has passed.
@@ -202,7 +203,7 @@ which only Kubernetes' most permissive Pod Security level, privileged, allows.
 | The CNI agent's settings | Put every pod in the mesh, whatever its labels, except the pods of `kube-system`, `istio-system` and `kyverno` and a pod on the host network | `components/render/istio-cni-values.yaml` |
 | `default` in `istio-system` | The mesh-wide PeerAuthentication in `STRICT` mode, so a pod refuses any call that presents no workload certificate | `components/mesh/strict-mtls.yaml` |
 | `mitstack-ambient-probes` | A Cilium policy that admits the kubelet's health probes into every pod. The CNI agent rewrites their source to `169.254.7.127`, so ztunnel can let them past, and Cilium would otherwise drop that address in a default-deny namespace | `components/mesh/probes.yaml` |
-| `mitstack-database-instance-ports` | Keeps every caller but the CloudNativePG operator off port 8000 of a Postgres instance, where its instance manager answers the operator, and everyone off its ports other than 5432 and 8000 | `components/mesh/cloudnative-pg.yaml` |
+| `mitstack-database-instance-ports` | Keeps every caller but the CloudNativePG operator off port 8000 of a Postgres instance, where its instance manager, the CloudNativePG process inside each Postgres pod, answers the operator, and everyone off its ports other than 5432 and 8000 | `components/mesh/cloudnative-pg.yaml` |
 | Argo CD's mesh policies | Admit port 15008 between the same Argo CD pods the chart's own network policies admit | `components/mesh/argocd.yaml` |
 
 istiod injects no sidecar, because `components/render/istiod-values.yaml`
@@ -211,8 +212,10 @@ ambient mode, and `mitstack-require-mesh` refuses a pod that claims one.
 
 Cilium still decides which pods may talk, but Cilium sees a call inside the
 mesh only as port 15008. Every Cilium policy that admits a call between two
-pods on a named port therefore admits 15008 from the same peers. Where the
-port itself matters, an Istio AuthorizationPolicy keeps it, such as
+pods on a port it lists therefore admits 15008 from the same peers. Inside
+the mesh, Cilium can no longer tell those listed ports apart. Where that
+matters, an AuthorizationPolicy, Istio's rule for which caller may reach which
+port, which ztunnel enforces, limits the ports again. One is
 `mitstack-database-instance-ports` for a Postgres instance.
 
 Two kinds of caller hold no workload identity. The API server calls each
@@ -226,7 +229,7 @@ call without an identity, and the Cilium policies still decide who reaches it.
 | `cert-manager/mitstack-cert-manager-webhook` | 10250 on cert-manager's webhook, in the hosting set | The API server |
 | `cert-manager/mitstack-trust-manager-webhook` | 6443 on trust-manager, in the hosting set | The API server |
 | `external-secrets/mitstack-external-secrets-webhook` | 10250 on the External Secrets webhook, in the hosting set | The API server |
-| `traefik/mitstack-traefik-web` | 8000 and 8443 on Traefik, in the hosting set | Web clients, through the load balancers |
+| `traefik/mitstack-traefik-web` | 8000 and 8443 on Traefik, in the hosting set, the container ports behind its NodePorts 30080 and 30081 | Web clients, through the load balancers |
 
 Cilium's Istio page asks for two settings when Cilium replaces kube-proxy.
 `cni.exclusive: false` keeps the CNI configuration Istio chains after

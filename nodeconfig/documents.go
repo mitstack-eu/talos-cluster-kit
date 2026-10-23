@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/siderolabs/talos/pkg/machinery/config/config"
+	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/block"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/cri"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/k8s"
@@ -87,8 +88,26 @@ func (c Cluster) documents(n Node) ([]config.Document, error) {
 	}
 	docs = append(docs, talosAPIAccessDocument())
 	docs = append(docs, c.mirrorDocuments()...)
+	docs = append(docs, systemVolumeDocuments()...)
 	docs = append(docs, c.userVolumeDocuments()...)
 	return append(docs, manifests...), nil
+}
+
+// systemVolumeDocuments encrypt STATE and EPHEMERAL with LUKS2 when a node first formats them, each under a key derived
+// from the node's UUID, and lock EPHEMERAL's key to the random salt its own STATE holds.
+func systemVolumeDocuments() []config.Document {
+	state := block.NewVolumeConfigV1Alpha1()
+	state.MetaName = constants.StatePartitionLabel
+	state.EncryptionSpec = nodeIDEncryption(block.EncryptionKey{KeyNodeID: &block.EncryptionKeyNodeID{}})
+	ephemeral := block.NewVolumeConfigV1Alpha1()
+	ephemeral.MetaName = constants.EphemeralPartitionLabel
+	ephemeral.MountSpec.MountSecure = new(true)
+	ephemeral.EncryptionSpec = nodeIDEncryption(block.EncryptionKey{KeyNodeID: &block.EncryptionKeyNodeID{}, KeyLockToSTATE: new(true)})
+	return []config.Document{state, ephemeral}
+}
+
+func nodeIDEncryption(key block.EncryptionKey) block.EncryptionSpec {
+	return block.EncryptionSpec{EncryptionProvider: blockres.EncryptionProviderLUKS2, EncryptionKeys: []block.EncryptionKey{key}}
 }
 
 // userVolumeDocuments put each user volume in a directory on EPHEMERAL, which spans a Cloud server's one disk whole.

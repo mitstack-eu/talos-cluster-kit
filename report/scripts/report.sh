@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Posts the node report: each node's Talos version and readiness, the etcd members, each Argo CD Application's health,
-# CloudNativePG's objects, the objects labelled mitstack.dev/subscription with the kinds it read whole, the API server's
+# Posts the node report: each node's Talos version and readiness, the etcd members, how each node's STATE and EPHEMERAL
+# are encrypted, each Argo CD Application's health, CloudNativePG's objects, the objects labelled mitstack.dev/subscription with the kinds it read whole, the API server's
 # key set as jwks, and a checks member naming none of the verdict's checks.
 # When a read or the body fails or times out, it posts a report whose error names it instead, then exits non-zero.
 # Usage: REPORT_URL=<https url> SUBSCRIPTION_ID=<id> HOST_IP=<this pod's node> [REPORT_TOKEN_FILE=/var/run/mitstack/token] [REPORT_READ_SECONDS=25] report.sh
 # It exists so the platform sees a cluster it never dials into, as ADR 0072 requires, with os:reader and no Secret right.
 set -euo pipefail
 
-# Seven limits of 25 seconds, their 5-second kill grace and the post's 20 fit the Job's activeDeadlineSeconds of 240.
+# Eight limits of 25 seconds, their 5-second kill grace and the post's 20 fit the Job's activeDeadlineSeconds of 270.
 limit=${REPORT_READ_SECONDS:-25}
 # Each kind as kubectl --show-kind names it, which is how a block names the objects it creates. The report holds no
 # Secret right, so secret is never one of them.
@@ -40,8 +40,27 @@ collect() {
   read_into "kubectl get applications" "$work/applications.json" kubectl get applications.argoproj.io -n argocd -o json
   read_into "kubectl get --raw /openid/v1/jwks" "$work/jwks.json" kubectl get --raw /openid/v1/jwks
   read_into "talosctl etcd members" "$work/members.txt" talosctl -n "$HOST_IP" etcd members
-  read_cloudnative_pg
+  read_system_volumes
+  read_beside cloudnative-pg kubectl get clusters.postgresql.cnpg.io,databases.postgresql.cnpg.io,databaseroles.postgresql.cnpg.io -A -o json
   read_subscription_resources
+}
+
+# read_beside NAME COMMAND... keeps the read's output, stderr and exit status, so a failed read is reported beside the
+# others in a full report.
+read_beside() {
+  local name=$1 status=0
+  shift
+  limited "$@" > "$work/$name.out" 2> "$work/$name.err" || status=$?
+  printf '%s' "$status" > "$work/$name.status"
+}
+
+# read_system_volumes reads every node's volume statuses through the Talos API and slurps talosctl's stream of objects
+# into one array.
+read_system_volumes() {
+  local nodes
+  nodes=$(jq -r '[.items[].status.addresses[]? | select(.type == "InternalIP") | .address] | join(",")' "$work/nodes.json") || nodes=
+  read_beside system-volumes talosctl -n "$nodes" get volumestatus -o json
+  jq -s . "$work/system-volumes.out" > "$work/system-volumes.json" 2> /dev/null || true
 }
 
 # read_subscription_resources reads each kind on its own, all of them within one time limit, and keeps a kind only when
@@ -63,14 +82,6 @@ read_subscription_resources() {
       cat "$work/kind.read" >> "$work/subscription-resources.json"
     fi
   done
-}
-
-# read_cloudnative_pg keeps its exit status and stderr, so a failed read is reported beside the reads above.
-read_cloudnative_pg() {
-  local status=0
-  limited kubectl get clusters.postgresql.cnpg.io,databases.postgresql.cnpg.io,databaseroles.postgresql.cnpg.io -A -o json \
-    > "$work/cloudnative-pg.json" 2> "$work/cloudnative-pg.err" || status=$?
-  printf '%s' "$status" > "$work/cloudnative-pg.status"
 }
 
 # report_failure NAME STATUS posts a report whose error names the read, how it ended and the last 1 KiB of its
@@ -105,9 +116,12 @@ body() {
     --slurpfile applications "$work/applications.json" \
     --slurpfile jwks "$work/jwks.json" \
     --rawfile members "$work/members.txt" \
-    --rawfile cnpg "$work/cloudnative-pg.json" \
+    --rawfile cnpg "$work/cloudnative-pg.out" \
     --rawfile cnpg_err "$work/cloudnative-pg.err" \
     --argjson cnpg_status "$(cat "$work/cloudnative-pg.status")" \
+    --rawfile volumes "$work/system-volumes.json" \
+    --rawfile volumes_err "$work/system-volumes.err" \
+    --argjson volumes_status "$(cat "$work/system-volumes.status")" \
     --arg made_at "$made_at" \
     --slurpfile kinds "$work/subscription-resources.json" \
     --from-file /dev/stdin <<'JQ'
@@ -121,10 +135,16 @@ body() {
     else
       {applied: .status.applied, message: (.status.message // null | if . then .[0:256] else . end)}
     end;
-    def cloudnative_pg_read:
-      if $cnpg_status != 0 then {exitStatus: $cnpg_status, stderr: $cnpg_err[-1024:]}
-      else try ($cnpg | fromjson | [.items[] | cloudnative_pg])
-        catch {exitStatus: 0, stderr: "kubectl exited 0, and its output is not the CloudNativePG objects this report reads"}
+    def system_volume: {
+      node: .node, name: .metadata.id, phase: .spec.phase,
+      encryptionProvider: (.spec.encryptionProvider // "none"),
+      encryptionKeys: (.spec.configuredEncryptionKeys // []),
+      lockedToState: (.spec.encryptionLockedToState // false)
+    };
+    # beside(status; stderr; refusal; read) is a read_beside read's result, or how it failed.
+    def beside($status; $stderr; $refusal; read):
+      if $status != 0 then {exitStatus: $status, stderr: $stderr[-1024:]}
+      else try read catch {exitStatus: 0, stderr: $refusal}
       end;
     # A kind is listed whole or not at all, and 1000 objects keep the body inside the platform's 256 KiB.
     def subscription_resources:
@@ -146,12 +166,17 @@ body() {
       etcd: {members: [$members | split("\n") | .[1:][] | select(test("\\S")) | [splits("\\s+")] | {
         id: .[1], hostname: .[2], peerURLs: (.[3] | split(",")), learner: (.[5] == "true")
       }]},
+      systemVolumes: beside($volumes_status; $volumes_err;
+        "talosctl exited 0, and its output is not the volume statuses this report reads";
+        $volumes | fromjson | [.[] | select(.metadata.id == "STATE" or .metadata.id == "EPHEMERAL") | system_volume]),
       argocd: {applications: [$applications[0].items[] | {
         name: .metadata.name,
         health: (.status.health.status // "Unknown"),
         sync: (.status.sync.status // "Unknown")
       }]},
-      cloudNativePG: cloudnative_pg_read,
+      cloudNativePG: beside($cnpg_status; $cnpg_err;
+        "kubectl exited 0, and its output is not the CloudNativePG objects this report reads";
+        $cnpg | fromjson | [.items[] | cloudnative_pg]),
       subscriptionResources: $listed.objects,
       subscriptionResourceKinds: $listed.kinds,
       jwks: $jwks[0],

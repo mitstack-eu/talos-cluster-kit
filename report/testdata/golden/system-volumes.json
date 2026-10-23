@@ -1,0 +1,58 @@
+[
+  {
+    "node": "10.0.0.5",
+    "name": "STATE",
+    "phase": "ready",
+    "encryptionProvider": "luks2",
+    "encryptionKeys": [
+      "nodeID"
+    ],
+    "lockedToState": false
+  },
+  {
+    "node": "10.0.0.5",
+    "name": "EPHEMERAL",
+    "phase": "ready",
+    "encryptionProvider": "luks2",
+    "encryptionKeys": [
+      "nodeID"
+    ],
+    "lockedToState": true
+  },
+  {
+    "node": "10.0.0.6",
+    "name": "STATE",
+    "phase": "ready",
+    "encryptionProvider": "luks2",
+    "encryptionKeys": [
+      "nodeID"
+    ],
+    "lockedToState": false
+  },
+  {
+    "node": "10.0.0.6",
+    "name": "EPHEMERAL",
+    "phase": "ready",
+    "encryptionProvider": "luks2",
+    "encryptionKeys": [
+      "nodeID"
+    ],
+    "lockedToState": true
+  },
+  {
+    "node": "10.0.0.7",
+    "name": "STATE",
+    "phase": "ready",
+    "encryptionProvider": "none",
+    "encryptionKeys": [],
+    "lockedToState": false
+  },
+  {
+    "node": "10.0.0.7",
+    "name": "EPHEMERAL",
+    "phase": "ready",
+    "encryptionProvider": "none",
+    "encryptionKeys": [],
+    "lockedToState": false
+  }
+]

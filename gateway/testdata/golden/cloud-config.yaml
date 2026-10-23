@@ -102,7 +102,9 @@ write_files:
       KUBECTL_SHA256=65691ff77eb6fa44c908b77a1082c9f092c3b9733b5cefabec0d1104890e21a8
   - path: /etc/mitstack-gateway/images.txt
     content: |
+      docker.io/library/busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
       docker.io/otel/opentelemetry-collector-contrib:0.163.1@sha256:1175b03003053962012f5a231f5567f66a3e8fdb960c7835c0e48f7aa1555806
+      docker.io/rancher/local-path-provisioner:v0.0.37@sha256:e757967a5ec338f6a9b371c5a9688bedaa8c3578ea3dd4db329ea0084be0a86f
       ghcr.io/cloudnative-pg/cloudnative-pg:1.30.1@sha256:923c267ec29636db3bee20f993d0ec4973fa22998e1adad37da79e4d32b5bc07
       ghcr.io/cloudnative-pg/pgbouncer:1.25.2@sha256:b15c428057d1ffbc19fb70496911a5f1a47066dcc1315bf794f4e85ade29e2e5
       ghcr.io/cloudnative-pg/postgresql:18.6-system-trixie@sha256:f7e00138159bb45d70b624ba25e446924cb3ed1bf366d13e936c3f81b914064e
@@ -131,6 +133,7 @@ write_files:
       argocd.yaml fb411045350cff6403ef713a067f92d7c88e0527e6ca9c8bd115886f8c4aa17b https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/argocd/argocd.yaml
       kyverno.yaml 7f93b0957f04a348f03d6c0cdff833dd6e1eb4b9becc8481ffc2ca5ab65b2902 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/kyverno/kyverno.yaml
       cloudnative-pg.yaml 6c62fe77193f3e9dbd1073cf81bc9271ab041f39097bf855417b8488d8eb8561 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/cloudnative-pg/cloudnative-pg.yaml
+      local-path-provisioner.yaml b2dfa76fee341a7ff10719b32edd35a857ab34d467bcd31889d6193691c30d39 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/local-path-provisioner/local-path-provisioner.yaml
   - path: /usr/local/bin/mitstack-gateway-prepare
     permissions: "0755"
     content: |

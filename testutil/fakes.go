@@ -9,12 +9,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v4"
+
+	"github.com/mitstack-eu/talos-cluster-kit/components"
 )
 
 // Update rewrites every golden file a test compares against, when go test runs with -update.
@@ -105,6 +108,14 @@ func Kind(docs []map[string]any, kind string) []map[string]any {
 		}
 	}
 	return matching
+}
+
+func Manifest(t *testing.T, name string, lists ...[]components.Manifest) components.Manifest {
+	t.Helper()
+	manifests := slices.Concat(lists...)
+	i := slices.IndexFunc(manifests, func(m components.Manifest) bool { return m.Name == name })
+	require.GreaterOrEqual(t, i, 0, "no manifest %s", name)
+	return manifests[i]
 }
 
 // Field walks path through nested maps and lists, where a list step is its decimal index.

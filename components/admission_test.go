@@ -17,13 +17,10 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 )
 
-// manifest returns the default set's manifest of that name, served or inline.
 func manifest(t *testing.T, name string) components.Manifest {
 	t.Helper()
 	set := components.Default()
-	i := slices.IndexFunc(slices.Concat(set.Served, set.Inline), func(m components.Manifest) bool { return m.Name == name })
-	require.GreaterOrEqual(t, i, 0, "the default set has no manifest %s", name)
-	return slices.Concat(set.Served, set.Inline)[i]
+	return testutil.Manifest(t, name, set.Served, set.Inline)
 }
 
 func namedDocument(t *testing.T, m components.Manifest, kind, name string) map[string]any {
@@ -82,6 +79,27 @@ func TestDatabaseSlicesPolicy_GrantsEachPodExactlyItsAllows(t *testing.T) {
 			assert.Equal(t, want, testutil.Grants(t, policy, sliceEndpoints, pod))
 		})
 	}
+}
+
+func TestLocalPathProvisioner_LabelsEveryPodItStartsAndOpensTheAPIServerToItsNamespaceAlone(t *testing.T) {
+	label := testutil.Documents(t, manifest(t, "mitstack-require-app-label").Bytes)[0]
+	exempt := testutil.Field(t, label, "spec", "matchConstraints", "namespaceSelector", "matchExpressions", "0", "values").([]any)
+	provisioner := manifest(t, "local-path-provisioner")
+	namespace := testutil.Documents(t, manifest(t, "local-path-provisioner-namespace").Bytes)[0]
+	policy := namedDocument(t, manifest(t, "mitstack-local-path-flows"), "CiliumClusterwideNetworkPolicy", "mitstack-local-path-flows")
+	pods := map[string]testutil.CiliumEndpoint{"a pod in local-path-storage": testutil.Endpoint("local-path-storage", nil, nil), "an app pod": sliceEndpoints["app"]}
+
+	template := testutil.Field(t, namedDocument(t, provisioner, "Deployment", "local-path-provisioner"), "spec", "template")
+	helper := testutil.Documents(t, []byte(testutil.Field(t, namedDocument(t, provisioner, "ConfigMap", "local-path-config"), "data", "helperPod.yaml").(string)))[0]
+
+	for pod, labels := range map[string]any{"the provisioner": testutil.Field(t, template, "metadata", "labels"), "a helper pod": testutil.Field(t, helper, "metadata", "labels")} {
+		assert.NotEmpty(t, labels.(map[string]any)["mitstack.dev/app"], "the app-label policy refuses %s", pod)
+	}
+	assert.NotContains(t, exempt, "local-path-storage", "the app-label policy skips the namespace")
+	assert.NotContains(t, string(manifest(t, "mitstack-generate-default-deny").Bytes), "local-path-storage", "the namespace gets no mitstack-default-deny")
+	assert.Equal(t, "privileged", testutil.Field(t, namespace, "metadata", "labels", "pod-security.kubernetes.io/enforce"), "Talos's default level, baseline, refuses a helper pod's hostPath volume")
+	assert.Equal(t, []string{"egress to entity kube-apiserver"}, testutil.Grants(t, policy, pods, "a pod in local-path-storage"))
+	assert.Empty(t, testutil.Grants(t, policy, pods, "an app pod"), "the policy opens the API server beyond local-path-storage")
 }
 
 // gitBlob is the object id git gives a file's bytes, which `git rev-parse <tag>:<path>` answers.

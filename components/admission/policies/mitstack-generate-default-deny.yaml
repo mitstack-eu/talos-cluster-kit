@@ -18,7 +18,7 @@ spec:
       resources: ["namespaces"]
   matchConditions:
   - name: not-a-system-namespace
-    expression: "!(object.metadata.name in ['kube-system', 'kube-public', 'kube-node-lease', 'argocd', 'kyverno', 'cnpg-system', 'mitstack-node'])"
+    expression: "!(object.metadata.name in ['kube-system', 'kube-public', 'kube-node-lease', 'argocd', 'kyverno', 'cnpg-system', 'mitstack-node', 'istio-system'])"
   variables:
   - name: namespace
     expression: "string(object.metadata.name)"

@@ -39,7 +39,7 @@ type Set struct {
 	UserVolumes []string
 }
 
-//go:embed admission/policies argocd cilium cloudnative-pg kyverno local-path-provisioner metadata network-policies
+//go:embed admission/policies argocd cilium cloudnative-pg istio kyverno local-path-provisioner mesh metadata network-policies
 var defaultFiles embed.FS
 
 const LocalPathVolume = "local-path-provisioner"
@@ -54,6 +54,10 @@ func Default() Set {
 			defaultManifest("kyverno", "kyverno/kyverno.yaml"),
 			defaultManifest("cloudnative-pg", "cloudnative-pg/cloudnative-pg.yaml"),
 			defaultManifest("local-path-provisioner", "local-path-provisioner/local-path-provisioner.yaml"),
+			defaultManifest("istio-base", "istio/istio-base.yaml"),
+			defaultManifest("istiod", "istio/istiod.yaml"),
+			defaultManifest("istio-cni", "istio/istio-cni.yaml"),
+			defaultManifest("ztunnel", "istio/ztunnel.yaml"),
 		},
 		Inline: []Manifest{
 			defaultManifest("mitstack-metadata-block", "metadata/metadata-block.yaml"),
@@ -63,6 +67,12 @@ func Default() Set {
 			defaultManifest("mitstack-database-slices", "network-policies/mitstack-database-slices.yaml"),
 			defaultManifest("local-path-provisioner-namespace", "local-path-provisioner/namespace.yaml"),
 			defaultManifest("mitstack-local-path-flows", "local-path-provisioner/flows.yaml"),
+			defaultManifest("mitstack-strict-mtls", "mesh/strict-mtls.yaml"),
+			defaultManifest("mitstack-ambient-probes", "mesh/probes.yaml"),
+			defaultManifest("mitstack-mesh-cloudnative-pg", "mesh/cloudnative-pg.yaml"),
+			defaultManifest("mitstack-mesh-argocd", "mesh/argocd.yaml"),
+			defaultManifest("mitstack-require-mesh", "admission/policies/mitstack-require-mesh.yaml"),
+			defaultManifest("mitstack-require-strict-mtls", "admission/policies/mitstack-require-strict-mtls.yaml"),
 		},
 		TalosImages: pinnedTalosImages,
 		UserVolumes: []string{LocalPathVolume},

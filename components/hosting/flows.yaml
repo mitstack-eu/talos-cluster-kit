@@ -1,4 +1,5 @@
 # Each hosting namespace starts from mitstack-default-deny, so these name the only flows its pods make or take.
+# A call between two pods arrives on ztunnel's port 15008 in the mesh, so each such flow admits 15008 beside its port.
 apiVersion: cilium.io/v2
 kind: CiliumClusterwideNetworkPolicy
 metadata:
@@ -31,7 +32,7 @@ specs:
         k8s:io.kubernetes.pod.namespace: openbao
         k8s:app.kubernetes.io/name: openbao
     toPorts:
-    - ports: [{port: "8200", protocol: TCP}]
+    - ports: [{port: "8200", protocol: TCP}, {port: "15008", protocol: TCP}]
   ingress:
   - fromEntities: [kube-apiserver]
     toPorts:
@@ -54,26 +55,26 @@ specs:
         k8s:io.kubernetes.pod.namespace: openbao
         k8s:app.kubernetes.io/name: openbao
     toPorts:
-    - ports: [{port: "8200", protocol: TCP}, {port: "8201", protocol: TCP}]
+    - ports: [{port: "8200", protocol: TCP}, {port: "8201", protocol: TCP}, {port: "15008", protocol: TCP}]
   ingress:
   - fromEndpoints:
     - matchLabels:
         k8s:io.kubernetes.pod.namespace: openbao
         k8s:app.kubernetes.io/name: openbao
     toPorts:
-    - ports: [{port: "8200", protocol: TCP}, {port: "8201", protocol: TCP}]
+    - ports: [{port: "8200", protocol: TCP}, {port: "8201", protocol: TCP}, {port: "15008", protocol: TCP}]
   - fromEndpoints:
     - matchLabels:
         k8s:io.kubernetes.pod.namespace: external-secrets
         k8s:app.kubernetes.io/name: external-secrets
     toPorts:
-    - ports: [{port: "8200", protocol: TCP}]
+    - ports: [{port: "8200", protocol: TCP}, {port: "15008", protocol: TCP}]
   - fromEndpoints:
     - matchLabels:
         k8s:io.kubernetes.pod.namespace: mitstack-node
         k8s:app.kubernetes.io/name: mitstack-openbao-init
     toPorts:
-    - ports: [{port: "8200", protocol: TCP}]
+    - ports: [{port: "8200", protocol: TCP}, {port: "15008", protocol: TCP}]
 - description: "OpenBao's init Job looks names up through Cilium's DNS proxy, reaches OpenBao, and reaches GitHub's API, which the gateway forwards."
   endpointSelector:
     matchLabels:
@@ -94,7 +95,7 @@ specs:
         k8s:io.kubernetes.pod.namespace: openbao
         k8s:app.kubernetes.io/name: openbao
     toPorts:
-    - ports: [{port: "8200", protocol: TCP}]
+    - ports: [{port: "8200", protocol: TCP}, {port: "15008", protocol: TCP}]
   - toFQDNs:
     - matchName: api.github.com
     toPorts:

@@ -236,6 +236,119 @@ func TestRender_GivesEveryClusterADefaultStorageClassThatProvisionsOnItsNodesUse
 	}
 }
 
+func TestRender_RunsTheMeshAndItsAdmissionPoliciesOnEveryProfileAndSize(t *testing.T) {
+	for _, profile := range []nodeconfig.Profile{nodeconfig.HCloud, nodeconfig.Metal} {
+		for _, nodes := range []int{1, 3} {
+			t.Run(fmt.Sprintf("%s with %d nodes", profile, nodes), func(t *testing.T) {
+				cluster := testutil.NewCluster(t, testutil.WithProfile(profile), testutil.WithLocations(nodes))
+				node := nodeconfig.Node{}
+				if profile == nodeconfig.Metal {
+					node.Hostname = "cp-fsn1"
+				}
+
+				got, err := nodeconfig.Render(cluster, node)
+
+				require.NoError(t, err)
+				docs := testutil.Documents(t, got)
+				assert.Subset(t, documentNames(testutil.Kind(docs, "KubeExternalManifestConfig")), []any{"istio-base", "istiod", "istio-cni", "ztunnel"},
+					"no node fetches the mesh")
+				assert.Subset(t, documentNames(testutil.Kind(docs, "KubeInlineManifestConfig")),
+					[]any{"mitstack-strict-mtls", "mitstack-ambient-probes", "mitstack-require-mesh", "mitstack-require-strict-mtls"},
+					"the configuration carries no mesh-wide STRICT policy or no admission policy for it")
+			})
+		}
+	}
+}
+
+// meshDocs returns the documents of the named manifests of set, in order.
+func meshDocs(t *testing.T, set components.Set, names ...string) []map[string]any {
+	t.Helper()
+	var docs []map[string]any
+	for _, name := range names {
+		docs = append(docs, testutil.Documents(t, testutil.Manifest(t, name, set.Served, set.Inline).Bytes)...)
+	}
+	return docs
+}
+
+func TestRender_PutsEveryPodButKubeSystemsIstiosAndKyvernosInTheMeshFromTheMirror(t *testing.T) {
+	set := components.Default()
+	images, err := mirror.List(set)
+	require.NoError(t, err)
+	cni := testutil.Kind(meshDocs(t, set, "istio-cni"), "ConfigMap")[0]["data"].(map[string]any)
+	istio := meshDocs(t, set, "istio-base", "istiod")
+	cilium := testutil.Kind(meshDocs(t, set, "cilium"), "ConfigMap")[0]["data"].(map[string]any)
+	exempt := testutil.Field(t, meshDocs(t, set, "mitstack-require-mesh")[0], "spec", "matchConstraints", "namespaceSelector", "matchExpressions", "0", "values")
+
+	assert.Equal(t, "- namespaceSelector: {}\n  podSelector: {}", cni["AMBIENT_ENABLEMENT_SELECTOR"], "a label could take a pod out of the mesh")
+	assert.Equal(t, "kube-system,istio-system,kyverno", cni["EXCLUDE_NAMESPACES"])
+	assert.Subset(t, exempt, []any{"kube-system", "istio-system", "kyverno"}, "Kyverno checks a namespace the mesh skips")
+	assert.Equal(t, "false", cni["AMBIENT_DNS_CAPTURE"], "ztunnel would answer lookups Cilium's DNS proxy must see")
+	for _, name := range []string{"docker.io/istio/pilot", "docker.io/istio/install-cni", "docker.io/istio/ztunnel"} {
+		assert.True(t, slices.ContainsFunc(images, func(i components.Image) bool { return i.Name == name }), "the mirror holds no %s", name)
+	}
+	assert.Equal(t, "privileged", testutil.Field(t, testutil.Kind(istio, "Namespace")[0], "metadata", "labels", "pod-security.kubernetes.io/enforce"))
+	for _, cm := range testutil.Kind(istio, "ConfigMap") {
+		assert.NotEqual(t, "istio-sidecar-injector", testutil.Field(t, cm, "metadata", "name"), "istiod could give a pod a sidecar, which takes it out of the mesh")
+	}
+	assert.Equal(t, "false", cilium["cni-exclusive"], "Cilium would delete the CNI configuration Istio chains")
+	assert.Equal(t, "true", cilium["bpf-lb-sock-hostns-only"], "Cilium's socket load balancing would hide service calls from ztunnel")
+}
+
+func TestRender_RefusesACallWithoutAWorkloadIdentityButOnTheWebhookAndWebPorts(t *testing.T) {
+	set, err := components.Hosting(testutil.HostingInputs(t))
+	require.NoError(t, err)
+	var peers []map[string]any
+	for _, m := range slices.Concat(set.Served, set.Inline) {
+		peers = append(peers, testutil.Kind(testutil.Documents(t, m.Bytes), "PeerAuthentication")...)
+	}
+	admitted := testutil.Field(t, meshDocs(t, set, "mitstack-require-strict-mtls")[0], "spec", "matchConditions", "0", "expression").(string)
+
+	got := map[string]string{}
+	for _, peer := range peers {
+		key := fmt.Sprintf("%v/%v", testutil.Field(t, peer, "metadata", "namespace"), testutil.Field(t, peer, "metadata", "name"))
+		assert.Equal(t, "STRICT", testutil.Field(t, peer, "spec", "mtls", "mode"), key)
+		got[key] = ""
+		if ports, ok := testutil.Field(t, peer, "spec").(map[string]any)["portLevelMtls"]; ok {
+			got[key] = fmt.Sprint(ports)
+			assert.True(t, key == "cnpg-system/mitstack-cloudnative-pg-webhook" || strings.Contains(admitted, `"`+key+`"`), "Kyverno refuses %s", key)
+		}
+	}
+	permissive := func(ports ...int) string {
+		m := map[any]any{}
+		for _, p := range ports {
+			m[p] = map[string]any{"mode": "PERMISSIVE"}
+		}
+		return fmt.Sprint(m)
+	}
+	assert.Equal(t, map[string]string{
+		"istio-system/default":                               "",
+		"cnpg-system/mitstack-cloudnative-pg-webhook":        permissive(9443),
+		"cert-manager/mitstack-cert-manager-webhook":         permissive(10250),
+		"cert-manager/mitstack-trust-manager-webhook":        permissive(6443),
+		"external-secrets/mitstack-external-secrets-webhook": permissive(10250),
+		"traefik/mitstack-traefik-web":                       permissive(8000, 8443),
+	}, got, "a port takes calls without a workload identity that neither the API server nor an outside web client makes")
+}
+
+func TestRender_AdmitsZtunnelsPortWhereverArgoCDsChartAdmitsACallBetweenItsPods(t *testing.T) {
+	set := components.Default()
+	mesh := testutil.Kind(meshDocs(t, set, "mitstack-mesh-argocd"), "NetworkPolicy")
+
+	var want []string
+	for _, policy := range testutil.Kind(meshDocs(t, set, "argocd"), "NetworkPolicy") {
+		for _, rule := range testutil.Field(t, policy, "spec", "ingress").([]any) {
+			if from, _ := rule.(map[string]any)["from"].([]any); len(from) > 0 && testutil.Field(t, from, "0", "podSelector") != nil {
+				want = append(want, fmt.Sprint(testutil.Field(t, policy, "spec", "podSelector"), from, []any{map[string]any{"port": 15008, "protocol": "TCP"}}))
+			}
+		}
+	}
+	var got []string
+	for _, policy := range mesh {
+		got = append(got, fmt.Sprint(testutil.Field(t, policy, "spec", "podSelector"), testutil.Field(t, policy, "spec", "ingress", "0", "from"), testutil.Field(t, policy, "spec", "ingress", "0", "ports")))
+	}
+	assert.ElementsMatch(t, want, got, "a call between Argo CD's pods inside the mesh arrives on 15008, which the chart's policies do not admit")
+}
+
 func documentNames(docs []map[string]any) []any {
 	var names []any
 	for _, doc := range docs {

@@ -68,6 +68,8 @@ var (
 	hostingTLSManifest []byte
 	//go:embed hosting/flows.yaml
 	hostingFlowsManifest []byte
+	//go:embed hosting/mesh.yaml
+	hostingMeshManifest []byte
 	//go:embed hosting/seal-key.yaml
 	sealKeyTemplate string
 	//go:embed hosting/sealed-secrets-key.yaml
@@ -105,6 +107,7 @@ func Hosting(in HostingInputs) (Set, error) {
 		Manifest{Name: "traefik", Path: "components/traefik/traefik.yaml", Bytes: traefikManifest},
 		Manifest{Name: "mitstack-hosting-tls", Path: "components/hosting/tls.yaml", Bytes: hostingTLSManifest},
 		Manifest{Name: "mitstack-hosting-flows", Path: "components/hosting/flows.yaml", Bytes: hostingFlowsManifest},
+		Manifest{Name: "mitstack-hosting-mesh", Path: "components/hosting/mesh.yaml", Bytes: hostingMeshManifest},
 	)
 	set.Inline = append(slices.Clone(set.Inline), inline...)
 	set.UserVolumes = append(slices.Clone(set.UserVolumes), OpenBaoVolume)

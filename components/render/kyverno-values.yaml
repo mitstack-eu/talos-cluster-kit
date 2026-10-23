@@ -13,7 +13,7 @@ config:
       matchExpressions:
       - key: kubernetes.io/metadata.name
         operator: NotIn
-        values: [kube-system, kube-public, kube-node-lease, argocd, kyverno, cnpg-system, mitstack-node]
+        values: [kube-system, kube-public, kube-node-lease, argocd, kyverno, cnpg-system, mitstack-node, istio-system]
 admissionController:
   initContainer:
     image:

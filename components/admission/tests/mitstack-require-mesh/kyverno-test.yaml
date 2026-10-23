@@ -1,0 +1,23 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: mitstack-require-mesh
+policies:
+- ../../policies/mitstack-require-mesh.yaml
+resources:
+- accepted.yaml
+- refused.yaml
+results:
+- isValidatingPolicy: true
+  policy: mitstack-require-mesh
+  kind: Deployment
+  resources:
+  - accepted-require-mesh
+  result: pass
+- isValidatingPolicy: true
+  policy: mitstack-require-mesh
+  kind: Deployment
+  resources:
+  - refused-require-mesh-host-network
+  - refused-require-mesh-sidecar-marker
+  result: fail

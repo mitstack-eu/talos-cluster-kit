@@ -1,0 +1,34 @@
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: mitstack-require-strict-mtls
+  annotations:
+    mitstack.dev/standard: ADR 0095, mutual TLS with a workload identity
+spec:
+  validationActions: [Deny]
+  matchConstraints:
+    resourceRules:
+    - apiGroups: ["security.istio.io"]
+      apiVersions: ["*"]
+      operations: ["CREATE", "UPDATE"]
+      resources: ["peerauthentications"]
+    namespaceSelector:
+      matchExpressions:
+      - key: kubernetes.io/metadata.name
+        operator: NotIn
+        values: [kube-system, kube-public, kube-node-lease, argocd, kyverno, cnpg-system, mitstack-node, istio-system]
+  # The hosting set's own policies open only the ports the API server and outside web clients call.
+  matchConditions:
+  - name: not-one-of-the-hosting-sets-own
+    expression: >-
+      !(object.metadata.namespace + "/" + object.metadata.name in [
+        "cert-manager/mitstack-cert-manager-webhook", "cert-manager/mitstack-trust-manager-webhook",
+        "external-secrets/mitstack-external-secrets-webhook", "traefik/mitstack-traefik-web"])
+  variables:
+  - name: plain
+    expression: '["PERMISSIVE", "DISABLE"]'
+  validations:
+  - expression: '!(object.spec.?mtls.?mode.orValue("UNSET") in variables.plain)'
+    message: "mitstack-require-strict-mtls: a PeerAuthentication may not let a pod take calls that carry no workload identity"
+  - expression: 'object.spec.?portLevelMtls.orValue({}).all(port, !(object.spec.portLevelMtls[port].?mode.orValue("UNSET") in variables.plain))'
+    message: "mitstack-require-strict-mtls: a PeerAuthentication may not let a pod's port take calls that carry no workload identity"

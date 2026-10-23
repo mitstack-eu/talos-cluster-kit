@@ -321,10 +321,21 @@ func TestHosting_LetsTheInitJobReachOnlyClusterDNSOpenBaoAndGitHubsAPIAndOpenBao
 
 	assert.Equal(t, []string{
 		"egress to " + github + " on 443/TCP",
-		"egress with OpenBao on 8200/TCP",
+		"egress with OpenBao on 8200/TCP 15008/TCP",
 		"egress with cluster DNS on 53/UDP 53/TCP through the DNS proxy",
 	}, initFlows, "the init Job's flows")
-	assert.Contains(t, openBaoFlows, "ingress with the init Job on 8200/TCP", "OpenBao refuses the init Job's calls")
+	assert.Contains(t, openBaoFlows, "ingress with the init Job on 8200/TCP 15008/TCP", "OpenBao refuses the init Job's calls")
+}
+
+func TestHosting_KeepsTheMembersAloneOnOpenBaosClusterPortAndEveryoneOffItsOtherPorts(t *testing.T) {
+	set := hostingSet(t, testutil.HostingInputs(t))
+	policy := namedDocument(t, testutil.Manifest(t, "mitstack-hosting-mesh", set.Served), "AuthorizationPolicy", "mitstack-openbao-ports")
+	member, secrets := "cluster.local/ns/openbao/sa/openbao", "cluster.local/ns/external-secrets/sa/external-secrets"
+
+	assert.False(t, testutil.Denies(t, policy, member, 8201), "a member's call to the cluster port")
+	assert.False(t, testutil.Denies(t, policy, secrets, 8200), "External Secrets' call to the API")
+	assert.True(t, testutil.Denies(t, policy, secrets, 8201), "External Secrets' call to the cluster port")
+	assert.True(t, testutil.Denies(t, policy, member, 8202), "a call to a port OpenBao's flows do not name")
 }
 
 func TestHosting_ServesTraefikOnNodePorts30080And30081OnEveryNode(t *testing.T) {

@@ -1,0 +1,39 @@
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: accepted-require-strict-mtls
+  namespace: mitstack-admission-probe
+spec:
+  mtls:
+    mode: STRICT
+---
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: accepted-require-strict-mtls-ports
+  namespace: mitstack-admission-probe
+spec:
+  selector:
+    matchLabels:
+      mitstack.dev/app: probe
+  portLevelMtls:
+    8080:
+      mode: STRICT
+---
+# The hosting set's own exception for Traefik's web ports, which the policy admits by its namespace and name.
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: mitstack-traefik-web
+  namespace: traefik
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: traefik
+  mtls:
+    mode: STRICT
+  portLevelMtls:
+    8000:
+      mode: PERMISSIVE
+    8443:
+      mode: PERMISSIVE

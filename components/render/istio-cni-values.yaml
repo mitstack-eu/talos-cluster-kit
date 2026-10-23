@@ -1,0 +1,11 @@
+profile: ambient
+image: docker.io/istio/install-cni:1.30.7-distroless@sha256:5d65fa948ff28fac54d99f272205a3f71ee84e609d7e46792eecd77db0501d79
+# The namespaces whose pods stay out of the mesh: the API server's and Cilium's own, Istio's, and Kyverno's webhooks.
+excludeNamespaces: [kube-system, istio-system, kyverno]
+ambient:
+  # Every other pod joins the mesh whatever its labels, so no namespace or pod can opt out by a label.
+  enablementSelectors:
+  - podSelector: {}
+    namespaceSelector: {}
+  # Name lookups keep going straight to cluster DNS, where Cilium's DNS proxy learns the addresses its FQDN policies allow.
+  dnsCapture: false

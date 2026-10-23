@@ -11,10 +11,12 @@ Back to [the README](../README.md).
 
 The component set is the manifests every Talos cluster starts with.
 The table lists its files. `scripts/render-components.sh` writes the first
-five from pinned sources, each checked against a pinned sha256, and refuses
+six rows from pinned sources, each checked against a pinned sha256, and refuses
 any image that is not named by digest. The CloudNativePG files are copied from
 a release, and the rest are written by hand. The hosting set's files follow in
-a second table.
+a second table. [The README's mesh section](../README.md#how-every-call-between-pods-proves-who-makes-it)
+explains the mesh's terms used here: the CNI agent, ztunnel, port 15008, the
+exceptions for callers with no identity, and a Postgres instance's port 8000.
 
 | File | Source | What it runs |
 |---|---|---|
@@ -23,8 +25,10 @@ a second table.
 | `components/argocd/argocd.yaml` | The argo-cd 10.10.5 chart with `components/render/argocd-values.yaml`, Dex off | Argo CD v3.5.5 in namespace `argocd`, with a health check that reads a CloudNativePG Cluster passing through a switchover, failover, upgrade or configuration change as Progressing |
 | `components/kyverno/kyverno.yaml` | The kyverno 3.9.1 chart with `components/render/kyverno-values.yaml`, its tests and Helm hooks off | Kyverno v1.19.1 in namespace `kyverno`, its images from `ghcr.io` and its webhooks skipping the system namespaces |
 | `components/local-path-provisioner/local-path-provisioner.yaml` | The local-path-provisioner 0.0.37 chart with `components/render/local-path-provisioner-values.yaml`, taken from the source archive of the commit the project's v0.0.37 tag names, since the project publishes no chart repository | Rancher's local path provisioner in namespace `local-path-storage`, behind the default StorageClass `local-path`, keeping each claim on the user volume `local-path-provisioner` |
+| `components/istio/istio-base.yaml`, `istiod.yaml`, `istio-cni.yaml`, `ztunnel.yaml` | Istio's base, istiod, cni and ztunnel 1.30.7 charts, each with its values file in `components/render/` | Istio in ambient mode in namespace `istio-system`: its CRDs, istiod with no sidecar injector, the CNI agent that puts every pod outside `kube-system`, `istio-system` and `kyverno` in the mesh, and ztunnel on every node |
 | `components/cloudnative-pg/cloudnative-pg.yaml`, `components/cloudnative-pg/namespace.yaml` | Copied from mitstack-eu/cluster-bases v0.4.0 | The CloudNativePG 1.30.1 operator in namespace `cnpg-system`, with its default Postgres and PgBouncer images by digest |
-| `components/admission/policies/` | Written by hand | The Kyverno policies that require the `mitstack.dev/app` label and give each app namespace `mitstack-default-deny` |
+| `components/admission/policies/` | Written by hand | The Kyverno policies that require the `mitstack.dev/app` label, give each app namespace `mitstack-default-deny`, refuse a pod the mesh leaves out, and refuse a PeerAuthentication that takes a call with no workload identity |
+| `components/mesh/strict-mtls.yaml`, `probes.yaml`, `cloudnative-pg.yaml`, `argocd.yaml` | Written by hand | The mesh-wide `STRICT` PeerAuthentication, the Cilium policy that admits the kubelet's probes from `169.254.7.127`, the CloudNativePG operator's webhook exception and the ports a Postgres instance takes, and the network policies that admit the mesh's port 15008 between Argo CD's pods |
 | `components/network-policies/mitstack-database-slices.yaml` | Written by hand | The Cilium policy that opens a database slice's Postgres instances to each other, the operator and the app slices |
 | `components/local-path-provisioner/namespace.yaml`, `components/local-path-provisioner/flows.yaml` | Written by hand | The provisioner's namespace at the privileged Pod Security level, and the Cilium policy that lets its pods reach the API server |
 | `components/metadata/metadata-block.yaml` | Written by hand | The policy that drops pod traffic to `169.254.169.254` and isolates nothing else |
@@ -42,13 +46,13 @@ each chart with the sha256 its repository's `index.yaml` publishes.
 | `components/external-secrets/external-secrets.yaml` | The external-secrets 2.11.0 chart with `components/render/external-secrets-values.yaml` | External Secrets in namespace `external-secrets`, its webhook certificate from cert-manager |
 | `components/sealed-secrets/sealed-secrets.yaml` | The sealed-secrets 2.20.0 chart with `components/render/sealed-secrets-values.yaml` | The Sealed Secrets controller in `kube-system`, with key renewal off |
 | `components/traefik/traefik.yaml` | The traefik 41.6.1 chart with `components/render/traefik-values.yaml` | Traefik on every node in namespace `traefik`, on NodePorts 30080 and 30081 |
-| `components/hosting/tls.yaml`, `components/hosting/flows.yaml` | Written by hand | OpenBao's authority and certificate, its trust bundle, and the flows the hosting namespaces allow |
+| `components/hosting/tls.yaml`, `components/hosting/flows.yaml`, `components/hosting/mesh.yaml` | Written by hand | OpenBao's authority and certificate, its trust bundle, the flows the hosting namespaces allow, the ports OpenBao takes, and the webhook and Traefik ports that take a call with no workload identity |
 | `components/hosting/seal-key.yaml`, `sealed-secrets-key.yaml`, `sealed-app-key.yaml`, `storage.yaml` | Written by hand, as templates `components.Hosting` fills | The inline manifests that carry the block's secrets and OpenBao's volumes |
 | `openbaoinit/openbao-init.yaml` | Written by hand, as a template `openbaoinit.Manifests` fills | OpenBao's init Job in `mitstack-node`, and the ConfigMap with the public key the Job encrypts the root token and recovery key to, `openbaoSealKeyRecipient` |
 
 mitstack-eu/cluster-bases is the repository of pinned third-party manifests
 the k3s blocks copy from. It holds CloudNativePG, which the kit copies, and
-none of the charts the script renders. The kit renders those the way
+none of the charts the script renders. This module renders those the way
 cluster-bases renders its own, with a pinned chart, a values file and a check.
 To change one, edit its values file or the script's pin, then render again:
 
@@ -134,15 +138,21 @@ that log to check the order of the calls.
 | `TestReport_HandsTheCloudNativePGExitStatusToTheToolsImagesJqAsANumber` | The tools image's jq reads the CloudNativePG exit status as a number when the read exits 0 or 1, and a read that times out is reported inline with exit status 124 | The jq `tools/jq.env` pins, and `REPORT_READ_SECONDS=1` |
 | `TestReport_ThatCannotReadPostsOneReportNamingTheReadAndExitsNonZero` | When the nodes, Applications, key set or etcd members read fails, the key set read times out, or jq cannot build the body, exactly one report is posted. Its `error` names the read or `body`, its exit status or `timedOut`, and the last 1 KiB of its stderr with no NUL, report token, bearer token or JWT | Fake reads that write those to stderr, and `REPORT_READ_SECONDS=1` |
 | `TestReport_ThatReadsEverythingPostsAHealthyBodyByteForByte` | A healthy report's body is byte for byte the recorded one, which release 0.9.1 also posts on the fixture reads | `report/testdata/golden/healthy-body.json` and a fake `date` |
-| `TestDefault_RunsKyvernoWithBothPoliciesAndCloudNativePGWithTheDatabaseSlicePolicy` | The set carries Kyverno, both policies, CloudNativePG and the slice policy, and the mirror holds each of their images by digest | The default set and its mirror list |
+| `TestDefault_RunsKyvernoWithBothPoliciesAndCloudNativePGWithTheDatabaseSlicePolicy` | The set carries Kyverno, its app-label and default-deny policies, CloudNativePG and the slice policy, and the mirror holds each of their images by digest | The default set and its mirror list |
 | `TestRender_GivesEveryClusterADefaultStorageClassThatProvisionsOnItsNodesUserVolume` | For one node and for three, the configuration carries the user volume `local-path-provisioner` and fetches the provisioner. The set has one default class, the provisioner's. That class waits for its first consumer, makes `local` volumes and deletes a claim's directory with the claim. The provisioner keeps each claim on the user volume and runs with its hardened security context. The mirror holds both of its images by digest. Its manifests hold no Secret, no reference to one, no variable named for a credential and no rule on Secrets | The rendered documents and the set's manifests |
 | `TestLocalPathProvisioner_LabelsEveryPodItStartsAndOpensTheAPIServerToItsNamespaceAlone` | The provisioner's pods and its helper pods carry `mitstack.dev/app`. Neither admission policy exempts its namespace, which admits a `hostPath` volume. Its pods may reach the API server and nothing else, and an app pod gains nothing from its policy | Both admission policies, and the flow policy's selectors evaluated in Go against the labels Cilium gives a pod in the namespace and an app pod |
-| `TestDatabaseSlicesPolicy_GrantsEachPodExactlyItsAllows` | A slice's Postgres instance, a CloudNativePG Job, an app pod, a pod outside a database slice and a system pod each get exactly their allows | Cilium's view of each pod's labels |
+| `TestDatabaseSlicesPolicy_GrantsEachPodExactlyItsAllows` | A slice's Postgres instance, a CloudNativePG Job, an app pod, a pod outside a database slice and a system pod each get exactly their allows, each beside port 15008 | Cilium's view of each pod's labels |
+| `TestRender_RunsTheMeshAndItsAdmissionPoliciesOnEveryProfileAndSize` | For one and three nodes on the `hcloud` and the `metal` profile, the configuration fetches Istio's four charts and carries the mesh-wide `STRICT` policy, the probe policy and both mesh admission policies | The rendered documents |
+| `TestRender_PutsEveryPodButKubeSystemsIstiosAndKyvernosInTheMeshFromTheMirror` | The CNI agent selects every pod whatever its labels, skips only `kube-system`, `istio-system` and `kyverno`, which Kyverno's mesh policy exempts too, and leaves DNS to Cilium. The mirror holds Istio's three images, `istio-system` is privileged, istiod renders no injector templates, and Cilium keeps other CNI configuration and its socket load balancing to the host | The CNI agent's and Cilium's ConfigMaps and the mirror list |
+| `TestRender_RefusesACallWithoutAWorkloadIdentityButOnTheWebhookAndWebPorts` | Every PeerAuthentication is `STRICT`, the only ports that take a call with no identity are the five exceptions, the CloudNativePG operator's in the default set and four in the hosting set. `mitstack-require-strict-mtls` admits the four hosting exceptions by name, and the operator's sits in `cnpg-system`, which the policy skips | Every PeerAuthentication of the hosting set |
+| `TestMesh_KeepsTheOperatorAloneOnAnInstancesManagerPortAndEveryoneOffItsOtherPorts` | A Postgres instance takes 5432 from any caller Cilium admits, 8000 from the operator alone, and nothing else | The AuthorizationPolicy's rules, read by `testutil.Denies` |
+| `TestRender_AdmitsZtunnelsPortWhereverArgoCDsChartAdmitsACallBetweenItsPods` | Each Argo CD chart policy that admits a call from its own pods has a policy admitting 15008 from the same pods | Both sets of NetworkPolicies |
+| `TestHosting_KeepsTheMembersAloneOnOpenBaosClusterPortAndEveryoneOffItsOtherPorts` | OpenBao takes 8200 from any caller Cilium admits, 8201 from its members alone, and nothing else | The AuthorizationPolicy's rules, read by `testutil.Denies` |
 | `TestArgoCD_ReadsACloudNativePGClusterPassingThroughAPhaseAsProgressingAndAStuckOneAsDegraded` | The `argocd-cm` health check reads each phase CloudNativePG passes through as Progressing, and a cluster waiting for its user as Degraded | The check run in gopher-lua, the Lua runtime Argo CD embeds |
 | `TestInit_CommitsTheKeysAsPGPMessagesBeforeAnyRequestCarriesTheRootTokenThenWritesTheReadPolicyOnTheAccessorItRead` | One init with `recovery_pgp_keys`, both keys only as PGP messages gpg reads, the commit before any request with the root token, no plain key in a log, and the policy on the accessor read from `sys/auth` | Fake OpenBao and GitHub APIs over TLS, and the real gpg and openssl |
 | `TestInit_OnAStoreInitialisedWithItsInitFileCommittedWritesNothing` | An initialised store whose file is committed gets no write, and the token the script mints to read the file may only read | The same fakes |
 | `TestInit_StopsBeforeInitialisingWhenItCannotHandTheKeysBack` | A recipient gpg cannot encrypt to, a store initialised without the file, and a file already committed for an uninitialised store each stop the script with that state named | The same fakes |
-| `TestHosting_LetsTheInitJobReachOnlyClusterDNSOpenBaoAndGitHubsAPIAndOpenBaoTakeItsCalls` | The init Job's pod may reach cluster DNS, OpenBao on 8200 and `api.github.com` on 443 and nothing else, and OpenBao takes its calls | Cilium's view of each pod's labels |
+| `TestHosting_LetsTheInitJobReachOnlyClusterDNSOpenBaoAndGitHubsAPIAndOpenBaoTakeItsCalls` | The init Job's pod may reach cluster DNS, OpenBao on 8200 or 15008 and `api.github.com` on 443 and nothing else, and OpenBao takes its calls | Cilium's view of each pod's labels |
 | `TestPrepareScript_RefusesAManifestWhoseBytesDifferFromItsPin` | The gateway installs no manifest whose sha256 differs from the list, and stops | Fake curl and skopeo |
 
 The fixtures in `testutil/testdata/` are throwaway keys made for these tests:

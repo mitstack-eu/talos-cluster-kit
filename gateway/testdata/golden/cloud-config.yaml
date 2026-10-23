@@ -102,6 +102,9 @@ write_files:
       KUBECTL_SHA256=65691ff77eb6fa44c908b77a1082c9f092c3b9733b5cefabec0d1104890e21a8
   - path: /etc/mitstack-gateway/images.txt
     content: |
+      docker.io/istio/install-cni:1.30.7-distroless@sha256:5d65fa948ff28fac54d99f272205a3f71ee84e609d7e46792eecd77db0501d79
+      docker.io/istio/pilot:1.30.7-distroless@sha256:337c5423c9b235855aadca8762f1ac3f0ce584833e49c50176382382099ff201
+      docker.io/istio/ztunnel:1.30.7-distroless@sha256:02f183c632d08fe25317e6f7ffd057384f5d54620e620264af429e0d4dbf8889
       docker.io/library/busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
       docker.io/otel/opentelemetry-collector-contrib:0.163.1@sha256:1175b03003053962012f5a231f5567f66a3e8fdb960c7835c0e48f7aa1555806
       docker.io/rancher/local-path-provisioner:v0.0.37@sha256:e757967a5ec338f6a9b371c5a9688bedaa8c3578ea3dd4db329ea0084be0a86f
@@ -128,12 +131,16 @@ write_files:
       registry.k8s.io/pause:3.10.2@sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4
   - path: /etc/mitstack-gateway/manifests.txt
     content: |
-      cilium.yaml 4f2fa29bfd991b939d8347a9f4b2db673d48c1a5bf6c91beec3ff7f07b4e0d4c https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/cilium/cilium.yaml
+      cilium.yaml d466b0987cd34337d3dc241ae03bce7e87f097c701680c08f4bf94a48711d317 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/cilium/cilium.yaml
       cilium-policy-crd.yaml 582273fd2b7d7238563ad2976ba36905ba818834ed71c58cad6e51bb4762088b https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/cilium/policy-crd.yaml
       argocd.yaml fb411045350cff6403ef713a067f92d7c88e0527e6ca9c8bd115886f8c4aa17b https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/argocd/argocd.yaml
-      kyverno.yaml 7f93b0957f04a348f03d6c0cdff833dd6e1eb4b9becc8481ffc2ca5ab65b2902 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/kyverno/kyverno.yaml
+      kyverno.yaml 30c3d2833991432a4d5e7ca1de8f5f8fe198a5f6933f7ec5bce6fd369bd712f3 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/kyverno/kyverno.yaml
       cloudnative-pg.yaml 6c62fe77193f3e9dbd1073cf81bc9271ab041f39097bf855417b8488d8eb8561 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/cloudnative-pg/cloudnative-pg.yaml
       local-path-provisioner.yaml b2dfa76fee341a7ff10719b32edd35a857ab34d467bcd31889d6193691c30d39 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/local-path-provisioner/local-path-provisioner.yaml
+      istio-base.yaml 21fd1e9fea0b26e16f6d1784db982b690eee1bfd36b91ec58fee2ea06af826eb https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/istio/istio-base.yaml
+      istiod.yaml 228e5605e6c50962b9e307b4dad7f468bc4cb408c8fb09a7bdc46a25ff227b54 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/istio/istiod.yaml
+      istio-cni.yaml 4e468eb1ce1722df46f859dd8318c28507127a0a129e0cb51ab8cc8060372526 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/istio/istio-cni.yaml
+      ztunnel.yaml fac3f7016c82389be8f1340a961e9b81c47c981bbae4853a77ed2a62117c8663 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/istio/ztunnel.yaml
   - path: /usr/local/bin/mitstack-gateway-prepare
     permissions: "0755"
     content: |

@@ -189,6 +189,7 @@ data:
   kube-proxy-replacement-healthz-bind-address: ""
   enable-no-service-endpoints-routable: "true"
   bpf-lb-sock: "false"
+  bpf-lb-sock-hostns-only: "true"
   nodeport-addresses: ""
   enable-health-check-nodeport: "true"
   enable-health-check-loadbalancer-ip: "false"
@@ -203,7 +204,7 @@ data:
   enable-endpoint-lockdown-on-policy-overflow: "false"
   # Tell the agent to generate and write a CNI configuration file
   write-cni-conf-when-ready: /host/etc/cni/net.d/05-cilium.conflist
-  cni-exclusive: "true"
+  cni-exclusive: "false"
   cni-log-file: "/var/run/cilium/cilium-cni.log"
   enable-endpoint-health-checking: "true"
   enable-health-checking: "true"

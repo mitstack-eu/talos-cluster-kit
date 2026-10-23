@@ -1,0 +1,2 @@
+profile: ambient
+image: docker.io/istio/ztunnel:1.30.7-distroless@sha256:02f183c632d08fe25317e6f7ffd057384f5d54620e620264af429e0d4dbf8889

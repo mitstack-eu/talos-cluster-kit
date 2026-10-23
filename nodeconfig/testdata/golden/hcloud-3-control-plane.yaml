@@ -433,6 +433,11 @@ ca: |
     -----END CERTIFICATE-----
 ---
 apiVersion: v1alpha1
+kind: UserVolumeConfig
+name: local-path-provisioner
+volumeType: directory
+---
+apiVersion: v1alpha1
 kind: KubeExternalManifestConfig
 name: cilium
 url: https://10.0.0.2/manifests/cilium.yaml
@@ -456,6 +461,11 @@ apiVersion: v1alpha1
 kind: KubeExternalManifestConfig
 name: cloudnative-pg
 url: https://10.0.0.2/manifests/cloudnative-pg.yaml
+---
+apiVersion: v1alpha1
+kind: KubeExternalManifestConfig
+name: local-path-provisioner
+url: https://10.0.0.2/manifests/local-path-provisioner.yaml
 ---
 apiVersion: v1alpha1
 kind: KubeInlineManifestConfig
@@ -619,6 +629,36 @@ manifest: |
             k8s:cnpg.io/podRole: instance
         toPorts:
         - ports: [{port: "5432", protocol: TCP}]
+---
+apiVersion: v1alpha1
+kind: KubeInlineManifestConfig
+name: local-path-provisioner-namespace
+manifest: |
+    # The provisioner's helper pods mount the node's user volume through hostPath to create and delete each claim's
+    # directory, and only the privileged Pod Security Standard admits a hostPath volume.
+    apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: local-path-storage
+      labels:
+        pod-security.kubernetes.io/enforce: privileged
+---
+apiVersion: v1alpha1
+kind: KubeInlineManifestConfig
+name: mitstack-local-path-flows
+manifest: |
+    # local-path-storage starts from mitstack-default-deny, and this names its pods' one flow, which the helper pods share.
+    apiVersion: cilium.io/v2
+    kind: CiliumClusterwideNetworkPolicy
+    metadata:
+      name: mitstack-local-path-flows
+    specs:
+    - description: "The local path provisioner reaches the API server."
+      endpointSelector:
+        matchLabels:
+          k8s:io.kubernetes.pod.namespace: local-path-storage
+      egress:
+      - toEntities: [kube-apiserver]
 ---
 apiVersion: v1alpha1
 kind: KubeInlineManifestConfig

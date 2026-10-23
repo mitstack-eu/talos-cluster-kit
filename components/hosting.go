@@ -107,7 +107,7 @@ func Hosting(in HostingInputs) (Set, error) {
 		Manifest{Name: "mitstack-hosting-flows", Path: "components/hosting/flows.yaml", Bytes: hostingFlowsManifest},
 	)
 	set.Inline = append(slices.Clone(set.Inline), inline...)
-	set.UserVolumes = []string{OpenBaoVolume}
+	set.UserVolumes = append(slices.Clone(set.UserVolumes), OpenBaoVolume)
 	return set, nil
 }
 

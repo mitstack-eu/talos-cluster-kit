@@ -11,7 +11,7 @@ Back to [the README](../README.md).
 
 The component set is the manifests every Talos cluster starts with.
 The table lists its files. `scripts/render-components.sh` writes the first
-four from pinned sources, each checked against a published sha256, and refuses
+five from pinned sources, each checked against a pinned sha256, and refuses
 any image that is not named by digest. The CloudNativePG files are copied from
 a release, and the rest are written by hand. The hosting set's files follow in
 a second table.
@@ -22,9 +22,11 @@ a second table.
 | `components/cilium/policy-crd.yaml` | Cilium v1.19.9's `CiliumClusterwideNetworkPolicy` CRD | The CRD the metadata policy needs before Cilium's operator starts |
 | `components/argocd/argocd.yaml` | The argo-cd 10.10.5 chart with `components/render/argocd-values.yaml`, Dex off | Argo CD v3.5.5 in namespace `argocd`, with a health check that reads a CloudNativePG Cluster passing through a switchover, failover, upgrade or configuration change as Progressing |
 | `components/kyverno/kyverno.yaml` | The kyverno 3.9.1 chart with `components/render/kyverno-values.yaml`, its tests and Helm hooks off | Kyverno v1.19.1 in namespace `kyverno`, its images from `ghcr.io` and its webhooks skipping the system namespaces |
+| `components/local-path-provisioner/local-path-provisioner.yaml` | The local-path-provisioner 0.0.37 chart with `components/render/local-path-provisioner-values.yaml`, taken from the source archive of the commit the project's v0.0.37 tag names, since the project publishes no chart repository | Rancher's local path provisioner in namespace `local-path-storage`, behind the default StorageClass `local-path`, keeping each claim on the user volume `local-path-provisioner` |
 | `components/cloudnative-pg/cloudnative-pg.yaml`, `components/cloudnative-pg/namespace.yaml` | Copied from mitstack-eu/cluster-bases v0.4.0 | The CloudNativePG 1.30.1 operator in namespace `cnpg-system`, with its default Postgres and PgBouncer images by digest |
 | `components/admission/policies/` | Written by hand | The Kyverno policies that require the `mitstack.dev/app` label and give each app namespace `mitstack-default-deny` |
 | `components/network-policies/mitstack-database-slices.yaml` | Written by hand | The Cilium policy that opens a database slice's Postgres instances to each other, the operator and the app slices |
+| `components/local-path-provisioner/namespace.yaml`, `components/local-path-provisioner/flows.yaml` | Written by hand | The provisioner's namespace at the privileged Pod Security level, and the Cilium policy that lets its pods reach the API server |
 | `components/metadata/metadata-block.yaml` | Written by hand | The policy that drops pod traffic to `169.254.169.254` and isolates nothing else |
 | `components/logs/collector.yaml` | Written by hand, as a template `components.LogCollector` fills | The node-local OpenTelemetry Collector on the host network |
 
@@ -128,6 +130,8 @@ that log to check the order of the calls.
 | `TestReport_DeclaresItsNodeReportContractAndCarriesNoneOfTheVerdictsChecks` | The report's `checks` member names contract `node-report/v1` and an empty `names`, whether or not the CloudNativePG read succeeds, so the platform judges none of its checks and reads each as `not-reported` | Fake talosctl and kubectl, and a local HTTPS server playing the platform |
 | `TestReport_WhoseCloudNativePGReadFailsStillCarriesItsNodesAndApplications` | A failed CloudNativePG read is reported with its exit status and stderr, beside the nodes and Applications | A fake kubectl that refuses only that read |
 | `TestDefault_RunsKyvernoWithBothPoliciesAndCloudNativePGWithTheDatabaseSlicePolicy` | The set carries Kyverno, both policies, CloudNativePG and the slice policy, and the mirror holds each of their images by digest | The default set and its mirror list |
+| `TestRender_GivesEveryClusterADefaultStorageClassThatProvisionsOnItsNodesUserVolume` | For one node and for three, the configuration carries the user volume `local-path-provisioner` and fetches the provisioner. The set has one default class, the provisioner's. That class waits for its first consumer, makes `local` volumes and deletes a claim's directory with the claim. The provisioner keeps each claim on the user volume and runs with its hardened security context. The mirror holds both of its images by digest. Its manifests hold no Secret, no reference to one, no variable named for a credential and no rule on Secrets | The rendered documents and the set's manifests |
+| `TestLocalPathProvisioner_LabelsEveryPodItStartsAndOpensTheAPIServerToItsNamespaceAlone` | The provisioner's pods and its helper pods carry `mitstack.dev/app`. Neither admission policy exempts its namespace, which admits a `hostPath` volume. Its pods may reach the API server and nothing else, and an app pod gains nothing from its policy | Both admission policies, and the flow policy's selectors evaluated in Go against the labels Cilium gives a pod in the namespace and an app pod |
 | `TestDatabaseSlicesPolicy_GrantsEachPodExactlyItsAllows` | A slice's Postgres instance, a CloudNativePG Job, an app pod, a pod outside a database slice and a system pod each get exactly their allows | Cilium's view of each pod's labels |
 | `TestArgoCD_ReadsACloudNativePGClusterPassingThroughAPhaseAsProgressingAndAStuckOneAsDegraded` | The `argocd-cm` health check reads each phase CloudNativePG passes through as Progressing, and a cluster waiting for its user as Degraded | The check run in gopher-lua, the Lua runtime Argo CD embeds |
 | `TestInit_CommitsTheKeysAsPGPMessagesBeforeAnyRequestCarriesTheRootTokenThenWritesTheReadPolicyOnTheAccessorItRead` | One init with `recovery_pgp_keys`, both keys only as PGP messages gpg reads, the commit before any request with the root token, no plain key in a log, and the policy on the accessor read from `sys/auth` | Fake OpenBao and GitHub APIs over TLS, and the real gpg and openssl |

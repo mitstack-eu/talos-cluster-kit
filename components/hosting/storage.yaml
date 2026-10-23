@@ -1,6 +1,6 @@
-# OpenBao's members keep their Raft data on each node's user volume. OpenBao boots before any storage provisioner,
-# so each volume is a local one pinned to its node and bound to one member's claim by name, and the class provisions
-# nothing. Retain keeps the data if the claim goes.
+# OpenBao's members keep their Raft data on each node's user volume. Each volume is a local one pinned to its node and
+# bound to one member's claim by name, so a member keeps its node, and the class provisions nothing. Retain keeps the
+# data if the claim goes, where the default class local-path deletes it.
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:

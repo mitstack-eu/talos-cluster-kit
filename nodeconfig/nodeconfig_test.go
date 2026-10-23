@@ -3,12 +3,15 @@ package nodeconfig_test
 import (
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"net/netip"
 	"net/url"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -172,26 +175,129 @@ func TestRender_GivesACloudNodeADefaultRouteThroughHetznersRouterAndKeepsDHCPOnI
 	}
 }
 
-func TestRender_GivesAHostingClusterOpenBaosUserVolumeAndADefaultClusterNone(t *testing.T) {
+func directoryVolume(name string) map[string]any {
+	return map[string]any{"apiVersion": "v1alpha1", "kind": "UserVolumeConfig", "name": name, "volumeType": "directory"}
+}
+
+func TestRender_GivesAHostingClusterOpenBaosUserVolumeBesideTheLocalPathVolume(t *testing.T) {
 	hosting, err := components.Hosting(testutil.HostingInputs(t))
 	require.NoError(t, err)
 	cluster := testutil.NewCluster(t, testutil.WithLocations(3))
 	cluster.Components = hosting
-	plain, err := nodeconfig.Render(testutil.NewCluster(t, testutil.WithLocations(3)), nodeconfig.Node{})
-	require.NoError(t, err)
 
 	got, err := nodeconfig.Render(cluster, nodeconfig.Node{})
 
 	require.NoError(t, err)
 	docs := testutil.Documents(t, got)
-	assert.Equal(t, []map[string]any{{"apiVersion": "v1alpha1", "kind": "UserVolumeConfig", "name": components.OpenBaoVolume, "volumeType": "directory"}},
+	assert.Equal(t, []map[string]any{directoryVolume(components.LocalPathVolume), directoryVolume(components.OpenBaoVolume)},
 		testutil.Kind(docs, "UserVolumeConfig"))
-	var inline []any
-	for _, doc := range testutil.Kind(docs, "KubeInlineManifestConfig") {
-		inline = append(inline, doc["name"])
+	assert.Subset(t, documentNames(testutil.Kind(docs, "KubeInlineManifestConfig")),
+		[]any{"mitstack-openbao-seal-key", "mitstack-sealed-secrets-key", "mitstack-sealed-app-key", "mitstack-openbao-storage"})
+}
+
+func TestRender_GivesEveryClusterADefaultStorageClassThatProvisionsOnItsNodesUserVolume(t *testing.T) {
+	for name, nodes := range map[string]int{"one node": 1, "three nodes": 3} {
+		t.Run(name, func(t *testing.T) {
+			cluster := testutil.NewCluster(t, testutil.WithLocations(nodes))
+			images, err := mirror.List(cluster.Components)
+			require.NoError(t, err)
+
+			got, err := nodeconfig.Render(cluster, nodeconfig.Node{})
+
+			require.NoError(t, err)
+			docs := testutil.Documents(t, got)
+			assert.Equal(t, []map[string]any{directoryVolume(components.LocalPathVolume)}, testutil.Kind(docs, "UserVolumeConfig"))
+			assert.Contains(t, documentNames(testutil.Kind(docs, "KubeExternalManifestConfig")), "local-path-provisioner", "no node fetches the provisioner")
+			provisioner := testutil.Documents(t, testutil.Manifest(t, "local-path-provisioner", cluster.Components.Served).Bytes)
+			deployment, config := testutil.Kind(provisioner, "Deployment")[0], testutil.Kind(provisioner, "ConfigMap")[0]
+			helper := testutil.Documents(t, []byte(testutil.Field(t, config, "data", "helperPod.yaml").(string)))[0]
+			classes := defaultStorageClasses(t, cluster.Components)
+			require.Len(t, classes, 1, "the set's default storage classes")
+			command := testutil.Field(t, deployment, "spec", "template", "spec", "containers", "0", "command").([]any)
+			assert.Equal(t, command[slices.Index(command, any("--provisioner-name"))+1], classes[0]["provisioner"], "the default class names another provisioner")
+			assert.Equal(t, "WaitForFirstConsumer", classes[0]["volumeBindingMode"])
+			assert.Equal(t, "Delete", classes[0]["reclaimPolicy"], "a deleted claim's directory stays on the node")
+			assert.Equal(t, map[string]any{
+				"allowPrivilegeEscalation": false, "capabilities": map[string]any{"drop": []any{"ALL"}},
+				"readOnlyRootFilesystem": true, "runAsGroup": 65534, "runAsUser": 65534,
+			}, testutil.Field(t, deployment, "spec", "template", "spec", "containers", "0", "securityContext"), "the provisioner's container")
+			assert.Equal(t, "local", testutil.Field(t, classes[0], "metadata", "annotations", "defaultVolumeType"), "a hostPath volume comes back empty on a node that lost its directory")
+			var paths struct{ NodePathMap []struct{ Paths []string } }
+			require.NoError(t, json.Unmarshal([]byte(testutil.Field(t, config, "data", "config.json").(string)), &paths))
+			require.Len(t, paths.NodePathMap, 1, "the provisioner's node path map")
+			assert.Equal(t, []string{components.UserVolumePath(components.LocalPathVolume)}, paths.NodePathMap[0].Paths)
+			for _, pod := range []any{testutil.Field(t, deployment, "spec", "template"), helper} {
+				image, err := components.ParseImage(testutil.Field(t, pod, "spec", "containers", "0", "image").(string))
+				require.NoError(t, err)
+				assert.Contains(t, images, image, "the mirror holds no %s", image.Ref())
+			}
+			assert.Empty(t, credentials(t, append(provisioner, helper)))
+		})
 	}
-	assert.Subset(t, inline, []any{"mitstack-openbao-seal-key", "mitstack-sealed-secrets-key", "mitstack-sealed-app-key", "mitstack-openbao-storage"})
-	assert.Empty(t, testutil.Kind(testutil.Documents(t, plain), "UserVolumeConfig"))
+}
+
+func documentNames(docs []map[string]any) []any {
+	var names []any
+	for _, doc := range docs {
+		names = append(names, doc["name"])
+	}
+	return names
+}
+
+// defaultStorageClasses returns every StorageClass of the set that Kubernetes gives a claim naming no class.
+func defaultStorageClasses(t *testing.T, set components.Set) []map[string]any {
+	t.Helper()
+	var classes []map[string]any
+	for _, m := range slices.Concat(set.Served, set.Inline) {
+		for _, class := range testutil.Kind(testutil.Documents(t, m.Bytes), "StorageClass") {
+			if testutil.Field(t, class, "metadata", "annotations", "storageclass.kubernetes.io/is-default-class") == "true" {
+				classes = append(classes, class)
+			}
+		}
+	}
+	return classes
+}
+
+var credentialName = regexp.MustCompile(`(?i)token|secret|password|key`)
+
+// credentials names each Secret, reference to a Secret, variable named for a credential and RBAC rule on Secrets in docs.
+func credentials(t *testing.T, docs []map[string]any) []string {
+	t.Helper()
+	var found []string
+	var walk func(path string, node any)
+	walk = func(path string, node any) {
+		switch v := node.(type) {
+		case map[string]any:
+			for key, child := range v {
+				if child != nil && slices.Contains([]string{"secret", "secretKeyRef", "secretRef", "imagePullSecrets"}, key) {
+					found = append(found, path+"."+key)
+				}
+				walk(path+"."+key, child)
+			}
+		case []any:
+			for i, child := range v {
+				if strings.HasSuffix(path, ".env") && credentialName.MatchString(fmt.Sprint(testutil.Field(t, child, "name"))) {
+					found = append(found, fmt.Sprintf("%s.%d", path, i))
+				}
+				walk(fmt.Sprintf("%s.%d", path, i), child)
+			}
+		}
+	}
+	for _, doc := range docs {
+		name := fmt.Sprintf("%v %v", doc["kind"], testutil.Field(t, doc, "metadata", "name"))
+		if doc["kind"] == "Secret" {
+			found = append(found, name)
+		}
+		walk(name, doc)
+		rules, _ := doc["rules"].([]any)
+		for _, rule := range rules {
+			resources, _ := testutil.Field(t, rule, "resources").([]any)
+			if slices.Contains(resources, any("secrets")) || slices.Contains(resources, any("*")) {
+				found = append(found, name+" grants access to Secrets")
+			}
+		}
+	}
+	return found
 }
 
 func TestRender_SignsServiceAccountTokensForTheIssuerItIsGiven(t *testing.T) {

@@ -26,13 +26,6 @@ func hostingSet(t *testing.T, in components.HostingInputs) components.Set {
 	return set
 }
 
-func setManifest(t *testing.T, manifests []components.Manifest, name string) components.Manifest {
-	t.Helper()
-	i := slices.IndexFunc(manifests, func(m components.Manifest) bool { return m.Name == name })
-	require.GreaterOrEqual(t, i, 0, "no manifest %s", name)
-	return manifests[i]
-}
-
 // hclBlock returns the body of the first HCL block that opens with header, matching its braces.
 func hclBlock(t *testing.T, config, header string) string {
 	t.Helper()
@@ -64,7 +57,7 @@ func hclString(t *testing.T, block, key string) string {
 func TestHosting_ListensOnlyOnTLSKeepsRaftOnTheUserVolumeAndUnsealsWithAStaticKeyFile(t *testing.T) {
 	set := hostingSet(t, testutil.HostingInputs(t))
 
-	openbao := setManifest(t, set.Served, "openbao")
+	openbao := testutil.Manifest(t, "openbao", set.Served)
 
 	config := testutil.Field(t, namedDocument(t, openbao, "ConfigMap", "openbao-config"), "data", "extraconfig-from-values.hcl").(string)
 	listener := hclBlock(t, config, `listener "tcp"`)
@@ -85,7 +78,7 @@ func TestHosting_ListensOnlyOnTLSKeepsRaftOnTheUserVolumeAndUnsealsWithAStaticKe
 	assert.Equal(t, "/openbao/seal", mounts["seal-key"])
 	assert.Equal(t, "openbao-local", testutil.Field(t, statefulSet, "spec", "volumeClaimTemplates", "0", "spec", "storageClassName"))
 
-	volumes := testutil.Kind(testutil.Documents(t, setManifest(t, set.Inline, "mitstack-openbao-storage").Bytes), "PersistentVolume")
+	volumes := testutil.Kind(testutil.Documents(t, testutil.Manifest(t, "mitstack-openbao-storage", set.Inline).Bytes), "PersistentVolume")
 	require.Len(t, volumes, components.OpenBaoMembers)
 	for i, pv := range volumes {
 		assert.Equal(t, "/var/mnt/openbao", testutil.Field(t, pv, "spec", "local", "path"))
@@ -94,7 +87,7 @@ func TestHosting_ListensOnlyOnTLSKeepsRaftOnTheUserVolumeAndUnsealsWithAStaticKe
 		node := testutil.Field(t, pv, "spec", "nodeAffinity", "required", "nodeSelectorTerms", "0", "matchExpressions", "0", "values", "0")
 		assert.Equal(t, testutil.HostingNodes[i], node)
 	}
-	assert.Equal(t, []string{components.OpenBaoVolume}, set.UserVolumes)
+	assert.Contains(t, set.UserVolumes, components.OpenBaoVolume)
 }
 
 // secretForms are the ways a value can appear in a manifest: as it is, base64 and hex, and each line of a PEM body.
@@ -178,16 +171,16 @@ func TestHosting_KeepsEverySecretInlineAndNoServedManifestHoldsOne(t *testing.T)
 			assert.Equal(t, []string{manifest}, holders)
 		}
 	}
-	seal := namedDocument(t, setManifest(t, set.Inline, "mitstack-openbao-seal-key"), "Secret", "openbao-seal-key")
+	seal := namedDocument(t, testutil.Manifest(t, "mitstack-openbao-seal-key", set.Inline), "Secret", "openbao-seal-key")
 	assert.Equal(t, base64.StdEncoding.EncodeToString(in.SealKey), testutil.Field(t, seal, "data", "key"))
-	pair := namedDocument(t, setManifest(t, set.Inline, "mitstack-sealed-secrets-key"), "Secret", "sealed-secrets-boot-key")
+	pair := namedDocument(t, testutil.Manifest(t, "mitstack-sealed-secrets-key", set.Inline), "Secret", "sealed-secrets-boot-key")
 	assert.Equal(t, string(in.SealedSecretsKeyPEM), testutil.Field(t, pair, "stringData", "tls.key"))
 	assert.Equal(t, string(in.SealedSecretsCertPEM), testutil.Field(t, pair, "stringData", "tls.crt"))
 	assert.Equal(t, "active", testutil.Field(t, pair, "metadata", "labels", "sealedsecrets.bitnami.com/sealed-secrets-key"))
 	for _, m := range set.Inline {
 		assert.False(t, holds(m, []byte(testutil.AppKey)), "inline manifest %s holds the App key in plain", m.Name)
 	}
-	assert.Equal(t, []string{"RSA PRIVATE KEY"}, pemPrivateKeys(setManifest(t, set.Inline, "mitstack-sealed-secrets-key").Bytes))
+	assert.Equal(t, []string{"RSA PRIVATE KEY"}, pemPrivateKeys(testutil.Manifest(t, "mitstack-sealed-secrets-key", set.Inline).Bytes))
 }
 
 // podTemplates returns each pod template of the manifest's workloads, keyed by the workload's namespace and name.
@@ -232,7 +225,7 @@ func TestHosting_AddsToTheDefaultSetAndLeavesItAsItIs(t *testing.T) {
 	assert.Equal(t, def.Served, set.Served[:len(def.Served)])
 	assert.Equal(t, def.Inline, set.Inline[:len(def.Inline)])
 	assert.Equal(t, def.TalosImages, set.TalosImages)
-	assert.Empty(t, def.UserVolumes)
+	assert.Equal(t, append(slices.Clone(def.UserVolumes), components.OpenBaoVolume), set.UserVolumes)
 	assert.Equal(t, components.Default(), def, "rendering the hosting set changed the default set")
 }
 
@@ -273,8 +266,8 @@ func TestHosting_RefusesInputsItCannotBoot(t *testing.T) {
 
 func TestHosting_ServesOpenBaoACertificateForEveryAddressItsMembersAndClientsDial(t *testing.T) {
 	set := hostingSet(t, testutil.HostingInputs(t))
-	tls := setManifest(t, set.Served, "mitstack-hosting-tls")
-	config := testutil.Field(t, namedDocument(t, setManifest(t, set.Served, "openbao"), "ConfigMap", "openbao-config"), "data", "extraconfig-from-values.hcl").(string)
+	tls := testutil.Manifest(t, "mitstack-hosting-tls", set.Served)
+	config := testutil.Field(t, namedDocument(t, testutil.Manifest(t, "openbao", set.Served), "ConfigMap", "openbao-config"), "data", "extraconfig-from-values.hcl").(string)
 
 	cert := namedDocument(t, tls, "Certificate", "openbao-tls")
 
@@ -298,13 +291,13 @@ func TestHosting_ServesOpenBaoACertificateForEveryAddressItsMembersAndClientsDia
 	bundle := namedDocument(t, tls, "Bundle", "openbao-ca")
 	assert.Equal(t, map[string]any{"name": "openbao-ca", "key": "tls.crt"}, testutil.Field(t, bundle, "spec", "sources", "0", "secret"))
 	assert.Equal(t, "ca.crt", testutil.Field(t, bundle, "spec", "target", "configMap", "key"))
-	assert.Contains(t, string(setManifest(t, set.Served, "trust-manager").Bytes), `"--trust-namespace=openbao"`)
+	assert.Contains(t, string(testutil.Manifest(t, "trust-manager", set.Served).Bytes), `"--trust-namespace=openbao"`)
 }
 
 // initJob returns the init Job's pod as Cilium labels it, and its container's environment, from the hosting set.
 func initJob(t *testing.T, set components.Set) (testutil.CiliumEndpoint, map[string]string) {
 	t.Helper()
-	job := namedDocument(t, setManifest(t, set.Inline, "mitstack-openbao-init"), "Job", "mitstack-openbao-init")
+	job := namedDocument(t, testutil.Manifest(t, "mitstack-openbao-init", set.Inline), "Job", "mitstack-openbao-init")
 	labels := map[string]string{}
 	for k, v := range testutil.Field(t, job, "spec", "template", "metadata", "labels").(map[string]any) {
 		labels[k] = v.(string)
@@ -317,7 +310,7 @@ func TestHosting_LetsTheInitJobReachOnlyClusterDNSOpenBaoAndGitHubsAPIAndOpenBao
 	set := hostingSet(t, testutil.HostingInputs(t))
 	initPod, env := initJob(t, set)
 	github := strings.TrimPrefix(env["MITSTACK_GITHUB_API_URL"], "https://")
-	policy := namedDocument(t, setManifest(t, set.Served, "mitstack-hosting-flows"), "CiliumClusterwideNetworkPolicy", "mitstack-hosting-flows")
+	policy := namedDocument(t, testutil.Manifest(t, "mitstack-hosting-flows", set.Served), "CiliumClusterwideNetworkPolicy", "mitstack-hosting-flows")
 	pods := map[string]testutil.CiliumEndpoint{
 		"cluster DNS":  testutil.Endpoint("kube-system", nil, map[string]string{"k8s-app": "kube-dns"}),
 		"OpenBao":      testutil.Endpoint("openbao", nil, map[string]string{"app.kubernetes.io/name": "openbao", "component": "server"}),
@@ -336,7 +329,7 @@ func TestHosting_LetsTheInitJobReachOnlyClusterDNSOpenBaoAndGitHubsAPIAndOpenBao
 
 func TestHosting_ServesTraefikOnNodePorts30080And30081OnEveryNode(t *testing.T) {
 	set := hostingSet(t, testutil.HostingInputs(t))
-	traefik := setManifest(t, set.Served, "traefik")
+	traefik := testutil.Manifest(t, "traefik", set.Served)
 
 	service := namedDocument(t, traefik, "Service", "traefik")
 

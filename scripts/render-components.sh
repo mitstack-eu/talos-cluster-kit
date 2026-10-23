@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Renders the component set every Talos cluster starts with into
 # components/: Cilium from its chart, the CRD of Cilium's cluster-wide policy
-# from Cilium's source, and Argo CD and Kyverno from their charts. It renders
-# the hosting set's six charts too: OpenBao, cert-manager, trust-manager,
-# External Secrets, Sealed Secrets and Traefik. With --check it fails when a
-# committed file differs from a fresh render or names an image by anything but
-# a digest.
+# from Cilium's source, and Argo CD, Kyverno and the local path provisioner
+# from their charts. It renders the hosting set's six charts too: OpenBao,
+# cert-manager, trust-manager, External Secrets, Sealed Secrets and Traefik.
+# With --check it fails when a committed file differs from a fresh render or
+# names an image by anything but a digest.
 # Usage: scripts/render-components.sh [--check]
 #   HELM names the helm binary, helm on PATH by default; CI pins v3.18.6.
 # It exists so the manifests a node applies are reviewable bytes that come
@@ -25,6 +25,13 @@ readonly argocd_chart_url="https://github.com/argoproj/argo-helm/releases/downlo
 readonly kyverno_chart_version=3.9.1
 readonly kyverno_chart_sha256=7b7fe51a431b5b133b0ce7eb9dcb222b6a37fb967c163223cf480054ad14d752
 readonly kyverno_chart_url="https://kyverno.github.io/kyverno/kyverno-${kyverno_chart_version}.tgz"
+
+# The project publishes no chart repository, so the chart comes from the source archive of the commit its v0.0.37 tag
+# names, whose contents GitHub keeps the same for a commit id.
+readonly local_path_version=0.0.37
+readonly local_path_commit=49b2be8e26d6d34c9afaa21fa33108d2e82f8955
+readonly local_path_archive_sha256=2b95efae90cd01de97dd9809739d24b0ad2ccaded6e86e308f71733b690b3de8
+readonly local_path_archive_url="https://github.com/rancher/local-path-provisioner/archive/${local_path_commit}.tar.gz"
 
 # Each hosting chart is name, version, the sha256 its repository's index.yaml publishes, URL, namespace, and whether
 # the render creates that namespace.
@@ -113,6 +120,19 @@ render_kyverno() {
   } > "$work/kyverno.yaml"
 }
 
+render_local_path() {
+  local chart="local-path-provisioner-${local_path_commit}/deploy/chart/local-path-provisioner"
+  fetch "$local_path_archive_url" "$local_path_archive_sha256" "$work/local-path-provisioner.tar.gz"
+  tar -xzf "$work/local-path-provisioner.tar.gz" -C "$work" "$chart"
+  {
+    header "the local-path-provisioner ${local_path_version} chart"
+    "$helm" template local-path-provisioner "$work/$chart" \
+      --namespace local-path-storage \
+      --kube-version "$kube_version" \
+      --values "$root/components/render/local-path-provisioner-values.yaml"
+  } > "$work/local-path-provisioner.yaml"
+}
+
 # render_hosting_chart <name> <version> <sha256> <url> <namespace> <create|-> renders one hosting chart with the CRDs in
 # its crds/ folder, which helm template leaves out by default, and without its tests, which Talos would run as
 # ordinary pods.
@@ -153,11 +173,13 @@ main() {
   render_cilium_crd
   render_argocd
   render_kyverno
+  render_local_path
   refuse_undigested "$work/cilium.yaml" render-components
   refuse_undigested "$work/argocd.yaml" render-components
   refuse_undigested "$work/kyverno.yaml" render-components
+  refuse_undigested "$work/local-path-provisioner.yaml" render-components
 
-  local pairs=("cilium.yaml:components/cilium/cilium.yaml" "policy-crd.yaml:components/cilium/policy-crd.yaml" "argocd.yaml:components/argocd/argocd.yaml" "kyverno.yaml:components/kyverno/kyverno.yaml")
+  local pairs=("cilium.yaml:components/cilium/cilium.yaml" "policy-crd.yaml:components/cilium/policy-crd.yaml" "argocd.yaml:components/argocd/argocd.yaml" "kyverno.yaml:components/kyverno/kyverno.yaml" "local-path-provisioner.yaml:components/local-path-provisioner/local-path-provisioner.yaml")
   local chart name version sha256 url namespace create
   for chart in "${hosting_charts[@]}"; do
     read -r name version sha256 url namespace create <<< "$chart"

@@ -99,7 +99,9 @@ The member removal Job, the node report and OpenBao's init Job run in the
 tools image that `tools/Dockerfile` builds: bash, curl, jq, gpg, openssl,
 talosctl and kubectl on Alpine 3.22. `tools/tools.env` pins both binaries with
 their sha256, and the Dockerfile and the gateway's `prepare.sh` both install
-from it, so the image and the gateway run the same binaries. Each release
+from it, so the image and the gateway run the same binaries. `tools/jq.env`
+pins the image's jq the same way, and the report's tests fetch that jq, since
+jq-1.8 parses a number more strictly than the jq a runner may have. Each release
 pushes and signs that image and names it in `tools.Image`, which a block
 passes to `etcd.RemoveMemberJob`, `report.Manifests`, `openbaoinit.Inputs` and
 the gateway's `ExtraImages`.
@@ -143,7 +145,9 @@ that log to check the order of the calls.
 The fixtures in `testutil/testdata/` are throwaway keys made for these tests:
 a Talos secrets bundle, a gateway CA with its certificate and key, and a log
 receiver's CA. The script tests need `bash`, `curl`, `jq`, `gpg` and
-`openssl` on `PATH`.
+`openssl` on `PATH`. The report's tests also need linux/amd64 and, on their
+first run, network access to github.com, where they fetch the jq `tools/jq.env`
+pins into the user cache directory.
 
 ```bash
 go test -race ./...

@@ -14,7 +14,9 @@ The table lists its files. `scripts/render-components.sh` writes the first
 six rows from pinned sources, each checked against a pinned sha256, and refuses
 any image that is not named by digest. The CloudNativePG files are copied from
 a release, and the rest are written by hand. The hosting set's files follow in
-a second table.
+a second table. [The README's mesh section](../README.md#how-every-call-between-pods-proves-who-makes-it)
+explains the mesh's terms used here: the CNI agent, ztunnel, port 15008, the
+exceptions for callers with no identity, and a Postgres instance's port 8000.
 
 | File | Source | What it runs |
 |---|---|---|
@@ -142,7 +144,7 @@ that log to check the order of the calls.
 | `TestDatabaseSlicesPolicy_GrantsEachPodExactlyItsAllows` | A slice's Postgres instance, a CloudNativePG Job, an app pod, a pod outside a database slice and a system pod each get exactly their allows, each beside port 15008 | Cilium's view of each pod's labels |
 | `TestRender_RunsTheMeshAndItsAdmissionPoliciesOnEveryProfileAndSize` | For one and three nodes on the `hcloud` and the `metal` profile, the configuration fetches Istio's four charts and carries the mesh-wide `STRICT` policy, the probe policy and both mesh admission policies | The rendered documents |
 | `TestRender_PutsEveryPodButKubeSystemsIstiosAndKyvernosInTheMeshFromTheMirror` | The CNI agent selects every pod whatever its labels, skips only `kube-system`, `istio-system` and `kyverno`, which Kyverno's mesh policy exempts too, and leaves DNS to Cilium. The mirror holds Istio's three images, `istio-system` is privileged, istiod renders no injector templates, and Cilium keeps other CNI configuration and its socket load balancing to the host | The CNI agent's and Cilium's ConfigMaps and the mirror list |
-| `TestRender_RefusesACallWithoutAWorkloadIdentityButOnTheWebhookAndWebPorts` | Every PeerAuthentication is `STRICT`, the only ports that take a call with no identity are the five exceptions, and `mitstack-require-strict-mtls` admits each one outside the system namespaces | Every PeerAuthentication of the hosting set |
+| `TestRender_RefusesACallWithoutAWorkloadIdentityButOnTheWebhookAndWebPorts` | Every PeerAuthentication is `STRICT`, the only ports that take a call with no identity are the five exceptions, the CloudNativePG operator's in the default set and four in the hosting set, and `mitstack-require-strict-mtls` admits each one outside the system namespaces | Every PeerAuthentication of the hosting set |
 | `TestMesh_KeepsTheOperatorAloneOnAnInstancesManagerPortAndEveryoneOffItsOtherPorts` | A Postgres instance takes 5432 from any caller Cilium admits, 8000 from the operator alone, and nothing else | The AuthorizationPolicy's rules, read by `testutil.Denies` |
 | `TestRender_AdmitsZtunnelsPortWhereverArgoCDsChartAdmitsACallBetweenItsPods` | Each Argo CD chart policy that admits a call from its own pods has a policy admitting 15008 from the same pods | Both sets of NetworkPolicies |
 | `TestHosting_KeepsTheMembersAloneOnOpenBaosClusterPortAndEveryoneOffItsOtherPorts` | OpenBao takes 8200 from any caller Cilium admits, 8201 from its members alone, and nothing else | The AuthorizationPolicy's rules, read by `testutil.Denies` |

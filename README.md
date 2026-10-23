@@ -151,7 +151,7 @@ namespace outside the system namespaces, which are `kube-system`,
 | `mitstack-require-app-label` | Refuses a pod without a non-empty `mitstack.dev/app` label, which an app's network policies select its pods by | `components/admission/policies/mitstack-require-app-label.yaml` |
 | `mitstack-generate-default-deny` | Gives each namespace, new or existing, the NetworkPolicy `mitstack-default-deny`, which blocks every connection its pods make or take until an app's own policy allows it | `components/admission/policies/mitstack-generate-default-deny.yaml` |
 | `mitstack-require-mesh` | Refuses a pod on the host network and a pod annotated `sidecar.istio.io/status`, the two kinds of pod the mesh leaves out | `components/admission/policies/mitstack-require-mesh.yaml` |
-| `mitstack-require-strict-mtls` | Refuses a PeerAuthentication, Istio's policy for which calls a pod takes, that lets a pod or one of its ports take a call with no workload identity. The hosting set's four exceptions, named in the policy, are the only ones admitted | `components/admission/policies/mitstack-require-strict-mtls.yaml` |
+| `mitstack-require-strict-mtls` | Refuses a PeerAuthentication, Istio's policy for which calls a pod takes, that lets a pod or one of its ports take a call with no workload identity. The hosting set's four exceptions, named in the policy, are the only ones it admits. The operator's exception in the default set sits in `cnpg-system`, which the policy skips | `components/admission/policies/mitstack-require-strict-mtls.yaml` |
 
 Kyverno's webhooks skip the same system namespaces, so a Kyverno outage
 cannot stop a system pod, such as the node report in `mitstack-node`.
@@ -173,14 +173,15 @@ of those as Progressing, since CloudNativePG passes through them on its own.
 
 ## How every call between pods proves who makes it
 
-ADR 0095 requires that every call between services carries mutual TLS with a
-workload identity, and that a call without one is refused. A network policy
-decides which pod may reach which by its address and labels, so it cannot tell
-a real caller from a pod that took over that address. A certificate tied to
-the caller's service account can. The ADR asked for Cilium's own mutual
+A workload identity is a short-lived certificate that names the service
+account a pod runs as. ADR 0095 requires that every call between services
+carries mutual TLS with one, so both ends prove who they are, and that a call
+without one is refused. A network policy decides which pod may reach which by
+its address and labels, so it cannot tell a real caller from a pod that took
+over that address. A certificate can. The ADR asked for Cilium's own mutual
 authentication if it was ready, and a mesh otherwise. Cilium v1.19 documents
 that feature as an incomplete beta that authenticates once per pair of
-identities, so the kit runs Istio 1.30.7 in ambient mode.
+identities, so this module runs Istio 1.30.7 in ambient mode.
 
 Ambient mode adds no container to your pods. Each node runs ztunnel, a proxy
 that holds a certificate for every pod on the node and wraps each TCP call
@@ -190,21 +191,26 @@ certificate names the pod's service account as a SPIFFE identity, such as
 plane, issues it from a root it creates inside the cluster. Each certificate
 lasts 24 hours, and ztunnel asks for a new one when half of that has passed.
 
+Istio ships as four charts, `base`, `istiod`, `cni` and `ztunnel`. The `cni`
+chart runs the CNI agent, a pod on every node that hooks each new pod's
+network into the mesh. ztunnel and the CNI agent change each pod's network,
+which only Kubernetes' most permissive Pod Security level, privileged, allows.
+
 | Part | What it does | File |
 |---|---|---|
 | Istio's four charts | Run istiod, the CNI agent and ztunnel in `istio-system`, a namespace at the privileged Pod Security level | `components/istio/` |
 | The CNI agent's settings | Put every pod in the mesh, whatever its labels, except the pods of `kube-system`, `istio-system` and `kyverno` and a pod on the host network | `components/render/istio-cni-values.yaml` |
 | `default` in `istio-system` | The mesh-wide PeerAuthentication in `STRICT` mode, so a pod refuses any call that presents no workload certificate | `components/mesh/strict-mtls.yaml` |
-| `mitstack-ambient-probes` | Admits the kubelet's health probes, which the CNI agent sends from `169.254.7.127`, into every pod | `components/mesh/probes.yaml` |
-| `mitstack-database-instance-ports` | Keeps every caller but the operator off a Postgres instance's port 8000, and everyone off its ports other than 5432 and 8000 | `components/mesh/cloudnative-pg.yaml` |
+| `mitstack-ambient-probes` | A Cilium policy that admits the kubelet's health probes into every pod. The CNI agent rewrites their source to `169.254.7.127`, so ztunnel can let them past, and Cilium would otherwise drop that address in a default-deny namespace | `components/mesh/probes.yaml` |
+| `mitstack-database-instance-ports` | Keeps every caller but the CloudNativePG operator off port 8000 of a Postgres instance, where its instance manager answers the operator, and everyone off its ports other than 5432 and 8000 | `components/mesh/cloudnative-pg.yaml` |
 | Argo CD's mesh policies | Admit port 15008 between the same Argo CD pods the chart's own network policies admit | `components/mesh/argocd.yaml` |
 
 istiod injects no sidecar, because `components/render/istiod-values.yaml`
 leaves out the injector's templates. A pod with a sidecar would sit outside
 ambient mode, and `mitstack-require-mesh` refuses a pod that claims one.
 
-Cilium still decides which pods may talk, but a call inside the mesh reaches
-it only as port 15008. Every Cilium policy that admits a call between two
+Cilium still decides which pods may talk, but Cilium sees a call inside the
+mesh only as port 15008. Every Cilium policy that admits a call between two
 pods on a named port therefore admits 15008 from the same peers. Where the
 port itself matters, an Istio AuthorizationPolicy keeps it, such as
 `mitstack-database-instance-ports` for a Postgres instance.
@@ -228,11 +234,16 @@ Cilium's, and `socketLB.hostNamespaceOnly: true` leaves a pod's service calls
 for ztunnel to see. `components/render/cilium-values.yaml` sets both.
 
 You can read the certificate a pod holds from the ztunnel on its node, whose
-admin port lists each certificate with its serial number and expiry:
+admin port lists each certificate with its serial number and expiry. This
+reads them for a pod `shop-0` in namespace `app-shop`:
 
 ```bash
-kubectl -n istio-system port-forward pod/<ztunnel-pod-on-the-node> 15000:15000 &
+node=$(kubectl -n app-shop get pod shop-0 -o jsonpath='{.spec.nodeName}')
+ztunnel=$(kubectl -n istio-system get pod -l app=ztunnel --field-selector "spec.nodeName=$node" -o name)
+kubectl -n istio-system port-forward "$ztunnel" 15000:15000 & forward=$!
+sleep 2
 curl -s localhost:15000/config_dump | jq '.certificates'
+kill "$forward"
 ```
 
 ## Where a claim keeps its data

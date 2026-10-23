@@ -70,10 +70,19 @@ var (
 	cloudNativePGNamespace []byte
 	//go:embed network-policies/mitstack-database-slices.yaml
 	databaseSlicesPolicy []byte
+	//go:embed local-path-provisioner/local-path-provisioner.yaml
+	localPathProvisionerManifest []byte
+	//go:embed local-path-provisioner/namespace.yaml
+	localPathNamespace []byte
+	//go:embed local-path-provisioner/flows.yaml
+	localPathFlowsPolicy []byte
 )
 
+// LocalPathVolume is the user volume the default StorageClass provisions each claim's directory on.
+const LocalPathVolume = "local-path-provisioner"
+
 // Default returns the component set at the pinned versions, from Cilium and Argo CD to Kyverno's admission
-// policies and the CloudNativePG operator.
+// policies, the CloudNativePG operator and the local path provisioner behind the default StorageClass.
 func Default() Set {
 	return Set{
 		Versions: PinnedVersions,
@@ -83,6 +92,7 @@ func Default() Set {
 			{Name: "argocd", Path: "components/argocd/argocd.yaml", Bytes: argoCDManifest},
 			{Name: "kyverno", Path: "components/kyverno/kyverno.yaml", Bytes: kyvernoManifest},
 			{Name: "cloudnative-pg", Path: "components/cloudnative-pg/cloudnative-pg.yaml", Bytes: cloudNativePGManifest},
+			{Name: "local-path-provisioner", Path: "components/local-path-provisioner/local-path-provisioner.yaml", Bytes: localPathProvisionerManifest},
 		},
 		Inline: []Manifest{
 			{Name: "mitstack-metadata-block", Path: "components/metadata/metadata-block.yaml", Bytes: metadataBlockManifest},
@@ -90,8 +100,11 @@ func Default() Set {
 			{Name: "mitstack-generate-default-deny", Path: "components/admission/policies/mitstack-generate-default-deny.yaml", Bytes: generateDefaultDenyPolicy},
 			{Name: "cloudnative-pg-namespace", Path: "components/cloudnative-pg/namespace.yaml", Bytes: cloudNativePGNamespace},
 			{Name: "mitstack-database-slices", Path: "components/network-policies/mitstack-database-slices.yaml", Bytes: databaseSlicesPolicy},
+			{Name: "local-path-provisioner-namespace", Path: "components/local-path-provisioner/namespace.yaml", Bytes: localPathNamespace},
+			{Name: "mitstack-local-path-flows", Path: "components/local-path-provisioner/flows.yaml", Bytes: localPathFlowsPolicy},
 		},
 		TalosImages: pinnedTalosImages,
+		UserVolumes: []string{LocalPathVolume},
 	}
 }
 

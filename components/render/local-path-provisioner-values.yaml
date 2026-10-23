@@ -1,0 +1,27 @@
+commonLabels:
+  mitstack.dev/app: local-path-provisioner
+image:
+  tag: v0.0.37@sha256:e757967a5ec338f6a9b371c5a9688bedaa8c3578ea3dd4db329ea0084be0a86f
+helperImage:
+  tag: 1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+storageClass:
+  provisionerName: rancher.io/local-path
+  defaultClass: true
+  volumeBindingMode: WaitForFirstConsumer
+  # A local volume fails to mount once its directory is gone, where the provisioner recreates a hostPath one empty.
+  defaultVolumeType: local
+# The Talos user volume local-path-provisioner, which Talos mounts on every node.
+nodePathMap:
+- node: DEFAULT_PATH_FOR_NON_LISTED_NODES
+  paths: [/var/mnt/local-path-provisioner]
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
+  readOnlyRootFilesystem: true
+  runAsUser: 65534
+  runAsGroup: 65534

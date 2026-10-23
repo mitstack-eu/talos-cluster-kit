@@ -1,0 +1,8 @@
+# The provisioner's helper pods mount the node's user volume through hostPath to create and delete each claim's
+# directory, and only the privileged Pod Security Standard admits a hostPath volume.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: local-path-storage
+  labels:
+    pod-security.kubernetes.io/enforce: privileged

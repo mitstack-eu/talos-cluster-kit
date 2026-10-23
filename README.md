@@ -33,7 +33,7 @@ the order a block uses them.
 
 | Package | What it does | Main entry points |
 |---|---|---|
-| `components` | Holds the pinned component set: Cilium, the custom resource definition (CRD) of Cilium's cluster-wide policy, Argo CD, the policy that keeps pods from Hetzner's metadata service at `169.254.169.254`, Kyverno with its two admission policies, the CloudNativePG operator with the database-slice policy, and the node-local OpenTelemetry Collector. It also holds the boot set of a cluster that hosts the platform | `Default`, `Hosting`, `Set.Images`, `LogCollector`, `ParseImage` |
+| `components` | Holds the pinned component set: Cilium, the custom resource definition (CRD) of Cilium's cluster-wide policy, Argo CD, the policy that keeps pods from Hetzner's metadata service at `169.254.169.254`, Kyverno with its two admission policies, the CloudNativePG operator with the database-slice policy, the local path provisioner behind the default StorageClass, and the node-local OpenTelemetry Collector. It also holds the boot set of a cluster that hosts the platform | `Default`, `Hosting`, `Set.Images`, `LogCollector`, `ParseImage` |
 | `nodeconfig` | Renders a control-plane node's machine configuration with Talos's own `machinery` module and validates it against Talos's schema | `Render`, `Cluster`, `Node`, `NewSecrets`, `ParseSecrets`, `Secrets.AdminTalosconfig` |
 | `image` | Runs imager, Sidero Labs' open-source image builder, with the `hcloud` or the `metal` profile, and discards its output | `Run`, `Build` |
 | `mirror` | Lists every image the nodes pull, each by digest | `List`, `Render` |
@@ -83,12 +83,12 @@ control-plane node and changes it in these ways:
 |---|---|---|
 | DNS and time | Every node asks Hetzner's resolvers `185.12.64.1` and `185.12.64.2` and syncs from `ntp1.hetzner.de`, `ntp2.hetzner.com` and `ntp3.hetzner.net`, and Sidero's discovery service is off | `resolverDocument`, `timeSyncDocument` in `nodeconfig/documents.go` |
 | Images | `docker.io`, `ghcr.io`, `public.ecr.aws`, `quay.io` and `registry.k8s.io` go to every gateway's mirror in turn, with no fallback to the public registry | `mirrorDocuments` |
-| Components | Cilium, its policy CRD, Argo CD, Kyverno and the CloudNativePG operator come from the first gateway over TLS. The metadata policy, the two admission policies, the `cnpg-system` namespace, the database-slice policy and the Collector sit in the configuration | `manifestDocuments` |
+| Components | Cilium, its policy CRD, Argo CD, Kyverno, the CloudNativePG operator and the local path provisioner come from the first gateway over TLS. The metadata policy, the two admission policies, the `cnpg-system` and `local-path-storage` namespaces, the database-slice policy, the provisioner's flow policy and the Collector sit in the configuration | `manifestDocuments` |
 | Logs | Talos sends service and kernel logs to the node-local Collector on `127.0.0.1`, which exports them over OTLP with TLS verified. A cluster whose `Logs` is the zero `LogExport` runs no Collector and keeps its logs on the node | `adaptV1Alpha1`, `kernelLogDocument`, `components.LogCollector` |
 | Networking | Flannel and kube-proxy are off, since Cilium replaces both, and etcd and the kubelet bind to the private network | `adapt` |
 | Default route | A Cloud node keeps DHCP on `eth0` and routes everything outside the network through Hetzner's router at the network's first address. The block's network route of `0.0.0.0/0` then carries that traffic to the gateway. Hetzner's DHCP gives the node no default route, and Talos runs no default DHCP on a link that has a `LinkConfig` | `routeDocuments` |
 | Talos API from pods | Only pods in `mitstack-node` may hold a Talos identity, with `os:admin`, `os:etcd:backup` or `os:reader` | `talosAPIAccessDocument` |
-| User volumes | Each user volume the set names, such as OpenBao's in the hosting set, is a directory Talos mounts at `/var/mnt/<name>` | `userVolumeDocuments` |
+| User volumes | Each user volume the set names, `local-path-provisioner` on every cluster and OpenBao's in the hosting set, is a directory Talos mounts at `/var/mnt/<name>` | `userVolumeDocuments` |
 | Service-account issuer | Every service-account token names `Cluster.ServiceAccountIssuer` as its issuer, which Talos passes to the API server as `--service-account-issuer`. `Render` refuses a cluster with no issuer, or with one that is not https, has no host, or carries a query or fragment. [How AWS comes to trust a cluster's tokens](#how-aws-comes-to-trust-a-clusters-tokens) says why | `adapt` in `nodeconfig/documents.go`, `checkIssuer` in `nodeconfig/nodeconfig.go` |
 
 The configuration holds every key of the cluster, its certificate
@@ -167,15 +167,92 @@ Argo CD's built-in health check reads a Postgres switchover, failover,
 upgrade or configuration change as Degraded. The kit's `argocd-cm` reads each
 of those as Progressing, since CloudNativePG passes through them on its own.
 
+## Where a claim keeps its data
+
+Every cluster has a default StorageClass, `local-path`, so a claim that names
+no class still binds. Rancher's local path provisioner v0.0.37 serves it from
+namespace `local-path-storage`. Each volume is a directory on a node's own
+disk, so the provisioner never calls Hetzner and holds no Hetzner token.
+
+The class waits for its first consumer, so a claim binds once a pod that
+mounts it is scheduled. The provisioner then starts a helper pod on that node,
+which creates the claim's directory under `/var/mnt/local-path-provisioner`,
+the Talos user volume `local-path-provisioner`. The claim gets a `local`
+volume pinned to that node. A pod cannot mount a `local` volume whose directory
+is gone, so a node that lost its disk never hands a claim an empty directory.
+The provisioner's own default is `hostPath`, which it recreates empty, and its
+README calls `local` volumes "an experimental feature". Kubernetes documents
+`local` volumes with no such mark. This claim, for example, gets a directory on
+whichever node first runs a pod that mounts it:
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data
+  namespace: shop
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 10Gi
+```
+
+The data outlives its pod, and every later pod that mounts the claim runs on
+the same node. The data is lost with the node's machine, as Talos documents
+for all local storage. A workload that must survive a lost node keeps copies
+on other nodes itself, as CloudNativePG does with three instances. Deleting
+the claim deletes its directory, because the class's reclaim policy is
+`Delete` and the provisioner's teardown script removes it.
+
+A claim's size caps nothing. The provisioner ignores a claim's capacity, and
+Talos documents that a `directory` volume suits no workload that needs an
+enforced quota. One claim can therefore fill `EPHEMERAL`, which etcd, the
+container images and the logs share. The chart sets `allowVolumeExpansion:
+true` on the class, but no size exists on the node for a resize to change.
+
+The admission policies treat the provisioner as an app. Its pods and the
+helper pods it starts carry `mitstack.dev/app: local-path-provisioner`, and
+Kyverno gives its namespace `mitstack-default-deny`. The Cilium policy
+`mitstack-local-path-flows` lets the namespace's pods reach the API server and
+nothing else. A helper pod carries the provisioner's labels and service
+account, so the policy cannot tell the two apart. The namespace enforces the
+privileged Pod Security Standard, because a helper pod mounts the user volume
+through `hostPath`, which Talos's default level, baseline, refuses.
+
+That service account's token reaches every node's host. Its Role lets it
+create pods in `local-path-storage`, where the privileged level admits a pod
+with any host access, and its ClusterRole reads pods, their logs and
+ConfigMaps in every namespace. It reads no Secret. The provisioner itself runs
+as user 65534 with a read-only root, no privilege escalation and no
+capabilities.
+
+| File | What it holds |
+|---|---|
+| `components/render/local-path-provisioner-values.yaml` | The values the chart renders with: both images by digest, the default class, its binding mode and `local` volumes, the node path and the provisioner's security context |
+| `components/local-path-provisioner/local-path-provisioner.yaml` | The rendered chart: the provisioner, its configuration with the helper pod's template, and the class |
+| `components/local-path-provisioner/namespace.yaml` | The namespace and its Pod Security level |
+| `components/local-path-provisioner/flows.yaml` | The policy `mitstack-local-path-flows` |
+| `components/components.go` | `Default`, which serves the chart, carries the namespace and the policy inline, and names the user volume `LocalPathVolume` |
+
+| Page | What the provisioner's setup takes from it |
+|---|---|
+| [Talos: Local Storage](https://docs.siderolabs.com/kubernetes-guides/csi/local-storage) | The provisioner keeps its volumes on a user volume at `/var/mnt/local-path-provisioner`, its class may be the default, and its namespace is labelled privileged |
+| [Talos: User Volumes](https://docs.siderolabs.com/talos/v1.14/configure-your-talos-cluster/storage-and-disk-management/disk-management/user) | A `directory` volume is a bind mount on `EPHEMERAL` with no enforceable quota, and Talos propagates every user volume's mount into the kubelet |
+| [Local Path Provisioner](https://github.com/rancher/local-path-provisioner/blob/v0.0.37/README.md) | `nodePathMap` names each node's directory, the provisioner ignores a claim's capacity, and a class's `defaultVolumeType` picks `local` or `hostPath` |
+| [Kubernetes: storage classes](https://kubernetes.io/docs/concepts/storage/storage-classes/) | A claim with no class gets the class annotated `storageclass.kubernetes.io/is-default-class`, and `WaitForFirstConsumer` delays binding until a pod mounts the claim |
+| [Kubernetes: persistent volume types](https://kubernetes.io/docs/concepts/storage/persistent-volumes/#types-of-persistent-volumes) | A `hostPath` volume is "for single node testing only", and the page says to "consider using `local` volume instead" |
+| [Kubernetes: Pod Security Standards](https://kubernetes.io/docs/concepts/security/pod-security-standards/) | The baseline level forbids `hostPath` volumes |
+
 ## How a cluster that hosts the platform boots
 
 A cluster that runs mitstack's own control plane must start its secret store,
 External Secrets and its web entry point before Argo CD or the platform runs.
 `components.Hosting` returns that boot set. It is the default set with six
 more charts and the manifests that join them, and a block opts in by passing
-it as `Cluster.Components`. A cluster built from `components.Default` renders
-the same bytes it always did, and the golden files in
-`nodeconfig/testdata/golden/` and `gateway/testdata/golden/` prove it.
+it as `Cluster.Components`. A cluster built from `components.Default` carries
+none of the hosting set's manifests, and the golden files in
+`nodeconfig/testdata/golden/` and `gateway/testdata/golden/` record its render.
 
 The block mints the inputs and the kit checks them. `Hosting` refuses a seal
 key that is not 32 bytes, a certificate of another key, an App key not sealed
@@ -255,11 +332,12 @@ which Talos mounts at `/var/mnt/openbao`. A Cloud server has one disk, and the
 partition Talos calls `EPHEMERAL` spans all of it. The volume is therefore a
 directory on `EPHEMERAL`, which needs no free space on the disk.
 
-OpenBao starts before any storage provisioner could run. The StorageClass
-`openbao-local` provisions nothing, and each member's claim binds a local
-volume that is pinned to one named node, so a member keeps its node and its
-data. Talos documents that a node's local data is lost with its machine, which
-is why OpenBao runs three members and Raft carries the data.
+The StorageClass `openbao-local` provisions nothing. Each member's claim binds
+a local volume pinned to one named node, so a member keeps its node and its
+data. The class's `Retain` policy keeps that data if the claim goes, where the
+default class `local-path` deletes it. Talos documents that a node's local
+data is lost with its machine, which is why OpenBao runs three members and
+Raft carries the data.
 
 ### Which flows the hosting namespaces allow
 

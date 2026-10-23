@@ -1,0 +1,12 @@
+# local-path-storage starts from mitstack-default-deny, and this names its pods' one flow, which the helper pods share.
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: mitstack-local-path-flows
+specs:
+- description: "The local path provisioner reaches the API server."
+  endpointSelector:
+    matchLabels:
+      k8s:io.kubernetes.pod.namespace: local-path-storage
+  egress:
+  - toEntities: [kube-apiserver]

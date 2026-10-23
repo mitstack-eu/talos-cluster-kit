@@ -39,7 +39,7 @@ the order a block uses them.
 | `mirror` | Lists every image the nodes pull, each by digest | `List`, `Render` |
 | `gateway` | Renders the cloud-config of the gateway in each location, and mints the cluster's gateway CA and each gateway's certificate | `Render`, `Inputs`, `NewCA`, `CA.Issue`, `ReleaseURL` |
 | `etcd` | Renders the Job that removes a lost node's etcd member and then its Node object, and holds the gateway's script that bootstraps etcd empty or from a snapshot | `RemoveMemberJob`, `BootstrapScript`, `Bootstrap.Args` |
-| `report` | Renders the node report, a CronJob that posts each node, its Talos version, the etcd membership, Argo CD's health and CloudNativePG's clusters, databases and roles to the platform, with a `checks` member declaring which of the platform verdict's checks it carries | `Manifests` |
+| `report` | Renders the node report, a CronJob that posts each node, its Talos version, the etcd membership, Argo CD's health, CloudNativePG's clusters, databases and roles, and the API server's key set to the platform, with a `checks` member declaring which of the platform verdict's checks it carries | `Manifests` |
 | `openbaoinit` | Renders OpenBao's init Job, which the hosting set carries: it initialises a hosting cluster's OpenBao once, commits the root token and recovery key to the cluster repository as PGP messages, then writes the policy each slice's External Secrets reads with | `Manifests`, `Inputs`, `InitFile` |
 | `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image and the gateway both install, and names the tools image a release published | `Env`, `Pin`, `Image` |
 | `testutil` | Holds the fixtures, fakes and decoders this module's tests and a block's tests share | `NewCluster`, `NewTools`, `Golden` |
@@ -49,16 +49,17 @@ for a cluster with one location:
 
 ```go
 cfg, err := nodeconfig.Render(nodeconfig.Cluster{
-	Name:           "shop",
-	SubscriptionID: "sub_0123456789ab",
-	Profile:        nodeconfig.HCloud,
-	Components:     components.Default(),
-	Secrets:        secrets, // from nodeconfig.NewSecrets(time.Now())
-	Network:        netip.MustParsePrefix("10.0.0.0/16"),
-	APIAddresses:   []netip.Addr{netip.MustParseAddr("10.0.0.3")},
-	Gateways:       []netip.Addr{netip.MustParseAddr("10.0.0.2")},
-	GatewayCA:      gatewayCA.Cert, // from gateway.NewCA
-	Logs:           components.LogExport{Endpoint: "otlp.mitstack.dev:4317", CA: receiverCA}, // the log receiver's CA
+	Name:                 "shop",
+	SubscriptionID:       "sub_0123456789ab",
+	Profile:              nodeconfig.HCloud,
+	Components:           components.Default(),
+	Secrets:              secrets, // from nodeconfig.NewSecrets(time.Now())
+	Network:              netip.MustParsePrefix("10.0.0.0/16"),
+	APIAddresses:         []netip.Addr{netip.MustParseAddr("10.0.0.3")},
+	Gateways:             []netip.Addr{netip.MustParseAddr("10.0.0.2")},
+	GatewayCA:            gatewayCA.Cert, // from gateway.NewCA
+	Logs:                 components.LogExport{Endpoint: "otlp.mitstack.dev:4317", CA: receiverCA}, // the log receiver's CA
+	ServiceAccountIssuer: issuer, // https://mitstack-oidc-7kq2m4xw3pa3hd6rz5tn2cjvle.s3.eu-central-1.amazonaws.com/sub_0123456789ab
 }, nodeconfig.Node{})
 ```
 
@@ -88,12 +89,38 @@ control-plane node and changes it in these ways:
 | Default route | A Cloud node keeps DHCP on `eth0` and routes everything outside the network through Hetzner's router at the network's first address. The block's network route of `0.0.0.0/0` then carries that traffic to the gateway. Hetzner's DHCP gives the node no default route, and Talos runs no default DHCP on a link that has a `LinkConfig` | `routeDocuments` |
 | Talos API from pods | Only pods in `mitstack-node` may hold a Talos identity, with `os:admin`, `os:etcd:backup` or `os:reader` | `talosAPIAccessDocument` |
 | User volumes | Each user volume the set names, such as OpenBao's in the hosting set, is a directory Talos mounts at `/var/mnt/<name>` | `userVolumeDocuments` |
+| Service-account issuer | The API server signs every service-account token for `Cluster.ServiceAccountIssuer`, the `issuerURL` of the `KubeServiceAccountConfig` document, which Talos passes as `--service-account-issuer` and as the default `--api-audiences`. `Render` refuses a cluster with no issuer, or with one that is not https or carries a query or fragment | `adapt`, `checkIssuer` |
 
 The configuration holds every key of the cluster, its certificate
 authorities included, but no admin client certificate. Talos's etcd
 bootstrap accepts only `os:admin`, its full-rights role, so the gateway runs
 it once with a short-lived talosconfig from `Secrets.AdminTalosconfig` and
 deletes that file on exit.
+
+## How AWS comes to trust a cluster's tokens
+
+A pod proves who it is to AWS with a service-account token that names the
+cluster's issuer. AWS accepts the token only when it can fetch the issuer's
+discovery document and key set over public HTTPS. Its
+[IAM OIDC provider page](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_create_oidc.html)
+requires an issuer that begins with `https://`, allows a path, and allows no
+query.
+
+The API server serves both documents itself, at
+`/.well-known/openid-configuration` and `/openid/v1/jwks`, but only on the
+cluster's private network. The block therefore passes a public issuer, such as
+an S3 bucket's URL, as `Cluster.ServiceAccountIssuer`. The node report then
+carries the API server's key set as its `jwks` member, and the platform
+publishes it under that issuer.
+
+Kubernetes serves the discovery endpoints only for an https issuer with no
+query or fragment, as its
+[service account issuer discovery](https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/#service-account-issuer-discovery)
+page says, which is why `Render` refuses any other issuer. The report reads
+the key set as the service account it already runs as, because Kubernetes binds
+the `system:service-account-issuer-discovery` role to every service account by
+default. A cluster keeps the signing key it was built with, so the report
+carries no proof of a key change.
 
 ## How a cluster isolates each app
 

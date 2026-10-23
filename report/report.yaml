@@ -1,7 +1,9 @@
 # The node report: a CronJob that reads the cluster with the Talos os:reader
 # role and a Kubernetes identity that may only read Nodes, Applications and
 # CloudNativePG's objects, and posts the result to the platform. It also creates the one namespace
-# whose pods may hold a Talos identity.
+# whose pods may hold a Talos identity. Its read of the API server's key set
+# needs no rule here, since Kubernetes binds system:service-account-issuer-discovery
+# to every service account by default.
 apiVersion: v1
 kind: Namespace
 metadata:

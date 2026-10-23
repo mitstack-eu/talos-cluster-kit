@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"net/url"
 	"regexp"
 	"slices"
 
@@ -19,52 +20,43 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/internal/check"
 )
 
-// Profile names the imager profile a cluster's image is built with, and so the platform its nodes run on.
+// Profile is the imager profile, HCloud for a server named by Hetzner's metadata service and Metal for a dedicated one.
 type Profile string
 
 const (
-	// HCloud is a Hetzner Cloud server, which boots from a snapshot and names itself from Hetzner's metadata service.
 	HCloud Profile = "hcloud"
-	// Metal is a Hetzner dedicated server, whose image is written from the rescue system and which has no metadata service.
-	Metal Profile = "metal"
+	Metal  Profile = "metal"
 )
 
-// apiServerPort is the port every private load balancer carries the Kubernetes API on.
 const apiServerPort = 6443
 
-// SubscriptionLabel is the node label naming the subscription that owns the node.
 const SubscriptionLabel = "mitstack.dev/subscription"
 
 // Cluster is what every node of one cluster shares.
 type Cluster struct {
-	// Name is the Kubernetes cluster name.
-	Name string
-	// SubscriptionID labels every node and every log line.
+	Name           string
 	SubscriptionID string
 	Profile        Profile
 	Components     components.Set
 	Secrets        *Secrets
-	// Network is the cluster's own Hetzner private network, which etcd and the kubelet bind to and whose route of
-	// 0.0.0.0/0 to a gateway carries a Cloud node's other traffic.
+	// Network is the cluster's private network, which etcd and the kubelet bind to.
 	Network netip.Prefix
-	// APIAddresses are the private load balancers that carry the Kubernetes API, one per location, the first of
-	// them the control-plane endpoint, and the API server's certificate names them all.
+	// APIAddresses are the API's private load balancers, one per location, the first the control-plane endpoint.
 	APIAddresses []netip.Addr
-	// Gateways are the gateways' private addresses, one per location; every one serves the image mirror.
-	Gateways []netip.Addr
-	// GatewayCA is the PEM certificate the gateways' TLS certificates chain to.
-	GatewayCA []byte
-	// Logs is where the node-local Collector exports the node's logs; with none, the node runs no Collector.
+	Gateways     []netip.Addr
+	GatewayCA    []byte
+	// Logs is where the node-local Collector exports logs; with none, the node runs no Collector.
 	Logs components.LogExport
+	// ServiceAccountIssuer is the issuer every service-account token names, where AWS reads the cluster's key set.
+	ServiceAccountIssuer *url.URL
 }
 
-// Node is what one node's configuration adds to its cluster's.
 type Node struct {
-	// Hostname names a Metal node, which has no metadata service to name it, and stays empty on a Cloud node.
+	// Hostname names a Metal node, which has no metadata service, and stays empty on a Cloud node.
 	Hostname string
 }
 
-// Render returns the multi-document machine configuration of a control-plane node, validated against Talos's own schema.
+// Render returns a control-plane node's multi-document machine configuration, validated against Talos's schema.
 func Render(c Cluster, n Node) ([]byte, error) {
 	if err := c.validate(n); err != nil {
 		return nil, err
@@ -87,7 +79,6 @@ func Render(c Cluster, n Node) ([]byte, error) {
 	return cfg.EncodeBytes(encoder.WithComments(encoder.CommentsDisabled))
 }
 
-// generate returns Talos's own control-plane configuration for the cluster, before the kit adapts it.
 func (c Cluster) generate() (machineryconfig.Provider, error) {
 	sans := make([]string, 0, len(c.APIAddresses))
 	for _, addr := range c.APIAddresses {
@@ -133,11 +124,25 @@ func (c Cluster) validate(n Node) error {
 	if err := check.PEMCertificate(c.GatewayCA); err != nil {
 		errs = append(errs, fmt.Errorf("gateway CA: %w", err))
 	}
+	if err := checkIssuer(c.ServiceAccountIssuer); err != nil {
+		errs = append(errs, err)
+	}
 	if err := c.validateNode(n); err != nil {
 		errs = append(errs, err)
 	}
 	if errs != nil {
 		return fmt.Errorf("cluster %q: %w", c.Name, errors.Join(errs...))
+	}
+	return nil
+}
+
+// checkIssuer refuses an issuer the API server serves no discovery for: one not https, or with a query or fragment.
+func checkIssuer(issuer *url.URL) error {
+	switch {
+	case issuer == nil:
+		return errors.New("the cluster has no service-account issuer")
+	case issuer.Scheme != "https" || issuer.Host == "" || issuer.RawQuery != "" || issuer.Fragment != "":
+		return fmt.Errorf("service-account issuer %s is not an https URL with a host and no query or fragment", issuer)
 	}
 	return nil
 }
@@ -165,8 +170,7 @@ func (imageMode) String() string        { return "cloud" }
 func (imageMode) RequiresInstall() bool { return false }
 func (imageMode) InContainer() bool     { return false }
 
-// replacedKinds are the generated documents the kit drops, because documents() writes its own in their place
-// or because the cluster runs without them: Flannel and Sidero's discovery service.
+// replacedKinds are generated documents the kit drops, as documents() replaces them or the cluster runs without them.
 var replacedKinds = []string{"KubeFlannelCNIConfig", "DiscoveryServiceConfig", "ResolverConfig", "HostnameConfig"}
 
 func keepGenerated(doc config.Document) bool {

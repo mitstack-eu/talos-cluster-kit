@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
 # Posts the node report: each node's Talos version and readiness, the etcd members, each Argo CD Application's health,
-# CloudNativePG's objects, the API server's key set as jwks, and a checks member naming none of the verdict's checks.
+# CloudNativePG's objects, the objects labelled mitstack.dev/subscription with the kinds it read whole, the API server's
+# key set as jwks, and a checks member naming none of the verdict's checks.
 # When a read or the body fails or times out, it posts a report whose error names it instead, then exits non-zero.
 # Usage: REPORT_URL=<https url> SUBSCRIPTION_ID=<id> HOST_IP=<this pod's node> [REPORT_TOKEN_FILE=/var/run/mitstack/token] [REPORT_READ_SECONDS=25] report.sh
 # It exists so the platform sees a cluster it never dials into, as ADR 0072 requires, with os:reader and no Secret right.
 set -euo pipefail
 
-# Six limits of 25 seconds, their 5-second kill grace and the post's 20 fit the Job's activeDeadlineSeconds of 240.
+# Seven limits of 25 seconds, their 5-second kill grace and the post's 20 fit the Job's activeDeadlineSeconds of 240.
 limit=${REPORT_READ_SECONDS:-25}
+# Each kind as kubectl --show-kind names it, which is how a block names the objects it creates. The report holds no
+# Secret right, so secret is never one of them.
+subscription_kinds=(namespace serviceaccount service resourcequota limitrange deployment.apps
+  ingress.networking.k8s.io networkpolicy.networking.k8s.io role.rbac.authorization.k8s.io
+  rolebinding.rbac.authorization.k8s.io application.argoproj.io appproject.argoproj.io
+  externalsecret.external-secrets.io)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
@@ -34,6 +41,28 @@ collect() {
   read_into "kubectl get --raw /openid/v1/jwks" "$work/jwks.json" kubectl get --raw /openid/v1/jwks
   read_into "talosctl etcd members" "$work/members.txt" talosctl -n "$HOST_IP" etcd members
   read_cloudnative_pg
+  read_subscription_resources
+}
+
+# read_subscription_resources reads each kind on its own, all of them within one time limit, and keeps a kind only when
+# its read exits 0 with a list, so a read that fails or is cut short leaves its kind out of the report.
+read_subscription_resources() {
+  local kind
+  mkdir "$work/kinds"
+  # shellcheck disable=SC2016 # the inner script expands its own arguments
+  limited bash -c 'dir=$1; shift; for kind; do
+      kubectl get "$kind" -A -l mitstack.dev/subscription -o json > "$dir/$kind.read" && mv "$dir/$kind.read" "$dir/$kind.json"
+    done' _ "$work/kinds" "${subscription_kinds[@]}" || true
+  : > "$work/subscription-resources.json"
+  for kind in "${subscription_kinds[@]}"; do
+    [ -f "$work/kinds/$kind.json" ] || continue
+    if jq -c --arg kind "$kind" '{kind: $kind, objects: [.items[] | {
+        namespace: (.metadata.namespace // null), kind: $kind, name: .metadata.name,
+        subscription: .metadata.labels["mitstack.dev/subscription"]
+      }]}' "$work/kinds/$kind.json" > "$work/kind.read" 2>/dev/null; then
+      cat "$work/kind.read" >> "$work/subscription-resources.json"
+    fi
+  done
 }
 
 # read_cloudnative_pg keeps its exit status and stderr, so a failed read is reported beside the reads above.
@@ -79,6 +108,8 @@ body() {
     --rawfile cnpg "$work/cloudnative-pg.json" \
     --rawfile cnpg_err "$work/cloudnative-pg.err" \
     --argjson cnpg_status "$(cat "$work/cloudnative-pg.status")" \
+    --arg made_at "$made_at" \
+    --slurpfile kinds "$work/subscription-resources.json" \
     --from-file /dev/stdin <<'JQ'
     def talos_version: (.status.nodeInfo.osImage // "") | (try capture("^Talos \\((?<v>[^)]+)\\)").v catch null);
     def ready: [.status.conditions[]? | select(.type == "Ready") | .status == "True"] | any;
@@ -95,9 +126,16 @@ body() {
       else try ($cnpg | fromjson | [.items[] | cloudnative_pg])
         catch {exitStatus: 0, stderr: "kubectl exited 0, and its output is not the CloudNativePG objects this report reads"}
       end;
-    {
+    # A kind is listed whole or not at all, and 1000 objects keep the body inside the platform's 256 KiB.
+    def subscription_resources:
+      reduce $kinds[] as $read ({objects: [], kinds: []};
+        if (.objects | length) + ($read.objects | length) <= 1000 then
+          .objects += $read.objects | .kinds += [$read.kind]
+        else . end);
+    subscription_resources as $listed | {
       subscriptionId: $subscription,
       reportedAt: $at,
+      madeAt: $made_at,
       nodes: [$nodes[0].items[] | {
         name: .metadata.name,
         ready: ready,
@@ -114,6 +152,8 @@ body() {
         sync: (.status.sync.status // "Unknown")
       }]},
       cloudNativePG: cloudnative_pg_read,
+      subscriptionResources: $listed.objects,
+      subscriptionResourceKinds: $listed.kinds,
       jwks: $jwks[0],
       checks: {contract: "node-report/v1", names: []}
     }
@@ -138,6 +178,7 @@ main() {
   local token_file=${REPORT_TOKEN_FILE:-/var/run/mitstack/token} status=0
   [ -s "$token_file" ] || fail "no report token at $token_file"
   token=$(cat "$token_file")
+  made_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   collect
   body > "$work/body.json" 2> "$work/read.err" || status=$?
   [ "$status" -eq 0 ] || report_failure body "$status"

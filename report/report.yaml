@@ -1,6 +1,7 @@
 # The node report: a CronJob that reads the cluster with the Talos os:reader
-# role and a Kubernetes identity that may only read Nodes, Applications and
-# CloudNativePG's objects, and posts the result to the platform. It also creates the one namespace
+# role and a Kubernetes identity that may only read Nodes, Applications,
+# CloudNativePG's objects and the kinds of object a block labels with its
+# subscription, never a Secret, and posts the result to the platform. It also creates the one namespace
 # whose pods may hold a Talos identity. Its read of the API server's key set
 # needs no rule here, since Kubernetes binds system:service-account-issuer-discovery
 # to every service account by default.
@@ -32,9 +33,27 @@ rules:
   - apiGroups: [""]
     resources: [nodes]
     verbs: [get, list]
+  - apiGroups: [""]
+    resources: [namespaces, serviceaccounts, services, resourcequotas, limitranges]
+    verbs: [list]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [list]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses, networkpolicies]
+    verbs: [list]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [roles, rolebindings]
+    verbs: [list]
   - apiGroups: [argoproj.io]
     resources: [applications]
     verbs: [get, list]
+  - apiGroups: [argoproj.io]
+    resources: [appprojects]
+    verbs: [list]
+  - apiGroups: [external-secrets.io]
+    resources: [externalsecrets]
+    verbs: [list]
   - apiGroups: [postgresql.cnpg.io]
     resources: [clusters, databases, databaseroles]
     verbs: [get, list]

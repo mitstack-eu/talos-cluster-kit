@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Posts the node report: each node's Talos version and readiness, the etcd members, each Argo CD Application's
-# health, CloudNativePG's objects, and a checks member naming the verdict's checks these reads carry, which is none.
+# Posts the node report: each node's Talos version and readiness, the etcd members, each Argo CD Application's health,
+# CloudNativePG's objects, the API server's key set as jwks, and a checks member naming none of the verdict's checks.
 # Usage: REPORT_URL=<https url> SUBSCRIPTION_ID=<id> HOST_IP=<this pod's node> [REPORT_TOKEN_FILE=/var/run/mitstack/token] report.sh
 # It exists so the platform sees a cluster it never dials into, as ADR 0072 requires, with os:reader and no Secret right.
 set -euo pipefail
@@ -16,6 +16,7 @@ fail() {
 collect() {
   kubectl get nodes -o json > "$work/nodes.json"
   kubectl get applications.argoproj.io -n argocd -o json > "$work/applications.json"
+  kubectl get --raw /openid/v1/jwks > "$work/jwks.json"
   talosctl -n "$HOST_IP" etcd members > "$work/members.txt"
   read_cloudnative_pg
 }
@@ -35,6 +36,7 @@ body() {
     --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --slurpfile nodes "$work/nodes.json" \
     --slurpfile applications "$work/applications.json" \
+    --slurpfile jwks "$work/jwks.json" \
     --rawfile members "$work/members.txt" \
     --rawfile cnpg "$work/cloudnative-pg.json" \
     --rawfile cnpg_err "$work/cloudnative-pg.err" \
@@ -73,6 +75,7 @@ body() {
         sync: (.status.sync.status // "Unknown")
       }]},
       cloudNativePG: cloudnative_pg_read,
+      jwks: $jwks[0],
       checks: {contract: "node-report/v1", names: []}
     }'
 }

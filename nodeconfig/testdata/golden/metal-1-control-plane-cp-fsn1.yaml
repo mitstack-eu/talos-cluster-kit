@@ -236,7 +236,7 @@ issuer:
         Wq1pndetJBhKB0kxTyoIycVxW8dSFWg7Q0FlLnuorQLuZCBn/vIHtxIksyINDFDw
         ZlTWhP/8DSBvcVgtEUqOXyYcXgq4bv0elQ3ESSormxdDwXOq/4g4v+VK9Zel
         -----END RSA PRIVATE KEY-----
-    issuerURL: https://10.0.0.3:6443
+    issuerURL: https://mitstack-oidc-7kq2m4xw3pa3hd6rz5tn2cjvle.s3.eu-central-1.amazonaws.com/sub_0123456789ab
 ---
 apiVersion: v1alpha1
 kind: KubeAPIServerConfig

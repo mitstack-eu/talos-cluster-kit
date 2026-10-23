@@ -17,7 +17,10 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 )
 
-const cloudNativePGRead = "get clusters.postgresql.cnpg.io,databases.postgresql.cnpg.io,databaseroles.postgresql.cnpg.io -A -o json"
+const (
+	cloudNativePGRead = "get clusters.postgresql.cnpg.io,databases.postgresql.cnpg.io,databaseroles.postgresql.cnpg.io -A -o json"
+	keySetRead        = "get --raw /openid/v1/jwks"
+)
 
 // fakeTalosctl and fakeKubectl answer the report's reads from the fixture cluster in testdata/, and
 // failingCloudNativePGKubectl refuses only the CloudNativePG read, as a cluster without its CRDs would.
@@ -27,6 +30,7 @@ const (
 case "$*" in
   "get nodes -o json") cat testdata/nodes.json ;;
   "get applications.argoproj.io -n argocd -o json") cat testdata/applications.json ;;
+  "` + keySetRead + `") cat testdata/jwks.json ;;
   "` + cloudNativePGRead + `") cat testdata/cloudnative-pg.json ;;
   *) exit 1 ;;
 esac
@@ -35,6 +39,7 @@ esac
 case "$*" in
   "get nodes -o json") cat testdata/nodes.json ;;
   "get applications.argoproj.io -n argocd -o json") cat testdata/applications.json ;;
+  "` + keySetRead + `") cat testdata/jwks.json ;;
   "` + cloudNativePGRead + `") echo 'error: the server does not have a resource type "clusters"' >&2; exit 1 ;;
   *) exit 1 ;;
 esac
@@ -120,9 +125,22 @@ func TestReport_PostsEachNodeWithItsTalosVersionTheEtcdMembershipAndArgoCDsHealt
 	assert.Equal(t, []string{
 		"kubectl get nodes -o json",
 		"kubectl get applications.argoproj.io -n argocd -o json",
+		"kubectl " + keySetRead,
 		"talosctl -n 10.0.0.6 etcd members",
 		"kubectl " + cloudNativePGRead,
 	}, tools.Calls(t))
+}
+
+func TestReport_CarriesTheKeySetTheAPIServerSignsServiceAccountTokensWithUnderJwks(t *testing.T) {
+	var want map[string]any
+	data, err := os.ReadFile(filepath.Join("testdata", "jwks.json"))
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(data, &want))
+
+	_, posted, out, err := runReport(t, fakeKubectl)
+
+	require.NoError(t, err, out)
+	assert.Equal(t, want, posted.body["jwks"], "the report's jwks member is the API server's key set as read")
 }
 
 func TestReport_ListsCloudNativePGsClustersDatabasesAndRoles(t *testing.T) {

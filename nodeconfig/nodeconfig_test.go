@@ -6,6 +6,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"net/netip"
+	"net/url"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -191,6 +192,44 @@ func TestRender_GivesAHostingClusterOpenBaosUserVolumeAndADefaultClusterNone(t *
 	}
 	assert.Subset(t, inline, []any{"mitstack-openbao-seal-key", "mitstack-sealed-secrets-key", "mitstack-sealed-app-key", "mitstack-openbao-storage"})
 	assert.Empty(t, testutil.Kind(testutil.Documents(t, plain), "UserVolumeConfig"))
+}
+
+func TestRender_SignsServiceAccountTokensForTheIssuerItIsGiven(t *testing.T) {
+	cluster := testutil.NewCluster(t)
+	cluster.ServiceAccountIssuer = &url.URL{Scheme: "https", Host: "oidc.example.com", Path: "/clusters/shop"}
+
+	got, err := nodeconfig.Render(cluster, nodeconfig.Node{})
+
+	require.NoError(t, err)
+	accounts := testutil.Kind(testutil.Documents(t, got), "KubeServiceAccountConfig")
+	require.Len(t, accounts, 1)
+	assert.Equal(t, "https://oidc.example.com/clusters/shop", testutil.Field(t, accounts[0], "issuer", "issuerURL"),
+		"the issuerURL Talos passes the API server as --service-account-issuer")
+}
+
+func TestRender_RefusesAServiceAccountIssuerTheAPIServerServesNoDiscoveryFor(t *testing.T) {
+	cases := []struct {
+		name   string
+		issuer *url.URL
+		want   string
+	}{
+		{name: "no issuer", want: "no service-account issuer"},
+		{name: "an http issuer", issuer: &url.URL{Scheme: "http", Host: "oidc.example.com", Path: "/shop"}, want: "http://oidc.example.com/shop is not an https URL"},
+		{name: "an issuer with no host", issuer: &url.URL{Scheme: "https", Path: "/shop"}, want: "https:///shop is not an https URL"},
+		{name: "an issuer with a query", issuer: &url.URL{Scheme: "https", Host: "oidc.example.com", Path: "/shop", RawQuery: "v=1"}, want: "https://oidc.example.com/shop?v=1 is not an https URL"},
+		{name: "an issuer with a fragment", issuer: &url.URL{Scheme: "https", Host: "oidc.example.com", Path: "/shop", Fragment: "keys"}, want: "https://oidc.example.com/shop#keys is not an https URL"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cluster := testutil.NewCluster(t)
+			cluster.ServiceAccountIssuer = tc.issuer
+
+			_, err := nodeconfig.Render(cluster, nodeconfig.Node{})
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
 }
 
 func TestRender_CarriesNoAdminClientCertificate(t *testing.T) {

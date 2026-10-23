@@ -28,16 +28,13 @@ var HetznerResolvers = []netip.Addr{netip.MustParseAddr("185.12.64.1"), netip.Mu
 // HetznerTimeServers are Hetzner's NTP servers, which every node syncs from in place of time.cloudflare.com.
 var HetznerTimeServers = []string{"ntp1.hetzner.de", "ntp2.hetzner.com", "ntp3.hetzner.net"}
 
-// TalosAPIRoles are the Talos roles a pod in TalosAPINamespace may hold: os:admin for the etcd member removal,
-// which accepts no narrower role, os:etcd:backup for the snapshot, and os:reader for the node report.
+// TalosAPIRoles are the roles a TalosAPINamespace pod may hold, os:admin as etcd member removal takes no narrower one.
 var TalosAPIRoles = []string{"os:admin", "os:etcd:backup", "os:reader"}
 
 // TalosAPINamespace is the one namespace whose pods may hold a Talos API identity.
 const TalosAPINamespace = "mitstack-node"
 
-// adapt changes the generated documents the kit keeps: no kube-proxy, since Cilium replaces it, the nodes'
-// subscription label, etcd and the kubelet bound to the private network, and service logs sent to the
-// node-local Collector when the cluster has a log receiver.
+// adapt changes the generated documents the kit keeps, turning kube-proxy off since Cilium replaces it.
 func (c Cluster) adapt(generated []config.Document) []config.Document {
 	var docs []config.Document
 	for _, doc := range generated {
@@ -52,6 +49,8 @@ func (c Cluster) adapt(generated []config.Document) []config.Document {
 		case *k8s.KubeNodeConfigV1Alpha1:
 			d.LabelsConfig[SubscriptionLabel] = c.SubscriptionID
 			d.NodeIPConfig.NodeIPValidSubnets = []string{c.Network.String()}
+		case *k8s.KubeServiceAccountConfigV1Alpha1:
+			d.ServiceIssuer.IssuerURL = meta.URL{URL: c.ServiceAccountIssuer}
 		}
 		docs = append(docs, doc)
 	}
@@ -76,7 +75,6 @@ func loopbackLogURL(port int) *url.URL {
 	return &url.URL{Scheme: "tcp", Host: "127.0.0.1:" + strconv.Itoa(port)}
 }
 
-// documents returns the documents the kit adds to the generated ones.
 func (c Cluster) documents(n Node) ([]config.Document, error) {
 	manifests, err := c.manifestDocuments()
 	if err != nil {
@@ -93,8 +91,7 @@ func (c Cluster) documents(n Node) ([]config.Document, error) {
 	return append(docs, manifests...), nil
 }
 
-// userVolumeDocuments give each user volume the set keeps data on a directory on EPHEMERAL, since a Cloud server has
-// one disk and EPHEMERAL spans all of it, leaving no free space for a partition of its own.
+// userVolumeDocuments put each user volume in a directory on EPHEMERAL, which spans a Cloud server's one disk whole.
 func (c Cluster) userVolumeDocuments() []config.Document {
 	var docs []config.Document
 	for _, name := range c.Components.UserVolumes {
@@ -118,8 +115,7 @@ func resolverDocument() config.Document {
 // cloudLink is a Cloud node's one interface, on the cluster's private network, since the node has no public one.
 const cloudLink = "eth0"
 
-// routeDocuments give a Cloud node the default route Hetzner's DHCP leaves out, through Hetzner's router, which the
-// network's own route sends on to the gateway.
+// routeDocuments give a Cloud node the default route DHCP leaves out, through Hetzner's router to the gateway.
 func (c Cluster) routeDocuments() []config.Document {
 	if c.Profile != HCloud {
 		return nil
@@ -173,8 +169,7 @@ func talosAPIAccessDocument() config.Document {
 	return doc
 }
 
-// mirrorDocuments send each public registry to every gateway's mirror in turn, with no fallback to the registry
-// itself, and trust each gateway's certificate for those pulls.
+// mirrorDocuments send each public registry to every gateway's mirror in turn, with no fallback to the registry itself.
 func (c Cluster) mirrorDocuments() []config.Document {
 	var docs []config.Document
 	for _, registry := range components.MirroredRegistries {
@@ -196,8 +191,7 @@ func (c Cluster) mirrorDocuments() []config.Document {
 	return docs
 }
 
-// manifestDocuments name each served manifest at the first gateway, and carry each inline one with the
-// node-local Collector when the cluster has a log receiver.
+// manifestDocuments name each served manifest at the first gateway, and add the Collector when logs have a receiver.
 func (c Cluster) manifestDocuments() ([]config.Document, error) {
 	inline := c.Components.Inline
 	if !c.Logs.IsZero() {

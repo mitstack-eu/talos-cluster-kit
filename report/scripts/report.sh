@@ -26,7 +26,7 @@ read_cloudnative_pg() {
   local status=0
   kubectl get clusters.postgresql.cnpg.io,databases.postgresql.cnpg.io,databaseroles.postgresql.cnpg.io -A -o json \
     > "$work/cloudnative-pg.json" 2> "$work/cloudnative-pg.err" || status=$?
-  echo "$status" > "$work/cloudnative-pg.status"
+  printf '%s' "$status" > "$work/cloudnative-pg.status"
 }
 
 # body prints the report; a member line is NODE ID HOSTNAME PEER-URLS CLIENT-URLS LEARNER.
@@ -40,7 +40,7 @@ body() {
     --rawfile members "$work/members.txt" \
     --rawfile cnpg "$work/cloudnative-pg.json" \
     --rawfile cnpg_err "$work/cloudnative-pg.err" \
-    --rawfile cnpg_status "$work/cloudnative-pg.status" '
+    --argjson cnpg_status "$(cat "$work/cloudnative-pg.status")" '
     def talos_version: (.status.nodeInfo.osImage // "") | (try capture("^Talos \\((?<v>[^)]+)\\)").v catch null);
     def ready: [.status.conditions[]? | select(.type == "Ready") | .status == "True"] | any;
     def cloudnative_pg: {
@@ -51,8 +51,8 @@ body() {
     else
       {applied: .status.applied, message: (.status.message // null | if . then .[0:256] else . end)}
     end;
-    def cloudnative_pg_read: ($cnpg_status | tonumber) as $status |
-      if $status != 0 then {exitStatus: $status, stderr: $cnpg_err[-1024:]}
+    def cloudnative_pg_read:
+      if $cnpg_status != 0 then {exitStatus: $cnpg_status, stderr: $cnpg_err[-1024:]}
       else try ($cnpg | fromjson | [.items[] | cloudnative_pg])
         catch {exitStatus: 0, stderr: "kubectl exited 0, and its output is not the CloudNativePG objects this report reads"}
       end;

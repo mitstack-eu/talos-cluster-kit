@@ -1,0 +1,146 @@
+{
+    "metadata": {
+        "namespace": "block",
+        "type": "VolumeStatuses.block.talos.dev",
+        "id": "META",
+        "version": 2,
+        "owner": "block.VolumeManagerController",
+        "phase": "running"
+    },
+    "node": "10.0.0.5",
+    "spec": {
+        "phase": "ready",
+        "type": "partition",
+        "location": "/dev/sda4"
+    }
+}
+{
+    "metadata": {
+        "namespace": "block",
+        "type": "VolumeStatuses.block.talos.dev",
+        "id": "STATE",
+        "version": 4,
+        "owner": "block.VolumeManagerController",
+        "phase": "running"
+    },
+    "node": "10.0.0.5",
+    "spec": {
+        "phase": "ready",
+        "type": "partition",
+        "location": "/dev/sda5",
+        "mountLocation": "/dev/dm-0",
+        "filesystem": "xfs",
+        "encryptionProvider": "luks2",
+        "configuredEncryptionKeys": [
+            "nodeID"
+        ],
+        "encryptionSlot": 0
+    }
+}
+{
+    "metadata": {
+        "namespace": "block",
+        "type": "VolumeStatuses.block.talos.dev",
+        "id": "EPHEMERAL",
+        "version": 4,
+        "owner": "block.VolumeManagerController",
+        "phase": "running"
+    },
+    "node": "10.0.0.5",
+    "spec": {
+        "phase": "ready",
+        "type": "partition",
+        "location": "/dev/sda6",
+        "mountLocation": "/dev/dm-1",
+        "filesystem": "xfs",
+        "encryptionProvider": "luks2",
+        "configuredEncryptionKeys": [
+            "nodeID"
+        ],
+        "encryptionLockedToState": true,
+        "encryptionSlot": 0
+    }
+}
+{
+    "metadata": {
+        "namespace": "block",
+        "type": "VolumeStatuses.block.talos.dev",
+        "id": "STATE",
+        "version": 4,
+        "owner": "block.VolumeManagerController",
+        "phase": "running"
+    },
+    "node": "10.0.0.6",
+    "spec": {
+        "phase": "ready",
+        "type": "partition",
+        "location": "/dev/sda5",
+        "mountLocation": "/dev/dm-0",
+        "filesystem": "xfs",
+        "encryptionProvider": "luks2",
+        "configuredEncryptionKeys": [
+            "nodeID"
+        ],
+        "encryptionSlot": 0
+    }
+}
+{
+    "metadata": {
+        "namespace": "block",
+        "type": "VolumeStatuses.block.talos.dev",
+        "id": "EPHEMERAL",
+        "version": 4,
+        "owner": "block.VolumeManagerController",
+        "phase": "running"
+    },
+    "node": "10.0.0.6",
+    "spec": {
+        "phase": "ready",
+        "type": "partition",
+        "location": "/dev/sda6",
+        "mountLocation": "/dev/dm-1",
+        "filesystem": "xfs",
+        "encryptionProvider": "luks2",
+        "configuredEncryptionKeys": [
+            "nodeID"
+        ],
+        "encryptionLockedToState": true,
+        "encryptionSlot": 0
+    }
+}
+{
+    "metadata": {
+        "namespace": "block",
+        "type": "VolumeStatuses.block.talos.dev",
+        "id": "STATE",
+        "version": 2,
+        "owner": "block.VolumeManagerController",
+        "phase": "running"
+    },
+    "node": "10.0.0.7",
+    "spec": {
+        "phase": "ready",
+        "type": "partition",
+        "location": "/dev/sda5",
+        "mountLocation": "/dev/sda5",
+        "filesystem": "xfs"
+    }
+}
+{
+    "metadata": {
+        "namespace": "block",
+        "type": "VolumeStatuses.block.talos.dev",
+        "id": "EPHEMERAL",
+        "version": 2,
+        "owner": "block.VolumeManagerController",
+        "phase": "running"
+    },
+    "node": "10.0.0.7",
+    "spec": {
+        "phase": "ready",
+        "type": "partition",
+        "location": "/dev/sda6",
+        "mountLocation": "/dev/sda6",
+        "filesystem": "xfs"
+    }
+}

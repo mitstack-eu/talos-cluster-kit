@@ -28,7 +28,8 @@ const (
 	applicationsRead  = "get applications.argoproj.io -n argocd -o json"
 	keySetRead        = "get --raw /openid/v1/jwks"
 	cloudNativePGRead = "get clusters.postgresql.cnpg.io,databases.postgresql.cnpg.io,databaseroles.postgresql.cnpg.io -A -o json"
-	fakeTalosctl      = `cat testdata/members.txt`
+	membersRead       = "-n 10.0.0.6 etcd members"
+	volumesRead       = "-n 10.0.0.5,10.0.0.6,10.0.0.7 get volumestatus -o json"
 	// failedRead writes 2000 bytes of noise, its message, the report token, a bearer header, a JWT and a NUL to stderr.
 	failedRead = `head -c 2000 /dev/zero | tr '\0' x >&2; printf '\nerror: the server is gone\n' >&2
 printf 'token ` + reportToken + `\nAuthorization: Bearer abc.def\nsigned eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln\n\0' >&2
@@ -50,6 +51,13 @@ func subscriptionRead(kind string) string {
 // refuses only the CloudNativePG read, as a cluster without its CRDs would.
 var fakeKubectl, failingCloudNativePGKubectl = kubectlAnswering(nil), kubectlAnswering(map[string]string{
 	cloudNativePGRead: `echo 'error: the server does not have a resource type "clusters"' >&2; exit 1`})
+
+// fakeTalosctl answers the etcd members and every node's volume statuses from testdata/.
+var fakeTalosctl = talosctlAnswering("cat testdata/volumes.json")
+
+func talosctlAnswering(volumes string) string {
+	return "case \"$*\" in\n\"" + membersRead + "\")\ncat testdata/members.txt\n;;\n\"" + volumesRead + "\")\n" + volumes + "\n;;\n*) exit 1 ;;\nesac\n"
+}
 
 // kubectlAnswering answers each kubectl read from the fixture cluster, except those overrides replaces.
 func kubectlAnswering(overrides map[string]string) string {
@@ -163,13 +171,57 @@ func TestReport_PostsEachNodeWithItsTalosVersionTheEtcdMembershipAndArgoCDsHealt
 		"kubectl get nodes -o json",
 		"kubectl get applications.argoproj.io -n argocd -o json",
 		"kubectl " + keySetRead,
-		"talosctl -n 10.0.0.6 etcd members",
+		"talosctl " + membersRead,
+		"talosctl " + volumesRead,
 		"kubectl " + cloudNativePGRead,
 	}
 	for _, kind := range subscriptionKinds {
 		wantCalls = append(wantCalls, "kubectl "+subscriptionRead(kind))
 	}
 	assert.Equal(t, wantCalls, tools.Calls(t))
+}
+
+func TestReport_NamesEachNodesStateAndEphemeralVolumeWithItsEncryption(t *testing.T) {
+	volume := func(node, name, provider string, keys []any, lockedToState bool) map[string]any {
+		return map[string]any{"node": node, "name": name, "phase": "ready", "encryptionProvider": provider,
+			"encryptionKeys": keys, "lockedToState": lockedToState}
+	}
+	nodeID := []any{"nodeID"}
+
+	_, posted, out, err := runReport(t, nil)
+
+	require.NoError(t, err, out)
+	assert.Equal(t, []any{
+		volume("10.0.0.5", "STATE", "luks2", nodeID, false),
+		volume("10.0.0.5", "EPHEMERAL", "luks2", nodeID, true),
+		volume("10.0.0.6", "STATE", "luks2", nodeID, false),
+		volume("10.0.0.6", "EPHEMERAL", "luks2", nodeID, true),
+		volume("10.0.0.7", "STATE", "none", []any{}, false),
+		volume("10.0.0.7", "EPHEMERAL", "none", []any{}, false),
+	}, posted.body["systemVolumes"])
+}
+
+func TestReport_WhoseVolumeReadFailsStillCarriesItsNodesAndNamesTheFailure(t *testing.T) {
+	cases := map[string]struct {
+		answer string
+		want   map[string]any
+	}{
+		"the read exits 1": {`echo 'rpc error: code = Unavailable desc = 10.0.0.7 is unreachable' >&2; exit 1`,
+			map[string]any{"exitStatus": float64(1), "stderr": "rpc error: code = Unavailable desc = 10.0.0.7 is unreachable\n"}},
+		"the read times out": {"sleep 10", map[string]any{"exitStatus": float64(124), "stderr": ""}},
+		"the read prints no volume statuses": {"echo 'not json'",
+			map[string]any{"exitStatus": float64(0), "stderr": "talosctl exited 0, and its output is not the volume statuses this report reads"}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, posted, out, err := runReport(t, map[string]string{"talosctl": talosctlAnswering(tc.answer)}, "REPORT_READ_SECONDS=1")
+
+			require.NoError(t, err, out)
+			assert.NotContains(t, posted.body, "error", "a failed volume read still leaves a full report")
+			assert.Len(t, posted.body["nodes"], 3)
+			assert.Equal(t, tc.want, posted.body["systemVolumes"])
+		})
+	}
 }
 
 // fixtureObjects are the labelled objects of testdata/subscription-resources, as the report lists them.

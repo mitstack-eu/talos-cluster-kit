@@ -260,6 +260,36 @@ func TestRender_RunsTheMeshAndItsAdmissionPoliciesOnEveryProfileAndSize(t *testi
 	}
 }
 
+func TestRender_EncryptsStateAndEphemeralWithLUKS2UnderTheNodeIDKeyWithEphemeralsKeyLockedToState(t *testing.T) {
+	nodeIDKey := map[string]any{"slot": 0, "nodeID": map[string]any{}}
+	want := map[string]map[string]any{
+		"STATE": {"apiVersion": "v1alpha1", "kind": "VolumeConfig", "name": "STATE",
+			"encryption": map[string]any{"provider": "luks2", "keys": []any{nodeIDKey}}},
+		"EPHEMERAL": {"apiVersion": "v1alpha1", "kind": "VolumeConfig", "name": "EPHEMERAL", "mount": map[string]any{"secure": true},
+			"encryption": map[string]any{"provider": "luks2", "keys": []any{map[string]any{"slot": 0, "nodeID": map[string]any{}, "lockToState": true}}}},
+	}
+	for _, profile := range []nodeconfig.Profile{nodeconfig.HCloud, nodeconfig.Metal} {
+		for _, nodes := range []int{1, 3} {
+			t.Run(fmt.Sprintf("%s with %d nodes", profile, nodes), func(t *testing.T) {
+				cluster := testutil.NewCluster(t, testutil.WithProfile(profile), testutil.WithLocations(nodes))
+				node := nodeconfig.Node{}
+				if profile == nodeconfig.Metal {
+					node.Hostname = "cp-fsn1"
+				}
+
+				got, err := nodeconfig.Render(cluster, node)
+
+				require.NoError(t, err)
+				volumes := map[string]map[string]any{}
+				for _, doc := range testutil.Kind(testutil.Documents(t, got), "VolumeConfig") {
+					volumes[doc["name"].(string)] = doc
+				}
+				assert.Equal(t, want, volumes)
+			})
+		}
+	}
+}
+
 // meshDocs returns the documents of the named manifests of set, in order.
 func meshDocs(t *testing.T, set components.Set, names ...string) []map[string]any {
 	t.Helper()

@@ -89,7 +89,7 @@ code embeds it with `go:embed`.
 | `etcd/scripts/remove-member.sh` | The member removal Job, inline in its command | Looks up the lost node's etcd member, removes it, then deletes the Node | `etcd/etcd_test.go` |
 | `etcd/scripts/bootstrap.sh` | The gateway, as `mitstack-talos-bootstrap` | Bootstraps etcd, or restores it and deletes the old Node objects, then deletes the admin talosconfig | `etcd/etcd_test.go` |
 | `gateway/scripts/prepare.sh` | The gateway, once at first boot | Installs talosctl and kubectl, copies each image into the local registry by digest, and fetches each served manifest | `gateway/gateway_test.go` |
-| `report/scripts/report.sh` | The node report's CronJob, inline in its command | Reads the nodes, the etcd members, the Argo CD Applications and CloudNativePG's objects, and posts the report | `report/report_test.go` |
+| `report/scripts/report.sh` | The node report's CronJob, inline in its command | Reads the nodes, the etcd members, the Argo CD Applications and CloudNativePG's objects, and posts the report with a `checks` member that names none of the platform verdict's checks | `report/report_test.go` |
 | `openbaoinit/scripts/openbao-init.sh` | OpenBao's init Job, inline in its command | Initialises OpenBao once, commits `openbao-init.asc`, then enables kv and Kubernetes auth and writes `app-secrets-reader` | `openbaoinit/openbaoinit_test.go` |
 | `scripts/render-components.sh` | A workstation and CI | Renders the component set | The `components` CI job |
 
@@ -123,6 +123,7 @@ that log to check the order of the calls.
 | `TestRemoveMemberJob_RemovesTheEtcdMemberBeforeDeletingItsNode` | The member goes before its Node, and a failed removal keeps the Node | Fake talosctl and kubectl |
 | `TestBootstrapScript_RestoresFromTheSnapshotThenDeletesTheOldNodes` | The restore bootstraps from the snapshot, deletes every Node outside `--keep`, and deletes the talosconfig | Fake talosctl and kubectl |
 | `TestReport_PostsEachNodeWithItsTalosVersionTheEtcdMembershipAndArgoCDsHealth` | The report carries each node, its Talos version, the members and each Application's health | Fake talosctl and kubectl, and a local HTTPS server playing the platform |
+| `TestReport_DeclaresItsNodeReportContractAndCarriesNoneOfTheVerdictsChecks` | The report's `checks` member names contract `node-report/v1` and an empty `names`, whether or not the CloudNativePG read succeeds, so the platform judges none of its checks and reads each as `not-reported` | Fake talosctl and kubectl, and a local HTTPS server playing the platform |
 | `TestReport_WhoseCloudNativePGReadFailsStillCarriesItsNodesAndApplications` | A failed CloudNativePG read is reported with its exit status and stderr, beside the nodes and Applications | A fake kubectl that refuses only that read |
 | `TestDefault_RunsKyvernoWithBothPoliciesAndCloudNativePGWithTheDatabaseSlicePolicy` | The set carries Kyverno, both policies, CloudNativePG and the slice policy, and the mirror holds each of their images by digest | The default set and its mirror list |
 | `TestDatabaseSlicesPolicy_GrantsEachPodExactlyItsAllows` | A slice's Postgres instance, a CloudNativePG Job, an app pod, a pod outside a database slice and a system pod each get exactly their allows | Cilium's view of each pod's labels |

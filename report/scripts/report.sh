@@ -1,12 +1,8 @@
 #!/usr/bin/env bash
-# Reads the cluster and posts the node report to the platform: each node with
-# its Talos version and readiness, the etcd membership, the health and sync
-# status of every Argo CD Application, and CloudNativePG's clusters, databases
-# and roles.
-# Usage: REPORT_URL=<https url> SUBSCRIPTION_ID=<id> HOST_IP=<this pod's node> report.sh
-#   REPORT_TOKEN_FILE names the bearer token's file, /var/run/mitstack/token by default.
-# It exists so the platform sees a cluster it never dials into, as ADR 0072
-# requires, from reads that hold the Talos os:reader role and no Secret right.
+# Posts the node report: each node's Talos version and readiness, the etcd members, each Argo CD Application's
+# health, CloudNativePG's objects, and a checks member naming the verdict's checks these reads carry, which is none.
+# Usage: REPORT_URL=<https url> SUBSCRIPTION_ID=<id> HOST_IP=<this pod's node> [REPORT_TOKEN_FILE=/var/run/mitstack/token] report.sh
+# It exists so the platform sees a cluster it never dials into, as ADR 0072 requires, with os:reader and no Secret right.
 set -euo pipefail
 
 work=$(mktemp -d)
@@ -76,7 +72,8 @@ body() {
         health: (.status.health.status // "Unknown"),
         sync: (.status.sync.status // "Unknown")
       }]},
-      cloudNativePG: cloudnative_pg_read
+      cloudNativePG: cloudnative_pg_read,
+      checks: {contract: "node-report/v1", names: []}
     }'
 }
 

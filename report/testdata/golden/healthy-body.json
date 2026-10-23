@@ -1,0 +1,112 @@
+{
+  "subscriptionId": "sub_0123456789ab",
+  "reportedAt": "2026-10-23T15:45:00Z",
+  "nodes": [
+    {
+      "name": "poc-talos4-cp1",
+      "ready": true,
+      "talosVersion": "v1.14.4",
+      "kubeletVersion": "v1.37.1",
+      "internalIP": "10.0.0.5"
+    },
+    {
+      "name": "poc-talos4-cp2",
+      "ready": true,
+      "talosVersion": "v1.14.4",
+      "kubeletVersion": "v1.37.1",
+      "internalIP": "10.0.0.6"
+    },
+    {
+      "name": "poc-talos4-cp3",
+      "ready": false,
+      "talosVersion": "v1.14.3",
+      "kubeletVersion": "v1.37.1",
+      "internalIP": "10.0.0.7"
+    }
+  ],
+  "etcd": {
+    "members": [
+      {
+        "id": "25afe91c7e8956f1",
+        "hostname": "poc-talos4-cp2",
+        "peerURLs": [
+          "https://10.0.0.6:2380"
+        ],
+        "learner": false
+      },
+      {
+        "id": "a48f107742a8605c",
+        "hostname": "poc-talos4-cp1",
+        "peerURLs": [
+          "https://10.0.0.5:2380"
+        ],
+        "learner": false
+      },
+      {
+        "id": "1948ccd42e0e52cd",
+        "hostname": "poc-talos4-cp4",
+        "peerURLs": [
+          "https://10.0.0.7:2380"
+        ],
+        "learner": true
+      }
+    ]
+  },
+  "argocd": {
+    "applications": [
+      {
+        "name": "cluster-root",
+        "health": "Healthy",
+        "sync": "Synced"
+      },
+      {
+        "name": "shop",
+        "health": "Degraded",
+        "sync": "OutOfSync"
+      }
+    ]
+  },
+  "cloudNativePG": [
+    {
+      "namespace": "app-pg",
+      "kind": "Cluster",
+      "name": "shared",
+      "subscription": "sub_pg0123456789",
+      "phase": "Cluster in healthy state",
+      "instances": 2,
+      "readyInstances": 2
+    },
+    {
+      "namespace": "app-pg",
+      "kind": "Database",
+      "name": "shop",
+      "subscription": "sub_shop01234567",
+      "applied": true,
+      "message": null
+    },
+    {
+      "namespace": "app-pg",
+      "kind": "DatabaseRole",
+      "name": "shop",
+      "subscription": null,
+      "applied": false,
+      "message": "role \"shop\" cannot be created: the cluster is not ready"
+    }
+  ],
+  "jwks": {
+    "keys": [
+      {
+        "use": "sig",
+        "kty": "RSA",
+        "kid": "X7f4xdHJ3VhGhUSm9X2w7tW06WnE-6QxB21YPrB9jV8",
+        "alg": "RS256",
+        "n": "tuGxhE_w7Y6hrx9LnzEmECep2X3EwlbAj63vyEIg0t9nv2Jp7ynerW2vs8PDu6XagPFswISbLTPMpV-GAIzIu8OevJxSkeYFxkz2y0Se4EVJvw3khkO7OrxBZj2_Q-xL6zpFX5Y6sZ4IqdDXCkKv4TnjF3OmWK6RebzJrJ4FMaH8uPM6KcMHEK2x_vzgWILyv4iUH61QX5TYMxXd6OZWR7G12FiVMRnbYi7-l1wdUfoUuWXZ1BBFbig7ikhgIUA4UQQoFYW1GJKcQTtuyoGAkGSVKEc50Y4vZp3nnq7d39pvhetfpIZ4lG-msWShdrDUSUVwnmA09MebCFoc0GhzULoMo_cSETe2XZJl5tQN2LG5aZFeA1E-ijNTszGKImkwQXa5dWM5Ec_Mv0TKXKWmx3X4l-v9VAw0EI-nhhKDdjZace9RS4DSgRbrgmfpb9ojJl_WPJ2ilvNEVe_NkJCgp76uzmr8aZiCMUqfHs7ZMLFj5II8xH6508M6HGdaTzmLNVRDlDRrRWtTziUKkL-syA-ud1xbq4Ba2zNtf7Ux32GhMqzn-GdQE8wnlsQUV6b0QZ9fDbccE9w7EsvHOp30mS3ULaZ2uIYfNs6G8snoO9amDOrhilS-WL57BWNVx-BL55dQJzkW_gJGOrPYPgeCSsXG5W0_-3telD0zz3Vz1XM",
+        "e": "AQAB"
+      }
+    ]
+  },
+  "checks": {
+    "contract": "node-report/v1",
+    "names": []
+  }
+}

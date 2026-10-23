@@ -1,10 +1,11 @@
 # Each binary is checked against its sha256 pin: talosctl and kubectl against tools.env, the file the gateway installs
-# them from, and jq against jq.env, the file the report's tests fetch the same jq by.
+# them from, and jq against jq.env, the file the report's tests fetch the same jq by. coreutils replaces busybox's
+# timeout, which exits 143 on a timeout where the node report reads GNU timeout's 124.
 FROM docker.io/library/alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
 
 COPY tools.env jq.env /tmp/
 
-RUN apk add --no-cache bash ca-certificates curl gpg openssl \
+RUN apk add --no-cache bash ca-certificates coreutils curl gpg openssl \
  && . /tmp/tools.env \
  && . /tmp/jq.env \
  && curl -fsSL --proto '=https' -o /usr/local/bin/talosctl "https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/talosctl-linux-amd64" \

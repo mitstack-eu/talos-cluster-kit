@@ -1,6 +1,7 @@
 {
   "subscriptionId": "sub_0123456789ab",
   "reportedAt": "2026-10-23T15:45:00Z",
+  "madeAt": "2026-10-23T15:45:00Z",
   "nodes": [
     {
       "name": "poc-talos4-cp1",
@@ -52,6 +53,64 @@
       }
     ]
   },
+  "systemVolumes": [
+    {
+      "node": "10.0.0.5",
+      "name": "STATE",
+      "phase": "ready",
+      "encryptionProvider": "luks2",
+      "encryptionKeys": [
+        "nodeID"
+      ],
+      "lockedToState": false
+    },
+    {
+      "node": "10.0.0.5",
+      "name": "EPHEMERAL",
+      "phase": "ready",
+      "encryptionProvider": "luks2",
+      "encryptionKeys": [
+        "nodeID"
+      ],
+      "lockedToState": true
+    },
+    {
+      "node": "10.0.0.6",
+      "name": "STATE",
+      "phase": "ready",
+      "encryptionProvider": "luks2",
+      "encryptionKeys": [
+        "nodeID"
+      ],
+      "lockedToState": false
+    },
+    {
+      "node": "10.0.0.6",
+      "name": "EPHEMERAL",
+      "phase": "ready",
+      "encryptionProvider": "luks2",
+      "encryptionKeys": [
+        "nodeID"
+      ],
+      "lockedToState": true
+    },
+    {
+      "node": "10.0.0.7",
+      "name": "STATE",
+      "phase": "ready",
+      "encryptionProvider": "none",
+      "encryptionKeys": [],
+      "lockedToState": false
+    },
+    {
+      "node": "10.0.0.7",
+      "name": "EPHEMERAL",
+      "phase": "ready",
+      "encryptionProvider": "none",
+      "encryptionKeys": [],
+      "lockedToState": false
+    }
+  ],
   "argocd": {
     "applications": [
       {
@@ -92,6 +151,47 @@
       "applied": false,
       "message": "role \"shop\" cannot be created: the cluster is not ready"
     }
+  ],
+  "subscriptionResources": [
+    {
+      "namespace": null,
+      "kind": "namespace",
+      "name": "app-shop",
+      "subscription": "sub_slice0123456"
+    },
+    {
+      "namespace": "app-shop",
+      "kind": "deployment.apps",
+      "name": "shop",
+      "subscription": "sub_deploy012345"
+    },
+    {
+      "namespace": "argocd",
+      "kind": "appproject.argoproj.io",
+      "name": "app-shop",
+      "subscription": "sub_slice0123456"
+    },
+    {
+      "namespace": "argocd",
+      "kind": "externalsecret.external-secrets.io",
+      "name": "repo-app-shop",
+      "subscription": "sub_slice0123456"
+    }
+  ],
+  "subscriptionResourceKinds": [
+    "namespace",
+    "serviceaccount",
+    "service",
+    "resourcequota",
+    "limitrange",
+    "deployment.apps",
+    "ingress.networking.k8s.io",
+    "networkpolicy.networking.k8s.io",
+    "role.rbac.authorization.k8s.io",
+    "rolebinding.rbac.authorization.k8s.io",
+    "application.argoproj.io",
+    "appproject.argoproj.io",
+    "externalsecret.external-secrets.io"
   ],
   "jwks": {
     "keys": [

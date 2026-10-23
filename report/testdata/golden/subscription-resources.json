@@ -1,0 +1,26 @@
+[
+  {
+    "namespace": null,
+    "kind": "namespace",
+    "name": "app-shop",
+    "subscription": "sub_slice0123456"
+  },
+  {
+    "namespace": "app-shop",
+    "kind": "deployment.apps",
+    "name": "shop",
+    "subscription": "sub_deploy012345"
+  },
+  {
+    "namespace": "argocd",
+    "kind": "appproject.argoproj.io",
+    "name": "app-shop",
+    "subscription": "sub_slice0123456"
+  },
+  {
+    "namespace": "argocd",
+    "kind": "externalsecret.external-secrets.io",
+    "name": "repo-app-shop",
+    "subscription": "sub_slice0123456"
+  }
+]

@@ -3,6 +3,7 @@ package report_test
 import (
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"maps"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -27,22 +29,44 @@ const (
 	applicationsRead  = "get applications.argoproj.io -n argocd -o json"
 	keySetRead        = "get --raw /openid/v1/jwks"
 	cloudNativePGRead = "get clusters.postgresql.cnpg.io,databases.postgresql.cnpg.io,databaseroles.postgresql.cnpg.io -A -o json"
-	fakeTalosctl      = `cat testdata/members.txt`
+	membersRead       = "-n 10.0.0.6 etcd members"
+	volumesRead       = "-n 10.0.0.5,10.0.0.6,10.0.0.7 get volumestatus -o json"
 	// failedRead writes 2000 bytes of noise, its message, the report token, a bearer header, a JWT and a NUL to stderr.
 	failedRead = `head -c 2000 /dev/zero | tr '\0' x >&2; printf '\nerror: the server is gone\n' >&2
 printf 'token ` + reportToken + `\nAuthorization: Bearer abc.def\nsigned eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln\n\0' >&2
 exit 3`
 )
 
+// subscriptionKinds are the kinds whose labelled objects the report lists, each as kubectl --show-kind names it, in the
+// order it reads them.
+var subscriptionKinds = []string{"namespace", "serviceaccount", "service", "resourcequota", "limitrange", "deployment.apps",
+	"ingress.networking.k8s.io", "networkpolicy.networking.k8s.io", "role.rbac.authorization.k8s.io",
+	"rolebinding.rbac.authorization.k8s.io", "application.argoproj.io", "appproject.argoproj.io",
+	"externalsecret.external-secrets.io"}
+
+func subscriptionRead(kind string) string {
+	return "get " + kind + " -A -l mitstack.dev/subscription -o json"
+}
+
 // fakeKubectl answers the report's reads from the fixture cluster in testdata/, and failingCloudNativePGKubectl
 // refuses only the CloudNativePG read, as a cluster without its CRDs would.
 var fakeKubectl, failingCloudNativePGKubectl = kubectlAnswering(nil), kubectlAnswering(map[string]string{
 	cloudNativePGRead: `echo 'error: the server does not have a resource type "clusters"' >&2; exit 1`})
 
+// fakeTalosctl answers the etcd members and every node's volume statuses from testdata/.
+var fakeTalosctl = talosctlAnswering("cat testdata/volumes.json")
+
+func talosctlAnswering(volumes string) string {
+	return "case \"$*\" in\n\"" + membersRead + "\")\ncat testdata/members.txt\n;;\n\"" + volumesRead + "\")\n" + volumes + "\n;;\n*) exit 1 ;;\nesac\n"
+}
+
 // kubectlAnswering answers each kubectl read from the fixture cluster, except those overrides replaces.
 func kubectlAnswering(overrides map[string]string) string {
 	answers := map[string]string{nodesRead: "cat testdata/nodes.json", applicationsRead: "cat testdata/applications.json",
 		keySetRead: "cat testdata/jwks.json", cloudNativePGRead: "cat testdata/cloudnative-pg.json"}
+	for _, kind := range subscriptionKinds {
+		answers[subscriptionRead(kind)] = "cat testdata/subscription-resources/" + kind + ".json"
+	}
 	maps.Copy(answers, overrides)
 	script := "case \"$*\" in\n"
 	for read, answer := range answers {
@@ -140,25 +164,83 @@ func TestReport_PostsEachNodeWithItsTalosVersionTheEtcdMembershipAndArgoCDsHealt
 		map[string]any{"name": "cluster-root", "health": "Healthy", "sync": "Synced"},
 		map[string]any{"name": "shop", "health": "Degraded", "sync": "OutOfSync"},
 	}}, posted.body["argocd"])
-	assert.Equal(t, []string{
+	wantCalls := []string{
 		"kubectl get nodes -o json",
 		"kubectl get applications.argoproj.io -n argocd -o json",
 		"kubectl " + keySetRead,
-		"talosctl -n 10.0.0.6 etcd members",
+		"talosctl " + membersRead,
+		"talosctl " + volumesRead,
 		"kubectl " + cloudNativePGRead,
-	}, tools.Calls(t))
+	}
+	for _, kind := range subscriptionKinds {
+		wantCalls = append(wantCalls, "kubectl "+subscriptionRead(kind))
+	}
+	assert.Equal(t, wantCalls, tools.Calls(t))
 }
 
-func TestReport_CarriesTheKeySetTheAPIServerSignsServiceAccountTokensWithUnderJwks(t *testing.T) {
-	var want map[string]any
-	data, err := os.ReadFile(filepath.Join("testdata", "jwks.json"))
+func readJSON(t *testing.T, path ...string) any {
+	t.Helper()
+	var v any
+	data, err := os.ReadFile(filepath.Join(path...))
 	require.NoError(t, err)
-	require.NoError(t, json.Unmarshal(data, &want))
+	require.NoError(t, json.Unmarshal(data, &v))
+	return v
+}
 
+func TestReport_NamesEachNodesStateAndEphemeralVolumeWithItsEncryption(t *testing.T) {
 	_, posted, out, err := runReport(t, nil)
 
 	require.NoError(t, err, out)
-	assert.Equal(t, want, posted.body["jwks"], "the report's jwks member is the API server's key set as read")
+	assert.Equal(t, readJSON(t, "testdata", "golden", "system-volumes.json"), posted.body["systemVolumes"])
+}
+
+func TestReport_ListsTheObjectsOfEachKindItReadWholeAndLeavesOutAKindWhoseReadFailsOrIsCutShort(t *testing.T) {
+	without := func(left string) []string {
+		return slices.DeleteFunc(slices.Clone(subscriptionKinds), func(k string) bool { return k == left })
+	}
+	cases := map[string]struct {
+		read, answer string
+		wantKinds    []string
+	}{
+		"every read answers":                 {"", "", subscriptionKinds},
+		"the deployment read fails":          {subscriptionRead("deployment.apps"), `echo 'error: forbidden' >&2; exit 1`, without("deployment.apps")},
+		"the deployment read prints no list": {subscriptionRead("deployment.apps"), `echo 'not json'`, without("deployment.apps")},
+		"the deployment read is cut short by the time limit": {subscriptionRead("deployment.apps"), "sleep 10",
+			subscriptionKinds[:slices.Index(subscriptionKinds, "deployment.apps")]},
+		"the namespace read holds more objects than one report carries": {subscriptionRead("namespace"),
+			`jq -n '{apiVersion: "v1", kind: "List", items: [range(1001) | {metadata: {name: "app-\(.)", labels: {"mitstack.dev/subscription": "sub_slice0123456"}}}]}'`,
+			without("namespace")},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			kubectl := kubectlAnswering(map[string]string{tc.read: tc.answer})
+
+			_, posted, out, err := runReport(t, map[string]string{"kubectl": kubectl}, "REPORT_READ_SECONDS=1")
+
+			require.NoError(t, err, out)
+			assert.Len(t, posted.body["nodes"], 3, "a kind left out still leaves a full report")
+			kinds := []any{}
+			for _, kind := range tc.wantKinds {
+				kinds = append(kinds, kind)
+			}
+			assert.Equal(t, kinds, posted.body["subscriptionResourceKinds"])
+			listed := slices.DeleteFunc(readJSON(t, "testdata", "golden", "subscription-resources.json").([]any),
+				func(o any) bool { return !slices.Contains(kinds, o.(map[string]any)["kind"]) })
+			assert.Equal(t, listed, posted.body["subscriptionResources"], "the list holds exactly the objects of the kinds it names")
+			assert.NotContains(t, posted.body, "subscriptionResourcesComplete", "no whole-list flag lets an observer read an unread kind absent")
+			madeAt := fmt.Sprint(posted.body["madeAt"])
+			_, err = time.Parse("2006-01-02T15:04:05Z", madeAt)
+			require.NoError(t, err, "madeAt, when the reads began, in reportedAt's UTC format")
+			assert.LessOrEqual(t, madeAt, posted.body["reportedAt"], "the reads begin no later than the report is made")
+		})
+	}
+}
+
+func TestReport_CarriesTheKeySetTheAPIServerSignsServiceAccountTokensWithUnderJwks(t *testing.T) {
+	_, posted, out, err := runReport(t, nil)
+
+	require.NoError(t, err, out)
+	assert.Equal(t, readJSON(t, "testdata", "jwks.json"), posted.body["jwks"], "the report's jwks member is the API server's key set as read")
 }
 
 func TestReport_ListsCloudNativePGsClustersDatabasesAndRoles(t *testing.T) {
@@ -176,44 +258,39 @@ func TestReport_ListsCloudNativePGsClustersDatabasesAndRoles(t *testing.T) {
 }
 
 func TestReport_DeclaresItsNodeReportContractAndCarriesNoneOfTheVerdictsChecks(t *testing.T) {
-	for name, kubectl := range map[string]string{"every read answers": fakeKubectl, "the CloudNativePG read fails": failingCloudNativePGKubectl} {
-		t.Run(name, func(t *testing.T) {
-			_, posted, out, err := runReport(t, map[string]string{"kubectl": kubectl})
-
-			require.NoError(t, err, out)
-			assert.Equal(t, map[string]any{"contract": "node-report/v1", "names": []any{}}, posted.body["checks"])
-		})
-	}
-}
-
-func TestReport_WhoseCloudNativePGReadFailsStillCarriesItsNodesAndApplications(t *testing.T) {
-	_, posted, out, err := runReport(t, map[string]string{"kubectl": failingCloudNativePGKubectl})
+	_, posted, out, err := runReport(t, nil)
 
 	require.NoError(t, err, out)
-	assert.Len(t, posted.body["nodes"], 3)
-	assert.Len(t, testutil.Field(t, posted.body, "argocd", "applications"), 2)
-	assert.Equal(t, map[string]any{
-		"exitStatus": float64(1),
-		"stderr":     "error: the server does not have a resource type \"clusters\"\n",
-	}, posted.body["cloudNativePG"])
+	assert.Equal(t, map[string]any{"contract": "node-report/v1", "names": []any{}}, posted.body["checks"])
 }
 
-func TestReport_HandsTheCloudNativePGExitStatusToTheToolsImagesJqAsANumber(t *testing.T) {
+func TestReport_NamesAFailedVolumeOrCloudNativePGReadInlineWithItsExitStatusAsANumberInAFullReport(t *testing.T) {
+	notVolumes := map[string]any{"exitStatus": float64(0), "stderr": "talosctl exited 0, and its output is not the volume statuses this report reads"}
 	cases := map[string]struct {
-		kubectl string
-		want    func(t *testing.T, read any)
+		fakes map[string]string
+		key   string
+		want  any
 	}{
-		"the read exits 0": {fakeKubectl, func(t *testing.T, read any) { assert.Len(t, read, 3) }},
-		"the read exits 1": {failingCloudNativePGKubectl, func(t *testing.T, read any) { assert.Equal(t, float64(1), testutil.Field(t, read, "exitStatus")) }},
-		"the read times out": {kubectlAnswering(map[string]string{cloudNativePGRead: "sleep 10"}),
-			func(t *testing.T, read any) { assert.Equal(t, float64(124), testutil.Field(t, read, "exitStatus")) }},
+		"the CloudNativePG read exits 1": {map[string]string{"kubectl": failingCloudNativePGKubectl}, "cloudNativePG",
+			map[string]any{"exitStatus": float64(1), "stderr": "error: the server does not have a resource type \"clusters\"\n"}},
+		"the CloudNativePG read times out": {map[string]string{"kubectl": kubectlAnswering(map[string]string{cloudNativePGRead: "sleep 10"})},
+			"cloudNativePG", map[string]any{"exitStatus": float64(124), "stderr": ""}},
+		"the volume read exits 1": {map[string]string{"talosctl": talosctlAnswering(`echo 'rpc error: 10.0.0.7 is unreachable' >&2; exit 1`)},
+			"systemVolumes", map[string]any{"exitStatus": float64(1), "stderr": "rpc error: 10.0.0.7 is unreachable\n"}},
+		"the volume read times out": {map[string]string{"talosctl": talosctlAnswering("sleep 10")}, "systemVolumes",
+			map[string]any{"exitStatus": float64(124), "stderr": ""}},
+		"the volume read prints no JSON":   {map[string]string{"talosctl": talosctlAnswering("echo 'not json'")}, "systemVolumes", notVolumes},
+		"the volume read prints no volume": {map[string]string{"talosctl": talosctlAnswering("true")}, "systemVolumes", notVolumes},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, posted, out, err := runReport(t, map[string]string{"kubectl": tc.kubectl}, "REPORT_READ_SECONDS=1")
+			_, posted, out, err := runReport(t, tc.fakes, "REPORT_READ_SECONDS=1")
 
 			require.NoError(t, err, out)
-			tc.want(t, posted.body["cloudNativePG"])
+			assert.Len(t, posted.body["nodes"], 3)
+			assert.Len(t, testutil.Field(t, posted.body, "argocd", "applications"), 2)
+			assert.Equal(t, map[string]any{"contract": "node-report/v1", "names": []any{}}, posted.body["checks"])
+			assert.Equal(t, tc.want, posted.body[tc.key])
 		})
 	}
 }
@@ -260,18 +337,32 @@ func TestReport_ThatReadsEverythingPostsAHealthyBodyByteForByte(t *testing.T) {
 	testutil.Golden(t, filepath.Join("testdata", "golden", "healthy-body.json"), posted.raw)
 }
 
-func TestManifests_LetsTheReportListCloudNativePGsClustersDatabasesAndRoles(t *testing.T) {
+func TestManifests_LetsTheReportListEachKindItReadsAndCloudNativePGsObjectsAndGrantsNoVerbOnSecrets(t *testing.T) {
 	rendered, err := report.Manifests(report.Inputs{URL: "https://api.mitstack.dev/v1/cluster-reports", SubscriptionID: "sub_0123456789ab", ToolsImage: testutil.ToolsImage})
 	require.NoError(t, err)
 
 	roles := testutil.Kind(testutil.Documents(t, rendered), "ClusterRole")
 
 	require.Len(t, roles, 1)
-	assert.Contains(t, testutil.Field(t, roles[0], "rules"), map[string]any{
-		"apiGroups": []any{"postgresql.cnpg.io"},
-		"resources": []any{"clusters", "databases", "databaseroles"},
-		"verbs":     []any{"get", "list"},
-	})
+	rules := testutil.Field(t, roles[0], "rules").([]any)
+	assert.ElementsMatch(t, []any{
+		map[string]any{"apiGroups": []any{""}, "resources": []any{"nodes"}, "verbs": []any{"get", "list"}},
+		map[string]any{"apiGroups": []any{""}, "resources": []any{"namespaces", "serviceaccounts", "services", "resourcequotas", "limitranges"},
+			"verbs": []any{"list"}},
+		map[string]any{"apiGroups": []any{"apps"}, "resources": []any{"deployments"}, "verbs": []any{"list"}},
+		map[string]any{"apiGroups": []any{"networking.k8s.io"}, "resources": []any{"ingresses", "networkpolicies"}, "verbs": []any{"list"}},
+		map[string]any{"apiGroups": []any{"rbac.authorization.k8s.io"}, "resources": []any{"roles", "rolebindings"}, "verbs": []any{"list"}},
+		map[string]any{"apiGroups": []any{"argoproj.io"}, "resources": []any{"applications"}, "verbs": []any{"get", "list"}},
+		map[string]any{"apiGroups": []any{"argoproj.io"}, "resources": []any{"appprojects"}, "verbs": []any{"list"}},
+		map[string]any{"apiGroups": []any{"external-secrets.io"}, "resources": []any{"externalsecrets"}, "verbs": []any{"list"}},
+		map[string]any{"apiGroups": []any{"postgresql.cnpg.io"}, "resources": []any{"clusters", "databases", "databaseroles"},
+			"verbs": []any{"get", "list"}},
+	}, rules)
+	for _, rule := range rules {
+		resources := testutil.Field(t, rule, "resources").([]any)
+		assert.NotContains(t, resources, "secrets", "rule %v grants a verb on secrets", rule)
+		assert.NotContains(t, resources, "*", "rule %v grants a verb on every resource, secrets among them", rule)
+	}
 }
 
 func TestManifests_RefusesAReportURLThatIsNotHTTPS(t *testing.T) {

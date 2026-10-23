@@ -171,7 +171,7 @@ func (imageMode) RequiresInstall() bool { return false }
 func (imageMode) InContainer() bool     { return false }
 
 // replacedKinds are generated documents the kit drops, as documents() replaces them or the cluster runs without them.
-var replacedKinds = []string{"KubeFlannelCNIConfig", "DiscoveryServiceConfig", "ResolverConfig", "HostnameConfig"}
+var replacedKinds = []string{"KubeFlannelCNIConfig", "DiscoveryServiceConfig", "ResolverConfig", "HostnameConfig", "VolumeConfig"}
 
 func keepGenerated(doc config.Document) bool {
 	return !slices.Contains(replacedKinds, doc.Kind())

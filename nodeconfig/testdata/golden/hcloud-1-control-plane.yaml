@@ -32,12 +32,6 @@ clusterID: IniHXeojFWG5n8S7gy4YIeiCbp1viCxE9fwucTqsvbc=
 clusterSecret: 8u3yYi/OFtDsHdcf7NG73dCnG/C7qAnGVd1ocusyeF4=
 ---
 apiVersion: v1alpha1
-kind: VolumeConfig
-name: EPHEMERAL
-mount:
-    secure: true
----
-apiVersion: v1alpha1
 kind: FilesystemTrimConfig
 interval: 168h0m0s
 ---
@@ -377,6 +371,27 @@ ca: |
     bcSKSSNdHYEgQjAKBggqhkjOPQQDAgNIADBFAiBYFgPaxKKMJ1dYPBzkL35SOyYp
     3dWub+ybSJltqgI1WAIhAO75/5ADvfGAQ3tfDSGiuad+5lw4VbVMMRHwPiDixmC7
     -----END CERTIFICATE-----
+---
+apiVersion: v1alpha1
+kind: VolumeConfig
+name: STATE
+encryption:
+    provider: luks2
+    keys:
+        - slot: 0
+          nodeID: {}
+---
+apiVersion: v1alpha1
+kind: VolumeConfig
+name: EPHEMERAL
+encryption:
+    provider: luks2
+    keys:
+        - slot: 0
+          nodeID: {}
+          lockToState: true
+mount:
+    secure: true
 ---
 apiVersion: v1alpha1
 kind: UserVolumeConfig

@@ -13,7 +13,7 @@ import (
 var Env string
 
 // Image is the tools image this release published and signed, which the release job writes into the commit it tags.
-const Image = "ghcr.io/mitstack-eu/talos-cluster-kit-tools:unreleased@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+const Image = "ghcr.io/mitstack-eu/talos-cluster-kit-tools:v0.8.0@sha256:7c584a98ad3cb896594d4e69b178c227c00401f426a84fb859bf61b301ba8dfa"
 
 // Pin returns the value tools.env gives name, or "" when it names none.
 func Pin(name string) string {

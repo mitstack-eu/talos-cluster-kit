@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -34,6 +35,17 @@ printf 'token ` + reportToken + `\nAuthorization: Bearer abc.def\nsigned eyJhbGc
 exit 3`
 )
 
+// subscriptionKinds are the kinds whose labelled objects the report lists, each as kubectl --show-kind names it, in the
+// order it reads them.
+var subscriptionKinds = []string{"namespace", "serviceaccount", "service", "resourcequota", "limitrange", "deployment.apps",
+	"ingress.networking.k8s.io", "networkpolicy.networking.k8s.io", "role.rbac.authorization.k8s.io",
+	"rolebinding.rbac.authorization.k8s.io", "application.argoproj.io", "appproject.argoproj.io",
+	"externalsecret.external-secrets.io"}
+
+func subscriptionRead(kind string) string {
+	return "get " + kind + " -A -l mitstack.dev/subscription -o json"
+}
+
 // fakeKubectl answers the report's reads from the fixture cluster in testdata/, and failingCloudNativePGKubectl
 // refuses only the CloudNativePG read, as a cluster without its CRDs would.
 var fakeKubectl, failingCloudNativePGKubectl = kubectlAnswering(nil), kubectlAnswering(map[string]string{
@@ -43,6 +55,13 @@ var fakeKubectl, failingCloudNativePGKubectl = kubectlAnswering(nil), kubectlAns
 func kubectlAnswering(overrides map[string]string) string {
 	answers := map[string]string{nodesRead: "cat testdata/nodes.json", applicationsRead: "cat testdata/applications.json",
 		keySetRead: "cat testdata/jwks.json", cloudNativePGRead: "cat testdata/cloudnative-pg.json"}
+	for _, kind := range subscriptionKinds {
+		fixture := filepath.Join("testdata", "subscription-resources", kind+".json")
+		answers[subscriptionRead(kind)] = `echo '{"apiVersion": "v1", "kind": "List", "items": []}'`
+		if _, err := os.Stat(fixture); err == nil {
+			answers[subscriptionRead(kind)] = "cat " + fixture
+		}
+	}
 	maps.Copy(answers, overrides)
 	script := "case \"$*\" in\n"
 	for read, answer := range answers {
@@ -140,13 +159,98 @@ func TestReport_PostsEachNodeWithItsTalosVersionTheEtcdMembershipAndArgoCDsHealt
 		map[string]any{"name": "cluster-root", "health": "Healthy", "sync": "Synced"},
 		map[string]any{"name": "shop", "health": "Degraded", "sync": "OutOfSync"},
 	}}, posted.body["argocd"])
-	assert.Equal(t, []string{
+	wantCalls := []string{
 		"kubectl get nodes -o json",
 		"kubectl get applications.argoproj.io -n argocd -o json",
 		"kubectl " + keySetRead,
 		"talosctl -n 10.0.0.6 etcd members",
 		"kubectl " + cloudNativePGRead,
-	}, tools.Calls(t))
+	}
+	for _, kind := range subscriptionKinds {
+		wantCalls = append(wantCalls, "kubectl "+subscriptionRead(kind))
+	}
+	assert.Equal(t, wantCalls, tools.Calls(t))
+}
+
+// fixtureObjects are the labelled objects of testdata/subscription-resources, as the report lists them.
+var fixtureObjects = map[string]any{
+	"namespace": map[string]any{"namespace": nil, "kind": "namespace", "name": "app-shop", "subscription": "sub_slice0123456"},
+	"deployment.apps": map[string]any{"namespace": "app-shop", "kind": "deployment.apps", "name": "shop",
+		"subscription": "sub_deploy012345"},
+	"appproject.argoproj.io": map[string]any{"namespace": "argocd", "kind": "appproject.argoproj.io", "name": "app-shop",
+		"subscription": "sub_slice0123456"},
+	"externalsecret.external-secrets.io": map[string]any{"namespace": "argocd", "kind": "externalsecret.external-secrets.io",
+		"name": "repo-app-shop", "subscription": "sub_slice0123456"},
+}
+
+// listedOf returns the fixture objects of kinds, in the order the report reads their kinds.
+func listedOf(kinds []string) []any {
+	listed := []any{}
+	for _, kind := range kinds {
+		if object, ok := fixtureObjects[kind]; ok {
+			listed = append(listed, object)
+		}
+	}
+	return listed
+}
+
+func without(kinds []string, left string) []string {
+	return slices.DeleteFunc(slices.Clone(kinds), func(kind string) bool { return kind == left })
+}
+
+func asAny(values []string) []any {
+	out := make([]any, len(values))
+	for i, v := range values {
+		out[i] = v
+	}
+	return out
+}
+
+func TestReport_ListsTheSubscriptionsLabelledObjectsAndNamesEachKindItReadWhole(t *testing.T) {
+	_, posted, out, err := runReport(t, nil)
+
+	require.NoError(t, err, out)
+	assert.Equal(t, listedOf(subscriptionKinds), posted.body["subscriptionResources"])
+	assert.Equal(t, asAny(subscriptionKinds), posted.body["subscriptionResourceKinds"])
+	assert.NotContains(t, posted.body, "subscriptionResourcesComplete", "no whole-list flag lets an observer read an unread kind absent")
+	madeAtText, ok := posted.body["madeAt"].(string)
+	require.True(t, ok, "madeAt = %v; want the time the reads began", posted.body["madeAt"])
+	madeAt, err := time.Parse(time.RFC3339, madeAtText)
+	require.NoError(t, err)
+	reportedAt, err := time.Parse(time.RFC3339, posted.body["reportedAt"].(string))
+	require.NoError(t, err)
+	assert.False(t, madeAt.After(reportedAt), "madeAt %s, when the reads began, is after reportedAt %s", madeAt, reportedAt)
+}
+
+func TestReport_LeavesOutOfSubscriptionResourceKindsAKindWhoseReadFailsOrIsCutShort(t *testing.T) {
+	deployments := subscriptionRead("deployment.apps")
+	beforeDeployments := subscriptionKinds[:slices.Index(subscriptionKinds, "deployment.apps")]
+	cases := map[string]struct {
+		read, answer string
+		wantKinds    []string
+	}{
+		"the deployment read fails": {deployments, `echo 'error: deployments.apps is forbidden' >&2; exit 1`,
+			without(subscriptionKinds, "deployment.apps")},
+		"the deployment read prints no list":                 {deployments, `echo 'not json'`, without(subscriptionKinds, "deployment.apps")},
+		"the deployment read is cut short by the time limit": {deployments, "sleep 10", beforeDeployments},
+		"the namespace read holds more objects than one report carries": {subscriptionRead("namespace"),
+			`jq -n '{apiVersion: "v1", kind: "List", items: [range(1001) | {metadata: {name: "app-\(.)", labels: {"mitstack.dev/subscription": "sub_slice0123456"}}}]}'`,
+			without(subscriptionKinds, "namespace")},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			kubectl := kubectlAnswering(map[string]string{tc.read: tc.answer})
+
+			_, posted, out, err := runReport(t, map[string]string{"kubectl": kubectl}, "REPORT_READ_SECONDS=1")
+
+			require.NoError(t, err, out)
+			assert.NotContains(t, posted.body, "error", "a kind left out still leaves a full report")
+			assert.Len(t, posted.body["nodes"], 3)
+			assert.Equal(t, asAny(tc.wantKinds), posted.body["subscriptionResourceKinds"])
+			assert.Equal(t, listedOf(tc.wantKinds), posted.body["subscriptionResources"],
+				"the list holds exactly the objects of the kinds it names")
+		})
+	}
 }
 
 func TestReport_CarriesTheKeySetTheAPIServerSignsServiceAccountTokensWithUnderJwks(t *testing.T) {
@@ -272,6 +376,34 @@ func TestManifests_LetsTheReportListCloudNativePGsClustersDatabasesAndRoles(t *t
 		"resources": []any{"clusters", "databases", "databaseroles"},
 		"verbs":     []any{"get", "list"},
 	})
+}
+
+func TestManifests_LetsTheReportListEachKindItReadsAndGrantsNoVerbOnSecrets(t *testing.T) {
+	rendered, err := report.Manifests(report.Inputs{URL: "https://api.mitstack.dev/v1/cluster-reports", SubscriptionID: "sub_0123456789ab", ToolsImage: testutil.ToolsImage})
+	require.NoError(t, err)
+
+	roles := testutil.Kind(testutil.Documents(t, rendered), "ClusterRole")
+
+	require.Len(t, roles, 1)
+	rules := testutil.Field(t, roles[0], "rules").([]any)
+	assert.ElementsMatch(t, []any{
+		map[string]any{"apiGroups": []any{""}, "resources": []any{"nodes"}, "verbs": []any{"get", "list"}},
+		map[string]any{"apiGroups": []any{""}, "resources": []any{"namespaces", "serviceaccounts", "services", "resourcequotas", "limitranges"},
+			"verbs": []any{"list"}},
+		map[string]any{"apiGroups": []any{"apps"}, "resources": []any{"deployments"}, "verbs": []any{"list"}},
+		map[string]any{"apiGroups": []any{"networking.k8s.io"}, "resources": []any{"ingresses", "networkpolicies"}, "verbs": []any{"list"}},
+		map[string]any{"apiGroups": []any{"rbac.authorization.k8s.io"}, "resources": []any{"roles", "rolebindings"}, "verbs": []any{"list"}},
+		map[string]any{"apiGroups": []any{"argoproj.io"}, "resources": []any{"applications"}, "verbs": []any{"get", "list"}},
+		map[string]any{"apiGroups": []any{"argoproj.io"}, "resources": []any{"appprojects"}, "verbs": []any{"list"}},
+		map[string]any{"apiGroups": []any{"external-secrets.io"}, "resources": []any{"externalsecrets"}, "verbs": []any{"list"}},
+		map[string]any{"apiGroups": []any{"postgresql.cnpg.io"}, "resources": []any{"clusters", "databases", "databaseroles"},
+			"verbs": []any{"get", "list"}},
+	}, rules)
+	for _, rule := range rules {
+		resources := testutil.Field(t, rule, "resources").([]any)
+		assert.NotContains(t, resources, "secrets", "rule %v grants a verb on secrets", rule)
+		assert.NotContains(t, resources, "*", "rule %v grants a verb on every resource, secrets among them", rule)
+	}
 }
 
 func TestManifests_RefusesAReportURLThatIsNotHTTPS(t *testing.T) {

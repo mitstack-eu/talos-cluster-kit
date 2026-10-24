@@ -416,17 +416,20 @@ OpenBao's and Sealed Secrets' own rotation, and never through a new render.
 
 ### How Argo CD reads mitstack-eu's repositories
 
-This section is for whoever builds a block that installs a cluster hosting
+This section is for an engineer who builds a cluster block that hosts
 mitstack's platform, and for anyone checking which key such a cluster reads
-its code with. A [block](https://github.com/mitstack-eu/mitstack-workspace/blob/main/docs/glossary.md#block)
-is a service mitstack runs for its subscribers; here it is the one that calls
-`components.Hosting`. The hosting set is what that function returns, as
-[How a cluster that hosts the platform boots](#how-a-cluster-that-hosts-the-platform-boots)
-describes.
+its code with. It uses four terms from earlier in this README.
+
+| Term | Meaning here |
+|---|---|
+| Cluster block | The block, a unit of infrastructure an app subscribes to, whose Go program imports this module and installs the cluster |
+| Platform-hosting cluster | A cluster that runs mitstack's own control plane |
+| Hosting set | The manifests `components.Hosting` returns for a platform-hosting cluster, which the cluster block hands to the install |
+| Inline manifest | A manifest of the set that travels inside each node's machine configuration instead of being served over the network, which is where every secret goes |
 
 Argo CD is the controller that applies a cluster's Git repositories to the
-cluster, and it needs a credential to read them. On a hosting cluster it reads
-every repository through one credential template. A credential template is a
+cluster, and it needs a credential to read them. On a platform-hosting cluster
+it reads every repository through one credential template. A credential template is a
 Secret in Argo CD's namespace `argocd`, labelled
 `argocd.argoproj.io/secret-type: repo-creds`, whose credentials Argo CD lends
 to other repositories. Argo CD v3.5.5 lends them to each repository whose URL
@@ -435,27 +438,32 @@ For each read it exchanges the template's GitHub App key for a short-lived
 installation token, the token GitHub issues to one installation of an App.
 Nothing on the cluster therefore refreshes a token.
 
-A hosting cluster knows two GitHub Apps. The hosting App can write, and only
-OpenBao's init Job uses its key, as
+A platform-hosting cluster uses two GitHub Apps, each with its own private
+key. The hosting App can write to repositories. Only OpenBao's init Job, the
+one-off Job that sets up the cluster's secret store, uses its key, as
 [How OpenBao is initialised](#how-openbao-is-initialised) describes. The
-template uses the other one, the reader App `mitstack-cluster-reader`, which
-may only read contents and metadata and is installed on every `mitstack-eu`
-repository.
+credential template uses the second App, the reader App
+`mitstack-cluster-reader`. It may only read contents and metadata, and it is
+installed on every `mitstack-eu` repository.
 
-The reader App's key reaches the cluster only sealed, as a SealedSecret. That
-is a Sealed Secrets object holding a value encrypted to one cluster's key
-pair, which the Sealed Secrets controller on that cluster decrypts, or opens,
-into a Secret. The block encrypts the key with `kubeseal` to the key pair it
-also hands `Hosting` as `SealedSecretsKeyPEM` and `SealedSecretsCertPEM`. It
-uses kubeseal's strict scope, so the value opens only under the name
-`mitstack-eu-repo-creds` in namespace `argocd`. The block then passes that
-SealedSecret, holding the one value `githubAppPrivateKey`, as
-`SealedReaderKey`.
+The reader App's key reaches the cluster only sealed. Sealed Secrets is the
+controller that decrypts, or opens, a SealedSecret: an object holding values
+encrypted to the cluster's RSA key pair, which it turns into an ordinary
+Secret. The cluster block holds that key pair and passes it to
+`components.Hosting` as two PEM byte slices, `SealedSecretsKeyPEM` and
+`SealedSecretsCertPEM`. It encrypts the reader App's key to the pair with
+`kubeseal`, the Sealed Secrets command-line tool, in its strict scope. Strict
+scope ties the encrypted value to one name and namespace, here
+`mitstack-eu-repo-creds` in `argocd`, so it opens nowhere else.
 
-`Hosting` copies nothing from the block's SealedSecret but that encrypted
+The cluster block passes the resulting SealedSecret manifest, holding the one
+value `githubAppPrivateKey`, as the byte slice `SealedReaderKey`. It passes
+the App's two ids as the strings `ReaderAppID` and `ReaderInstallationID`.
+`components.Hosting` copies nothing from that manifest but the encrypted
 value. It writes a new SealedSecret around the value, with the same name, the
-template's label and its plain fields, into the inline manifest
-`mitstack-reader-repo-creds`. Sealed Secrets opens it into this Secret:
+`repo-creds` label and three unencrypted fields: `type`, `url` and the two
+ids. That SealedSecret goes into the inline manifest
+`mitstack-reader-repo-creds`, and Sealed Secrets opens it into this Secret:
 
 ```yaml
 apiVersion: v1
@@ -473,17 +481,18 @@ stringData:
   githubAppPrivateKey: <the reader App's PEM key>
 ```
 
-Nothing else in the hosting set writes an Argo CD repository credential. It
-holds no ExternalSecret, the External Secrets object that writes a Secret from
-an outside source, and no External Secrets generator, the object that mints a
-value such as a GitHub token for one.
+No other object of the hosting set writes an Argo CD repository credential.
+The set holds no ExternalSecret, the External Secrets object that writes a
+Secret from an outside source. It holds no External Secrets generator either,
+the object that mints a value such as a GitHub token for an ExternalSecret.
 
-Any Secret that names one repository for Argo CD must therefore carry its
-`url` and `type` and no credential field, or it never takes the template. Two
-kinds of such Secret exist, and neither lives in this kit. The block writes
-one for the cluster repository, the GitHub repository Argo CD applies to the
-cluster. The block k3s-app-slice writes one for each app it gives a share of
-the cluster, naming that app's own repository.
+Argo CD also keeps one Secret for each repository it reads, naming that
+repository's `url`. Argo CD lends the template only to a repository with no
+credential of its own, so each of those Secrets must carry `url` and `type`
+and no credential field. This module writes none of them. The cluster block
+writes the one for the cluster repository, the GitHub repository whose
+manifests Argo CD applies to the cluster. The block k3s-app-slice, which gives
+an app its own namespace on the cluster, writes one for that app's repository.
 
 ### Where OpenBao keeps its data
 

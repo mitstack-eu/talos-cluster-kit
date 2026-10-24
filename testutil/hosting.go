@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	texttemplate "text/template"
 	"time"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
@@ -54,7 +55,7 @@ var hostingKeyPair struct {
 	keyPEM, certPEM []byte
 }
 
-// HostingInputs returns throwaway hosting inputs: a seal key, a Sealed Secrets key pair, AppKey sealed to it and InitInputs.
+// HostingInputs returns throwaway hosting inputs: a seal key, a Sealed Secrets key pair, AppKey and ReaderKey sealed to it, the reader App's ids and InitInputs.
 func HostingInputs(t *testing.T) components.HostingInputs {
 	t.Helper()
 	sealKey := make([]byte, components.SealKeyBytes)
@@ -67,9 +68,33 @@ func HostingInputs(t *testing.T) components.HostingInputs {
 		SealedSecretsKeyPEM:  keyPEM,
 		SealedSecretsCertPEM: certPEM,
 		SealedAppKey:         SealedAppKey(t, &key.PublicKey, AppKey),
+		SealedReaderKey:      SealedReaderKey(t, &key.PublicKey, ReaderKey(t)),
+		ReaderAppID:          ReaderAppID,
+		ReaderInstallationID: ReaderInstallationID,
 		Nodes:                HostingNodes,
 		Init:                 InitInputs(t),
 	}
+}
+
+const (
+	ReaderAppID          = "2345678"
+	ReaderInstallationID = "90123456"
+)
+
+var readerKey struct {
+	sync.Once
+	pem string
+}
+
+// ReaderKey is a throwaway RSA key in the PEM form GitHub hands out an App key, minted once per test binary.
+func ReaderKey(t *testing.T) string {
+	t.Helper()
+	readerKey.Do(func() {
+		key, err := rsa.GenerateKey(rand.Reader, 2048)
+		require.NoError(t, err)
+		readerKey.pem = string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+	})
+	return readerKey.pem
 }
 
 const (
@@ -181,11 +206,22 @@ func SealedSecretsKeyPair(t *testing.T) (*rsa.PrivateKey, []byte, []byte) {
 // SealedAppKey seals value to pub as kubeseal does in its strict scope, and returns the SealedSecret manifest.
 func SealedAppKey(t *testing.T, pub *rsa.PublicKey, value string) []byte {
 	t.Helper()
+	return Sealed(t, pub, components.SealedAppKeyNamespace, components.SealedAppKeyName, components.SealedAppKeyItem, value)
+}
+
+// SealedReaderKey seals the reader App's key to pub as the block does, and returns the SealedSecret manifest.
+func SealedReaderKey(t *testing.T, pub *rsa.PublicKey, value string) []byte {
+	t.Helper()
+	return Sealed(t, pub, components.ReaderCredentialNamespace, components.ReaderCredentialName, components.ReaderCredentialItem, value)
+}
+
+// Sealed seals value to pub in the strict scope of namespace/name, and returns a SealedSecret manifest holding it as item.
+func Sealed(t *testing.T, pub *rsa.PublicKey, namespace, name, item, value string) []byte {
+	t.Helper()
 	sessionKey := make([]byte, 32)
 	_, err := rand.Read(sessionKey)
 	require.NoError(t, err)
-	label := []byte(components.SealedAppKeyNamespace + "/" + components.SealedAppKeyName)
-	wrapped, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, pub, sessionKey, label)
+	wrapped, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, pub, sessionKey, []byte(namespace+"/"+name))
 	require.NoError(t, err)
 	block, err := aes.NewCipher(sessionKey)
 	require.NoError(t, err)
@@ -201,5 +237,70 @@ metadata:
 spec:
   encryptedData:
     %s: %s
-`, components.SealedAppKeyName, components.SealedAppKeyNamespace, components.SealedAppKeyItem, base64.StdEncoding.EncodeToString(sealed))
+`, name, namespace, item, base64.StdEncoding.EncodeToString(sealed))
+}
+
+// OpenedSecret is the Secret the Sealed Secrets controller writes when it opens a SealedSecret.
+type OpenedSecret struct {
+	Namespace, Name string
+	Labels          map[string]string
+	Data            map[string]string
+}
+
+// Unseal opens a SealedSecret document as the controller does: every encryptedData value under the label namespace/name, then each other template.data value as a Go template over them.
+func Unseal(t *testing.T, keyPEM []byte, doc map[string]any) OpenedSecret {
+	t.Helper()
+	block, _ := pem.Decode(keyPEM)
+	require.NotNil(t, block, "the Sealed Secrets key is not PEM")
+	key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+	require.NoError(t, err)
+	opened := OpenedSecret{
+		Namespace: Field(t, doc, "metadata", "namespace").(string),
+		Name:      Field(t, doc, "metadata", "name").(string),
+		Labels:    map[string]string{},
+		Data:      map[string]string{},
+	}
+	label := []byte(opened.Namespace + "/" + opened.Name)
+	spec, _ := doc["spec"].(map[string]any)
+	encrypted, _ := spec["encryptedData"].(map[string]any)
+	for item, value := range encrypted {
+		opened.Data[item] = openSealedValue(t, key, label, value.(string))
+	}
+	template, _ := spec["template"].(map[string]any)
+	metadata, _ := template["metadata"].(map[string]any)
+	labels, _ := metadata["labels"].(map[string]any)
+	for k, v := range labels {
+		opened.Labels[k] = v.(string)
+	}
+	plain, _ := template["data"].(map[string]any)
+	for item, value := range plain {
+		if _, sealed := encrypted[item]; sealed {
+			continue
+		}
+		require.IsType(t, "", value, "template.data %s is not a string", item)
+		parsed, err := texttemplate.New(item).Parse(value.(string))
+		require.NoError(t, err, "template.data %s", item)
+		var out strings.Builder
+		require.NoError(t, parsed.Execute(&out, opened.Data))
+		opened.Data[item] = out.String()
+	}
+	return opened
+}
+
+func openSealedValue(t *testing.T, key *rsa.PrivateKey, label []byte, value string) string {
+	t.Helper()
+	raw, err := base64.StdEncoding.DecodeString(value)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(raw), 2)
+	n := 2 + int(binary.BigEndian.Uint16(raw))
+	require.GreaterOrEqual(t, len(raw), n)
+	sessionKey, err := rsa.DecryptOAEP(sha256.New(), nil, key, raw[2:n], label)
+	require.NoError(t, err, "the value is not sealed to the key pair under %s", label)
+	block, err := aes.NewCipher(sessionKey)
+	require.NoError(t, err)
+	gcm, err := cipher.NewGCM(block)
+	require.NoError(t, err)
+	plain, err := gcm.Open(nil, make([]byte, gcm.NonceSize()), raw[n:], nil)
+	require.NoError(t, err)
+	return string(plain)
 }

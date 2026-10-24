@@ -187,11 +187,11 @@ func (in HostingInputs) validate() (sealedValues, error) {
 	errs = append(errs, err)
 	sealed.readerKey, err = readOpenable(key, in.SealedReaderKey, readerKeyFile)
 	errs = append(errs, err)
-	if !githubIDRe.MatchString(in.ReaderAppID) {
-		errs = append(errs, fmt.Errorf("the reader App id %q is not a number", in.ReaderAppID))
+	if err := openbaoinit.CheckGitHubID("the reader App id", in.ReaderAppID); err != nil {
+		errs = append(errs, err)
 	}
-	if !githubIDRe.MatchString(in.ReaderInstallationID) {
-		errs = append(errs, fmt.Errorf("the reader App's installation id %q is not a number", in.ReaderInstallationID))
+	if err := openbaoinit.CheckGitHubID("the reader App's installation id", in.ReaderInstallationID); err != nil {
+		errs = append(errs, err)
 	}
 	errs = append(errs, validateNodes(in.Nodes))
 	return sealed, errors.Join(errs...)
@@ -254,11 +254,7 @@ type sealedSecret struct {
 	} `yaml:"spec"`
 }
 
-var (
-	encryptedDataRe = regexp.MustCompile(`^[A-Za-z0-9+/]+=*$`)
-	// githubIDRe is the positive decimal number GitHub gives an App or an installation, as openbaoinit checks it.
-	githubIDRe = regexp.MustCompile(`^[1-9][0-9]{0,19}$`)
-)
+var encryptedDataRe = regexp.MustCompile(`^[A-Za-z0-9+/]+=*$`)
 
 // readSealed renders nothing of the file but its one sealed value, since Talos applies inline manifests as cluster-admin.
 func readSealed(manifest []byte, want sealedFile) (string, error) {

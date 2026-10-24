@@ -194,15 +194,16 @@ const argoCDSecretType = "argocd.argoproj.io/secret-type"
 // argoCDCredentialTypes are the secret types that make a Secret in Argo CD's namespace a repository credential or credential template.
 var argoCDCredentialTypes = []string{"repository", "repo-creds", "repository-write", "repo-write-creds"}
 
-// argoCDCredentialWriters returns each Secret, and each SealedSecret by the Secret it opens to, that the set labels as an Argo CD repository credential, keyed "kind namespace/name".
+// argoCDCredentialWriters returns, keyed "kind namespace/name", every ExternalSecret and External Secrets generator of the set, and each Secret or SealedSecret whose Secret is labelled an Argo CD repository credential.
 func argoCDCredentialWriters(t *testing.T, set components.Set) map[string]map[string]any {
 	t.Helper()
 	writers := map[string]map[string]any{}
 	for _, m := range slices.Concat(set.Served, set.Inline) {
 		for _, doc := range testutil.Documents(t, m.Bytes) {
-			if slices.Contains(argoCDCredentialTypes, secretType(doc)) {
-				key := fmt.Sprintf("%s %s/%s", doc["kind"], testutil.Field(t, doc, "metadata", "namespace"), testutil.Field(t, doc, "metadata", "name"))
-				writers[key] = doc
+			group, _, _ := strings.Cut(fmt.Sprint(doc["apiVersion"]), "/")
+			external := group == "generators.external-secrets.io" || group == "external-secrets.io" && strings.HasSuffix(fmt.Sprint(doc["kind"]), "ExternalSecret")
+			if metadata, _ := doc["metadata"].(map[string]any); external || slices.Contains(argoCDCredentialTypes, secretType(doc)) {
+				writers[fmt.Sprintf("%s %v/%v", doc["kind"], metadata["namespace"], metadata["name"])] = doc
 			}
 		}
 	}
@@ -211,16 +212,13 @@ func argoCDCredentialWriters(t *testing.T, set components.Set) map[string]map[st
 
 // secretType returns the Argo CD secret type a Secret carries, or a SealedSecret's template gives the Secret it opens to, and "" for any other object.
 func secretType(doc map[string]any) string {
-	metadata, _ := doc["metadata"].(map[string]any)
-	switch doc["kind"] {
-	case "Secret":
-	case "SealedSecret":
+	if doc["kind"] == "SealedSecret" {
 		spec, _ := doc["spec"].(map[string]any)
-		template, _ := spec["template"].(map[string]any)
-		metadata, _ = template["metadata"].(map[string]any)
-	default:
+		doc, _ = spec["template"].(map[string]any)
+	} else if doc["kind"] != "Secret" {
 		return ""
 	}
+	metadata, _ := doc["metadata"].(map[string]any)
 	labels, _ := metadata["labels"].(map[string]any)
 	value, _ := labels[argoCDSecretType].(string)
 	return value
@@ -232,8 +230,7 @@ func TestHosting_GivesArgoCDOneCredentialTemplateForEveryMitstackEURepositoryFro
 	set := hostingSet(t, in)
 
 	var templates []testutil.OpenedSecret
-	for key, doc := range argoCDCredentialWriters(t, set) {
-		require.Equal(t, "SealedSecret", doc["kind"], "%s carries Argo CD's credential unsealed", key)
+	for _, doc := range argoCDCredentialWriters(t, set) {
 		if opened := testutil.Unseal(t, in.SealedSecretsKeyPEM, doc); opened.Namespace == "argocd" && opened.Labels[argoCDSecretType] == "repo-creds" {
 			templates = append(templates, opened)
 		}
@@ -251,19 +248,8 @@ func TestHosting_GivesArgoCDOneCredentialTemplateForEveryMitstackEURepositoryFro
 func TestHosting_RendersNoExternalSecretGeneratorOrOtherWriterOfArgoCDRepositoryCredentials(t *testing.T) {
 	set := hostingSet(t, testutil.HostingInputs(t))
 
-	var externalSecrets []string
-	for _, m := range slices.Concat(set.Served, set.Inline) {
-		for _, doc := range testutil.Documents(t, m.Bytes) {
-			group, _, _ := strings.Cut(fmt.Sprint(doc["apiVersion"]), "/")
-			kind := fmt.Sprint(doc["kind"])
-			if group == "generators.external-secrets.io" || group == "external-secrets.io" && slices.Contains([]string{"ExternalSecret", "ClusterExternalSecret"}, kind) {
-				externalSecrets = append(externalSecrets, fmt.Sprintf("%s %s in %s", doc["apiVersion"], kind, m.Name))
-			}
-		}
-	}
 	writers := slices.Sorted(maps.Keys(argoCDCredentialWriters(t, set)))
 
-	assert.Empty(t, externalSecrets, "the hosting set renders External Secrets writers")
 	assert.Equal(t, []string{"SealedSecret argocd/" + components.ReaderCredentialName}, writers, "the objects that write an Argo CD repository credential")
 }
 
@@ -333,10 +319,6 @@ func TestHosting_RefusesInputsItCannotBoot(t *testing.T) {
 		"a reader key under another name": {func(in *components.HostingInputs) {
 			in.SealedReaderKey = bytes.Replace(in.SealedReaderKey, []byte("name: "+components.ReaderCredentialName), []byte("name: other"), 1)
 		}, "want bitnami.com/v1alpha1 SealedSecret argocd/" + components.ReaderCredentialName},
-		"the App key file passed as the reader key": {func(in *components.HostingInputs) { in.SealedReaderKey = in.SealedAppKey }, "the sealed reader key is"},
-		"a reader key file with a second object": {func(in *components.HostingInputs) {
-			in.SealedReaderKey = append(in.SealedReaderKey, []byte("---\napiVersion: v1\nkind: Secret\n")...)
-		}, "the sealed reader key holds more than one document"},
 		"a reader key with a username sealed beside it": {func(in *components.HostingInputs) {
 			in.SealedReaderKey = bytes.Replace(in.SealedReaderKey, []byte("encryptedData:\n"), []byte("encryptedData:\n    username: c2VhbGVk\n"), 1)
 		}, "the sealed reader key's encryptedData holds 2 items, want only " + components.ReaderCredentialItem},

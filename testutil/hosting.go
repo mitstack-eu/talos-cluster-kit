@@ -247,9 +247,12 @@ type OpenedSecret struct {
 	Data            map[string]string
 }
 
-// Unseal opens a SealedSecret document as the controller does: every encryptedData value under the label namespace/name, then each other template.data value as a Go template over them.
+// Unseal opens a SealedSecret document as the controller does: every encryptedData value under the label namespace/name, then each other template.data value as a Go template over them. Any other document opens to nothing.
 func Unseal(t *testing.T, keyPEM []byte, doc map[string]any) OpenedSecret {
 	t.Helper()
+	if doc["kind"] != "SealedSecret" {
+		return OpenedSecret{}
+	}
 	block, _ := pem.Decode(keyPEM)
 	require.NotNil(t, block, "the Sealed Secrets key is not PEM")
 	key, err := x509.ParsePKCS1PrivateKey(block.Bytes)

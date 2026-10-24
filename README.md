@@ -418,11 +418,12 @@ OpenBao's and Sealed Secrets' own rotation, and never through a new render.
 
 This section is for an engineer who builds a cluster block that hosts
 mitstack's platform, and for anyone checking which key such a cluster reads
-its code with. It uses four terms from earlier in this README.
+its code with. It uses five terms.
 
 | Term | Meaning here |
 |---|---|
-| Cluster block | The block, a unit of infrastructure an app subscribes to, whose Go program imports this module and installs the cluster |
+| This module | The Go module `github.com/mitstack-eu/talos-cluster-kit` this repository holds, whose package `components` renders what a cluster starts with |
+| Cluster block | A block, a unit of infrastructure an app subscribes to, whose Go program imports this module and installs a Talos cluster: hcloud-talos-cluster or hrobot-talos-cluster |
 | Platform-hosting cluster | A cluster that runs mitstack's own control plane |
 | Hosting set | The manifests `components.Hosting` returns for a platform-hosting cluster, which the cluster block hands to the install |
 | Inline manifest | A manifest of the set that travels inside each node's machine configuration instead of being served over the network, which is where every secret goes |
@@ -439,9 +440,12 @@ installation token, the token GitHub issues to one installation of an App.
 Nothing on the cluster therefore refreshes a token.
 
 A platform-hosting cluster uses two GitHub Apps, each with its own private
-key. The hosting App can write to repositories. Only OpenBao's init Job, the
-one-off Job that sets up the cluster's secret store, uses its key, as
-[How OpenBao is initialised](#how-openbao-is-initialised) describes. The
+key. The hosting App can write to repositories. Only OpenBao's init Job uses
+its key. OpenBao is the cluster's secret store, and the init Job is the
+one-off Job that sets it up and commits the store's root token and recovery
+key to the cluster repository, which is why its App needs write access. The
+section [How OpenBao is initialised](#how-openbao-is-initialised) has the
+detail. The
 credential template uses the second App, the reader App
 `mitstack-cluster-reader`. It may only read contents and metadata, and it is
 installed on every `mitstack-eu` repository.
@@ -449,9 +453,10 @@ installed on every `mitstack-eu` repository.
 The reader App's key reaches the cluster only sealed. Sealed Secrets is the
 controller that decrypts, or opens, a SealedSecret: an object holding values
 encrypted to the cluster's RSA key pair, which it turns into an ordinary
-Secret. The cluster block holds that key pair and passes it to
-`components.Hosting` as two PEM byte slices, `SealedSecretsKeyPEM` and
-`SealedSecretsCertPEM`. It encrypts the reader App's key to the pair with
+Secret. The cluster block supplies that key pair, since Sealed Secrets on
+this cluster never mints a key of its own. It passes the pair to
+`components.Hosting` as two PEM-encoded byte slices, the private key
+`SealedSecretsKeyPEM` and its certificate `SealedSecretsCertPEM`. It encrypts the reader App's key to the pair with
 `kubeseal`, the Sealed Secrets command-line tool, in its strict scope. Strict
 scope ties the encrypted value to one name and namespace, here
 `mitstack-eu-repo-creds` in `argocd`, so it opens nowhere else.
@@ -461,8 +466,8 @@ value `githubAppPrivateKey`, as the byte slice `SealedReaderKey`. It passes
 the App's two ids as the strings `ReaderAppID` and `ReaderInstallationID`.
 `components.Hosting` copies nothing from that manifest but the encrypted
 value. It writes a new SealedSecret around the value, with the same name, the
-`repo-creds` label and three unencrypted fields: `type`, `url` and the two
-ids. That SealedSecret goes into the inline manifest
+`repo-creds` label and four unencrypted fields: `type`, `url`,
+`githubAppID` and `githubAppInstallationID`. That SealedSecret goes into the inline manifest
 `mitstack-reader-repo-creds`, and Sealed Secrets opens it into this Secret:
 
 ```yaml
@@ -486,8 +491,9 @@ The set holds no ExternalSecret, the External Secrets object that writes a
 Secret from an outside source. It holds no External Secrets generator either,
 the object that mints a value such as a GitHub token for an ExternalSecret.
 
-Argo CD also keeps one Secret for each repository it reads, naming that
-repository's `url`. Argo CD lends the template only to a repository with no
+Argo CD also keeps one Secret for each repository it reads, labelled
+`argocd.argoproj.io/secret-type: repository` and naming that repository's
+`url`. Argo CD lends the template only to a repository with no
 credential of its own, so each of those Secrets must carry `url` and `type`
 and no credential field. This module writes none of them. The cluster block
 writes the one for the cluster repository, the GitHub repository whose

@@ -189,12 +189,7 @@ func TestHosting_KeepsEverySecretInlineAndNoServedManifestHoldsOne(t *testing.T)
 	assert.Equal(t, []string{"RSA PRIVATE KEY"}, pemPrivateKeys(testutil.Manifest(t, "mitstack-sealed-secrets-key", set.Inline).Bytes))
 }
 
-const argoCDSecretType = "argocd.argoproj.io/secret-type"
-
-// argoCDCredentialTypes are the secret types that make a Secret in Argo CD's namespace a repository credential or credential template.
-var argoCDCredentialTypes = []string{"repository", "repo-creds", "repository-write", "repo-write-creds"}
-
-// argoCDCredentialWriters returns, keyed "kind namespace/name", every ExternalSecret and External Secrets generator of the set, and each Secret or SealedSecret whose Secret is labelled an Argo CD repository credential.
+// argoCDCredentialWriters returns, keyed "kind namespace/name", every ExternalSecret and External Secrets generator of the set, and each object labelled an Argo CD repository credential.
 func argoCDCredentialWriters(t *testing.T, set components.Set) map[string]map[string]any {
 	t.Helper()
 	writers := map[string]map[string]any{}
@@ -202,7 +197,7 @@ func argoCDCredentialWriters(t *testing.T, set components.Set) map[string]map[st
 		for _, doc := range testutil.Documents(t, m.Bytes) {
 			group, _, _ := strings.Cut(fmt.Sprint(doc["apiVersion"]), "/")
 			external := group == "generators.external-secrets.io" || group == "external-secrets.io" && strings.HasSuffix(fmt.Sprint(doc["kind"]), "ExternalSecret")
-			if metadata, _ := doc["metadata"].(map[string]any); external || slices.Contains(argoCDCredentialTypes, secretType(doc)) {
+			if metadata, _ := doc["metadata"].(map[string]any); external || slices.Contains([]string{"repository", "repo-creds", "repository-write", "repo-write-creds"}, secretType(doc)) {
 				writers[fmt.Sprintf("%s %v/%v", doc["kind"], metadata["namespace"], metadata["name"])] = doc
 			}
 		}
@@ -210,17 +205,15 @@ func argoCDCredentialWriters(t *testing.T, set components.Set) map[string]map[st
 	return writers
 }
 
-// secretType returns the Argo CD secret type a Secret carries, or a SealedSecret's template gives the Secret it opens to, and "" for any other object.
+// secretType returns the Argo CD secret type an object is labelled with, a SealedSecret's being the one its template gives the Secret it opens to.
 func secretType(doc map[string]any) string {
 	if doc["kind"] == "SealedSecret" {
 		spec, _ := doc["spec"].(map[string]any)
 		doc, _ = spec["template"].(map[string]any)
-	} else if doc["kind"] != "Secret" {
-		return ""
 	}
 	metadata, _ := doc["metadata"].(map[string]any)
 	labels, _ := metadata["labels"].(map[string]any)
-	value, _ := labels[argoCDSecretType].(string)
+	value, _ := labels["argocd.argoproj.io/secret-type"].(string)
 	return value
 }
 
@@ -229,20 +222,19 @@ func TestHosting_GivesArgoCDOneCredentialTemplateForEveryMitstackEURepositoryFro
 
 	set := hostingSet(t, in)
 
-	var templates []testutil.OpenedSecret
+	var templates []map[string]string
 	for _, doc := range argoCDCredentialWriters(t, set) {
-		if opened := testutil.Unseal(t, in.SealedSecretsKeyPEM, doc); opened.Namespace == "argocd" && opened.Labels[argoCDSecretType] == "repo-creds" {
-			templates = append(templates, opened)
+		if opened := testutil.Unseal(t, in.SealedSecretsKeyPEM, doc); opened.Namespace == "argocd" && secretType(doc) == "repo-creds" {
+			templates = append(templates, opened.Data)
 		}
 	}
-	require.Len(t, templates, 1, "Argo CD's namespace holds %d credential templates, want 1", len(templates))
-	assert.Equal(t, map[string]string{
+	assert.Equal(t, []map[string]string{{
 		"type":                    "git",
 		"url":                     "https://github.com/mitstack-eu/",
 		"githubAppID":             testutil.ReaderAppID,
 		"githubAppInstallationID": testutil.ReaderInstallationID,
 		"githubAppPrivateKey":     testutil.ReaderKey(t),
-	}, templates[0].Data, "the credential template %s/%s", templates[0].Namespace, templates[0].Name)
+	}}, templates, "the data of each credential template in argocd")
 }
 
 func TestHosting_RendersNoExternalSecretGeneratorOrOtherWriterOfArgoCDRepositoryCredentials(t *testing.T) {

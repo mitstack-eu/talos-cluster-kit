@@ -243,7 +243,6 @@ spec:
 // OpenedSecret is the Secret the Sealed Secrets controller writes when it opens a SealedSecret.
 type OpenedSecret struct {
 	Namespace, Name string
-	Labels          map[string]string
 	Data            map[string]string
 }
 
@@ -257,31 +256,27 @@ func Unseal(t *testing.T, keyPEM []byte, doc map[string]any) OpenedSecret {
 	require.NotNil(t, block, "the Sealed Secrets key is not PEM")
 	key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
 	require.NoError(t, err)
-	opened := OpenedSecret{
-		Namespace: Field(t, doc, "metadata", "namespace").(string),
-		Name:      Field(t, doc, "metadata", "name").(string),
-		Labels:    map[string]string{},
-		Data:      map[string]string{},
-	}
-	label := []byte(opened.Namespace + "/" + opened.Name)
+	namespace, nsOK := Field(t, doc, "metadata", "namespace").(string)
+	name, nameOK := Field(t, doc, "metadata", "name").(string)
+	require.True(t, nsOK && nameOK, "the SealedSecret's namespace or name is not a string")
+	opened := OpenedSecret{Namespace: namespace, Name: name, Data: map[string]string{}}
+	label := []byte(namespace + "/" + name)
 	spec, _ := doc["spec"].(map[string]any)
 	encrypted, _ := spec["encryptedData"].(map[string]any)
 	for item, value := range encrypted {
-		opened.Data[item] = openSealedValue(t, key, label, value.(string))
+		sealed, ok := value.(string)
+		require.True(t, ok, "encryptedData %s is not a string", item)
+		opened.Data[item] = openSealedValue(t, key, label, sealed)
 	}
 	template, _ := spec["template"].(map[string]any)
-	metadata, _ := template["metadata"].(map[string]any)
-	labels, _ := metadata["labels"].(map[string]any)
-	for k, v := range labels {
-		opened.Labels[k] = v.(string)
-	}
 	plain, _ := template["data"].(map[string]any)
 	for item, value := range plain {
 		if _, sealed := encrypted[item]; sealed {
 			continue
 		}
-		require.IsType(t, "", value, "template.data %s is not a string", item)
-		parsed, err := texttemplate.New(item).Parse(value.(string))
+		text, ok := value.(string)
+		require.True(t, ok, "template.data %s is not a string", item)
+		parsed, err := texttemplate.New(item).Parse(text)
 		require.NoError(t, err, "template.data %s", item)
 		var out strings.Builder
 		require.NoError(t, parsed.Execute(&out, opened.Data))

@@ -24,7 +24,16 @@ func PEMCertificate(data []byte) error {
 var (
 	digestRefRe = regexp.MustCompile(`^[a-z0-9-]+(\.[a-z0-9-]+)+(/[a-z0-9._-]+)+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$`)
 	dns1123Re   = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+	githubIDRe  = regexp.MustCompile(`^[1-9][0-9]{0,19}$`)
 )
+
+// GitHubID fails unless id is the positive decimal number GitHub gives an App or an installation.
+func GitHubID(id string) error {
+	if !githubIDRe.MatchString(id) {
+		return fmt.Errorf("%q is not a number", id)
+	}
+	return nil
+}
 
 // DigestRef fails unless ref names an image as registry/repository:tag@sha256:digest.
 func DigestRef(ref string) error {

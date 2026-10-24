@@ -338,8 +338,11 @@ none of the hosting set's manifests, and the golden files in
 `nodeconfig/testdata/golden/` and `gateway/testdata/golden/` record its render.
 
 The block mints the inputs and the kit checks them. `Hosting` refuses a seal
-key that is not 32 bytes, a certificate of another key, an App key not sealed
-to that key pair, and anything but three distinct node names. It also refuses
+key that is not 32 bytes, a certificate of another key, and an App key or
+reader key not sealed to that key pair. It refuses a sealed file that holds
+more than its one SealedSecret and its one value, a reader App id or
+installation id that is not a number, and anything but three distinct node
+names. It also refuses
 init inputs that `openbaoinit.Manifests` refuses: a tools image without a
 digest, a repository that is not `owner/name`, an App or installation id that
 is not a number, and a recipient that is not one armored public key able to
@@ -347,10 +350,13 @@ encrypt.
 
 ```go
 set, err := components.Hosting(components.HostingInputs{
-	SealKey:              sealKey,      // 32 random bytes
-	SealedSecretsKeyPEM:  keyPEM,       // the RSA key Sealed Secrets opens with, PKCS #1 PEM
-	SealedSecretsCertPEM: certPEM,      // its self-signed certificate, which the block seals to
-	SealedAppKey:         sealedAppKey, // the SealedSecret github-app-key in mitstack-node
+	SealKey:              sealKey,         // 32 random bytes
+	SealedSecretsKeyPEM:  keyPEM,          // the RSA key Sealed Secrets opens with, PKCS #1 PEM
+	SealedSecretsCertPEM: certPEM,         // its self-signed certificate, which the block seals to
+	SealedAppKey:         sealedAppKey,    // the SealedSecret github-app-key in mitstack-node
+	SealedReaderKey:      sealedReaderKey, // the SealedSecret mitstack-eu-repo-creds in argocd
+	ReaderAppID:          "2345678",       // the read-only reader GitHub App
+	ReaderInstallationID: "90123456",      // its installation on every mitstack-eu repository
 	Nodes:                []string{"shop-node-fsn1", "shop-node-nbg1", "shop-node-hel1"},
 	Init: openbaoinit.Inputs{
 		ToolsImage:     tools.Image, // the tools image this release published
@@ -401,12 +407,53 @@ the cluster.
 | `mitstack-openbao-seal-key` | The Secret `openbao-seal-key` with the 32-byte seal key | `components/hosting/seal-key.yaml` |
 | `mitstack-sealed-secrets-key` | The key pair, labelled as Sealed Secrets' active key | `components/hosting/sealed-secrets-key.yaml` |
 | `mitstack-sealed-app-key` | The `SealedSecret` that opens to the hosting GitHub App's key | `components/hosting/sealed-app-key.yaml` |
+| `mitstack-reader-repo-creds` | The `SealedSecret` that opens to Argo CD's credential template, holding the reader GitHub App's key | `components/hosting/reader-repo-creds.yaml` |
 | `mitstack-openbao-storage` | OpenBao's StorageClass and the local volume of each member | `components/hosting/storage.yaml` |
 | `mitstack-openbao-init` | OpenBao's init Job, and the ConfigMap with the recipient's public key. It holds no secret, and sits inline because it names this cluster's repository | `openbaoinit/openbao-init.yaml` |
 
 Talos creates each object of a manifest once and never edits it afterwards. A
 new seal key or key pair therefore reaches a running cluster only through
 OpenBao's and Sealed Secrets' own rotation, and never through a new render.
+
+### How Argo CD reads mitstack-eu's repositories
+
+Argo CD on a hosting cluster reads every repository it applies through one
+credential template: a Secret in `argocd` labelled
+`argocd.argoproj.io/secret-type: repo-creds`. Argo CD v3.5.5 lends a
+template's credentials to each repository whose URL starts with the
+template's `url` and that carries no credential of its own. It mints a
+short-lived installation token from the template's GitHub App for each read,
+so nothing on the cluster refreshes a token.
+
+The template's App is the reader App, a GitHub App that may only read
+contents and metadata, installed on every `mitstack-eu` repository. Its key
+reaches the cluster only sealed. The block seals it with `kubeseal` in the
+strict scope to the boot key pair, as the SealedSecret
+`argocd/mitstack-eu-repo-creds` holding the one value `githubAppPrivateKey`,
+and passes that file as `SealedReaderKey`. `Hosting` renders nothing of the
+file but that sealed value. It adds the template's plain fields around it,
+and Sealed Secrets opens the result into this Secret:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mitstack-eu-repo-creds
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: repo-creds
+stringData:
+  type: git
+  url: https://github.com/mitstack-eu/
+  githubAppID: "2345678"
+  githubAppInstallationID: "90123456"
+  githubAppPrivateKey: <the reader App's PEM key>
+```
+
+The hosting set renders no ExternalSecret, generator or other writer of an
+Argo CD repository credential. A repository Secret that the block or a slice
+writes for Argo CD must therefore carry its `url` and `type` and no
+credential field, or it never takes the template.
 
 ### Where OpenBao keeps its data
 

@@ -42,10 +42,7 @@ type Inputs struct {
 	Recipient []byte
 }
 
-var (
-	repositoryRe = regexp.MustCompile(`^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$`)
-	githubIDRe   = regexp.MustCompile(`^[1-9][0-9]{0,19}$`)
-)
+var repositoryRe = regexp.MustCompile(`^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$`)
 
 func Manifests(in Inputs) ([]byte, error) {
 	if err := in.validate(); err != nil {
@@ -72,11 +69,11 @@ func (in Inputs) validate() error {
 	if !repositoryRe.MatchString(in.Repository) {
 		errs = append(errs, fmt.Errorf("repository %q is not owner/name", in.Repository))
 	}
-	if !githubIDRe.MatchString(in.AppID) {
-		errs = append(errs, fmt.Errorf("GitHub App id %q is not a number", in.AppID))
+	if err := check.GitHubID(in.AppID); err != nil {
+		errs = append(errs, fmt.Errorf("GitHub App id %w", err))
 	}
-	if !githubIDRe.MatchString(in.InstallationID) {
-		errs = append(errs, fmt.Errorf("installation id %q is not a number", in.InstallationID))
+	if err := check.GitHubID(in.InstallationID); err != nil {
+		errs = append(errs, fmt.Errorf("installation id %w", err))
 	}
 	if err := canEncryptTo(in.Recipient); err != nil {
 		errs = append(errs, err)

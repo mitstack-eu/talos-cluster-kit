@@ -38,6 +38,14 @@ const (
 	SealedAppKeyItem      = openbaoinit.AppKeyItem
 )
 
+// The reader credential is the Secret Argo CD lends to every repository under readerCredentialURL that carries no credential of its own.
+const (
+	ReaderCredentialNamespace = "argocd"
+	ReaderCredentialName      = "mitstack-eu-repo-creds"
+	ReaderCredentialItem      = "githubAppPrivateKey"
+	readerCredentialURL       = "https://github.com/mitstack-eu/"
+)
+
 func UserVolumePath(name string) string {
 	return "/var/mnt/" + name
 }
@@ -47,8 +55,26 @@ type HostingInputs struct {
 	// SealedSecretsKeyPEM and SealedSecretsCertPEM are the RSA key pair Sealed Secrets opens with, as PKCS #1 and X.509 PEM.
 	SealedSecretsKeyPEM, SealedSecretsCertPEM []byte
 	SealedAppKey                              []byte
-	Nodes                                     []string
-	Init                                      openbaoinit.Inputs
+	// SealedReaderKey is the SealedSecret that opens to the read-only reader App's key, as ReaderCredentialItem of ReaderCredentialName.
+	SealedReaderKey                   []byte
+	ReaderAppID, ReaderInstallationID string
+	Nodes                             []string
+	Init                              openbaoinit.Inputs
+}
+
+// sealedFile names the one value a block's SealedSecret file may hold, and what an error calls the file.
+type sealedFile struct {
+	what, namespace, name, item string
+}
+
+var (
+	appKeyFile    = sealedFile{"the sealed App key", SealedAppKeyNamespace, SealedAppKeyName, SealedAppKeyItem}
+	readerKeyFile = sealedFile{"the sealed reader key", ReaderCredentialNamespace, ReaderCredentialName, ReaderCredentialItem}
+)
+
+// sealedValues are the sealed values the hosting set renders, each read from its block file.
+type sealedValues struct {
+	appKey, readerKey string
 }
 
 var (
@@ -76,6 +102,8 @@ var (
 	sealedSecretsKeyTemplate string
 	//go:embed hosting/sealed-app-key.yaml
 	sealedAppKeyTemplate string
+	//go:embed hosting/reader-repo-creds.yaml
+	readerRepoCredsTemplate string
 	//go:embed hosting/storage.yaml
 	storageTemplate string
 )
@@ -84,6 +112,7 @@ var (
 	sealKey          = tmpl.Must("OpenBao's seal key", sealKeyTemplate)
 	sealedSecretsKey = tmpl.Must("the Sealed Secrets key pair", sealedSecretsKeyTemplate)
 	sealedAppKey     = tmpl.Must("the sealed App key", sealedAppKeyTemplate)
+	readerRepoCreds  = tmpl.Must("Argo CD's credential template", readerRepoCredsTemplate)
 	storage          = tmpl.Must("OpenBao's volumes", storageTemplate)
 )
 
@@ -114,7 +143,7 @@ func Hosting(in HostingInputs) (Set, error) {
 	return set, nil
 }
 
-func (in HostingInputs) inlineManifests(sealed string) ([]Manifest, error) {
+func (in HostingInputs) inlineManifests(sealed sealedValues) ([]Manifest, error) {
 	parts := []struct {
 		name, path string
 		t          *template.Template
@@ -123,7 +152,11 @@ func (in HostingInputs) inlineManifests(sealed string) ([]Manifest, error) {
 		{"mitstack-openbao-seal-key", "components/hosting/seal-key.yaml", sealKey, map[string]string{"Key": base64.StdEncoding.EncodeToString(in.SealKey)}},
 		{"mitstack-sealed-secrets-key", "components/hosting/sealed-secrets-key.yaml", sealedSecretsKey, map[string]string{"Cert": string(in.SealedSecretsCertPEM), "Key": string(in.SealedSecretsKeyPEM)}},
 		{"mitstack-sealed-app-key", "components/hosting/sealed-app-key.yaml", sealedAppKey, map[string]string{
-			"Namespace": SealedAppKeyNamespace, "Name": SealedAppKeyName, "Item": SealedAppKeyItem, "Sealed": sealed,
+			"Namespace": SealedAppKeyNamespace, "Name": SealedAppKeyName, "Item": SealedAppKeyItem, "Sealed": sealed.appKey,
+		}},
+		{"mitstack-reader-repo-creds", "components/hosting/reader-repo-creds.yaml", readerRepoCreds, map[string]string{
+			"Namespace": ReaderCredentialNamespace, "Name": ReaderCredentialName, "Item": ReaderCredentialItem, "Sealed": sealed.readerKey,
+			"URL": readerCredentialURL, "AppID": in.ReaderAppID, "InstallationID": in.ReaderInstallationID,
 		}},
 		{"mitstack-openbao-storage", "components/hosting/storage.yaml", storage, map[string]any{"Nodes": in.Nodes, "Path": UserVolumePath(OpenBaoVolume)}},
 	}
@@ -142,35 +175,51 @@ func (in HostingInputs) inlineManifests(sealed string) ([]Manifest, error) {
 	return append(manifests, Manifest{Name: "mitstack-openbao-init", Path: "openbaoinit/openbao-init.yaml", Bytes: initJob}), nil
 }
 
-func (in HostingInputs) validate() (string, error) {
+func (in HostingInputs) validate() (sealedValues, error) {
 	var errs []error
 	if len(in.SealKey) != SealKeyBytes {
 		errs = append(errs, fmt.Errorf("the seal key is %d bytes, want %d", len(in.SealKey), SealKeyBytes))
 	}
 	key, err := sealedSecretsKeyPair(in.SealedSecretsKeyPEM, in.SealedSecretsCertPEM)
-	if err != nil {
+	errs = append(errs, err)
+	var sealed sealedValues
+	sealed.appKey, err = readOpenable(key, in.SealedAppKey, appKeyFile)
+	errs = append(errs, err)
+	sealed.readerKey, err = readOpenable(key, in.SealedReaderKey, readerKeyFile)
+	errs = append(errs, err)
+	if err := openbaoinit.CheckGitHubID("the reader App id", in.ReaderAppID); err != nil {
 		errs = append(errs, err)
 	}
-	sealed, err := readSealedAppKey(in.SealedAppKey)
-	if err != nil {
+	if err := openbaoinit.CheckGitHubID("the reader App's installation id", in.ReaderInstallationID); err != nil {
 		errs = append(errs, err)
-	} else if key != nil {
-		if err := opens(key, sealed); err != nil {
-			errs = append(errs, err)
-		}
 	}
-	if len(in.Nodes) != OpenBaoMembers {
-		errs = append(errs, fmt.Errorf("%d nodes are named, want one for each of OpenBao's %d members", len(in.Nodes), OpenBaoMembers))
+	errs = append(errs, validateNodes(in.Nodes))
+	return sealed, errors.Join(errs...)
+}
+
+func validateNodes(nodes []string) error {
+	var errs []error
+	if len(nodes) != OpenBaoMembers {
+		errs = append(errs, fmt.Errorf("%d nodes are named, want one for each of OpenBao's %d members", len(nodes), OpenBaoMembers))
 	}
-	for _, node := range in.Nodes {
+	for _, node := range nodes {
 		if err := check.DNS1123Label(node); err != nil {
 			errs = append(errs, fmt.Errorf("node name: %w", err))
 		}
 	}
-	if len(slices.Compact(slices.Sorted(slices.Values(in.Nodes)))) != len(in.Nodes) {
+	if len(slices.Compact(slices.Sorted(slices.Values(nodes)))) != len(nodes) {
 		errs = append(errs, errors.New("a node is named twice"))
 	}
-	return sealed, errors.Join(errs...)
+	return errors.Join(errs...)
+}
+
+// readOpenable reads file's one sealed value and, once the key pair has parsed, checks that the value opens with it.
+func readOpenable(key *rsa.PrivateKey, file []byte, want sealedFile) (string, error) {
+	sealed, err := readSealed(file, want)
+	if err != nil || key == nil {
+		return sealed, err
+	}
+	return sealed, opens(key, sealed, want)
 }
 
 func sealedSecretsKeyPair(keyPEM, certPEM []byte) (*rsa.PrivateKey, error) {
@@ -207,50 +256,50 @@ type sealedSecret struct {
 
 var encryptedDataRe = regexp.MustCompile(`^[A-Za-z0-9+/]+=*$`)
 
-// readSealedAppKey renders nothing of the file but its one sealed value, since Talos applies inline manifests as cluster-admin.
-func readSealedAppKey(manifest []byte) (string, error) {
+// readSealed renders nothing of the file but its one sealed value, since Talos applies inline manifests as cluster-admin.
+func readSealed(manifest []byte, want sealedFile) (string, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(manifest))
 	var s sealedSecret
 	if err := dec.Decode(&s); err != nil {
-		return "", fmt.Errorf("the sealed App key is not YAML: %w", err)
+		return "", fmt.Errorf("%s is not YAML: %w", want.what, err)
 	}
 	var extra any
 	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		return "", errors.New("the sealed App key holds more than one document")
+		return "", fmt.Errorf("%s holds more than one document", want.what)
 	}
-	if s.APIVersion != "bitnami.com/v1alpha1" || s.Kind != "SealedSecret" || s.Metadata.Name != SealedAppKeyName || s.Metadata.Namespace != SealedAppKeyNamespace {
-		return "", fmt.Errorf("the sealed App key is %s %s %s/%s, want bitnami.com/v1alpha1 SealedSecret %s/%s",
-			s.APIVersion, s.Kind, s.Metadata.Namespace, s.Metadata.Name, SealedAppKeyNamespace, SealedAppKeyName)
+	if s.APIVersion != "bitnami.com/v1alpha1" || s.Kind != "SealedSecret" || s.Metadata.Name != want.name || s.Metadata.Namespace != want.namespace {
+		return "", fmt.Errorf("%s is %s %s %s/%s, want bitnami.com/v1alpha1 SealedSecret %s/%s",
+			want.what, s.APIVersion, s.Kind, s.Metadata.Namespace, s.Metadata.Name, want.namespace, want.name)
 	}
-	sealed := s.Spec.EncryptedData[SealedAppKeyItem]
+	sealed := s.Spec.EncryptedData[want.item]
 	if len(s.Spec.EncryptedData) != 1 || !encryptedDataRe.MatchString(sealed) {
-		return "", fmt.Errorf("the sealed App key's encryptedData holds %d items, want only %s, sealed", len(s.Spec.EncryptedData), SealedAppKeyItem)
+		return "", fmt.Errorf("%s's encryptedData holds %d items, want only %s, sealed", want.what, len(s.Spec.EncryptedData), want.item)
 	}
 	return sealed, nil
 }
 
 // opens decrypts as the controller does: a length-prefixed RSA-OAEP session key labelled namespace/name, then AES-GCM.
-func opens(key *rsa.PrivateKey, sealed string) error {
+func opens(key *rsa.PrivateKey, sealed string, want sealedFile) error {
 	raw, err := base64.StdEncoding.DecodeString(sealed)
 	if err != nil || len(raw) < 2 || len(raw) < 2+int(binary.BigEndian.Uint16(raw)) {
-		return errors.New("the sealed App key's value is not a sealed value")
+		return fmt.Errorf("%s's value is not a sealed value", want.what)
 	}
 	n := 2 + int(binary.BigEndian.Uint16(raw))
-	label := []byte(SealedAppKeyNamespace + "/" + SealedAppKeyName)
+	label := []byte(want.namespace + "/" + want.name)
 	sessionKey, err := rsa.DecryptOAEP(sha256.New(), nil, key, raw[2:n], label)
 	if err != nil {
-		return errors.New("the sealed App key is not sealed to the Sealed Secrets key pair")
+		return fmt.Errorf("%s is not sealed to the Sealed Secrets key pair", want.what)
 	}
 	block, err := aes.NewCipher(sessionKey)
 	if err != nil {
-		return fmt.Errorf("the sealed App key's session key: %w", err)
+		return fmt.Errorf("%s's session key: %w", want.what, err)
 	}
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return fmt.Errorf("the sealed App key's session key: %w", err)
+		return fmt.Errorf("%s's session key: %w", want.what, err)
 	}
 	if _, err := gcm.Open(nil, make([]byte, gcm.NonceSize()), raw[n:], nil); err != nil {
-		return errors.New("the sealed App key does not open with its session key")
+		return fmt.Errorf("%s does not open with its session key", want.what)
 	}
 	return nil
 }

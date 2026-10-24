@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
+	"maps"
 	"net/url"
 	"regexp"
 	"slices"
@@ -133,12 +134,15 @@ func holds(m components.Manifest, value []byte) bool {
 func TestHosting_KeepsEverySecretInlineAndNoServedManifestHoldsOne(t *testing.T) {
 	in := testutil.HostingInputs(t)
 	sealedValue := regexp.MustCompile(components.SealedAppKeyItem + `: (\S+)`).FindSubmatch(in.SealedAppKey)[1]
+	sealedReaderValue := regexp.MustCompile(components.ReaderCredentialItem + `: (\S+)`).FindSubmatch(in.SealedReaderKey)[1]
 	secrets := map[string][]byte{
 		"the seal key":            in.SealKey,
 		"the Sealed Secrets key":  in.SealedSecretsKeyPEM,
 		"the Sealed Secrets cert": in.SealedSecretsCertPEM,
 		"the sealed App key":      sealedValue,
 		"the App key in plain":    []byte(testutil.AppKey),
+		"the sealed reader key":   sealedReaderValue,
+		"the reader key in plain": []byte(testutil.ReaderKey(t)),
 	}
 
 	set := hostingSet(t, in)
@@ -160,6 +164,7 @@ func TestHosting_KeepsEverySecretInlineAndNoServedManifestHoldsOne(t *testing.T)
 		"mitstack-openbao-seal-key":   {in.SealKey},
 		"mitstack-sealed-secrets-key": {in.SealedSecretsKeyPEM, in.SealedSecretsCertPEM},
 		"mitstack-sealed-app-key":     {sealedValue},
+		"mitstack-reader-repo-creds":  {sealedReaderValue},
 	} {
 		for _, value := range values {
 			var holders []string
@@ -179,8 +184,65 @@ func TestHosting_KeepsEverySecretInlineAndNoServedManifestHoldsOne(t *testing.T)
 	assert.Equal(t, "active", testutil.Field(t, pair, "metadata", "labels", "sealedsecrets.bitnami.com/sealed-secrets-key"))
 	for _, m := range set.Inline {
 		assert.False(t, holds(m, []byte(testutil.AppKey)), "inline manifest %s holds the App key in plain", m.Name)
+		assert.False(t, holds(m, []byte(testutil.ReaderKey(t))), "inline manifest %s holds the reader key in plain", m.Name)
 	}
 	assert.Equal(t, []string{"RSA PRIVATE KEY"}, pemPrivateKeys(testutil.Manifest(t, "mitstack-sealed-secrets-key", set.Inline).Bytes))
+}
+
+// argoCDCredentialWriters returns, keyed "kind namespace/name", every ExternalSecret and External Secrets generator of the set, and each object labelled an Argo CD repository credential.
+func argoCDCredentialWriters(t *testing.T, set components.Set) map[string]map[string]any {
+	t.Helper()
+	writers := map[string]map[string]any{}
+	for _, m := range slices.Concat(set.Served, set.Inline) {
+		for _, doc := range testutil.Documents(t, m.Bytes) {
+			group, _, _ := strings.Cut(fmt.Sprint(doc["apiVersion"]), "/")
+			external := group == "generators.external-secrets.io" || group == "external-secrets.io" && strings.HasSuffix(fmt.Sprint(doc["kind"]), "ExternalSecret")
+			if metadata, _ := doc["metadata"].(map[string]any); external || slices.Contains([]string{"repository", "repo-creds", "repository-write", "repo-write-creds"}, secretType(doc)) {
+				writers[fmt.Sprintf("%s %v/%v", doc["kind"], metadata["namespace"], metadata["name"])] = doc
+			}
+		}
+	}
+	return writers
+}
+
+// secretType returns the Argo CD secret type an object is labelled with, a SealedSecret's being the one its template gives the Secret it opens to.
+func secretType(doc map[string]any) string {
+	if doc["kind"] == "SealedSecret" {
+		spec, _ := doc["spec"].(map[string]any)
+		doc, _ = spec["template"].(map[string]any)
+	}
+	metadata, _ := doc["metadata"].(map[string]any)
+	labels, _ := metadata["labels"].(map[string]any)
+	value, _ := labels["argocd.argoproj.io/secret-type"].(string)
+	return value
+}
+
+func TestHosting_GivesArgoCDOneCredentialTemplateForEveryMitstackEURepositoryFromTheSealedReaderKey(t *testing.T) {
+	in := testutil.HostingInputs(t)
+
+	set := hostingSet(t, in)
+
+	var templates []map[string]string
+	for _, doc := range argoCDCredentialWriters(t, set) {
+		if opened := testutil.Unseal(t, in.SealedSecretsKeyPEM, doc); opened.Namespace == "argocd" && secretType(doc) == "repo-creds" {
+			templates = append(templates, opened.Data)
+		}
+	}
+	assert.Equal(t, []map[string]string{{
+		"type":                    "git",
+		"url":                     "https://github.com/mitstack-eu/",
+		"githubAppID":             testutil.ReaderAppID,
+		"githubAppInstallationID": testutil.ReaderInstallationID,
+		"githubAppPrivateKey":     testutil.ReaderKey(t),
+	}}, templates, "the data of each credential template in argocd")
+}
+
+func TestHosting_RendersNoExternalSecretGeneratorOrOtherWriterOfArgoCDRepositoryCredentials(t *testing.T) {
+	set := hostingSet(t, testutil.HostingInputs(t))
+
+	writers := slices.Sorted(maps.Keys(argoCDCredentialWriters(t, set)))
+
+	assert.Equal(t, []string{"SealedSecret argocd/" + components.ReaderCredentialName}, writers, "the objects that write an Argo CD repository credential")
 }
 
 // podTemplates returns each pod template of the manifest's workloads, keyed by the workload's namespace and name.
@@ -243,6 +305,17 @@ func TestHosting_RefusesInputsItCannotBoot(t *testing.T) {
 		"an App key in another namespace": {func(in *components.HostingInputs) {
 			in.SealedAppKey = bytes.Replace(in.SealedAppKey, []byte("namespace: "+components.SealedAppKeyNamespace), []byte("namespace: default"), 1)
 		}, "want bitnami.com/v1alpha1 SealedSecret mitstack-node/github-app-key"},
+		"a reader key sealed to another pair": {func(in *components.HostingInputs) {
+			in.SealedReaderKey = testutil.SealedReaderKey(t, &otherKey.PublicKey, testutil.ReaderKey(t))
+		}, "the sealed reader key is not sealed to the Sealed Secrets key pair"},
+		"a reader key under another name": {func(in *components.HostingInputs) {
+			in.SealedReaderKey = bytes.Replace(in.SealedReaderKey, []byte("name: "+components.ReaderCredentialName), []byte("name: other"), 1)
+		}, "want bitnami.com/v1alpha1 SealedSecret argocd/" + components.ReaderCredentialName},
+		"a reader key with a username sealed beside it": {func(in *components.HostingInputs) {
+			in.SealedReaderKey = bytes.Replace(in.SealedReaderKey, []byte("encryptedData:\n"), []byte("encryptedData:\n    username: c2VhbGVk\n"), 1)
+		}, "the sealed reader key's encryptedData holds 2 items, want only " + components.ReaderCredentialItem},
+		"a reader App id that is not a number": {func(in *components.HostingInputs) { in.ReaderAppID = "abc" }, `the reader App id "abc" is not a number`},
+		"no reader installation id":            {func(in *components.HostingInputs) { in.ReaderInstallationID = "" }, `the reader App's installation id "" is not a number`},
 		"an init Job image named by tag alone": {func(in *components.HostingInputs) { in.Init.ToolsImage = "ghcr.io/x/tools:v1" }, "OpenBao's init Job: tools image"},
 		"an App key file with a second object": {func(in *components.HostingInputs) {
 			in.SealedAppKey = append(in.SealedAppKey, []byte("---\napiVersion: v1\nkind: Secret\n")...)

@@ -47,6 +47,14 @@ var (
 	githubIDRe   = regexp.MustCompile(`^[1-9][0-9]{0,19}$`)
 )
 
+// CheckGitHubID fails unless id is the positive decimal number GitHub gives an App or an installation, calling it what.
+func CheckGitHubID(what, id string) error {
+	if !githubIDRe.MatchString(id) {
+		return fmt.Errorf("%s %q is not a number", what, id)
+	}
+	return nil
+}
+
 func Manifests(in Inputs) ([]byte, error) {
 	if err := in.validate(); err != nil {
 		return nil, err
@@ -72,11 +80,11 @@ func (in Inputs) validate() error {
 	if !repositoryRe.MatchString(in.Repository) {
 		errs = append(errs, fmt.Errorf("repository %q is not owner/name", in.Repository))
 	}
-	if !githubIDRe.MatchString(in.AppID) {
-		errs = append(errs, fmt.Errorf("GitHub App id %q is not a number", in.AppID))
+	if err := CheckGitHubID("GitHub App id", in.AppID); err != nil {
+		errs = append(errs, err)
 	}
-	if !githubIDRe.MatchString(in.InstallationID) {
-		errs = append(errs, fmt.Errorf("installation id %q is not a number", in.InstallationID))
+	if err := CheckGitHubID("installation id", in.InstallationID); err != nil {
+		errs = append(errs, err)
 	}
 	if err := canEncryptTo(in.Recipient); err != nil {
 		errs = append(errs, err)

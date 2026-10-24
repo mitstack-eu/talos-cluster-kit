@@ -342,11 +342,10 @@ key that is not 32 bytes, a certificate of another key, and an App key or
 reader key not sealed to that key pair. It refuses a sealed file that holds
 more than its one SealedSecret and its one value, a reader App id or
 installation id that is not a number, and anything but three distinct node
-names. It also refuses
-init inputs that `openbaoinit.Manifests` refuses: a tools image without a
-digest, a repository that is not `owner/name`, an App or installation id that
-is not a number, and a recipient that is not one armored public key able to
-encrypt.
+names. It also refuses init inputs that `openbaoinit.Manifests` refuses: a
+tools image without a digest, a repository that is not `owner/name`, an App
+or installation id that is not a number, and a recipient that is not one
+armored public key able to encrypt.
 
 ```go
 set, err := components.Hosting(components.HostingInputs{

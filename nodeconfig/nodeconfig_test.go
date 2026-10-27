@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/siderolabs/talos/pkg/machinery/config/configloader"
+	"github.com/siderolabs/talos/pkg/machinery/config/machine"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v4"
@@ -57,6 +59,77 @@ func goldenPath(profile nodeconfig.Profile, locations int, hostname string) stri
 		name += "-" + hostname
 	}
 	return filepath.Join("testdata", "golden", name+".yaml")
+}
+
+// robotWorker is a dedicated server joining a cluster whose control plane spans three locations.
+func robotWorker(t *testing.T) (nodeconfig.Cluster, nodeconfig.Node) {
+	t.Helper()
+	return testutil.NewCluster(t, testutil.WithProfile(nodeconfig.Metal), testutil.WithLocations(3)), nodeconfig.Node{Hostname: "wk-fsn1"}
+}
+
+type diskImage struct{}
+
+func (diskImage) String() string        { return "cloud" }
+func (diskImage) RequiresInstall() bool { return false }
+func (diskImage) InContainer() bool     { return false }
+
+func TestRenderWorker_IsAWorkerTalosAcceptsThatJoinsThroughThePrivateAPIEndpointAndAppliesNoManifest(t *testing.T) {
+	cluster, node := robotWorker(t)
+
+	got, err := nodeconfig.RenderWorker(cluster, node)
+
+	require.NoError(t, err)
+	cfg, err := configloader.NewFromBytes(got)
+	require.NoError(t, err)
+	_, err = cfg.Validate(diskImage{})
+	require.NoError(t, err, "Talos's schema refuses the worker configuration")
+	assert.Equal(t, machine.TypeWorker, cfg.Machine().Type())
+	assert.Equal(t, "https://10.0.0.3:6443", cfg.K8sClusterConfig().ClusterEndpoint().String(), "the first location's private API load balancer")
+	docs := testutil.Documents(t, got)
+	for _, kind := range []string{"KubeInlineManifestConfig", "KubeExternalManifestConfig", "KubeTalosAPIAccessConfig"} {
+		assert.Empty(t, testutil.Kind(docs, kind), "only a control-plane node applies a %s", kind)
+	}
+	testutil.Golden(t, filepath.Join("testdata", "golden", "metal-3-worker-wk-fsn1.yaml"), got)
+}
+
+func TestRenderWorker_HoldsTheGoldenListOfSecretsWithNeitherTheEtcdNorTheServiceAccountSigningKey(t *testing.T) {
+	cluster, node := robotWorker(t)
+	controlPlane, err := nodeconfig.Render(cluster, nodeconfig.Node{Hostname: "cp-fsn1"})
+	require.NoError(t, err)
+	require.Subset(t, heldSecrets(t, controlPlane), []string{"certs.etcd.key", "certs.k8sserviceaccount.key"}, "the search misses a key a control-plane node holds")
+
+	got, err := nodeconfig.RenderWorker(cluster, node)
+
+	require.NoError(t, err)
+	held := heldSecrets(t, got)
+	assert.NotContains(t, held, "certs.etcd.key", "the worker could issue etcd certificates")
+	assert.NotContains(t, held, "certs.k8sserviceaccount.key", "the worker could sign service-account tokens")
+	testutil.Golden(t, filepath.Join("testdata", "golden", "metal-3-worker-secrets.txt"), []byte(strings.Join(held, "\n")+"\n"))
+}
+
+// heldSecrets names each field of the fixture secrets whose value config holds, as is or decoded, at any indentation.
+func heldSecrets(t *testing.T, config []byte) []string {
+	t.Helper()
+	var bundle map[string]any
+	require.NoError(t, yaml.Unmarshal(testutil.ReadTestdata(t, "secrets.yaml"), &bundle))
+	flat := strings.Join(strings.Fields(string(config)), "")
+	var held []string
+	var walk func(path string, node any)
+	walk = func(path string, node any) {
+		if fields, ok := node.(map[string]any); ok {
+			for key, child := range fields {
+				walk(strings.TrimPrefix(path+"."+key, "."), child)
+			}
+			return
+		}
+		decoded, err := base64.StdEncoding.DecodeString(node.(string))
+		if strings.Contains(flat, node.(string)) || err == nil && strings.Contains(flat, strings.Join(strings.Fields(string(decoded)), "")) {
+			held = append(held, path)
+		}
+	}
+	walk("", bundle)
+	slices.Sort(held)
+	return held
 }
 
 func TestRender_WithNoLogReceiverLeavesOutTheCollectorAndBothLogSinksAndNothingElse(t *testing.T) {

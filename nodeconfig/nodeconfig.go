@@ -58,14 +58,23 @@ type Node struct {
 
 // Render returns a control-plane node's multi-document machine configuration, validated against Talos's schema.
 func Render(c Cluster, n Node) ([]byte, error) {
+	return c.render(machine.TypeControlPlane, n)
+}
+
+// RenderWorker returns a worker node's multi-document machine configuration, validated against Talos's schema.
+func RenderWorker(c Cluster, n Node) ([]byte, error) {
+	return c.render(machine.TypeWorker, n)
+}
+
+func (c Cluster) render(role machine.Type, n Node) ([]byte, error) {
 	if err := c.validate(n); err != nil {
 		return nil, err
 	}
-	base, err := c.generate()
+	base, err := c.generate(role)
 	if err != nil {
 		return nil, err
 	}
-	extra, err := c.documents(n)
+	extra, err := c.documents(role, n)
 	if err != nil {
 		return nil, err
 	}
@@ -79,7 +88,7 @@ func Render(c Cluster, n Node) ([]byte, error) {
 	return cfg.EncodeBytes(encoder.WithComments(encoder.CommentsDisabled))
 }
 
-func (c Cluster) generate() (machineryconfig.Provider, error) {
+func (c Cluster) generate(role machine.Type) (machineryconfig.Provider, error) {
 	sans := make([]string, 0, len(c.APIAddresses))
 	for _, addr := range c.APIAddresses {
 		sans = append(sans, addr.String())
@@ -94,7 +103,7 @@ func (c Cluster) generate() (machineryconfig.Provider, error) {
 	if err != nil {
 		return nil, fmt.Errorf("prepare the configuration of cluster %s: %w", c.Name, err)
 	}
-	cfg, err := input.Config(machine.TypeControlPlane)
+	cfg, err := input.Config(role)
 	if err != nil {
 		return nil, fmt.Errorf("generate the configuration of cluster %s: %w", c.Name, err)
 	}

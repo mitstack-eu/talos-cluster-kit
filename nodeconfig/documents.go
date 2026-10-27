@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/siderolabs/talos/pkg/machinery/config/config"
+	"github.com/siderolabs/talos/pkg/machinery/config/machine"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/block"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/cri"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/k8s"
@@ -48,6 +49,9 @@ func (c Cluster) adapt(generated []config.Document) []config.Document {
 		case *k8s.KubeProxyConfigV1Alpha1:
 			d.ProxyEnabled = new(false)
 		case *k8s.KubeNodeConfigV1Alpha1:
+			if d.LabelsConfig == nil {
+				d.LabelsConfig = map[string]string{}
+			}
 			d.LabelsConfig[SubscriptionLabel] = c.SubscriptionID
 			d.NodeIPConfig.NodeIPValidSubnets = []string{c.Network.String()}
 		case *k8s.KubeServiceAccountConfigV1Alpha1:
@@ -59,7 +63,9 @@ func (c Cluster) adapt(generated []config.Document) []config.Document {
 }
 
 func (c Cluster) adaptV1Alpha1(d *v1alpha1.Config) {
-	d.ClusterConfig.EtcdConfig.EtcdAdvertisedSubnets = []string{c.Network.String()}
+	if d.ClusterConfig.EtcdConfig != nil {
+		d.ClusterConfig.EtcdConfig.EtcdAdvertisedSubnets = []string{c.Network.String()}
+	}
 	if c.Logs.IsZero() {
 		return
 	}
@@ -76,7 +82,7 @@ func loopbackLogURL(port int) *url.URL {
 	return &url.URL{Scheme: "tcp", Host: "127.0.0.1:" + strconv.Itoa(port)}
 }
 
-func (c Cluster) documents(n Node) ([]config.Document, error) {
+func (c Cluster) documents(role machine.Type, n Node) ([]config.Document, error) {
 	manifests, err := c.manifestDocuments()
 	if err != nil {
 		return nil, err
@@ -86,10 +92,16 @@ func (c Cluster) documents(n Node) ([]config.Document, error) {
 	if !c.Logs.IsZero() {
 		docs = append(docs, kernelLogDocument())
 	}
-	docs = append(docs, talosAPIAccessDocument())
+	if role.IsControlPlane() {
+		docs = append(docs, talosAPIAccessDocument())
+	}
 	docs = append(docs, c.mirrorDocuments()...)
 	docs = append(docs, systemVolumeDocuments()...)
 	docs = append(docs, c.userVolumeDocuments()...)
+	// Only a control-plane node applies manifests, so a worker holds none of the keys the hosting set's carry.
+	if !role.IsControlPlane() {
+		return docs, nil
+	}
 	return append(docs, manifests...), nil
 }
 

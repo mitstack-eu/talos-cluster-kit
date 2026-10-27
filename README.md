@@ -1,12 +1,16 @@
 # talos-cluster-kit
 
-This repository holds the Talos install that mitstack's two Hetzner cluster
+This repository holds the Talos install that mitstack's Hetzner Talos cluster
 blocks share. It is for an engineer who changes what a Talos node boots, what
 its cluster starts with, or how etcd recovers. A block is a unit of
 infrastructure an app subscribes to, as
 [the workspace glossary](https://github.com/mitstack-eu/mitstack-workspace/blob/main/docs/glossary.md)
-defines. Two blocks import this module: hcloud-talos-cluster on Hetzner Cloud
-servers and hrobot-talos-cluster on Hetzner dedicated servers.
+defines. hcloud-talos-cluster imports this module to run a cluster on Hetzner
+Cloud servers. A block whose control plane runs on Cloud servers and whose
+workers run on Hetzner dedicated servers builds those workers from the
+module's worker render, as
+[ADR 0103](https://github.com/mitstack-eu/mitstack/blob/main/docs/adr/0103-mitstack-offers-five-hetzner-capacity-blocks-and-keeps-the-k3s-block.md)
+decides.
 
 Talos Linux is an operating system that runs only Kubernetes and is managed
 through an API, with no shell and no SSH. The module follows the fourth Talos
@@ -20,7 +24,7 @@ The module renders and the block acts. Nothing here calls Hetzner, GitHub or
 the platform: each function takes its inputs as values and returns bytes, or
 runs one local command. The block decides when to render, mints the secrets
 that go in, and creates the servers. Keeping the install in one module means a
-fix to the boot or to etcd recovery lands once and reaches both blocks.
+fix to the boot or to etcd recovery lands once and reaches every block.
 
 ## What a cluster is built from
 
@@ -34,7 +38,7 @@ the order a block uses them.
 | Package | What it does | Main entry points |
 |---|---|---|
 | `components` | Holds the pinned component set: Cilium, the custom resource definition (CRD) of Cilium's cluster-wide policy, Argo CD, the policy that keeps pods from Hetzner's metadata service at `169.254.169.254`, Istio's ambient mesh with its mesh-wide mutual TLS policy, Kyverno with its four admission policies, the CloudNativePG operator with the database-slice policy, the local path provisioner behind the default StorageClass, and the node-local OpenTelemetry Collector. It also holds the boot set of a cluster that hosts the platform | `Default`, `Hosting`, `Set.Images`, `LogCollector`, `ParseImage` |
-| `nodeconfig` | Renders a control-plane node's machine configuration with Talos's own `machinery` module and validates it against Talos's schema | `Render`, `Cluster`, `Node`, `NewSecrets`, `ParseSecrets`, `Secrets.AdminTalosconfig` |
+| `nodeconfig` | Renders a control-plane node's or a worker node's machine configuration with Talos's own `machinery` module and validates it against Talos's schema | `Render`, `RenderWorker`, `Cluster`, `Node`, `NewSecrets`, `ParseSecrets`, `Secrets.AdminTalosconfig` |
 | `image` | Runs imager, Sidero Labs' open-source image builder, with the `hcloud` or the `metal` profile, and discards its output | `Run`, `Build` |
 | `mirror` | Lists every image the nodes pull, each by digest | `List`, `Render` |
 | `gateway` | Renders the cloud-config of the gateway in each location, and mints the cluster's gateway CA and each gateway's certificate | `Render`, `Inputs`, `NewCA`, `CA.Issue`, `ReleaseURL` |
@@ -74,10 +78,26 @@ from one snapshot and takes its name from Hetzner's metadata service. A
 dedicated node has no metadata service, so a dedicated cluster renders once per
 node with that node's `Node.Hostname`.
 
+A worker is a node that runs the apps' pods and holds no key of the cluster's
+certificate authorities. It joins the cluster through
+`nodeconfig.RenderWorker`, which takes the same `Cluster` and the same secrets
+as `Render`. `Cluster.Profile` names the
+server the configuration boots on. A block whose control plane runs on Cloud
+servers therefore renders a dedicated worker from a copy of its `Cluster`
+with `Profile` set to `nodeconfig.Metal`:
+
+```go
+robot := cluster // the Cluster the control plane rendered from
+robot.Profile = nodeconfig.Metal
+cfg, err := nodeconfig.RenderWorker(robot, nodeconfig.Node{Hostname: "wk-fsn1"})
+```
+
 ## What the configuration holds
 
 `nodeconfig.Render` starts from the configuration Talos itself generates for a
-control-plane node and changes it in these ways:
+control-plane node and changes it in these ways. `nodeconfig.RenderWorker`
+starts from Talos's worker configuration and makes the same changes, except
+where the last row says.
 
 | Concern | What the rendered configuration does | Where |
 |---|---|---|
@@ -91,9 +111,10 @@ control-plane node and changes it in these ways:
 | Disk encryption | `STATE` and `EPHEMERAL` are LUKS2 volumes, each under a key Talos derives from the node's UUID and the volume's name. `EPHEMERAL`'s key also takes the random salt its node's `STATE` holds. Talos 1.14's disk image holds neither volume, so every node formats and encrypts both on its first boot, under its own UUID and its own salt. The keys protect a disk that leaves its server, and not against whoever holds the Hetzner project's token | `systemVolumeDocuments` |
 | User volumes | Each user volume the set names, `local-path-provisioner` on every cluster and OpenBao's in the hosting set, is a directory Talos mounts at `/var/mnt/<name>` | `userVolumeDocuments` |
 | Service-account issuer | Every service-account token names `Cluster.ServiceAccountIssuer` as its issuer, which Talos passes to the API server as `--service-account-issuer`. `Render` refuses a cluster with no issuer, or with one that is not https, has no host, or carries a query or fragment. [How AWS comes to trust a cluster's tokens](#how-aws-comes-to-trust-a-clusters-tokens) says why | `adapt` in `nodeconfig/documents.go`, `checkIssuer` in `nodeconfig/nodeconfig.go` |
+| Worker nodes | A worker joins through the first private API load balancer and carries no manifest and no Talos API access, since only a control-plane node applies either. Its secrets are the Talos and Kubernetes CA certificates, the trustd and bootstrap tokens and the discovery identity. It holds no CA key, so neither the etcd authority's key nor the service-account signing key | `RenderWorker`, `documents` |
 
-The configuration holds every key of the cluster, its certificate
-authorities included, but no admin client certificate. Talos's etcd
+A control-plane node's configuration holds every key of the cluster, its
+certificate authorities included, but no admin client certificate. Talos's etcd
 bootstrap accepts only `os:admin`, its full-rights role, so the gateway runs
 it once with a short-lived talosconfig from `Secrets.AdminTalosconfig` and
 deletes that file on exit.
@@ -423,7 +444,7 @@ its code with. It uses five terms.
 | Term | Meaning here |
 |---|---|
 | This module | The Go module `github.com/mitstack-eu/talos-cluster-kit` this repository holds, whose package `components` renders what a cluster starts with |
-| Cluster block | A block, a unit of infrastructure an app subscribes to, whose Go program imports this module and installs a Talos cluster: hcloud-talos-cluster or hrobot-talos-cluster |
+| Cluster block | A block, a unit of infrastructure an app subscribes to, whose Go program imports this module and installs a Talos cluster, such as hcloud-talos-cluster |
 | Platform-hosting cluster | A cluster that runs mitstack's own control plane |
 | Hosting set | The manifests `components.Hosting` returns for a platform-hosting cluster, which the cluster block hands to the install |
 | Inline manifest | A manifest of the set that travels inside each node's machine configuration instead of being served over the network, which is where every secret goes |

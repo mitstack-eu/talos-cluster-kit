@@ -122,6 +122,8 @@ that log to check the order of the calls.
 | Test | What it proves | Against what |
 |---|---|---|
 | `TestRender_MatchesTheGoldenConfiguration` | The configuration for one and three control-plane nodes on the `hcloud` and the `metal` profile matches its recording | `nodeconfig/testdata/golden/` |
+| `TestRenderWorker_IsAWorkerTalosAcceptsThatJoinsThroughThePrivateAPIEndpointAndAppliesNoManifest` | A dedicated worker's configuration passes Talos's own loader and schema, names machine type `worker` and the first private API load balancer, carries no manifest and no Talos API access, and matches its recording | `nodeconfig/testdata/golden/metal-3-worker-wk-fsn1.yaml` |
+| `TestRenderWorker_HoldsTheGoldenListOfSecretsWithNeitherTheEtcdNorTheServiceAccountSigningKey` | The worker holds exactly the fixture secrets its recording lists, and neither the etcd authority's key nor the service-account signing key, which the same search finds in a control-plane node's configuration | `nodeconfig/testdata/golden/metal-3-worker-secrets.txt` |
 | `TestRender_PullsEveryImageOfTheComponentSetFromEveryGatewaysMirror` | Every image the set names, and every image the configuration names, comes from a mirror with no fallback | The mirror list |
 | `TestRender_UsesHetznersResolversAndTimeServersInPlaceOfTalosDefaults` | Hetzner's resolvers and time servers replace Talos's | The rendered documents |
 | `TestRender_GivesACloudNodeADefaultRouteThroughHetznersRouterAndKeepsDHCPOnItsLink` | A Cloud node routes through `10.0.0.1` and keeps its DHCP address, and a dedicated node gets neither document | The rendered documents |

@@ -79,6 +79,18 @@ func TestPlane_TheWorkerBuilderJoinsTheNetworkAtItsFixedAddressAndBuildsOnlyOnce
 	assert.Equal(t, controlplane.ServerRunning, gateways[0].Status, "the gateway while the worker builder builds")
 }
 
+func TestPlane_TheWorkerBuilderGoesWithAClusterBuildThatFails(t *testing.T) {
+	h := newHarness(t)
+	h.buildingBuilder()
+	require.Equal(t, "image-build-failed", refusalClass(t, h.settle(nil)))
+	require.Len(t, h.byRole(controlplane.RoleWorkerBuilder), 1, "worker builders once the cluster's build failed")
+
+	err := h.converge()
+
+	assert.Equal(t, "cluster-secrets-lost", refusalClass(t, err))
+	assert.Empty(t, h.byRole(controlplane.RoleWorkerBuilder), "a worker builder outlived the cluster's failed build")
+}
+
 func TestPlane_DeleteDeletesTheWorkerImage(t *testing.T) {
 	h := newHarness(t)
 	h.built()

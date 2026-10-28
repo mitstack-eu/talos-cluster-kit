@@ -155,7 +155,9 @@ func selected[T any](items map[int64]*T, labels func(*T) map[string]string, sele
 	return out
 }
 
-func role(labels map[string]string) controlplane.Role { return controlplane.Role(labels[controlplane.KeyRole]) }
+func role(labels map[string]string) controlplane.Role {
+	return controlplane.Role(labels[controlplane.KeyRole])
+}
 
 func (f *Fake) ListServers(_ context.Context, sel string) ([]controlplane.Server, error) {
 	f.mu.Lock()

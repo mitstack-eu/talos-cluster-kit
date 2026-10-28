@@ -321,7 +321,7 @@ func TestHosting_AddsToTheDefaultSetAndLeavesItAsItIs(t *testing.T) {
 }
 
 func TestHosting_RefusesInputsItCannotBoot(t *testing.T) {
-	otherKey, _, otherCert := testutil.SealedSecretsKeyPair(t)
+	_, _, otherCert := testutil.SealedSecretsKeyPair(t)
 	cases := map[string]struct {
 		change func(*components.HostingInputs)
 		want   string
@@ -329,13 +329,13 @@ func TestHosting_RefusesInputsItCannotBoot(t *testing.T) {
 		"a seal key of 31 bytes":       {func(in *components.HostingInputs) { in.SealKey = in.SealKey[:31] }, "the seal key is 31 bytes, want 32"},
 		"a certificate of another key": {func(in *components.HostingInputs) { in.SealedSecretsCertPEM = otherCert }, "certifies another key"},
 		"a write key sealed to another pair": {func(in *components.HostingInputs) {
-			in.SealedWriteKey = testutil.SealedWriteKey(t, &otherKey.PublicKey, testutil.WriteKey(t))
+			in.SealedWriteKey = testutil.SealedWriteKey(t, otherCert, testutil.WriteKey(t))
 		}, "the sealed write key is not sealed to the Sealed Secrets key pair"},
 		"a write key in another namespace": {func(in *components.HostingInputs) {
 			in.SealedWriteKey = bytes.Replace(in.SealedWriteKey, []byte("namespace: "+components.DeployKeyNamespace), []byte("namespace: default"), 1)
 		}, "want bitnami.com/v1alpha1 SealedSecret mitstack-node/" + components.DeployKeySecret},
 		"a read key sealed to another pair": {func(in *components.HostingInputs) {
-			in.SealedReadKey = testutil.SealedReadKey(t, &otherKey.PublicKey, testutil.ReadKey(t))
+			in.SealedReadKey = testutil.SealedReadKey(t, otherCert, testutil.ReadKey(t))
 		}, "the sealed read key is not sealed to the Sealed Secrets key pair"},
 		"a read key under another name": {func(in *components.HostingInputs) {
 			in.SealedReadKey = bytes.Replace(in.SealedReadKey, []byte("name: "+components.RepositoryCredentialName), []byte("name: other"), 1)

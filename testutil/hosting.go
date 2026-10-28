@@ -13,7 +13,6 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/pem"
-	"fmt"
 	"math/big"
 	"os/exec"
 	"regexp"
@@ -61,13 +60,13 @@ func HostingInputs(t *testing.T) components.HostingInputs {
 	_, err := rand.Read(sealKey)
 	require.NoError(t, err)
 	hostingKeyPair.Do(func() { hostingKeyPair.key, hostingKeyPair.keyPEM, hostingKeyPair.certPEM = SealedSecretsKeyPair(t) })
-	key, keyPEM, certPEM := hostingKeyPair.key, hostingKeyPair.keyPEM, hostingKeyPair.certPEM
+	keyPEM, certPEM := hostingKeyPair.keyPEM, hostingKeyPair.certPEM
 	return components.HostingInputs{
 		SealKey:              sealKey,
 		SealedSecretsKeyPEM:  keyPEM,
 		SealedSecretsCertPEM: certPEM,
-		SealedWriteKey:       SealedWriteKey(t, &key.PublicKey, WriteKey(t)),
-		SealedReadKey:        SealedReadKey(t, &key.PublicKey, ReadKey(t)),
+		SealedWriteKey:       SealedWriteKey(t, certPEM, WriteKey(t)),
+		SealedReadKey:        SealedReadKey(t, certPEM, ReadKey(t)),
 		Nodes:                HostingNodes,
 		Init:                 InitInputs(t),
 	}
@@ -209,41 +208,20 @@ func SealedSecretsKeyPair(t *testing.T) (*rsa.PrivateKey, []byte, []byte) {
 	return key, keyPEM, certPEM
 }
 
-// SealedWriteKey seals the write deploy key to pub as kubeseal does in its strict scope, and returns the SealedSecret manifest.
-func SealedWriteKey(t *testing.T, pub *rsa.PublicKey, value string) []byte {
+// SealedWriteKey seals the write deploy key to certPEM's key in its strict scope, and returns the SealedSecret manifest.
+func SealedWriteKey(t *testing.T, certPEM []byte, value string) []byte {
 	t.Helper()
-	return Sealed(t, pub, components.DeployKeyNamespace, components.DeployKeySecret, components.DeployKeyItem, value)
+	sealed, err := components.Seal(certPEM, components.DeployKeyNamespace, components.DeployKeySecret, components.DeployKeyItem, []byte(value))
+	require.NoError(t, err)
+	return sealed
 }
 
-// SealedReadKey seals Argo CD's read-only deploy key to pub in its strict scope, and returns the SealedSecret manifest.
-func SealedReadKey(t *testing.T, pub *rsa.PublicKey, value string) []byte {
+// SealedReadKey seals Argo CD's read-only deploy key to certPEM's key in its strict scope, and returns the SealedSecret manifest.
+func SealedReadKey(t *testing.T, certPEM []byte, value string) []byte {
 	t.Helper()
-	return Sealed(t, pub, components.RepositoryCredentialNamespace, components.RepositoryCredentialName, components.RepositoryCredentialItem, value)
-}
-
-// Sealed seals value to pub in the strict scope of namespace/name, and returns a SealedSecret manifest holding it as item.
-func Sealed(t *testing.T, pub *rsa.PublicKey, namespace, name, item, value string) []byte {
-	t.Helper()
-	sessionKey := make([]byte, 32)
-	_, err := rand.Read(sessionKey)
+	sealed, err := components.Seal(certPEM, components.RepositoryCredentialNamespace, components.RepositoryCredentialName, components.RepositoryCredentialItem, []byte(value))
 	require.NoError(t, err)
-	wrapped, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, pub, sessionKey, []byte(namespace+"/"+name))
-	require.NoError(t, err)
-	block, err := aes.NewCipher(sessionKey)
-	require.NoError(t, err)
-	gcm, err := cipher.NewGCM(block)
-	require.NoError(t, err)
-	sealed := binary.BigEndian.AppendUint16(nil, uint16(len(wrapped)))
-	sealed = append(append(sealed, wrapped...), gcm.Seal(nil, make([]byte, gcm.NonceSize()), []byte(value), nil)...)
-	return fmt.Appendf(nil, `apiVersion: bitnami.com/v1alpha1
-kind: SealedSecret
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  encryptedData:
-    %s: %s
-`, name, namespace, item, base64.StdEncoding.EncodeToString(sealed))
+	return sealed
 }
 
 // OpenedSecret is the Secret the Sealed Secrets controller writes when it opens a SealedSecret.

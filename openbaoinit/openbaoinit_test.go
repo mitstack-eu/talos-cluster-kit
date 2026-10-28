@@ -5,11 +5,13 @@ package openbaoinit_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -205,7 +207,7 @@ func (f *fakes) run(t *testing.T, recipient []byte) (string, error) {
 	tools := testutil.NewTools(t, map[string]string{"ssh": fakeSSH})
 	dir := t.TempDir()
 	env := testutil.ContainerEnv(t, container)
-	for k, v := range map[string]string{
+	maps.Copy(env, map[string]string{
 		"PATH": tools.Dir + ":" + os.Getenv("PATH"), "HOME": tools.Dir, "GNUPGHOME": filepath.Join(dir, "gnupg"), "FAKE_REPO": f.repo,
 		"MITSTACK_OPENBAO_ADDR":     f.bao.URL,
 		"MITSTACK_OPENBAO_CA":       writeFile(t, dir, "openbao-ca.crt", certificatePEM(f.bao)),
@@ -213,26 +215,22 @@ func (f *fakes) run(t *testing.T, recipient []byte) (string, error) {
 		"MITSTACK_DEPLOY_KEY_FILE":  writeFile(t, dir, "ssh-privatekey", []byte(testutil.WriteKey(t))),
 		"MITSTACK_KNOWN_HOSTS_FILE": writeFile(t, dir, "known_hosts", []byte(testutil.GitHubKnownHosts)),
 		"MITSTACK_RETRY_SECONDS":    "0.05", "KUBERNETES_SERVICE_HOST": "10.96.0.1", "KUBERNETES_SERVICE_PORT": "443",
-	} {
-		env[k] = v
-	}
-	cmd := exec.Command("bash", "-c", testutil.Field(t, container, "command", "2").(string), "openbao-init")
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "bash", "-c", testutil.Field(t, container, "command", "2").(string), "openbao-init")
 	for k, v := range env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
-	var out bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &out
-	require.NoError(t, cmd.Start())
-	timer := time.AfterFunc(60*time.Second, func() { _ = cmd.Process.Kill() })
-	defer timer.Stop()
-	err := cmd.Wait()
-	require.True(t, timer.Stop(), "the init script ran past a minute:\n%s", out.String())
-	return out.String() + strings.Join(tools.Calls(t), "\n"), err
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, ctx.Err(), "the init script ran past a minute:\n%s", out)
+	return string(out) + strings.Join(tools.Calls(t), "\n"), err
 }
 
 func TestInit_CommitsTheKeysAsPGPMessagesBeforeAnyRequestCarriesTheRootTokenThenWritesTheReadPolicyOnTheAccessorItRead(t *testing.T) {
 	_, recipient := testutil.Recipient(t)
 	f := newFakes(t)
+	f.commit("cluster/app.yaml", "kind: ConfigMap\n")
 
 	out, err := f.run(t, recipient)
 
@@ -249,17 +247,17 @@ func TestInit_CommitsTheKeysAsPGPMessagesBeforeAnyRequestCarriesTheRootTokenThen
 	require.True(t, ok, "the script never committed %s:\n%s", openbaoinit.InitFile, out)
 	assert.Regexp(t, `^OpenBao root token:\n-----BEGIN PGP MESSAGE-----\n(?s:.*)\n-----END PGP MESSAGE-----\nOpenBao recovery key:\n-----BEGIN PGP MESSAGE-----\n(?s:.*)\n-----END PGP MESSAGE-----\n$`, committed)
 	assert.Equal(t, []string{fakeRootToken, fakeRecoveryKey}, testutil.RecipientDecryptions(t, committed), "gpg must read the root token, then the recovery key")
+	assert.Equal(t, "kind: ConfigMap", git(t, "", "--git-dir", f.repo, "show", defaultBranch+":cluster/app.yaml"), "another writer's commit is gone")
 	var setUp []string
 	for _, c := range calls {
 		assert.False(t, c.root && !c.committed, "%s %s carried the root token before %s was committed", c.method, c.path, openbaoinit.InitFile)
-		assert.NotContains(t, c.log, fakeRootToken, "a fake logged the root token")
-		assert.NotContains(t, c.log, fakeRecoveryKey, "a fake logged the recovery key")
 		if c.root {
 			setUp = append(setUp, c.method+" "+c.path+" "+c.body)
 		}
 	}
-	assert.NotContains(t, out, fakeRootToken, "the script printed the root token")
-	assert.NotContains(t, out, fakeRecoveryKey, "the script printed the recovery key")
+	for _, secret := range []string{fakeRootToken, fakeRecoveryKey} {
+		assert.NotContains(t, out+fmt.Sprint(calls), secret, "the script or a fake logged a key")
+	}
 	assert.NotContains(t, git(t, "", "--git-dir", f.repo, "log", "--format=%B", defaultBranch), fakeRootToken, "a commit message holds the root token")
 	namespace := "{{identity.entity.aliases." + fakeAccessor + ".metadata.service_account_namespace}}"
 	policy, err := json.Marshal(map[string]string{"policy": "path \"kv/data/apps/" + namespace + "/*\" {\n  capabilities = [\"read\"]\n}\n" +
@@ -297,7 +295,6 @@ func TestInit_ReachesTheRepositoryOverSSHOn443WithTheDeployKeyAndGitHubsPinnedHo
 		assert.Contains(t, c, "'/"+testutil.InitRepository+".git'", "an ssh call to GitHub")
 	}
 }
-
 func TestInit_CommitsTheRootTokenWhenTheInitsAnswerHoldsNoReadableRecoveryKey(t *testing.T) {
 	_, recipient := testutil.Recipient(t)
 	for name, recoveryKeys := range map[string]string{"missing": "", "malformed": `,"recovery_keys_base64":["not base64!"]`} {
@@ -316,50 +313,22 @@ func TestInit_CommitsTheRootTokenWhenTheInitsAnswerHoldsNoReadableRecoveryKey(t 
 	}
 }
 
-func TestInit_CommitsBesideAnotherWritersCommitThatLandedFirst(t *testing.T) {
-	_, recipient := testutil.Recipient(t)
-	f := newFakes(t)
-	f.commit("cluster/app.yaml", "kind: ConfigMap\n")
-
-	out, err := f.run(t, recipient)
-
-	require.NoError(t, err, out)
-	_, ok := f.file()
-	assert.True(t, ok, "the init file is not on %s:\n%s", defaultBranch, out)
-	assert.Equal(t, "kind: ConfigMap", git(t, "", "--git-dir", f.repo, "show", defaultBranch+":cluster/app.yaml"), "the other writer's file is gone")
-}
-
-func TestInit_OnAStoreInitialisedWithItsInitFileCommittedWritesNothing(t *testing.T) {
-	_, recipient := testutil.Recipient(t)
-	f := newFakes(t)
-	f.initialised = true
-	f.commit(openbaoinit.InitFile, "OpenBao root token:\nrecorded\n")
-	before := f.head()
-
-	out, err := f.run(t, recipient)
-
-	require.NoError(t, err, out)
-	assert.Contains(t, out, "holds "+openbaoinit.InitFile+", and this Job no longer holds the root token, so it changes nothing")
-	for _, c := range f.callsSoFar() {
-		assert.Equal(t, http.MethodGet, c.method, "the script wrote %s %s to OpenBao", c.method, c.path)
-	}
-	assert.Equal(t, before, f.head(), "the script committed to the repository")
-}
-
-func TestInit_StopsBeforeInitialisingWhenItCannotHandTheKeysBack(t *testing.T) {
+func TestInit_ChangesNothingOnAStoreItCannotInitialiseOrThatHoldsItsFileAlready(t *testing.T) {
 	_, recipient := testutil.Recipient(t)
 	cases := []struct {
-		name                       string
-		recipient                  []byte
-		initialised, file, noCalls bool
-		want                       string
+		name                           string
+		recipient                      []byte
+		initialised, file, noCalls, ok bool
+		want                           string
 	}{
-		{"a recipient key that cannot encrypt", testutil.SignOnlyRecipient(t), false, false, true,
+		{"a recipient key that cannot encrypt", testutil.SignOnlyRecipient(t), false, false, true, false,
 			"cannot encrypt to the recipient key, so OpenBao was left uninitialised"},
-		{"a store initialised without the init file", recipient, true, false, false,
+		{"a store initialised without the init file", recipient, true, false, false, false,
 			"OpenBao is initialised, and the cluster repository holds no " + openbaoinit.InitFile + ", so its root token and recovery key are lost"},
-		{"an uninitialised store whose repository already holds an init file", recipient, false, true, false,
+		{"an uninitialised store whose repository already holds an init file", recipient, false, true, false, false,
 			"OpenBao is uninitialised, and the cluster repository already holds " + openbaoinit.InitFile + ", so OpenBao was left uninitialised"},
+		{"a store initialised with its init file committed", recipient, true, true, false, true,
+			"holds " + openbaoinit.InitFile + ", and this Job no longer holds the root token, so it changes nothing"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -372,7 +341,7 @@ func TestInit_StopsBeforeInitialisingWhenItCannotHandTheKeysBack(t *testing.T) {
 
 			out, err := f.run(t, tc.recipient)
 
-			require.Error(t, err, "the script exited 0 on %s:\n%s", tc.name, out)
+			assert.Equal(t, tc.ok, err == nil, "the script's exit on %s:\n%s", tc.name, out)
 			assert.Contains(t, out, tc.want)
 			for _, c := range f.callsSoFar() {
 				assert.Equal(t, http.MethodGet, c.method, "the script sent %s %s to OpenBao", c.method, c.path)
@@ -414,7 +383,6 @@ func TestManifests_RunsTheScriptAsAJobInTheDeployKeysNamespaceThatMountsTheKeyTh
 	}
 	assert.Equal(t, string(testutil.InitInputs(t).Recipient), testutil.Field(t, testutil.Kind(docs, "ConfigMap")[0], "data", "recipient.asc"))
 }
-
 func TestManifests_RefusesInputsTheJobCannotRunWith(t *testing.T) {
 	owner, _ := testutil.Recipient(t)
 	cases := map[string]struct {

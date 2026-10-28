@@ -3,7 +3,8 @@
 # and kubectl that tools.env pins after checking their sha256, copies every
 # image of the mirror list into the local registry by digest, and fetches
 # every served manifest, refusing one whose sha256 differs from the list.
-# Usage: prepare.sh <tools.env> <images.txt> <manifests.txt> <manifest dir>
+# Only then does it write the completion file, which Caddy waits for.
+# Usage: prepare.sh <tools.env> <images.txt> <manifests.txt> <manifest dir> <completion file>
 #   images.txt holds one name:tag@sha256:digest per line, and manifests.txt
 #   one "<file name> <sha256> <url>" per line. PREPARE_BIN_DIR names where the
 #   binaries go, /usr/local/bin by default.
@@ -49,7 +50,7 @@ mirror_image() {
 }
 
 main() {
-  [ "$#" -eq 4 ] || fail "usage: prepare.sh <tools.env> <images.txt> <manifests.txt> <manifest dir>"
+  [ "$#" -eq 5 ] || fail "usage: prepare.sh <tools.env> <images.txt> <manifests.txt> <manifest dir> <completion file>"
   install_tools "$1"
 
   local ref file sha256 url
@@ -64,6 +65,7 @@ main() {
       fetch_checked "$url" "$sha256" "$4/$file" 0644
     fi
   done < "$3"
+  install -D -m 0644 /dev/null "$5"
   echo "prepare: the mirror and the manifests are in place"
 }
 

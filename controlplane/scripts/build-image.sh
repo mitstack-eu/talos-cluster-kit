@@ -9,12 +9,15 @@
 # It waits for the private interface's DHCP lease before routing, since cloud-init can start it before Hetzner's hc-net-ifup has one.
 # Given a hosting set's URL and the pin of its server's key, it appends that
 # set to the configuration in the tmpfs, so the hosting keys never reach the disk.
-# Usage: build-image.sh <imager image by digest> <machine configuration> <network router> [<hosting set URL> <key pin>]
+# It writes the disk only once the gateway's mirror answers under the gateway's
+# CA, so the snapshot, and every node booted from it, follows a complete mirror.
+# Usage: build-image.sh <imager image by digest> <machine configuration> <network router> <mirror URL> <gateway CA> [<hosting set URL> <key pin>]
 #   BUILD_WORK_DIR, BUILD_OUT_DIR, BUILD_DISK, BUILD_PULL_ATTEMPTS,
 #   BUILD_RESOLV_CONF, BUILD_PROC, BUILD_NET_CLASS, BUILD_ADDRESS_WAIT,
-#   BUILD_FETCH_ATTEMPTS and BUILD_FETCH_DELAY default to /mnt/mitstack-build,
-#   /var/lib/mitstack-build, /dev/sda, 30, /etc/resolv.conf, /proc,
-#   /sys/class/net, 120 seconds, 60 and 5 seconds.
+#   BUILD_FETCH_ATTEMPTS, BUILD_FETCH_DELAY, BUILD_MIRROR_ATTEMPTS and
+#   BUILD_MIRROR_DELAY default to /mnt/mitstack-build, /var/lib/mitstack-build,
+#   /dev/sda, 30, /etc/resolv.conf, /proc, /sys/class/net, 120 seconds, 60,
+#   5 seconds, 270 and 10 seconds.
 # It exists because the image embeds every key of the cluster, so it is built
 # inside the cluster's own Hetzner project and imager's output, which prints
 # that configuration, is discarded. A failed step leaves the builder running,
@@ -32,6 +35,8 @@ readonly net_class=${BUILD_NET_CLASS:-/sys/class/net}
 readonly address_wait=${BUILD_ADDRESS_WAIT:-120}
 readonly fetch_attempts=${BUILD_FETCH_ATTEMPTS:-60}
 readonly fetch_delay=${BUILD_FETCH_DELAY:-5}
+readonly mirror_attempts=${BUILD_MIRROR_ATTEMPTS:-270}
+readonly mirror_delay=${BUILD_MIRROR_DELAY:-10}
 readonly staged="$work/bin"
 readonly resolvers=("185.12.64.1" "185.12.64.2")
 
@@ -92,6 +97,15 @@ fetch_hosting() {
   printf -- '\n---\n' >> "$work/in/config.yaml"
   cat "$work/in/hosting.yaml" >> "$work/in/config.yaml"
   rm -f "$work/in/hosting.yaml"
+}
+
+# await_mirror waits for the gateway's mirror, which answers only once it is complete.
+await_mirror() {
+  local url=$1 ca=$2
+  if ! curl -sSf --proto '=https' --cacert "$ca" --connect-timeout 5 --max-time 30 \
+    --retry "$mirror_attempts" --retry-delay "$mirror_delay" --retry-all-errors -o /dev/null "$url"; then
+    fail "the gateway's mirror at $url did not answer after $mirror_attempts retries"
+  fi
 }
 
 # build runs imager with the kit's arguments and discards its output, since it prints every key of the configuration.
@@ -160,12 +174,13 @@ write_disk() {
 }
 
 main() {
-  [ "$#" -eq 3 ] || [ "$#" -eq 5 ] ||
-    fail "usage: build-image.sh <imager image> <machine configuration> <network router> [<hosting set URL> <key pin>]"
+  [ "$#" -eq 5 ] || [ "$#" -eq 7 ] ||
+    fail "usage: build-image.sh <imager image> <machine configuration> <network router> <mirror URL> <gateway CA> [<hosting set URL> <key pin>]"
   await_lease "$3"
   route_through_gateway "$3"
   pull_imager "$1"
-  build "$1" "$2" "${@:4}"
+  build "$1" "$2" "${@:6}"
+  await_mirror "$4" "$5"
   write_disk
 }
 

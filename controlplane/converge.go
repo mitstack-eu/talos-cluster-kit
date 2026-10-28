@@ -219,7 +219,7 @@ func (p Plane) builderStep(ctx context.Context, builder Server, img imageBuild) 
 				return fmt.Errorf("deleting the %s %d that did not finish: %w", img.builder, builder.ID, err)
 			}
 			return refuse(img.failure,
-				"the %s did not power itself off within %s of its creation, so %s was not built and the %s is deleted; %s; unsubscribe and subscribe again to rebuild the cluster",
+				"the %s did not power itself off within %s of its creation, so %s was not built or the gateway's mirror never completed, and the %s is deleted; %s; unsubscribe and subscribe again to rebuild the cluster",
 				img.builder, BuildDeadline, img.what, img.builder, metrics.stall())
 		}}, true, nil
 	case ServerOff:

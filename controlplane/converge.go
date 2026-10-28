@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -65,10 +66,18 @@ type site struct {
 	apiAddress string
 }
 
-// nodeStep builds anew only a cluster with neither node nor gateway left, since the cluster's keys live only in its
-// nodes, its snapshot and a builder. The worker image is built beside the cluster's own, while that waits.
+// nodeStep builds the worker image beside the cluster's own, and deletes the worker builder of a cluster refused.
 func (p Plane) nodeStep(ctx context.Context, st State, s site) (Step, bool, error) {
 	step, ok, err := p.controlPlaneStep(ctx, st, s)
+	var refused *Refusal
+	if worker, has := st.Server(RoleWorkerBuilder); has && errors.As(err, &refused) {
+		return Step{"delete the worker builder, whose disk holds the worker's join keys, beside a cluster that is refused", func(ctx context.Context) error {
+			if derr := p.API.DeleteServer(ctx, worker.ID); derr != nil {
+				return errors.Join(err, fmt.Errorf("deleting the worker builder %d: %w", worker.ID, derr))
+			}
+			return err
+		}}, true, nil
+	}
 	if err != nil || ok {
 		return step, ok, err
 	}

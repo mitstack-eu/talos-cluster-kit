@@ -18,7 +18,7 @@ var Env string
 var jqEnv string
 
 // Image is the tools image this release published and signed, which the release job writes into the commit it tags.
-const Image = "ghcr.io/mitstack-eu/talos-cluster-kit-tools:unreleased@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+const Image = "ghcr.io/mitstack-eu/talos-cluster-kit-tools:v0.16.0@sha256:ba8cdc36d4c44f3d7015d7dd931ea187daf5f8f7eebc45988b28d7385cc657d8"
 
 // Pin returns the value tools.env or jq.env gives name, or "" when neither names it.
 func Pin(name string) string {

@@ -341,7 +341,8 @@ func TestHosting_RefusesInputsItCannotBoot(t *testing.T) {
 			in.SealedReadKey = bytes.Replace(in.SealedReadKey, []byte("name: "+components.RepositoryCredentialName), []byte("name: other"), 1)
 		}, "want bitnami.com/v1alpha1 SealedSecret argocd/" + components.RepositoryCredentialName},
 		"a read key with a username sealed beside it": {func(in *components.HostingInputs) {
-			in.SealedReadKey = bytes.Replace(in.SealedReadKey, []byte("encryptedData:\n"), []byte("encryptedData:\n    username: c2VhbGVk\n"), 1)
+			item := regexp.MustCompile(`(?m)^(\s*)` + components.RepositoryCredentialItem + `:`)
+			in.SealedReadKey = item.ReplaceAll(in.SealedReadKey, []byte("${1}username: c2VhbGVk\n${1}"+components.RepositoryCredentialItem+":"))
 		}, "the sealed read key's encryptedData holds 2 items, want only " + components.RepositoryCredentialItem},
 		"an init Job image named by tag alone": {func(in *components.HostingInputs) { in.Init.ToolsImage = "ghcr.io/x/tools:v1" }, "OpenBao's init Job: tools image"},
 		"a write key file with a second object": {func(in *components.HostingInputs) {

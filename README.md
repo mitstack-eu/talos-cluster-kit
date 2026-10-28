@@ -92,9 +92,12 @@ robot.Profile = nodeconfig.Metal
 cfg, err := nodeconfig.RenderWorker(robot, nodeconfig.Node{
 	Hostname: "wk-hel1",
 	VSwitch: &nodeconfig.VSwitch{
-		MAC:     mac,  // the public card's permanent MAC, read in the rescue system, such as 9c:6b:00:55:d8:f5
-		VLAN:    4000, // the vSwitch's VLAN in Robot
-		Address: netip.MustParsePrefix("10.0.1.2/24"), // the node's address in the network's vSwitch subnet
+		// The public card's permanent MAC, read in the rescue system, such as 9c:6b:00:55:d8:f5.
+		MAC: mac,
+		// The vSwitch's VLAN in Robot.
+		VLAN: 4000,
+		// The node's address in the network's vSwitch subnet.
+		Address: netip.MustParsePrefix("10.0.1.2/24"),
 	},
 })
 ```

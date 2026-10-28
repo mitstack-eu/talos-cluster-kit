@@ -38,8 +38,9 @@ jobs:
         run: go vet ./...
 
       # The script suites run bash, curl, jq, gpg and openssl from the runner's image.
+      # On two cores the controlplane suite runs close to go test's default ten-minute timeout.
       - name: go test
-        run: go test -race ./...
+        run: go test -race -timeout 25m ./...
 
   components:
     name: components

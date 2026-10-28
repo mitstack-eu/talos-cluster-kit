@@ -1,12 +1,10 @@
 package openbaoinit_test
 
+// The init script runs with bash against a fake OpenBao over TLS and a bare Git repository that a fake ssh reaches,
+// so each test reads what it committed and which OpenBao calls carried the root token.
+
 import (
 	"bytes"
-	"crypto"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/sha256"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
@@ -35,49 +33,75 @@ const (
 	fakeRootToken   = "s.fake-root-token-0123456789"
 	fakeRecoveryKey = "6b1e0c3a5d7f9b2e4c6a8d0f1b3e5c7a9d2f4b6e8c0a1d3f5b7e9c2a4d6f8b0e"
 	fakeAccessor    = "auth_kubernetes_f1e2d3c4"
-	readToken       = "ghs_fake-read-token"
-	writeToken      = "ghs_fake-write-token"
-	contentsPath    = "/repos/" + testutil.InitRepository + "/contents/" + openbaoinit.InitFile
-	tokensPath      = "/app/installations/" + testutil.InitInstallationID + "/access_tokens"
+	defaultBranch   = "main"
 )
 
-// call is one request either fake took, whose log holds all it carried but OpenBao's token header, which root records.
+// call is one request OpenBao received, with whether the repository held the init file when it arrived.
 type call struct {
-	server, method, path, body, log string
-	root                            bool
+	method, path, body, log string
+	root, committed         bool
 }
 
-// fakes play OpenBao's HTTP API and GitHub's, each over TLS, and record every request.
 type fakes struct {
-	t           *testing.T
-	appKey      *rsa.PrivateKey
-	mu          sync.Mutex
-	calls       []call
-	initialised bool
-	// recoveryKeys, when set, replaces the init answer's recovery_keys_base64 member, comma first, or drops it when empty.
+	t            *testing.T
+	mu           sync.Mutex
+	calls        []call
+	initialised  bool
 	recoveryKeys *string
 	enabled      map[string]bool
-	files        map[string]string
-	bao, github  *httptest.Server
+	bao          *httptest.Server
+	// repo is the bare repository the fake ssh serves as the cluster repository.
+	repo string
 }
 
 func newFakes(t *testing.T) *fakes {
 	t.Helper()
-	appKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	require.NoError(t, err)
-	f := &fakes{t: t, appKey: appKey, enabled: map[string]bool{}, files: map[string]string{}}
+	f := &fakes{t: t, enabled: map[string]bool{}, repo: filepath.Join(t.TempDir(), "shop-cluster.git")}
+	git(t, "", "init", "--quiet", "--bare", "--initial-branch="+defaultBranch, f.repo)
+	f.commit("README.md", "# shop-cluster\n")
 	f.bao = httptest.NewTLSServer(http.HandlerFunc(f.serveOpenBao))
-	f.github = httptest.NewTLSServer(http.HandlerFunc(f.serveGitHub))
-	t.Cleanup(func() { f.bao.Close(); f.github.Close() })
+	t.Cleanup(f.bao.Close)
 	return f
 }
 
-func (f *fakes) record(server string, r *http.Request) call {
+func git(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-c", "user.name=test", "-c", "user.email=test@example.com"}, args...)...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "git %v: %s", args, out)
+	return strings.TrimSpace(string(out))
+}
+
+// commit puts a file on the repository's default branch as another writer would.
+func (f *fakes) commit(name, content string) {
+	f.t.Helper()
+	work := f.t.TempDir()
+	git(f.t, work, "clone", "--quiet", f.repo, ".")
+	require.NoError(f.t, os.MkdirAll(filepath.Dir(filepath.Join(work, name)), 0o755))
+	require.NoError(f.t, os.WriteFile(filepath.Join(work, name), []byte(content), 0o644))
+	git(f.t, work, "add", name)
+	git(f.t, work, "commit", "--quiet", "-m", "Add "+name)
+	git(f.t, work, "push", "--quiet", "origin", "HEAD:"+defaultBranch)
+}
+
+// file is the init file on the default branch, and whether there is one.
+func (f *fakes) file() (string, bool) {
+	out, err := exec.Command("git", "--git-dir", f.repo, "show", defaultBranch+":"+openbaoinit.InitFile).Output()
+	return string(out), err == nil
+}
+
+func (f *fakes) head() string {
+	return git(f.t, "", "--git-dir", f.repo, "rev-parse", defaultBranch)
+}
+
+func (f *fakes) record(r *http.Request) call {
 	raw, _ := io.ReadAll(r.Body)
 	headers := r.Header.Clone()
 	headers.Del("X-Vault-Token")
-	c := call{server: server, method: r.Method, path: r.URL.Path, body: string(raw), root: r.Header.Get("X-Vault-Token") == fakeRootToken,
-		log: fmt.Sprintf("%s %s %s %v %s", server, r.Method, r.URL.RequestURI(), headers, raw)}
+	_, committed := f.file()
+	c := call{method: r.Method, path: r.URL.Path, body: string(raw), root: r.Header.Get("X-Vault-Token") == fakeRootToken, committed: committed,
+		log: fmt.Sprintf("%s %s %v %s", r.Method, r.URL.RequestURI(), headers, raw)}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, c)
@@ -89,9 +113,8 @@ func reply(w http.ResponseWriter, status int, body string) {
 	_, _ = io.WriteString(w, body)
 }
 
-// serveOpenBao lists under sys/mounts and sys/auth what a POST below either enabled, with the accessor for kubernetes/.
 func (f *fakes) serveOpenBao(w http.ResponseWriter, r *http.Request) {
-	c := f.record("openbao", r)
+	c := f.record(r)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	switch {
@@ -118,7 +141,6 @@ func (f *fakes) serveOpenBao(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// initialise initialises once, and encrypts the recovery key to the binary key the request names, as OpenBao does.
 func (f *fakes) initialise(w http.ResponseWriter, c call) {
 	var req struct {
 		RecoveryPGPKeys []string `json:"recovery_pgp_keys"`
@@ -141,64 +163,6 @@ func (f *fakes) initialise(w http.ResponseWriter, c call) {
 		recovery = *f.recoveryKeys
 	}
 	reply(w, http.StatusOK, fmt.Sprintf(`{"root_token":%q%s}`, fakeRootToken, recovery))
-}
-
-// serveGitHub mints a token for a JWT the App's key signed, and serves openbao-init.asc raw to a token it minted.
-func (f *fakes) serveGitHub(w http.ResponseWriter, r *http.Request) {
-	c := f.record("github", r)
-	auth := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	content, found := f.files[openbaoinit.InitFile]
-	var body struct{ Message, Content string }
-	_ = json.Unmarshal([]byte(c.body), &body)
-	raw, err := base64.StdEncoding.DecodeString(body.Content)
-	switch {
-	case c.method == http.MethodPost && c.path == tokensPath:
-		f.mintToken(w, auth, c.body)
-	case c.path != contentsPath || (auth != readToken && auth != writeToken):
-		reply(w, http.StatusNotFound, `{"message":"Not Found"}`)
-	case c.method == http.MethodGet && r.Header.Get("Accept") != "application/vnd.github.raw+json":
-		reply(w, http.StatusUnsupportedMediaType, `{"message":"want the raw media type"}`)
-	case c.method == http.MethodGet && found:
-		_, _ = io.WriteString(w, content)
-	case c.method == http.MethodGet:
-		reply(w, http.StatusNotFound, `{"message":"Not Found"}`)
-	case c.method == http.MethodPut && auth == writeToken && !found && err == nil && body.Message != "":
-		f.files[openbaoinit.InitFile] = string(raw)
-		reply(w, http.StatusCreated, `{"content":{"name":"`+openbaoinit.InitFile+`"}}`)
-	default:
-		reply(w, http.StatusUnprocessableEntity, `{"message":"Invalid request"}`)
-	}
-}
-
-// mintToken answers a token for contents:read or contents:write on the cluster repository alone, to a JWT GitHub takes:
-// RS256 by the App's key, issued by the App, and alive at most ten minutes.
-func (f *fakes) mintToken(w http.ResponseWriter, jwt, body string) {
-	var req struct {
-		Repositories []string          `json:"repositories"`
-		Permissions  map[string]string `json:"permissions"`
-	}
-	var claims struct {
-		Iat, Exp int64
-		Iss      string
-	}
-	_ = json.Unmarshal([]byte(body), &req)
-	token := map[string]string{"read": readToken, "write": writeToken}[req.Permissions["contents"]]
-	parts := append(strings.Split(jwt, "."), "", "")[:3]
-	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
-	sum := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
-	raw, _ := base64.RawURLEncoding.DecodeString(parts[1])
-	now := time.Now().Unix()
-	switch {
-	case err != nil || rsa.VerifyPKCS1v15(&f.appKey.PublicKey, crypto.SHA256, sum[:], sig) != nil || json.Unmarshal(raw, &claims) != nil ||
-		claims.Iss != testutil.InitAppID || claims.Iat > now || claims.Exp <= now || claims.Exp-claims.Iat > 600:
-		reply(w, http.StatusUnauthorized, `{"message":"A JSON web token could not be decoded"}`)
-	case !slices.Equal(req.Repositories, []string{strings.Split(testutil.InitRepository, "/")[1]}) || len(req.Permissions) != 1 || token == "":
-		reply(w, http.StatusUnprocessableEntity, `{"message":"Invalid request"}`)
-	default:
-		reply(w, http.StatusCreated, fmt.Sprintf(`{"token":%q}`, token))
-	}
 }
 
 func (f *fakes) callsSoFar() []call {
@@ -228,22 +192,27 @@ func rendered(t *testing.T) ([]map[string]any, map[string]any) {
 	return docs, testutil.Field(t, jobs[0], "spec", "template").(map[string]any)
 }
 
-// run runs the rendered script in the Job's environment, its files, recipient key and addresses swapped for the fakes'.
+// fakeSSH runs the Git service it is asked for against the bare repository, as GitHub's SSH endpoint does for a deploy
+// key it accepts.
+const fakeSSH = `service=${*: -1}
+exec ${service%% *} "$FAKE_REPO"`
+
+// run runs the Job's own script with the Job's own environment, pointed at the fakes.
 func (f *fakes) run(t *testing.T, recipient []byte) (string, error) {
 	t.Helper()
 	_, pod := rendered(t)
 	container := testutil.Field(t, pod, "spec", "containers", "0")
+	tools := testutil.NewTools(t, map[string]string{"ssh": fakeSSH})
 	dir := t.TempDir()
-	appKey := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(f.appKey)})
 	env := testutil.ContainerEnv(t, container)
 	for k, v := range map[string]string{
-		"PATH": os.Getenv("PATH"), "HOME": dir, "GNUPGHOME": filepath.Join(dir, "gnupg"),
-		"MITSTACK_OPENBAO_ADDR": f.bao.URL, "MITSTACK_GITHUB_API_URL": f.github.URL,
-		"MITSTACK_OPENBAO_CA":     writeFile(t, dir, "openbao-ca.crt", certificatePEM(f.bao)),
-		"CURL_CA_BUNDLE":          writeFile(t, dir, "github-ca.crt", certificatePEM(f.github)),
-		"MITSTACK_RECIPIENT_FILE": writeFile(t, dir, "recipient.asc", recipient),
-		"MITSTACK_APP_KEY_FILE":   writeFile(t, dir, "private-key", appKey),
-		"MITSTACK_RETRY_SECONDS":  "0.05", "KUBERNETES_SERVICE_HOST": "10.96.0.1", "KUBERNETES_SERVICE_PORT": "443",
+		"PATH": tools.Dir + ":" + os.Getenv("PATH"), "HOME": tools.Dir, "GNUPGHOME": filepath.Join(dir, "gnupg"), "FAKE_REPO": f.repo,
+		"MITSTACK_OPENBAO_ADDR":     f.bao.URL,
+		"MITSTACK_OPENBAO_CA":       writeFile(t, dir, "openbao-ca.crt", certificatePEM(f.bao)),
+		"MITSTACK_RECIPIENT_FILE":   writeFile(t, dir, "recipient.asc", recipient),
+		"MITSTACK_DEPLOY_KEY_FILE":  writeFile(t, dir, "ssh-privatekey", []byte(testutil.WriteKey(t))),
+		"MITSTACK_KNOWN_HOSTS_FILE": writeFile(t, dir, "known_hosts", []byte(testutil.GitHubKnownHosts)),
+		"MITSTACK_RETRY_SECONDS":    "0.05", "KUBERNETES_SERVICE_HOST": "10.96.0.1", "KUBERNETES_SERVICE_PORT": "443",
 	} {
 		env[k] = v
 	}
@@ -258,7 +227,7 @@ func (f *fakes) run(t *testing.T, recipient []byte) (string, error) {
 	defer timer.Stop()
 	err := cmd.Wait()
 	require.True(t, timer.Stop(), "the init script ran past a minute:\n%s", out.String())
-	return out.String(), err
+	return out.String() + strings.Join(tools.Calls(t), "\n"), err
 }
 
 func TestInit_CommitsTheKeysAsPGPMessagesBeforeAnyRequestCarriesTheRootTokenThenWritesTheReadPolicyOnTheAccessorItRead(t *testing.T) {
@@ -276,17 +245,13 @@ func TestInit_CommitsTheKeysAsPGPMessagesBeforeAnyRequestCarriesTheRootTokenThen
 	require.NoError(t, json.Unmarshal([]byte(inits[0].body), &initBody))
 	assert.Equal(t, map[string]any{"recovery_shares": 1.0, "recovery_threshold": 1.0, "recovery_pgp_keys": initBody["recovery_pgp_keys"]}, initBody,
 		"the init must ask for one recovery share of threshold one and a plain root token")
-	committed := f.files[openbaoinit.InitFile]
+	committed, ok := f.file()
+	require.True(t, ok, "the script never committed %s:\n%s", openbaoinit.InitFile, out)
 	assert.Regexp(t, `^OpenBao root token:\n-----BEGIN PGP MESSAGE-----\n(?s:.*)\n-----END PGP MESSAGE-----\nOpenBao recovery key:\n-----BEGIN PGP MESSAGE-----\n(?s:.*)\n-----END PGP MESSAGE-----\n$`, committed)
 	assert.Equal(t, []string{fakeRootToken, fakeRecoveryKey}, testutil.RecipientDecryptions(t, committed), "gpg must read the root token, then the recovery key")
-	commit := slices.IndexFunc(calls, func(c call) bool { return c.method == http.MethodPut && c.path == contentsPath })
-	require.GreaterOrEqual(t, commit, 0, "the script never committed %s:\n%s", openbaoinit.InitFile, out)
-	firstRoot := slices.IndexFunc(calls, func(c call) bool { return c.root })
-	require.GreaterOrEqual(t, firstRoot, 0, "no request carried the root token, so nothing was set up")
-	assert.Less(t, commit, firstRoot, "%s %s carried the root token before %s was committed", calls[firstRoot].method, calls[firstRoot].path, openbaoinit.InitFile)
 	var setUp []string
 	for _, c := range calls {
-		assert.False(t, c.root && c.server == "github", "GitHub received the root token at %s %s", c.method, c.path)
+		assert.False(t, c.root && !c.committed, "%s %s carried the root token before %s was committed", c.method, c.path, openbaoinit.InitFile)
 		assert.NotContains(t, c.log, fakeRootToken, "a fake logged the root token")
 		assert.NotContains(t, c.log, fakeRecoveryKey, "a fake logged the recovery key")
 		if c.root {
@@ -295,6 +260,7 @@ func TestInit_CommitsTheKeysAsPGPMessagesBeforeAnyRequestCarriesTheRootTokenThen
 	}
 	assert.NotContains(t, out, fakeRootToken, "the script printed the root token")
 	assert.NotContains(t, out, fakeRecoveryKey, "the script printed the recovery key")
+	assert.NotContains(t, git(t, "", "--git-dir", f.repo, "log", "--format=%B", defaultBranch), fakeRootToken, "a commit message holds the root token")
 	namespace := "{{identity.entity.aliases." + fakeAccessor + ".metadata.service_account_namespace}}"
 	policy, err := json.Marshal(map[string]string{"policy": "path \"kv/data/apps/" + namespace + "/*\" {\n  capabilities = [\"read\"]\n}\n" +
 		"path \"kv/metadata/apps/" + namespace + "/*\" {\n  capabilities = [\"read\", \"list\"]\n}\n"})
@@ -310,6 +276,28 @@ func TestInit_CommitsTheKeysAsPGPMessagesBeforeAnyRequestCarriesTheRootTokenThen
 	}, setUp, "the setup sent these requests with the root token")
 }
 
+func TestInit_ReachesTheRepositoryOverSSHOn443WithTheDeployKeyAndGitHubsPinnedHostKeysAlone(t *testing.T) {
+	_, recipient := testutil.Recipient(t)
+	f := newFakes(t)
+
+	out, err := f.run(t, recipient)
+
+	require.NoError(t, err, out)
+	var sshCalls []string
+	for line := range strings.Lines(out) {
+		if strings.Contains(line, "git@ssh.github.com") {
+			sshCalls = append(sshCalls, strings.TrimSpace(line))
+		}
+	}
+	require.NotEmpty(t, sshCalls, "the script never reached the repository over ssh:\n%s", out)
+	for _, c := range sshCalls {
+		for _, want := range []string{"-p 443", "-o IdentitiesOnly=yes", "-o StrictHostKeyChecking=yes", "-o UserKnownHostsFile=", "-i "} {
+			assert.Contains(t, c, want, "an ssh call to GitHub")
+		}
+		assert.Contains(t, c, "'/"+testutil.InitRepository+".git'", "an ssh call to GitHub")
+	}
+}
+
 func TestInit_CommitsTheRootTokenWhenTheInitsAnswerHoldsNoReadableRecoveryKey(t *testing.T) {
 	_, recipient := testutil.Recipient(t)
 	for name, recoveryKeys := range map[string]string{"missing": "", "malformed": `,"recovery_keys_base64":["not base64!"]`} {
@@ -321,30 +309,41 @@ func TestInit_CommitsTheRootTokenWhenTheInitsAnswerHoldsNoReadableRecoveryKey(t 
 
 			require.Error(t, err, "the script exited 0 with the recovery key %s:\n%s", name, out)
 			assert.Contains(t, out, "the answer to the init holds no readable recovery key")
-			assert.Equal(t, []string{fakeRootToken}, testutil.RecipientDecryptions(t, f.files[openbaoinit.InitFile]), "the root token is lost:\n%s", out)
+			committed, _ := f.file()
+			assert.Equal(t, []string{fakeRootToken}, testutil.RecipientDecryptions(t, committed), "the root token is lost:\n%s", out)
 			assert.NotContains(t, out, fakeRootToken, "the script printed the root token")
 		})
 	}
+}
+
+func TestInit_CommitsBesideAnotherWritersCommitThatLandedFirst(t *testing.T) {
+	_, recipient := testutil.Recipient(t)
+	f := newFakes(t)
+	f.commit("cluster/app.yaml", "kind: ConfigMap\n")
+
+	out, err := f.run(t, recipient)
+
+	require.NoError(t, err, out)
+	_, ok := f.file()
+	assert.True(t, ok, "the init file is not on %s:\n%s", defaultBranch, out)
+	assert.Equal(t, "kind: ConfigMap", git(t, "", "--git-dir", f.repo, "show", defaultBranch+":cluster/app.yaml"), "the other writer's file is gone")
 }
 
 func TestInit_OnAStoreInitialisedWithItsInitFileCommittedWritesNothing(t *testing.T) {
 	_, recipient := testutil.Recipient(t)
 	f := newFakes(t)
 	f.initialised = true
-	f.files[openbaoinit.InitFile] = "OpenBao root token:\nrecorded\n"
+	f.commit(openbaoinit.InitFile, "OpenBao root token:\nrecorded\n")
+	before := f.head()
 
 	out, err := f.run(t, recipient)
 
 	require.NoError(t, err, out)
 	assert.Contains(t, out, "holds "+openbaoinit.InitFile+", and this Job no longer holds the root token, so it changes nothing")
 	for _, c := range f.callsSoFar() {
-		if c.method == http.MethodPost && c.path == tokensPath {
-			assert.JSONEq(t, `{"repositories":["shop-cluster"],"permissions":{"contents":"read"}}`, c.body, "the check must ask for a token that may only read")
-		} else {
-			assert.Equal(t, http.MethodGet, c.method, "the script wrote %s %s to %s", c.method, c.path, c.server)
-		}
+		assert.Equal(t, http.MethodGet, c.method, "the script wrote %s %s to OpenBao", c.method, c.path)
 	}
-	assert.Equal(t, "OpenBao root token:\nrecorded\n", f.files[openbaoinit.InitFile])
+	assert.Equal(t, before, f.head(), "the script committed to the repository")
 }
 
 func TestInit_StopsBeforeInitialisingWhenItCannotHandTheKeysBack(t *testing.T) {
@@ -367,33 +366,33 @@ func TestInit_StopsBeforeInitialisingWhenItCannotHandTheKeysBack(t *testing.T) {
 			f := newFakes(t)
 			f.initialised = tc.initialised
 			if tc.file {
-				f.files[openbaoinit.InitFile] = "OpenBao root token:\nanother store's\n"
+				f.commit(openbaoinit.InitFile, "OpenBao root token:\nanother store's\n")
 			}
+			before := f.head()
 
 			out, err := f.run(t, tc.recipient)
 
 			require.Error(t, err, "the script exited 0 on %s:\n%s", tc.name, out)
 			assert.Contains(t, out, tc.want)
 			for _, c := range f.callsSoFar() {
-				assert.False(t, c.server == "openbao" && c.method != http.MethodGet, "the script sent %s %s to OpenBao", c.method, c.path)
-				assert.NotEqual(t, http.MethodPut, c.method, "the script sent %s %s to %s", c.method, c.path, c.server)
+				assert.Equal(t, http.MethodGet, c.method, "the script sent %s %s to OpenBao", c.method, c.path)
 			}
-			assert.False(t, tc.noCalls && len(f.callsSoFar()) > 0, "the script reached a fake before it checked the recipient key")
+			assert.Equal(t, before, f.head(), "the script committed to the repository")
+			assert.False(t, tc.noCalls && len(f.callsSoFar()) > 0, "the script reached OpenBao before it checked the recipient key")
 		})
 	}
 }
 
-func TestManifests_RunsTheScriptAsAJobInTheAppKeysNamespaceThatMountsTheKeyTheRecipientAndOpenBaosAuthority(t *testing.T) {
+func TestManifests_RunsTheScriptAsAJobInTheDeployKeysNamespaceThatMountsTheKeyTheHostKeysTheRecipientAndOpenBaosAuthority(t *testing.T) {
 	docs, pod := rendered(t)
 
 	container := testutil.Field(t, pod, "spec", "containers", "0").(map[string]any)
 	env := testutil.ContainerEnv(t, container)
 
-	assert.Equal(t, openbaoinit.AppKeyNamespace, testutil.Field(t, testutil.Kind(docs, "Job")[0], "metadata", "namespace"))
+	assert.Equal(t, openbaoinit.DeployKeyNamespace, testutil.Field(t, testutil.Kind(docs, "Job")[0], "metadata", "namespace"))
 	assert.NotEmpty(t, testutil.Field(t, pod, "metadata", "labels", "mitstack.dev/app"), "the admission policy refuses a pod without mitstack.dev/app")
 	assert.Equal(t, testutil.ToolsImage, container["image"])
-	assert.Equal(t, []string{testutil.InitRepository, testutil.InitAppID, testutil.InitInstallationID, "https://api.github.com"},
-		[]string{env["MITSTACK_REPOSITORY"], env["MITSTACK_GITHUB_APP_ID"], env["MITSTACK_GITHUB_INSTALLATION_ID"], env["MITSTACK_GITHUB_API_URL"]})
+	assert.Equal(t, "ssh://git@ssh.github.com:443/"+testutil.InitRepository+".git", env["MITSTACK_REPOSITORY_URL"])
 	sources, mounted := map[string]string{}, map[string]string{}
 	for _, v := range testutil.Field(t, pod, "spec", "volumes").([]any) {
 		for kind, field := range map[string]string{"secret": "secretName", "configMap": "name"} {
@@ -406,9 +405,10 @@ func TestManifests_RunsTheScriptAsAJobInTheAppKeysNamespaceThatMountsTheKeyTheRe
 		mounted[testutil.Field(t, m, "mountPath").(string)] = sources[testutil.Field(t, m, "name").(string)]
 	}
 	for file, want := range map[string]string{
-		"MITSTACK_APP_KEY_FILE":   "secret " + openbaoinit.AppKeySecret + "/" + openbaoinit.AppKeyItem,
-		"MITSTACK_RECIPIENT_FILE": "configMap mitstack-openbao-init/recipient.asc",
-		"MITSTACK_OPENBAO_CA":     "configMap openbao-ca/ca.crt",
+		"MITSTACK_DEPLOY_KEY_FILE":  "secret " + openbaoinit.DeployKeySecret + "/" + openbaoinit.DeployKeyItem,
+		"MITSTACK_KNOWN_HOSTS_FILE": "configMap mitstack-openbao-init/known_hosts",
+		"MITSTACK_RECIPIENT_FILE":   "configMap mitstack-openbao-init/recipient.asc",
+		"MITSTACK_OPENBAO_CA":       "configMap openbao-ca/ca.crt",
 	} {
 		assert.Equal(t, want, mounted[filepath.Dir(env[file])]+"/"+filepath.Base(env[file]), "%s=%s", file, env[file])
 	}
@@ -423,8 +423,6 @@ func TestManifests_RefusesInputsTheJobCannotRunWith(t *testing.T) {
 	}{
 		"a tools image named by tag alone": {func(in *openbaoinit.Inputs) { in.ToolsImage = "ghcr.io/x/tools:v1" }, "tools image"},
 		"a repository with no owner":       {func(in *openbaoinit.Inputs) { in.Repository = "shop-cluster" }, `repository "shop-cluster" is not owner/name`},
-		"an App id that is not a number":   {func(in *openbaoinit.Inputs) { in.AppID = "Iv1.abc" }, `GitHub App id "Iv1.abc" is not a number`},
-		"an installation id that is empty": {func(in *openbaoinit.Inputs) { in.InstallationID = "" }, `installation id "" is not a number`},
 		"a recipient that is not a key":    {func(in *openbaoinit.Inputs) { in.Recipient = []byte("not a key") }, "the recipient is not an armored OpenPGP public key"},
 		"a recipient that cannot encrypt":  {func(in *openbaoinit.Inputs) { in.Recipient = testutil.SignOnlyRecipient(t) }, "has no key that can encrypt"},
 		"a recipient given as its private key": {func(in *openbaoinit.Inputs) {

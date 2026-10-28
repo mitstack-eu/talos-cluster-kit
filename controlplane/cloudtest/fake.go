@@ -159,6 +159,11 @@ func role(labels map[string]string) controlplane.Role {
 	return controlplane.Role(labels[controlplane.KeyRole])
 }
 
+// builds reports whether a server builds an image, powering itself off once it is done.
+func builds(labels map[string]string) bool {
+	return role(labels) == controlplane.RoleBuilder || role(labels) == controlplane.RoleWorkerBuilder
+}
+
 func (f *Fake) ListServers(_ context.Context, sel string) ([]controlplane.Server, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -254,7 +259,7 @@ func (f *Fake) PowerOnServer(_ context.Context, id int64) error {
 	f.write(true)
 	s := f.Servers[id]
 	s.Status, f.started[id] = controlplane.ServerRunning, f.now()
-	if f.InstantBuild && role(s.Labels) == controlplane.RoleBuilder {
+	if f.InstantBuild && builds(s.Labels) {
 		s.Status = controlplane.ServerOff
 	}
 	return nil
@@ -509,13 +514,13 @@ func (f *Fake) DeleteSnapshot(_ context.Context, id int64) error {
 	return nil
 }
 
-// Advance plays what Hetzner and the builder finish on their own: a builder powers itself off build after its
+// Advance plays what Hetzner and the builders finish on their own: a builder powers itself off build after its
 // power-on, unless build is zero, and a snapshot is available image after it started.
 func (f *Fake) Advance(build, image time.Duration) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for id, s := range f.Servers {
-		if role(s.Labels) == controlplane.RoleBuilder && s.Status == controlplane.ServerRunning && build > 0 && !f.now().Before(f.started[id].Add(build)) {
+		if builds(s.Labels) && s.Status == controlplane.ServerRunning && build > 0 && !f.now().Before(f.started[id].Add(build)) {
 			s.Status = controlplane.ServerOff
 		}
 	}
@@ -526,13 +531,14 @@ func (f *Fake) Advance(build, image time.Duration) {
 	}
 }
 
-// Resources is every resource but the builder, as text, so a later read shows any change to one made before.
+// Resources is every resource but the builders and the serving server, as text, so a later read shows any change to
+// one made before.
 func (f *Fake) Resources() map[int64]string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := map[int64]string{}
 	for id, s := range f.Servers {
-		if role(s.Labels) != controlplane.RoleBuilder {
+		if !builds(s.Labels) && role(s.Labels) != controlplane.RoleServing {
 			out[id] = fmt.Sprintf("%+v", *s)
 		}
 	}

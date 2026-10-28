@@ -22,7 +22,7 @@ var (
 	BuildImageScript         = buildImageScript
 	BootstrapFirstNodeScript = bootstrapFirstNodeScript
 	ClusterTokensScript      = clusterTokensScript
-	BuilderUserData          = builderUserData
+	ServingFile              = servingFile
 	KitRelease               = kitRelease
 )
 
@@ -33,6 +33,10 @@ func SwapToolsImage(t testing.TB, image string) {
 	t.Cleanup(func() { toolsImage = old })
 }
 
+func BuilderUserData(machineConfig []byte) (string, error) {
+	return builderUserData("builder", machineConfig, nil)
+}
+
 func (p Plane) ClusterComponents(enrolmentToken string) (components.Set, error) {
-	return p.clusterComponents(enrolmentToken)
+	return p.clusterComponents(components.Default(), enrolmentToken)
 }

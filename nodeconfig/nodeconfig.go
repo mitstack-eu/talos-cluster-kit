@@ -50,6 +50,9 @@ type Cluster struct {
 	Logs components.LogExport
 	// ServiceAccountIssuer is the issuer every service-account token names, where AWS reads the cluster's key set.
 	ServiceAccountIssuer *url.URL
+	// AppsOnWorkers keeps Talos's NoSchedule taint on the control-plane nodes, so only a pod that tolerates it, such as
+	// every DaemonSet of the component set, runs there.
+	AppsOnWorkers bool
 }
 
 type Node struct {
@@ -111,7 +114,7 @@ func (c Cluster) generate(role machine.Type) (machineryconfig.Provider, error) {
 		generate.WithVersionContract(versionContract),
 		generate.WithSecretsBundle(c.Secrets.bundle),
 		generate.WithClusterDiscovery(false),
-		generate.WithAllowSchedulingOnControlPlanes(true),
+		generate.WithAllowSchedulingOnControlPlanes(!c.AppsOnWorkers),
 		generate.WithAdditionalSubjectAltNames(sans),
 	)
 	if err != nil {

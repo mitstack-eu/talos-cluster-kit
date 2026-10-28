@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"net"
 	"net/netip"
 	"net/url"
 	"path/filepath"
@@ -652,4 +653,54 @@ func TestAdminTalosconfig_HoldsTheAdminRoleForItsTTLAlone(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"os:admin"}, cert.Subject.Organization)
 	assert.Equal(t, now.Add(10*time.Minute), cert.NotAfter.UTC())
+}
+
+func vswitchNode(t *testing.T) nodeconfig.Node {
+	t.Helper()
+	mac, err := net.ParseMAC("9c:6b:00:55:d8:f5")
+	require.NoError(t, err)
+	return nodeconfig.Node{Hostname: "wk-hel1", VSwitch: &nodeconfig.VSwitch{MAC: mac, VLAN: 4000, Address: netip.MustParsePrefix("10.0.9.2/24")}}
+}
+
+func TestRenderWorker_PutsADedicatedNodeOnItsVSwitchThroughTheCardWithItsMAC(t *testing.T) {
+	cluster, _ := robotWorker(t)
+
+	got, err := nodeconfig.RenderWorker(cluster, vswitchNode(t))
+
+	require.NoError(t, err)
+	docs := testutil.Documents(t, got)
+	assert.Equal(t, []map[string]any{{"apiVersion": "v1alpha1", "kind": "LinkAliasConfig", "name": "pub0",
+		"selector": map[string]any{"match": `mac(link.permanent_addr) == "9c:6b:00:55:d8:f5"`}}}, testutil.Kind(docs, "LinkAliasConfig"))
+	assert.Equal(t, []map[string]any{{"apiVersion": "v1alpha1", "kind": "LinkConfig", "name": "pub0", "up": true}}, testutil.Kind(docs, "LinkConfig"),
+		"a LinkConfig with no address keeps Talos's default DHCP off the public card")
+	assert.Equal(t, []map[string]any{{"apiVersion": "v1alpha1", "kind": "VLANConfig", "name": "vsw0", "vlanID": 4000, "parent": "pub0", "mtu": 1400,
+		"addresses": []any{map[string]any{"address": "10.0.9.2/24"}}, "routes": []any{map[string]any{"gateway": "10.0.9.1"}}}}, testutil.Kind(docs, "VLANConfig"))
+	assert.Empty(t, testutil.Kind(docs, "DHCPv4Config"))
+}
+
+func TestRender_RefusesAVSwitchItsProfileOrNetworkCannotCarry(t *testing.T) {
+	cases := []struct {
+		name    string
+		profile nodeconfig.Profile
+		edit    func(*nodeconfig.Node)
+		want    string
+	}{
+		{"a Cloud node", nodeconfig.HCloud, func(n *nodeconfig.Node) { n.Hostname = "" }, "a Cloud node has no vSwitch"},
+		{"an address outside the cluster network", nodeconfig.Metal, func(n *nodeconfig.Node) { n.VSwitch.Address = netip.MustParsePrefix("192.168.9.2/24") }, "outside the cluster network"},
+		{"the vSwitch gateway's own address", nodeconfig.Metal, func(n *nodeconfig.Node) { n.VSwitch.Address = netip.MustParsePrefix("10.0.9.1/24") }, "the vSwitch gateway's"},
+		{"VLAN 0", nodeconfig.Metal, func(n *nodeconfig.Node) { n.VSwitch.VLAN = 0 }, "VLAN 0"},
+		{"a MAC of eight bytes", nodeconfig.Metal, func(n *nodeconfig.Node) { n.VSwitch.MAC = net.HardwareAddr{1, 2, 3, 4, 5, 6, 7, 8} }, "MAC"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cluster := testutil.NewCluster(t, testutil.WithProfile(tc.profile))
+			node := vswitchNode(t)
+			tc.edit(&node)
+
+			_, err := nodeconfig.RenderWorker(cluster, node)
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
 }

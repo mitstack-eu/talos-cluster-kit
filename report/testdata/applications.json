@@ -4,7 +4,25 @@
   "items": [
     {
       "metadata": {"name": "cluster-root", "namespace": "argocd"},
-      "status": {"health": {"status": "Healthy"}, "sync": {"status": "Synced"}}
+      "status": {
+        "health": {"status": "Healthy"},
+        "sync": {"status": "Synced"},
+        "resources": [
+          {"version": "v1", "kind": "Namespace", "name": "app-shop", "status": "Synced", "health": {"status": "Healthy"}},
+          {"group": "argoproj.io", "version": "v1alpha1", "kind": "Application", "namespace": "argocd", "name": "app-shop", "status": "Synced", "health": {"status": "Degraded"}}
+        ]
+      }
+    },
+    {
+      "metadata": {"name": "repository-credentials", "namespace": "argocd"},
+      "status": {
+        "health": {"status": "Healthy"},
+        "sync": {"status": "OutOfSync"},
+        "resources": [
+          {"version": "v1", "kind": "Secret", "namespace": "app-shop", "name": "app-repository-shop", "status": "Synced", "requiresPruning": false},
+          {"group": "rbac.authorization.k8s.io", "version": "v1", "kind": "Role", "namespace": "app-shop", "name": "app-repository-shop", "status": "OutOfSync", "hook": false, "syncWave": 1}
+        ]
+      }
     },
     {
       "metadata": {"name": "shop", "namespace": "argocd"},

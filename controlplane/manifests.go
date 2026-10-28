@@ -38,22 +38,25 @@ const (
 	manifestDir        = "manifests/"
 )
 
-// clusterComponents adds the node report, the enrolment and token renewal, and the Argo CD application inline, so
-// the configuration carries them and the gateway mirrors their image.
-func (p Plane) clusterComponents(enrolmentToken string) (components.Set, error) {
-	set := components.Default()
+// clusterComponents carries the node report, the enrolment and the Argo CD application inline, so the gateway mirrors their image.
+func (p Plane) clusterComponents(set components.Set, enrolmentToken string) (components.Set, error) {
 	reportManifests, err := report.Manifests(report.Inputs{URL: p.PlatformURL + clusterReportsPath, SubscriptionID: p.Subscription, ToolsImage: toolsImage()})
 	if err != nil {
 		return components.Set{}, err
 	}
-	data := map[string]string{
-		"Namespace":      nodeconfig.TalosAPINamespace,
-		"Image":          toolsImage(),
-		"Script":         clusterTokensScript,
-		"PlatformURL":    p.PlatformURL,
-		"SubscriptionID": p.Subscription,
-		"RepoURL":        p.RepoURL,
-		"EnrolmentToken": enrolmentToken,
+	data := map[string]any{
+		"Namespace":            nodeconfig.TalosAPINamespace,
+		"Image":                toolsImage(),
+		"Script":               clusterTokensScript,
+		"PlatformURL":          p.PlatformURL,
+		"SubscriptionID":       p.Subscription,
+		"RepoURL":              p.RepoURL,
+		"EnrolmentToken":       enrolmentToken,
+		"RepositoryCredential": "platform-token",
+	}
+	if p.Hosting != nil {
+		data["RepoURL"] = components.RepositorySSHURL(p.Hosting.Repository)
+		data["RepositoryCredential"] = "deploy-key"
 	}
 	tokens, err := execute(clusterTokens, data)
 	if err != nil {
@@ -71,7 +74,7 @@ func (p Plane) clusterComponents(enrolmentToken string) (components.Set, error) 
 	return set, nil
 }
 
-func execute(t *template.Template, data map[string]string) ([]byte, error) {
+func execute(t *template.Template, data map[string]any) ([]byte, error) {
 	var out bytes.Buffer
 	if err := t.Execute(&out, data); err != nil {
 		return nil, fmt.Errorf("rendering %s: %w", t.Name(), err)

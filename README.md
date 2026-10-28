@@ -132,8 +132,9 @@ The platform calls a block's verbs, such as subscribe, and gives each call
 two minutes, while a control plane takes far longer to build. So
 `controlplane.Plane` keeps no state of its own. Every resource it creates
 carries the labels `mitstack.dev/block`, `mitstack.dev/subscription` and
-`mitstack.dev/role`, the role being `gateway`, `builder`, `node`, `image` for
-the snapshot, `api` or `ingress`. Each call reads the labels back and takes
+`mitstack.dev/role`. The roles are `gateway`, `builder`, `node`, `image` for
+the snapshot, `worker-builder`, `worker-image`, `serving`, `api` and
+`ingress`. Each call reads the labels back and takes
 the one change still missing, such as creating the firewall once the network
 exists. A block names its plane once per call, from its own id and the
 subscription:
@@ -179,6 +180,19 @@ so a block that adds workers renders them there with
 `nodeconfig.RenderWorker`. When `Installed` returns an error, the plane
 deletes the gateway and builder it just created, and a later call starts the
 install again.
+
+Every install also builds a worker image, so a later upgrade or scaling
+creates Cloud workers from it with no rebuild. The same change that creates
+the builder creates a second one, the worker builder, from the configuration
+`nodeconfig.RenderWorker` returns. That configuration holds none of the
+cluster's CA keys. The worker builder joins the network at `10.0.0.252`, and
+it starts once the gateway runs, beside the cluster's own builder. Its snapshot carries the role `worker-image`,
+and the plane deletes the worker builder once that snapshot is available.
+`Delete` removes the worker image with the rest.
+
+A block that installs a cluster hosting the platform sets `Plane.Hosting`. The
+section [How the hosting set reaches the builder](#how-the-hosting-set-reaches-the-builder)
+explains what changes.
 
 `AppsOnWorkers` decides where an app's pods run. Off, as for a cluster with
 Cloud nodes alone, every pod may run on the control-plane nodes. On, the
@@ -457,40 +471,47 @@ capabilities.
 A cluster that runs mitstack's own control plane must start its secret store,
 External Secrets and its web entry point before Argo CD or the platform runs.
 `components.Hosting` returns that boot set. It is the default set with six
-more charts and the manifests that join them, and a block opts in by passing
-it as `Cluster.Components`. A cluster built from `components.Default` carries
+more charts and the manifests that join them. A cluster built from `components.Default` carries
 none of the hosting set's manifests, and the golden files in
 `nodeconfig/testdata/golden/` and `gateway/testdata/golden/` record its render.
 
-The block mints the inputs and the kit checks them. `Hosting` refuses a seal
-key that is not 32 bytes, a certificate of another key, and an App key or
-reader key not sealed to that key pair. It refuses a sealed file that holds
-more than its one SealedSecret and its one value, a reader App id or
-installation id that is not a number, and anything but three distinct node
-names. It also refuses init inputs that `openbaoinit.Manifests` refuses: a
-tools image without a digest, a repository that is not `owner/name`, an App
-or installation id that is not a number, and a recipient that is not one
-armored public key able to encrypt.
+A block opts in through `controlplane.Plane`, which mints the hosting keys
+and renders the set itself. The block sets `Plane.Hosting` to the cluster
+repository, the recipient key and a `DeployKeys` hook:
 
 ```go
-set, err := components.Hosting(components.HostingInputs{
-	SealKey:              sealKey,         // 32 random bytes
-	SealedSecretsKeyPEM:  keyPEM,          // the RSA key Sealed Secrets opens with, PKCS #1 PEM
-	SealedSecretsCertPEM: certPEM,         // its self-signed certificate, which the block seals both App keys to
-	SealedAppKey:         sealedAppKey,    // the SealedSecret github-app-key in mitstack-node
-	SealedReaderKey:      sealedReaderKey, // the SealedSecret mitstack-eu-repo-creds in argocd
-	ReaderAppID:          "2345678",       // the read-only reader GitHub App
-	ReaderInstallationID: "90123456",      // its installation on every mitstack-eu repository
-	Nodes:                []string{"shop-node-fsn1", "shop-node-nbg1", "shop-node-hel1"},
-	Init: openbaoinit.Inputs{
-		ToolsImage:     tools.Image, // the tools image this release published
-		Repository:     "mitstack-eu/shop-cluster",
-		AppID:          "1234567",   // the hosting GitHub App
-		InstallationID: "89012345",  // its installation on the repository
-		Recipient:      recipient,   // the armored public key behind openbaoSealKeyRecipient
+plane.Hosting = &controlplane.Hosting{
+	Repository: "acme/shop-cluster", // the cluster repository, owner/name
+	Recipient:  recipient,           // the armored public key behind openbaoSealKeyRecipient
+	DeployKeys: func(ctx context.Context, keys controlplane.HostingKeys) (controlplane.SealedDeployKeys, error) {
+		// Create the write and read-only deploy keys on the repository, then seal each private half.
+		write, err := components.Seal(keys.SealedSecretsCertPEM, components.DeployKeyNamespace,
+			components.DeployKeySecret, components.DeployKeyItem, writeKey)
+		if err != nil {
+			return controlplane.SealedDeployKeys{}, err
+		}
+		read, err := components.Seal(keys.SealedSecretsCertPEM, components.RepositoryCredentialNamespace,
+			components.RepositoryCredentialName, components.RepositoryCredentialItem, readKey)
+		return controlplane.SealedDeployKeys{Write: write, Read: read}, err
 	},
-})
+}
 ```
+
+The install calls `DeployKeys` once, in the change that creates the gateway
+and the builders, with the 32-byte OpenBao seal key and a 4096-bit Sealed
+Secrets key pair it has just minted. Those keys exist only in that call's
+memory and in what the hook keeps of them. An error from the hook stops the
+install before any server exists. An install that fails after the hook leaves
+its deploy keys on the repository, with their private halves gone, so the
+block's hook deletes keys it created earlier before it creates new ones.
+
+`components.Hosting` checks what the hook returns. It refuses a seal key that
+is not 32 bytes, a certificate of another key, and a deploy key not sealed to
+that key pair. It refuses a sealed file that holds more than its one
+SealedSecret and its one value, and anything but three distinct node names. It
+also refuses init inputs that `openbaoinit.Manifests` refuses: a tools image
+without a digest, a repository that is not `owner/name`, and a recipient that
+is not one armored public key able to encrypt.
 
 ### What the hosting set runs
 
@@ -530,8 +551,8 @@ the cluster.
 |---|---|---|
 | `mitstack-openbao-seal-key` | The Secret `openbao-seal-key` with the 32-byte seal key | `components/hosting/seal-key.yaml` |
 | `mitstack-sealed-secrets-key` | The key pair, labelled as Sealed Secrets' active key | `components/hosting/sealed-secrets-key.yaml` |
-| `mitstack-sealed-app-key` | The `SealedSecret` that opens to the hosting GitHub App's key | `components/hosting/sealed-app-key.yaml` |
-| `mitstack-reader-repo-creds` | The `SealedSecret` that opens to Argo CD's credential template, holding the reader GitHub App's key | `components/hosting/reader-repo-creds.yaml` |
+| `mitstack-openbao-deploy-key` | The `SealedSecret` that opens to the cluster repository's write deploy key, for OpenBao's init Job | `components/hosting/deploy-key.yaml` |
+| `mitstack-cluster-repository` | The `SealedSecret` that opens to Argo CD's credential for the cluster repository, holding its read-only deploy key | `components/hosting/cluster-repository.yaml` |
 | `mitstack-openbao-storage` | OpenBao's StorageClass and the local volume of each member | `components/hosting/storage.yaml` |
 | `mitstack-openbao-init` | OpenBao's init Job, and the ConfigMap with the recipient's public key. It holds no secret, and sits inline because it names this cluster's repository | `openbaoinit/openbao-init.yaml` |
 
@@ -539,91 +560,107 @@ Talos creates each object of a manifest once and never edits it afterwards. A
 new seal key or key pair therefore reaches a running cluster only through
 OpenBao's and Sealed Secrets' own rotation, and never through a new render.
 
-### How Argo CD reads mitstack-eu's repositories
+### How the hosting set reaches the builder
+
+The builder's user data carries the cluster's machine configuration, and
+Hetzner accepts at most 32,768 bytes of user data. The hosting set's inline
+manifests do not fit beside the rest. A hosting install therefore creates a
+third short-lived server, the serving server, which hands them to the builder
+over the private network.
+
+The serving server joins the network at `10.0.0.251` with no public address.
+Its user data holds the hosting set's inline manifests as configuration
+documents, a TLS key minted for this install, and the program in
+`serve/scripts/serve.py`. The program serves that one file once, to the
+builder's address `10.0.0.250` alone, over TLS 1.3. It deletes its key once
+loaded, and the file after one complete fetch.
+
+The builder's user data gains the file's URL and the sha256 of the serving
+key's public half. `controlplane/scripts/build-image.sh` fetches the file with
+curl's `--pinnedpubkey`, so it trusts that one key and no authority. It
+appends the file to the configuration in its memory-backed scratch directory
+before imager runs. A fetch that fails removes the configuration and fails the
+build before imager starts.
+
+The plane deletes the serving server once the builder is gone, once the
+snapshot exists, or once the build is overdue. A build that fails therefore
+takes the serving server with it. The tests in `controlplane/hosting_test.go`
+log the builder's user data size: 29,056 bytes with a 4096-bit Sealed Secrets
+key.
+
+The `serve` package holds the server's key, its files and its command, and a
+block reuses it to serve any one file to one client.
+
+### How Argo CD reads the cluster repository
 
 This section is for an engineer who builds a cluster block that hosts
 mitstack's platform, and for anyone checking which key such a cluster reads
-its code with. It uses five terms.
+its code with. It uses seven terms.
 
 | Term | Meaning here |
 |---|---|
-| This module | The Go module `github.com/mitstack-eu/talos-cluster-kit` this repository holds, whose package `components` renders what a cluster starts with |
-| Cluster block | A block, a unit of infrastructure an app subscribes to, whose Go program imports this module and installs a Talos cluster, such as hcloud-talos-cluster |
 | Platform-hosting cluster | A cluster that runs mitstack's own control plane |
-| Hosting set | The manifests `components.Hosting` returns for a platform-hosting cluster, which the cluster block hands to the install |
+| Hosting set | The manifests `components.Hosting` returns for a platform-hosting cluster, which the install renders from the keys it mints |
 | Inline manifest | A manifest of the set that travels inside each node's machine configuration instead of being served over the network, which is where every secret goes |
+| Cluster block | A block, a unit of infrastructure an app subscribes to, whose Go program imports this module and installs a Talos cluster, such as hcloud-hrobot-talos-cluster |
+| Cluster repository | The GitHub repository the block creates for each cluster, whose manifests Argo CD applies to the cluster |
+| Deploy key | An SSH key GitHub grants access to one repository alone, read-only or with write access, and that the repository's admin can revoke on its own |
+| Sealed Secret | An object holding values encrypted to the cluster's RSA key pair, which the Sealed Secrets controller decrypts into an ordinary Secret |
 
 Argo CD is the controller that applies a cluster's Git repositories to the
-cluster, and it needs a credential to read them. On a platform-hosting cluster
-it reads every repository through one credential template. A credential template is a
-Secret in Argo CD's namespace `argocd`, labelled
-`argocd.argoproj.io/secret-type: repo-creds`, whose credentials Argo CD lends
-to other repositories. Argo CD v3.5.5 lends them to each repository whose URL
-starts with the template's `url` and that carries no credential of its own.
-For each read it exchanges the template's GitHub App key for a short-lived
-installation token, the token GitHub issues to one installation of an App.
-Nothing on the cluster therefore refreshes a token.
+cluster, and it needs a credential to read them. A platform-hosting cluster
+reads its cluster repository with a read-only deploy key, over GitHub's SSH
+endpoint on port 443. The cluster's gateway forwards only port 443 and the
+log receiver's port, so port 22 is closed to it. The URL has this form:
 
-A platform-hosting cluster uses two GitHub Apps, each with its own private
-key. The hosting App can write to repositories. Only OpenBao's init Job uses
-its key. OpenBao is the cluster's secret store, and the init Job is the
-one-off Job that sets it up and commits the store's root token and recovery
-key to the cluster repository, which is why its App needs write access. The
-section [How OpenBao is initialised](#how-openbao-is-initialised) has the
-detail. The
-credential template uses the second App, the reader App
-`mitstack-cluster-reader`. It may only read contents and metadata, and it is
-installed on every `mitstack-eu` repository.
+```text
+ssh://git@ssh.github.com:443/acme/shop-cluster.git
+```
 
-The reader App's key reaches the cluster only sealed. Sealed Secrets is the
-controller that decrypts, or opens, a SealedSecret: an object holding values
-encrypted to the cluster's RSA key pair, which it turns into an ordinary
-Secret. The cluster block supplies that key pair, since Sealed Secrets on
-this cluster never mints a key of its own. It passes the pair to
-`components.Hosting` as two PEM-encoded byte slices, the private key
-`SealedSecretsKeyPEM` and its certificate `SealedSecretsCertPEM`. It encrypts the reader App's key to the pair with
-`kubeseal`, the Sealed Secrets command-line tool, in its strict scope. Strict
-scope ties the encrypted value to one name and namespace, here
-`mitstack-eu-repo-creds` in `argocd`, so it opens nowhere else.
+`components.RepositorySSHURL` returns it for an `owner/name`. Argo CD checks
+GitHub's host key against the `[ssh.github.com]:443` entries of the
+`argocd-ssh-known-hosts-cm` ConfigMap in `components/argocd/argocd.yaml`.
+OpenBao's init Job checks the same entries.
 
-The cluster block passes the resulting SealedSecret manifest, holding the one
-value `githubAppPrivateKey`, as the byte slice `SealedReaderKey`. It passes
-the App's two ids as the strings `ReaderAppID` and `ReaderInstallationID`.
-`components.Hosting` copies nothing from that manifest but the encrypted
-value. It writes a new SealedSecret around the value, with the same name, the
-`repo-creds` label and four unencrypted fields: `type`, `url`,
-`githubAppID` and `githubAppInstallationID`. That SealedSecret goes into the inline manifest
-`mitstack-reader-repo-creds`, and Sealed Secrets opens it into this Secret:
+The cluster block creates two deploy keys on the cluster repository during the
+install. The write key lets OpenBao's init Job commit `openbao-init.asc`. The
+read-only key is Argo CD's. The block seals each private half in
+`DeployKeys` with `components.Seal`, which encrypts it to the minted
+certificate in Sealed Secrets' strict scope. Strict scope ties the encrypted
+value to one name and namespace, so it opens nowhere else. The block keeps no
+copy of either private half.
+
+| Deploy key | Name and namespace it opens as | Item |
+|---|---|---|
+| Write | `github-deploy-key` in `mitstack-node` | `ssh-privatekey` |
+| Read-only | `mitstack-cluster-repository` in `argocd` | `sshPrivateKey` |
+
+`components.Hosting` copies nothing from the read key's SealedSecret but the
+encrypted value. It writes a new SealedSecret around the value, labelled as an
+Argo CD repository, with the repository's `type` and `url` unencrypted. Sealed
+Secrets opens it into this Secret:
 
 ```yaml
 apiVersion: v1
 kind: Secret
 metadata:
-  name: mitstack-eu-repo-creds
+  name: mitstack-cluster-repository
   namespace: argocd
   labels:
-    argocd.argoproj.io/secret-type: repo-creds
+    argocd.argoproj.io/secret-type: repository
 stringData:
   type: git
-  url: https://github.com/mitstack-eu/
-  githubAppID: "2345678"
-  githubAppInstallationID: "90123456"
-  githubAppPrivateKey: <the reader App's PEM key>
+  url: ssh://git@ssh.github.com:443/acme/shop-cluster.git
+  sshPrivateKey: <the read-only deploy key>
 ```
 
-No other object of the hosting set writes an Argo CD repository credential.
-The set holds no ExternalSecret, the External Secrets object that writes a
-Secret from an outside source. It holds no External Secrets generator either,
-the object that mints a value such as a GitHub token for an ExternalSecret.
-
-Argo CD also keeps one Secret for each repository it reads, labelled
-`argocd.argoproj.io/secret-type: repository` and naming that repository's
-`url`. Argo CD lends the template only to a repository with no
-credential of its own, so each of those Secrets must carry `url` and `type`
-and no credential field. This module writes none of them. The cluster block
-writes the one for the cluster repository, the GitHub repository whose
-manifests Argo CD applies to the cluster. The block k3s-app-slice, which gives
-an app its own namespace on the cluster, writes one for that app's repository.
+On a hosting cluster the enrolment Job in `controlplane/manifests/cluster-tokens.yaml`
+takes only the cluster's report token from the platform. It writes no
+repository credential, and the cluster runs no CronJob that renews one. The
+environment value `REPOSITORY_CREDENTIAL=deploy-key` tells
+`controlplane/scripts/cluster-tokens.sh` so. A cluster that hosts no platform
+reads its repository with the short-lived token the platform issues, as
+`REPOSITORY_CREDENTIAL=platform-token`.
 
 ### Where OpenBao keeps its data
 
@@ -651,7 +688,7 @@ hosting set carries that label. The Cilium policy `mitstack-hosting-flows` in
 | cert-manager and trust-manager | Calls to the API server, and the API server's calls to their webhooks |
 | External Secrets | Calls to the API server, to cluster DNS and to OpenBao on 8200, and the API server's calls to its webhook |
 | OpenBao | Calls between members on 8200 and 8201, to the API server and to cluster DNS, and the calls of External Secrets and the init Job on 8200 |
-| OpenBao's init Job | Lookups through Cilium's DNS proxy, calls to OpenBao on 8200, and calls to `api.github.com` on 443, which the gateway forwards |
+| OpenBao's init Job | Lookups through Cilium's DNS proxy, calls to OpenBao on 8200, and SSH to `ssh.github.com` on 443, which the gateway forwards |
 | Traefik | Web traffic from outside the cluster on its two ports, calls to the API server, and calls to the app slices |
 
 Each flow between two pods on a named port also admits port 15008, where the
@@ -678,11 +715,13 @@ a different key from OpenBao's seal key. The owner keeps its private half, so
 only the owner can read the file.
 
 The Job runs `openbaoinit/scripts/openbao-init.sh` in the tools image, in
-`mitstack-node`, because that is where the `SealedSecret` `github-app-key`
+`mitstack-node`, because that is where the `SealedSecret` `github-deploy-key`
 opens. The pod mounts the Secret that `SealedSecret` opens to, holding the
-hosting GitHub App's key, and Kubernetes starts none of its containers until
-that Secret exists. The script signs a short-lived JWT with that key and
-exchanges it for a one-hour installation token, as GitHub's App guide shows.
+cluster repository's write deploy key, and Kubernetes starts none of its
+containers until that Secret exists. The script runs Git over SSH with that key
+alone, at the URL `components.RepositorySSHURL` returns. ssh accepts only a
+GitHub host key from the `[ssh.github.com]:443` entries the Job's ConfigMap
+carries, which are the ones Argo CD trusts.
 
 The script talks only to `openbao-0`, the member OpenBao's Helm guide says to
 initialise. The other two members join it through Raft, OpenBao's replicated
@@ -691,7 +730,8 @@ Talking to one member keeps the script from initialising a second store. Each
 request verifies OpenBao against the cluster's own authority. The script first
 encrypts a test message to the recipient key, and stops before it sends
 anything when gpg cannot encrypt to it. It then reads the store's state, and
-reads `openbao-init.asc` with an App token that may only read contents.
+looks for `openbao-init.asc` in a fresh clone of the repository's default
+branch.
 
 | OpenBao | `openbao-init.asc` | What the Job does |
 |---|---|---|
@@ -705,9 +745,10 @@ one, and passes the recipient's binary key as `recovery_pgp_keys`. OpenBao then
 returns the recovery key already encrypted, as a binary PGP message. The script
 turns that into ASCII armor, the text form between the `BEGIN` and `END` lines
 below, and leaves out the CRC24 checksum line that RFC 9580 says not to add.
-It encrypts the root token to the same recipient with gpg. It commits both
-with an App token that may write contents, before any request carries the root
-token:
+It encrypts the root token to the same recipient with gpg. It commits both and
+pushes the commit with the write key, before any request carries the root
+token. A push another writer beat is fetched afresh and tried again. The file
+reads:
 
 ```text
 OpenBao root token:
@@ -774,8 +815,10 @@ changes nothing. The owner then decrypts the root token from
 | [OpenBao: KV v2](https://openbao.org/docs/secrets/kv/kv-v2/) | A policy names a secret under `data/` and its listing under `metadata/` |
 | [OpenBao: Kubernetes auth](https://openbao.org/docs/auth/kubernetes/) and [its API](https://openbao.org/api-docs/auth/kubernetes/) | `kubernetes_host` is required, a pod's own token and CA serve for the review, and a login's alias carries `service_account_namespace` |
 | [OpenBao: templated policies](https://openbao.org/docs/concepts/policies/#templated-policies) and [`/sys/policies/acl`](https://openbao.org/api-docs/system/policies/) | A path may name `identity.entity.aliases.<mount accessor>.metadata.<key>` |
-| [GitHub: create or update file contents](https://docs.github.com/en/rest/repos/contents#create-or-update-file-contents) | `PUT` with a base64 `content` creates a file, 201 answers a new one, and a `GET` with `application/vnd.github.raw+json` returns the file as it is |
-| [GitHub: create an installation access token](https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app) and [the App's JWT](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app) | A token lasts one hour, `repositories` and `permissions` narrow it, and the RS256 JWT lives at most ten minutes |
+| [GitHub: managing deploy keys](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys#deploy-keys) | A deploy key reaches one repository, is read-only unless granted write access, and goes with that repository |
+| [GitHub: using SSH over the HTTPS port](https://docs.github.com/en/authentication/troubleshooting-ssh/using-ssh-over-the-https-port) | `ssh.github.com` takes SSH on port 443, at `ssh://git@ssh.github.com:443/<owner>/<repo>.git` |
+| [Argo CD: private repositories](https://argo-cd.readthedocs.io/en/stable/user-guide/private-repositories/) and [declarative setup](https://argo-cd.readthedocs.io/en/stable/operator-manual/declarative-setup/#repositories) | A Secret labelled `argocd.argoproj.io/secret-type: repository` carries `type`, `url` and `sshPrivateKey`, and SSH host keys come from `argocd-ssh-known-hosts-cm` |
+| [OpenSSH: ssh_config](https://man.openbsd.org/ssh_config) | `StrictHostKeyChecking yes` refuses a host key missing from `UserKnownHostsFile`, and `IdentitiesOnly` offers the named key alone |
 | [Kubernetes: Secrets](https://kubernetes.io/docs/concepts/configuration/secret/#restriction-secret-must-exist) | No container of a pod starts until every Secret it requires is available |
 | [RFC 9580 section 6.1](https://www.rfc-editor.org/rfc/rfc9580#section-6.1) | ASCII armor should carry no CRC24 footer |
 | [GnuPG: key-related options](https://www.gnupg.org/documentation/manuals/gnupg/GPG-Key-related-Options.html) and [commands](https://www.gnupg.org/documentation/manuals/gnupg/Operational-GPG-Commands.html) | `--recipient-file` encrypts to the one key in a file, and `--dearmor` unpacks an armored key |
@@ -790,6 +833,7 @@ changes nothing. The owner then decrypts the root token from
 | [trust-manager](https://cert-manager.io/docs/trust/trust-manager/) | A `Bundle` reads Secrets in its trust namespace and writes a ConfigMap to every namespace |
 | [External Secrets: HashiCorp Vault provider](https://external-secrets.io/latest/provider/hashicorp-vault/) | A private CA is named through `caProvider` or `caBundle` |
 | [Sealed Secrets: bring your own certificates](https://github.com/bitnami/sealed-secrets/blob/main/docs/bring-your-own-certificates.md) | The controller uses each key pair in its namespace that carries the active label |
+| [Sealed Secrets: scopes](https://github.com/bitnami/sealed-secrets#scopes) and [its crypto](https://github.com/bitnami/sealed-secrets/blob/main/docs/developer/crypto.md) | A strict-scope value is sealed with RSA-OAEP over SHA-256, labelled with its namespace and name, around an AES-GCM session key |
 | [Traefik chart values](https://github.com/traefik/traefik-helm-chart/blob/master/traefik/VALUES.md) | `deployment.kind`, `ports.web.nodePort`, `ports.websecure.nodePort` and `service.spec` |
 
 ## Why the image build discards its output

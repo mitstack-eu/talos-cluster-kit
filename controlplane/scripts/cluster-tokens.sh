@@ -3,8 +3,10 @@
 # one-time enrolment token for the report token and the cluster repository's
 # token; renew trades the report token for fresh tokens for the cluster
 # repository and each app slice's repository. Each token goes into the Secret
-# that uses it.
-# Usage: PLATFORM_URL=<https origin> SUBSCRIPTION_ID=<id> REPO_URL=<https url> cluster-tokens.sh enrol|renew
+# that uses it. A cluster whose REPOSITORY_CREDENTIAL is deploy-key reads its
+# repository with a sealed deploy key, so enrol writes its report token alone.
+# Usage: PLATFORM_URL=<https origin> SUBSCRIPTION_ID=<id> REPO_URL=<url>
+#   REPOSITORY_CREDENTIAL=platform-token|deploy-key cluster-tokens.sh enrol|renew
 #   TOKEN_FILE names the bearer token's file, /var/run/mitstack/token by
 #   default, and CALL_ATTEMPTS how often a 429, a 503 or no answer is retried, 20.
 # It exists because nothing may dial into the cluster, so the cluster asks for
@@ -58,12 +60,16 @@ write_repository_token() {
     kubectl label --local -f - argocd.argoproj.io/secret-type=repository -o yaml | kubectl apply -f - > /dev/null
 }
 
-# require_secrets fails unless both Secrets an enrolment writes exist, since a spent token can never write them again.
+platform_token() {
+  [ "$REPOSITORY_CREDENTIAL" = platform-token ]
+}
+
+# require_secrets fails unless every Secret an enrolment writes exists, since a spent token can never write them again.
 require_secrets() {
   if ! kubectl get secret "$report_secret" -n "$node_namespace" > /dev/null 2>&1; then
     fail "the enrolment token is spent but the Secret $report_secret in $node_namespace is missing, so the cluster cannot report until it is built again"
   fi
-  if ! kubectl get secret "$repository_secret" -n "$argocd_namespace" > /dev/null 2>&1; then
+  if platform_token && ! kubectl get secret "$repository_secret" -n "$argocd_namespace" > /dev/null 2>&1; then
     fail "the enrolment token is spent but the Secret $repository_secret in $argocd_namespace is missing, so Argo CD cannot read the cluster repository until it is built again"
   fi
 }
@@ -75,7 +81,9 @@ enrol() {
   case $status in
     200)
       write_report_token
-      write_repository_token
+      if platform_token; then
+        write_repository_token
+      fi
       echo "cluster-tokens: enrolled subscription $SUBSCRIPTION_ID"
       ;;
     409)
@@ -110,6 +118,7 @@ patch_app_repositories() {
 
 renew() {
   local status
+  platform_token || fail "a cluster that reads its repository with a deploy key renews no repository token"
   echo '{}' > "$work/body"
   status=$(post /v1/cluster-repository-tokens "$work/body")
   [ "$status" = 200 ] || fail "the platform answered $status to the repository token renewal"
@@ -119,7 +128,11 @@ renew() {
 }
 
 main() {
-  : "${PLATFORM_URL:?}" "${SUBSCRIPTION_ID:?}" "${REPO_URL:?}"
+  : "${PLATFORM_URL:?}" "${SUBSCRIPTION_ID:?}" "${REPO_URL:?}" "${REPOSITORY_CREDENTIAL:?}"
+  case $REPOSITORY_CREDENTIAL in
+    platform-token | deploy-key) ;;
+    *) fail "REPOSITORY_CREDENTIAL is $REPOSITORY_CREDENTIAL, want platform-token or deploy-key" ;;
+  esac
   case ${1:-} in
     enrol) enrol ;;
     renew) renew ;;

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -12,7 +13,6 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/pem"
-	"fmt"
 	"math/big"
 	"os/exec"
 	"regexp"
@@ -25,13 +25,11 @@ import (
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"github.com/ProtonMail/go-crypto/openpgp/armor"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/ssh"
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/openbaoinit"
 )
-
-// AppKey is the fixture GitHub App key HostingInputs seals; nothing accepts it.
-const AppKey = "-----BEGIN RSA PRIVATE KEY-----\nfixture-github-app-key-for-tests-only\n-----END RSA PRIVATE KEY-----\n"
 
 // HostingImages are the images the hosting set's charts pull, each by the digest its registry serves for the tag.
 var HostingImages = []string{
@@ -55,66 +53,73 @@ var hostingKeyPair struct {
 	keyPEM, certPEM []byte
 }
 
-// HostingInputs returns throwaway hosting inputs: a seal key, a Sealed Secrets key pair, AppKey and ReaderKey sealed to it, the reader App's ids and InitInputs.
+// HostingInputs returns throwaway hosting inputs: a seal key, a Sealed Secrets key pair, WriteKey and ReadKey sealed to it, the nodes and InitInputs.
 func HostingInputs(t *testing.T) components.HostingInputs {
 	t.Helper()
 	sealKey := make([]byte, components.SealKeyBytes)
 	_, err := rand.Read(sealKey)
 	require.NoError(t, err)
 	hostingKeyPair.Do(func() { hostingKeyPair.key, hostingKeyPair.keyPEM, hostingKeyPair.certPEM = SealedSecretsKeyPair(t) })
-	key, keyPEM, certPEM := hostingKeyPair.key, hostingKeyPair.keyPEM, hostingKeyPair.certPEM
+	keyPEM, certPEM := hostingKeyPair.keyPEM, hostingKeyPair.certPEM
 	return components.HostingInputs{
 		SealKey:              sealKey,
 		SealedSecretsKeyPEM:  keyPEM,
 		SealedSecretsCertPEM: certPEM,
-		SealedAppKey:         SealedAppKey(t, &key.PublicKey, AppKey),
-		SealedReaderKey:      SealedReaderKey(t, &key.PublicKey, ReaderKey(t)),
-		ReaderAppID:          ReaderAppID,
-		ReaderInstallationID: ReaderInstallationID,
+		SealedWriteKey:       SealedWriteKey(t, certPEM, WriteKey(t)),
+		SealedReadKey:        SealedReadKey(t, certPEM, ReadKey(t)),
 		Nodes:                HostingNodes,
 		Init:                 InitInputs(t),
 	}
 }
 
-const (
-	ReaderAppID          = "2345678"
-	ReaderInstallationID = "90123456"
-)
-
-var readerKey struct {
+var deployKeys struct {
 	sync.Once
-	pem string
+	write, read string
 }
 
-// ReaderKey is a throwaway RSA key in the PEM form GitHub hands out an App key, minted once per test binary.
-func ReaderKey(t *testing.T) string {
+// WriteKey is the throwaway OpenSSH private key HostingInputs seals as the init Job's write deploy key.
+func WriteKey(t *testing.T) string {
 	t.Helper()
-	readerKey.Do(func() {
-		key, err := rsa.GenerateKey(rand.Reader, 2048)
-		require.NoError(t, err)
-		readerKey.pem = string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
-	})
-	return readerKey.pem
+	deployKeys.Do(func() { deployKeys.write, deployKeys.read = DeployKey(t), DeployKey(t) })
+	return deployKeys.write
 }
 
-const (
-	InitRepository     = "mitstack-eu/shop-cluster"
-	InitAppID          = "1234567"
-	InitInstallationID = "89012345"
-)
+// ReadKey is the throwaway OpenSSH private key HostingInputs seals as Argo CD's read-only deploy key.
+func ReadKey(t *testing.T) string {
+	t.Helper()
+	deployKeys.Do(func() { deployKeys.write, deployKeys.read = DeployKey(t), DeployKey(t) })
+	return deployKeys.read
+}
+
+// DeployKey mints an Ed25519 key in the OpenSSH PEM form a deploy key's private half takes.
+func DeployKey(t *testing.T) string {
+	t.Helper()
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	block, err := ssh.MarshalPrivateKey(private, "")
+	require.NoError(t, err)
+	return string(pem.EncodeToMemory(block))
+}
+
+// AuthorizedKey is the public half of an OpenSSH private key in the authorized_keys form GitHub lists a deploy key in.
+func AuthorizedKey(t *testing.T, private string) string {
+	t.Helper()
+	signer, err := ssh.ParsePrivateKey([]byte(private))
+	require.NoError(t, err)
+	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey())))
+}
+
+const InitRepository = "mitstack-eu/shop-cluster"
 
 // InitInputs returns throwaway inputs for OpenBao's init Job, encrypting to Recipient's key.
 func InitInputs(t *testing.T) openbaoinit.Inputs {
 	t.Helper()
 	_, armored := Recipient(t)
-	return openbaoinit.Inputs{
-		ToolsImage:     ToolsImage,
-		Repository:     InitRepository,
-		AppID:          InitAppID,
-		InstallationID: InitInstallationID,
-		Recipient:      armored,
-	}
+	return openbaoinit.Inputs{ToolsImage: ToolsImage, Repository: InitRepository, Recipient: armored, KnownHosts: GitHubKnownHosts}
 }
+
+// GitHubKnownHosts is GitHub's published Ed25519 host key for its SSH endpoint on port 443.
+const GitHubKnownHosts = "[ssh.github.com]:443 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl\n"
 
 // recipientKey is minted once per test binary, since an OpenPGP key takes about as long to make as an RSA one.
 var recipientKey struct {
@@ -203,41 +208,20 @@ func SealedSecretsKeyPair(t *testing.T) (*rsa.PrivateKey, []byte, []byte) {
 	return key, keyPEM, certPEM
 }
 
-// SealedAppKey seals value to pub as kubeseal does in its strict scope, and returns the SealedSecret manifest.
-func SealedAppKey(t *testing.T, pub *rsa.PublicKey, value string) []byte {
+// SealedWriteKey seals the write deploy key to certPEM's key in its strict scope, and returns the SealedSecret manifest.
+func SealedWriteKey(t *testing.T, certPEM []byte, value string) []byte {
 	t.Helper()
-	return Sealed(t, pub, components.SealedAppKeyNamespace, components.SealedAppKeyName, components.SealedAppKeyItem, value)
+	sealed, err := components.Seal(certPEM, components.DeployKeyNamespace, components.DeployKeySecret, components.DeployKeyItem, []byte(value))
+	require.NoError(t, err)
+	return sealed
 }
 
-// SealedReaderKey seals the reader App's key to pub as the block does, and returns the SealedSecret manifest.
-func SealedReaderKey(t *testing.T, pub *rsa.PublicKey, value string) []byte {
+// SealedReadKey seals Argo CD's read-only deploy key to certPEM's key in its strict scope, and returns the SealedSecret manifest.
+func SealedReadKey(t *testing.T, certPEM []byte, value string) []byte {
 	t.Helper()
-	return Sealed(t, pub, components.ReaderCredentialNamespace, components.ReaderCredentialName, components.ReaderCredentialItem, value)
-}
-
-// Sealed seals value to pub in the strict scope of namespace/name, and returns a SealedSecret manifest holding it as item.
-func Sealed(t *testing.T, pub *rsa.PublicKey, namespace, name, item, value string) []byte {
-	t.Helper()
-	sessionKey := make([]byte, 32)
-	_, err := rand.Read(sessionKey)
+	sealed, err := components.Seal(certPEM, components.RepositoryCredentialNamespace, components.RepositoryCredentialName, components.RepositoryCredentialItem, []byte(value))
 	require.NoError(t, err)
-	wrapped, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, pub, sessionKey, []byte(namespace+"/"+name))
-	require.NoError(t, err)
-	block, err := aes.NewCipher(sessionKey)
-	require.NoError(t, err)
-	gcm, err := cipher.NewGCM(block)
-	require.NoError(t, err)
-	sealed := binary.BigEndian.AppendUint16(nil, uint16(len(wrapped)))
-	sealed = append(append(sealed, wrapped...), gcm.Seal(nil, make([]byte, gcm.NonceSize()), []byte(value), nil)...)
-	return fmt.Appendf(nil, `apiVersion: bitnami.com/v1alpha1
-kind: SealedSecret
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  encryptedData:
-    %s: %s
-`, name, namespace, item, base64.StdEncoding.EncodeToString(sealed))
+	return sealed
 }
 
 // OpenedSecret is the Secret the Sealed Secrets controller writes when it opens a SealedSecret.

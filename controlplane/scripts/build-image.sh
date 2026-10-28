@@ -7,11 +7,14 @@
 # failure in that overwrite ends it before the power-off.
 # It waits a second before the power-off: an unproven guard against cpx32 builders staying on.
 # It waits for the private interface's DHCP lease before routing, since cloud-init can start it before Hetzner's hc-net-ifup has one.
-# Usage: build-image.sh <imager image by digest> <machine configuration> <network router>
+# Given a hosting set's URL and the pin of its server's key, it appends that
+# set to the configuration in the tmpfs, so the hosting keys never reach the disk.
+# Usage: build-image.sh <imager image by digest> <machine configuration> <network router> [<hosting set URL> <key pin>]
 #   BUILD_WORK_DIR, BUILD_OUT_DIR, BUILD_DISK, BUILD_PULL_ATTEMPTS,
-#   BUILD_RESOLV_CONF, BUILD_PROC, BUILD_NET_CLASS and BUILD_ADDRESS_WAIT
-#   default to /mnt/mitstack-build, /var/lib/mitstack-build, /dev/sda, 30,
-#   /etc/resolv.conf, /proc, /sys/class/net and 120 seconds.
+#   BUILD_RESOLV_CONF, BUILD_PROC, BUILD_NET_CLASS, BUILD_ADDRESS_WAIT,
+#   BUILD_FETCH_ATTEMPTS and BUILD_FETCH_DELAY default to /mnt/mitstack-build,
+#   /var/lib/mitstack-build, /dev/sda, 30, /etc/resolv.conf, /proc,
+#   /sys/class/net, 120 seconds, 60 and 5 seconds.
 # It exists because the image embeds every key of the cluster, so it is built
 # inside the cluster's own Hetzner project and imager's output, which prints
 # that configuration, is discarded. A failed step leaves the builder running,
@@ -27,6 +30,8 @@ readonly resolv_conf=${BUILD_RESOLV_CONF:-/etc/resolv.conf}
 readonly proc=${BUILD_PROC:-/proc}
 readonly net_class=${BUILD_NET_CLASS:-/sys/class/net}
 readonly address_wait=${BUILD_ADDRESS_WAIT:-120}
+readonly fetch_attempts=${BUILD_FETCH_ATTEMPTS:-60}
+readonly fetch_delay=${BUILD_FETCH_DELAY:-5}
 readonly staged="$work/bin"
 readonly resolvers=("185.12.64.1" "185.12.64.2")
 
@@ -75,6 +80,20 @@ pull_imager() {
   fail "could not pull $1 after $attempts attempts"
 }
 
+# fetch_hosting appends the hosting set to the configuration, trusting only the serving server's pinned key, and
+# retries while that server boots.
+fetch_hosting() {
+  local url=$1 pin=$2
+  if ! curl -sSf --proto '=https' --tlsv1.3 -k --pinnedpubkey "$pin" --connect-timeout 5 --max-time 60 \
+    --retry "$fetch_attempts" --retry-delay "$fetch_delay" --retry-all-errors -o "$work/in/hosting.yaml" "$url"; then
+    rm -f "$work/in/config.yaml" "$work/in/hosting.yaml"
+    fail "could not fetch the hosting set from $url"
+  fi
+  printf -- '\n---\n' >> "$work/in/config.yaml"
+  cat "$work/in/hosting.yaml" >> "$work/in/config.yaml"
+  rm -f "$work/in/hosting.yaml"
+}
+
 # build runs imager with the kit's arguments and discards its output, since it prints every key of the configuration.
 build() {
   local imager=$1 config=$2
@@ -83,6 +102,9 @@ build() {
   mkdir -p "$work/in" "$out"
   install -m 0600 "$config" "$work/in/config.yaml"
   rm -f "$config"
+  if [ "$#" -eq 4 ]; then
+    fetch_hosting "$3" "$4"
+  fi
   if ! docker run --rm --privileged -v /dev:/dev -v "$work/in:/in:ro" -v "$out:/out" \
     "$imager" hcloud --arch amd64 --embedded-config-path /in/config.yaml > /dev/null 2>&1; then
     rm -f "$work/in/config.yaml"
@@ -138,11 +160,12 @@ write_disk() {
 }
 
 main() {
-  [ "$#" -eq 3 ] || fail "usage: build-image.sh <imager image> <machine configuration> <network router>"
+  [ "$#" -eq 3 ] || [ "$#" -eq 5 ] ||
+    fail "usage: build-image.sh <imager image> <machine configuration> <network router> [<hosting set URL> <key pin>]"
   await_lease "$3"
   route_through_gateway "$3"
   pull_imager "$1"
-  build "$1" "$2"
+  build "$1" "$2" "${@:4}"
   write_disk
 }
 

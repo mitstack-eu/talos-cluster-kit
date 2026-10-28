@@ -27,21 +27,21 @@ const (
 	adminTalosconfigTTL = 2 * time.Hour
 )
 
-// installation is what one install renders: both servers' user data, the cluster, the enrolment digest and the issuer bucket.
+// installation is what one install renders, with no serving server for a cluster that hosts no platform.
 type installation struct {
-	gatewayUserData, builderUserData string
-	cluster                          nodeconfig.Cluster
-	enrolmentDigest, issuerBucket    string
+	gatewayUserData, builderUserData, servingUserData, workerBuilderUserData string
+	cluster                                                                  nodeconfig.Cluster
+	enrolmentDigest, issuerBucket                                            string
 }
 
-// install creates both servers stopped and off the network, since Hetzner gives a server joining with no address the
+// install creates every server stopped and off the network, since Hetzner gives a server joining with no address the
 // first free one, which would be the gateway's own.
 func (p Plane) install(ctx context.Context, s site) error {
 	addr, err := netip.ParseAddr(s.apiAddress)
 	if err != nil {
 		return fmt.Errorf("the API load balancer has no address on network %d: %w", s.network.ID, err)
 	}
-	inst, err := p.render(addr, p.now())
+	inst, err := p.render(ctx, addr, p.now())
 	if err != nil {
 		return err
 	}
@@ -52,7 +52,7 @@ func (p Plane) install(ctx context.Context, s site) error {
 	gatewayLabels := p.Labels(RoleGateway)
 	gatewayLabels[KeyEnrolmentSHA256] = inst.enrolmentDigest
 	gatewayLabels[KeyIssuerBucket] = inst.issuerBucket
-	_, err = p.API.CreateServers(ctx, ServerSpec{
+	specs := []ServerSpec{{
 		Name:        p.Name(RoleGateway),
 		ServerType:  gatewayType,
 		Location:    GatewayLocation,
@@ -62,18 +62,21 @@ func (p Plane) install(ctx context.Context, s site) error {
 		FirewallIDs: []int64{s.firewall.ID},
 		PublicIPv4:  true,
 		Stopped:     true,
-	}, ServerSpec{
-		Name:        p.Name(RoleBuilder),
-		ServerType:  p.ServerType,
-		Location:    GatewayLocation,
-		Image:       builderImage,
-		UserData:    inst.builderUserData,
-		Labels:      p.Labels(RoleBuilder),
-		FirewallIDs: []int64{s.firewall.ID},
-		Stopped:     true,
-	})
-	if err != nil {
-		return p.rollBackInstall(ctx, fmt.Errorf("creating the gateway and the image builder: %w", err))
+	}, p.builderSpec(RoleBuilder, inst.builderUserData, s), p.builderSpec(RoleWorkerBuilder, inst.workerBuilderUserData, s)}
+	if inst.servingUserData != "" {
+		specs = append(specs, ServerSpec{
+			Name:        p.Name(RoleServing),
+			ServerType:  gatewayType,
+			Location:    GatewayLocation,
+			Image:       gatewayImage,
+			UserData:    inst.servingUserData,
+			Labels:      p.Labels(RoleServing),
+			FirewallIDs: []int64{s.firewall.ID},
+			Stopped:     true,
+		})
+	}
+	if _, err := p.API.CreateServers(ctx, specs...); err != nil {
+		return p.rollBackInstall(ctx, fmt.Errorf("creating the gateway and the builders: %w", err))
 	}
 	if p.Installed != nil {
 		if err := p.Installed(ctx, s.network, inst.cluster); err != nil {
@@ -81,6 +84,19 @@ func (p Plane) install(ctx context.Context, s site) error {
 		}
 	}
 	return nil
+}
+
+func (p Plane) builderSpec(r Role, userData string, s site) ServerSpec {
+	return ServerSpec{
+		Name:        p.Name(r),
+		ServerType:  p.ServerType,
+		Location:    GatewayLocation,
+		Image:       builderImage,
+		UserData:    userData,
+		Labels:      p.Labels(r),
+		FirewallIDs: []int64{s.firewall.ID},
+		Stopped:     true,
+	}
 }
 
 // orderableGatewayType is the first of GatewayServerTypes Hetzner reads as orderable in the gateway's location.
@@ -99,11 +115,11 @@ func (p Plane) orderableGatewayType(ctx context.Context) (string, error) {
 		strings.Join(GatewayServerTypes, ", "), GatewayLocation)
 }
 
-// rollBackInstall deletes whatever gateway and builder a failed install made, since the keys they were made with
-// are gone with this call, so the next call installs anew.
+// rollBackInstall deletes whatever servers a failed install made, since the keys they were made with are gone with
+// this call, so the next call installs anew.
 func (p Plane) rollBackInstall(ctx context.Context, cause error) error {
 	errs := []error{cause}
-	for _, r := range []Role{RoleGateway, RoleBuilder} {
+	for _, r := range []Role{RoleGateway, RoleBuilder, RoleServing, RoleWorkerBuilder} {
 		servers, err := p.API.ListServers(ctx, p.RoleSelector(r))
 		if err != nil {
 			errs = append(errs, fmt.Errorf("listing the %s of the failed install: %w", r, err))
@@ -118,8 +134,8 @@ func (p Plane) rollBackInstall(ctx context.Context, cause error) error {
 	return errors.Join(errs...)
 }
 
-// render mints the cluster's keys, gateway CA, enrolment token and issuer bucket, and renders both user data.
-func (p Plane) render(apiAddr netip.Addr, now time.Time) (installation, error) {
+// render mints the cluster's keys, gateway CA, enrolment token and issuer bucket, and renders every server's user data.
+func (p Plane) render(ctx context.Context, apiAddr netip.Addr, now time.Time) (installation, error) {
 	secrets, err := nodeconfig.NewSecrets(now)
 	if err != nil {
 		return installation{}, err
@@ -136,7 +152,13 @@ func (p Plane) render(apiAddr netip.Addr, now time.Time) (installation, error) {
 	if err != nil {
 		return installation{}, err
 	}
-	set, err := p.clusterComponents(token)
+	base := components.Default()
+	if p.Hosting != nil {
+		if base, err = p.hostingSet(ctx, now); err != nil {
+			return installation{}, err
+		}
+	}
+	set, err := p.clusterComponents(base, token)
 	if err != nil {
 		return installation{}, err
 	}
@@ -154,22 +176,35 @@ func (p Plane) render(apiAddr netip.Addr, now time.Time) (installation, error) {
 		ServiceAccountIssuer: issuerURL(bucket, p.Subscription),
 		AppsOnWorkers:        p.AppsOnWorkers,
 	}
-	config, err := nodeconfig.Render(cluster, nodeconfig.Node{})
+	inst := installation{cluster: cluster, enrolmentDigest: enrolmentTokenDigest(token), issuerBucket: bucket}
+	carried, fetched := cluster, []components.Manifest(nil)
+	if p.Hosting != nil {
+		carried.Components.Inline, fetched = splitHosting(set, base)
+	}
+	config, err := nodeconfig.Render(carried, nodeconfig.Node{})
 	if err != nil {
 		return installation{}, err
 	}
-	gatewayData, err := p.renderGateway(apiAddr, now, gatewayCA, set, secrets)
+	var fetch *hostingFetch
+	if p.Hosting != nil {
+		if inst.servingUserData, fetch, err = servingUserData(fetched, now); err != nil {
+			return installation{}, err
+		}
+	}
+	if inst.builderUserData, err = builderUserData("builder", config, fetch); err != nil {
+		return installation{}, err
+	}
+	workerConfig, err := nodeconfig.RenderWorker(cluster, nodeconfig.Node{})
 	if err != nil {
 		return installation{}, err
 	}
-	builderData, err := builderUserData(config)
-	if err != nil {
+	if inst.workerBuilderUserData, err = builderUserData("worker builder", workerConfig, nil); err != nil {
 		return installation{}, err
 	}
-	return installation{
-		gatewayUserData: gatewayData, builderUserData: builderData, cluster: cluster,
-		enrolmentDigest: enrolmentTokenDigest(token), issuerBucket: bucket,
-	}, nil
+	if inst.gatewayUserData, err = p.renderGateway(apiAddr, now, gatewayCA, set, secrets); err != nil {
+		return installation{}, err
+	}
+	return inst, nil
 }
 
 func (p Plane) renderGateway(apiAddr netip.Addr, now time.Time, ca gateway.CA, set components.Set, secrets *nodeconfig.Secrets) (string, error) {

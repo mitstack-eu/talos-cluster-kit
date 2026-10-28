@@ -5,16 +5,20 @@ package controlplane_test
 import (
 	"encoding/json"
 	"encoding/pem"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
+	"github.com/mitstack-eu/talos-cluster-kit/serve"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -82,6 +86,7 @@ cat > "${BUILD_DISK}"`,
   >> "$HOME/at-pause"`,
 		"docker": `if [ "$1" = run ]; then
   out=$(printf '%s\n' "$@" | sed -n 's#^\(.*\):/out$#\1#p')
+  cp "$(printf '%s\n' "$@" | sed -n 's#^\(.*\):/in:ro$#\1#p')/config.yaml" "$HOME/imager-config"
   echo "every key of the cluster"
   [ ` + exit + ` -eq 0 ] || exit ` + exit + `
   while read -r target size; do
@@ -117,6 +122,12 @@ type scriptRun struct {
 
 func runBuild(t *testing.T, imagerExit int, extraEnv ...string) scriptRun {
 	t.Helper()
+	return runBuildOf(t, imagerExit, "machine: {token: secret}", nil, extraEnv...)
+}
+
+// runBuildOf runs the build on config, with fetch as the hosting set's URL and key pin when it holds them.
+func runBuildOf(t *testing.T, imagerExit int, config string, fetch []string, extraEnv ...string) scriptRun {
+	t.Helper()
 	dir := t.TempDir()
 	tools := testutil.NewTools(t, buildFakes(imagerExit))
 	require.NoError(t, os.MkdirAll(filepath.Join(tools.Dir, "lib"), 0o755))
@@ -127,13 +138,13 @@ func runBuild(t *testing.T, imagerExit int, extraEnv ...string) scriptRun {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "net", testPrivateInterface), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "net", "lo"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "net", "docker0"), 0o755))
-	config := filepath.Join(dir, "config.yaml")
-	require.NoError(t, os.WriteFile(config, []byte("machine: {token: secret}"), 0o600))
+	configPath := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte(config), 0o600))
 	env := tools.Env(append([]string{"BUILD_WORK_DIR=" + filepath.Join(dir, "work"), "BUILD_OUT_DIR=" + filepath.Join(dir, "out"),
 		"BUILD_DISK=" + filepath.Join(dir, "disk"), "BUILD_RESOLV_CONF=" + filepath.Join(dir, "resolv.conf"),
 		"BUILD_PROC=" + filepath.Join(dir, "proc"), "BUILD_PULL_ATTEMPTS=1", "BUILD_NET_CLASS=" + filepath.Join(dir, "net"),
 		"BUILD_ADDRESS_WAIT=5"}, extraEnv...)...)
-	out, err := testutil.RunBash(t, controlplane.BuildImageScript, env, testImager, config, controlplane.RouterAddress)
+	out, err := testutil.RunBash(t, controlplane.BuildImageScript, env, append([]string{testImager, configPath, controlplane.RouterAddress}, fetch...)...)
 	return scriptRun{out: out, err: err, tools: tools, dir: dir}
 }
 
@@ -356,6 +367,81 @@ func TestBuildImage_AFailedImagerWritesNothingAndKeepsTheBuilderRunning(t *testi
 	}
 }
 
+// servingRun starts the serving server's own program with the files and command a hosting install rendered for it,
+// on a free local port, and returns the builder's configuration and its fetch pointed there.
+func servingRun(t *testing.T) (config string, fetch []string, served string) {
+	t.Helper()
+	h := newHarness(t, hosting)
+	require.NoError(t, h.converge())
+	serving := decodeCloudConfig(t, h.cloud.SpecFor(t, controlplane.RoleServing).UserData)
+	builder := decodeCloudConfig(t, h.cloud.SpecFor(t, controlplane.RoleBuilder).UserData)
+	dir := t.TempDir()
+	local := map[string]string{}
+	for _, f := range serving.WriteFiles {
+		local[f.Path] = filepath.Join(dir, filepath.Base(f.Path))
+		require.NoError(t, os.WriteFile(local[f.Path], []byte(serving.file(t, f.Path).Content), 0o600))
+	}
+	port := freePort(t)
+	run := slices.Clone(serving.RunCmd[0])
+	for i, arg := range run {
+		if path, ok := local[arg]; ok {
+			run[i] = path
+		}
+	}
+	require.Equal(t, controlplane.BuilderAddress, run[3], "the one client the serving server serves")
+	run[3], run[4] = "127.0.0.1", strconv.Itoa(port)
+	server := exec.Command(run[0], run[1:]...)
+	require.NoError(t, server.Start())
+	t.Cleanup(func() { _ = server.Process.Kill(); _ = server.Wait() })
+	require.Eventually(t, func() bool {
+		conn, err := net.Dial("tcp", "127.0.0.1:"+strconv.Itoa(port))
+		if err == nil {
+			_ = conn.Close()
+		}
+		return err == nil
+	}, 10*time.Second, 50*time.Millisecond, "the serving server never listened")
+	fetch = slices.Clone(builder.RunCmd[0][4:])
+	fetch[0] = strings.Replace(fetch[0], controlplane.ServingAddress+":"+strconv.Itoa(serve.DefaultPort), "127.0.0.1:"+strconv.Itoa(port), 1)
+	return builder.file(t, controlplane.BuilderConfigPath).Content, fetch, local[controlplane.ServingFile]
+}
+
+func freePort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port
+}
+
+func TestBuildImage_HandsImagerTheConfigurationWithTheHostingSetTheServingServerServed(t *testing.T) {
+	config, fetch, served := servingRun(t)
+
+	run := runBuildOf(t, 0, config, fetch, "BUILD_FETCH_DELAY=1")
+
+	require.NoError(t, run.err, run.out)
+	docs := testutil.Documents(t, []byte(run.recorded("imager-config")))
+	assert.Subset(t, names(docs), append([]string{"mitstack-node-report", "mitstack-cluster-tokens"}, hostingInline...),
+		"the inline manifests imager embeds")
+	assert.Equal(t, len(testutil.Documents(t, []byte(config)))+len(hostingInline), len(docs), "documents imager embeds")
+	assert.NoFileExists(t, served, "the hosting set outlives its one fetch")
+	assert.NoFileExists(t, filepath.Join(run.dir, "work", "in", "hosting.yaml"), "the fetched hosting set outlives the build")
+}
+
+func TestBuildImage_AServerThatFailsThePinGetsNoBuildAndTheConfigurationIsRemoved(t *testing.T) {
+	config, fetch, served := servingRun(t)
+	other, err := serve.NewKey("another server", time.Now())
+	require.NoError(t, err)
+	fetch[1] = other.Pin
+
+	run := runBuildOf(t, 0, config, fetch, "BUILD_FETCH_ATTEMPTS=0")
+
+	require.Error(t, run.err)
+	assert.Contains(t, run.out, "could not fetch the hosting set")
+	assert.Empty(t, run.recorded("imager-config"), "imager ran without the hosting set")
+	assert.NoFileExists(t, filepath.Join(run.dir, "work", "in", "config.yaml"), "the configuration outlives the failed fetch")
+	assert.FileExists(t, served, "the serving server served a client that failed the pin")
+}
+
 func TestBootstrapFirstNode_BootstrapsTheAddressWhoseTalosAPIProvesItIsTheClusters(t *testing.T) {
 	dir := t.TempDir()
 	flows := filepath.Join(dir, "flows.log")
@@ -433,7 +519,7 @@ func runClusterTokens(t *testing.T, srv *httptest.Server, verb, token string, ex
   get) [ "${SECRETS_PRESENT:-no}" = yes ] ;;
   *) cat ;;
 esac`})
-	env := tools.Env("PLATFORM_URL="+srv.URL, "SUBSCRIPTION_ID="+testSub, "REPO_URL="+testRepoURL,
+	env := tools.Env("PLATFORM_URL="+srv.URL, "SUBSCRIPTION_ID="+testSub, "REPO_URL="+testRepoURL, "REPOSITORY_CREDENTIAL=platform-token",
 		"TOKEN_FILE="+filepath.Join(dir, "token"), "CURL_CA_BUNDLE="+ca, "KUBE_API="+srv.URL, "KUBE_ACCOUNT_DIR="+dir, "CALL_ATTEMPTS=1")
 	out, err := testutil.RunBash(t, controlplane.ClusterTokensScript, append(env, extraEnv...), verb)
 	return scriptRun{out: out, err: err, tools: tools, dir: dir}
@@ -477,6 +563,26 @@ func TestClusterTokens_RenewPatchesEachAppSlicesRepositorySecret(t *testing.T) {
 		"POST /v1/cluster-repository-tokens Bearer report-token",
 		"PATCH /api/v1/namespaces/argocd/secrets/app-repository-orbit Bearer report-token",
 	}, *seen)
+}
+
+func TestClusterTokens_EnrolOnAClusterThatReadsItsRepositoryWithADeployKeyWritesTheReportTokenAlone(t *testing.T) {
+	srv, seen := platform(t, http.StatusOK)
+
+	run := runClusterTokens(t, srv, "enrol", "enrolment-token", "REPOSITORY_CREDENTIAL=deploy-key")
+	spent := runClusterTokens(t, srv, "enrol", "enrolment-token", "REPOSITORY_CREDENTIAL=deploy-key", "SECRETS_PRESENT=yes")
+	renew := runClusterTokens(t, srv, "renew", "report-token", "REPOSITORY_CREDENTIAL=deploy-key")
+
+	require.NoError(t, run.err, run.out)
+	var created []string
+	for _, call := range run.tools.Calls(t) {
+		if strings.HasPrefix(call, "kubectl create secret") {
+			created = append(created, strings.Fields(call)[4]+" in "+strings.Fields(call)[6])
+		}
+	}
+	assert.Equal(t, []string{"mitstack-report-token in mitstack-node"}, created)
+	require.NoError(t, spent.err, spent.out)
+	require.Error(t, renew.err, "a deploy-key cluster renewed a repository token")
+	assert.NotContains(t, *seen, "POST /v1/cluster-repository-tokens Bearer report-token", "the renewal asked the platform")
 }
 
 func certPEM(srv *httptest.Server) []byte {

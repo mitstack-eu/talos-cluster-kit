@@ -266,7 +266,7 @@ func TestRender_GivesAHostingClusterOpenBaosUserVolumeBesideTheLocalPathVolume(t
 	assert.Equal(t, []map[string]any{directoryVolume(components.LocalPathVolume), directoryVolume(components.OpenBaoVolume)},
 		testutil.Kind(docs, "UserVolumeConfig"))
 	assert.Subset(t, documentNames(testutil.Kind(docs, "KubeInlineManifestConfig")),
-		[]any{"mitstack-openbao-seal-key", "mitstack-sealed-secrets-key", "mitstack-sealed-app-key", "mitstack-openbao-storage"})
+		[]any{"mitstack-openbao-seal-key", "mitstack-sealed-secrets-key", "mitstack-openbao-deploy-key", "mitstack-cluster-repository", "mitstack-openbao-storage"})
 }
 
 func TestRender_GivesEveryClusterADefaultStorageClassThatProvisionsOnItsNodesUserVolume(t *testing.T) {

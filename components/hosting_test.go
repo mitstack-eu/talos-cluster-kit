@@ -133,16 +133,16 @@ func holds(m components.Manifest, value []byte) bool {
 
 func TestHosting_KeepsEverySecretInlineAndNoServedManifestHoldsOne(t *testing.T) {
 	in := testutil.HostingInputs(t)
-	sealedValue := regexp.MustCompile(components.SealedAppKeyItem + `: (\S+)`).FindSubmatch(in.SealedAppKey)[1]
-	sealedReaderValue := regexp.MustCompile(components.ReaderCredentialItem + `: (\S+)`).FindSubmatch(in.SealedReaderKey)[1]
+	sealedWriteValue := regexp.MustCompile(components.DeployKeyItem + `: (\S+)`).FindSubmatch(in.SealedWriteKey)[1]
+	sealedReadValue := regexp.MustCompile(components.RepositoryCredentialItem + `: (\S+)`).FindSubmatch(in.SealedReadKey)[1]
 	secrets := map[string][]byte{
 		"the seal key":            in.SealKey,
 		"the Sealed Secrets key":  in.SealedSecretsKeyPEM,
 		"the Sealed Secrets cert": in.SealedSecretsCertPEM,
-		"the sealed App key":      sealedValue,
-		"the App key in plain":    []byte(testutil.AppKey),
-		"the sealed reader key":   sealedReaderValue,
-		"the reader key in plain": []byte(testutil.ReaderKey(t)),
+		"the sealed write key":    sealedWriteValue,
+		"the write key in plain":  []byte(testutil.WriteKey(t)),
+		"the sealed read key":     sealedReadValue,
+		"the read key in plain":   []byte(testutil.ReadKey(t)),
 	}
 
 	set := hostingSet(t, in)
@@ -163,8 +163,8 @@ func TestHosting_KeepsEverySecretInlineAndNoServedManifestHoldsOne(t *testing.T)
 	for manifest, values := range map[string][][]byte{
 		"mitstack-openbao-seal-key":   {in.SealKey},
 		"mitstack-sealed-secrets-key": {in.SealedSecretsKeyPEM, in.SealedSecretsCertPEM},
-		"mitstack-sealed-app-key":     {sealedValue},
-		"mitstack-reader-repo-creds":  {sealedReaderValue},
+		"mitstack-openbao-deploy-key": {sealedWriteValue},
+		"mitstack-cluster-repository": {sealedReadValue},
 	} {
 		for _, value := range values {
 			var holders []string
@@ -183,8 +183,8 @@ func TestHosting_KeepsEverySecretInlineAndNoServedManifestHoldsOne(t *testing.T)
 	assert.Equal(t, string(in.SealedSecretsCertPEM), testutil.Field(t, pair, "stringData", "tls.crt"))
 	assert.Equal(t, "active", testutil.Field(t, pair, "metadata", "labels", "sealedsecrets.bitnami.com/sealed-secrets-key"))
 	for _, m := range set.Inline {
-		assert.False(t, holds(m, []byte(testutil.AppKey)), "inline manifest %s holds the App key in plain", m.Name)
-		assert.False(t, holds(m, []byte(testutil.ReaderKey(t))), "inline manifest %s holds the reader key in plain", m.Name)
+		assert.False(t, holds(m, []byte(testutil.WriteKey(t))), "inline manifest %s holds the write key in plain", m.Name)
+		assert.False(t, holds(m, []byte(testutil.ReadKey(t))), "inline manifest %s holds the read key in plain", m.Name)
 	}
 	assert.Equal(t, []string{"RSA PRIVATE KEY"}, pemPrivateKeys(testutil.Manifest(t, "mitstack-sealed-secrets-key", set.Inline).Bytes))
 }
@@ -217,24 +217,34 @@ func secretType(doc map[string]any) string {
 	return value
 }
 
-func TestHosting_GivesArgoCDOneCredentialTemplateForEveryMitstackEURepositoryFromTheSealedReaderKey(t *testing.T) {
+func TestHosting_GivesArgoCDTheClusterRepositoryOverSSHOnPort443FromTheSealedReadKey(t *testing.T) {
 	in := testutil.HostingInputs(t)
 
 	set := hostingSet(t, in)
 
-	var templates []map[string]string
+	var repositories []map[string]string
 	for _, doc := range argoCDCredentialWriters(t, set) {
-		if opened := testutil.Unseal(t, in.SealedSecretsKeyPEM, doc); opened.Namespace == "argocd" && secretType(doc) == "repo-creds" {
-			templates = append(templates, opened.Data)
+		if opened := testutil.Unseal(t, in.SealedSecretsKeyPEM, doc); opened.Namespace == "argocd" && secretType(doc) == "repository" {
+			repositories = append(repositories, opened.Data)
 		}
 	}
 	assert.Equal(t, []map[string]string{{
-		"type":                    "git",
-		"url":                     "https://github.com/mitstack-eu/",
-		"githubAppID":             testutil.ReaderAppID,
-		"githubAppInstallationID": testutil.ReaderInstallationID,
-		"githubAppPrivateKey":     testutil.ReaderKey(t),
-	}}, templates, "the data of each credential template in argocd")
+		"type":          "git",
+		"url":           "ssh://git@ssh.github.com:443/" + testutil.InitRepository + ".git",
+		"sshPrivateKey": testutil.ReadKey(t),
+	}}, repositories, "the data of each repository credential in argocd")
+	assert.Equal(t, "ssh://git@ssh.github.com:443/"+testutil.InitRepository+".git", components.RepositorySSHURL(testutil.InitRepository))
+}
+
+func TestHosting_GivesTheInitJobTheWriteKeyInTheNamespaceItRunsIn(t *testing.T) {
+	in := testutil.HostingInputs(t)
+
+	set := hostingSet(t, in)
+
+	sealed := namedDocument(t, testutil.Manifest(t, "mitstack-openbao-deploy-key", set.Inline), "SealedSecret", components.DeployKeySecret)
+	opened := testutil.Unseal(t, in.SealedSecretsKeyPEM, sealed)
+	assert.Equal(t, components.DeployKeyNamespace, opened.Namespace)
+	assert.Equal(t, map[string]string{components.DeployKeyItem: testutil.WriteKey(t)}, opened.Data)
 }
 
 func TestHosting_RendersNoExternalSecretGeneratorOrOtherWriterOfArgoCDRepositoryCredentials(t *testing.T) {
@@ -242,7 +252,26 @@ func TestHosting_RendersNoExternalSecretGeneratorOrOtherWriterOfArgoCDRepository
 
 	writers := slices.Sorted(maps.Keys(argoCDCredentialWriters(t, set)))
 
-	assert.Equal(t, []string{"SealedSecret argocd/" + components.ReaderCredentialName}, writers, "the objects that write an Argo CD repository credential")
+	assert.Equal(t, []string{"SealedSecret argocd/" + components.RepositoryCredentialName}, writers, "the objects that write an Argo CD repository credential")
+}
+
+func TestSeal_SealsAValueOnlyTheKeyPairOpensInTheStrictScopeOfItsSecret(t *testing.T) {
+	_, keyPEM, certPEM := testutil.SealedSecretsKeyPair(t)
+
+	file, err := components.Seal(certPEM, components.DeployKeyNamespace, components.DeployKeySecret, components.DeployKeyItem, []byte("a private key"))
+
+	require.NoError(t, err)
+	opened := testutil.Unseal(t, keyPEM, testutil.Documents(t, file)[0])
+	assert.Equal(t, testutil.OpenedSecret{
+		Namespace: components.DeployKeyNamespace, Name: components.DeployKeySecret,
+		Data: map[string]string{components.DeployKeyItem: "a private key"},
+	}, opened)
+	in := testutil.HostingInputs(t)
+	in.SealedSecretsKeyPEM, in.SealedSecretsCertPEM, in.SealedWriteKey = keyPEM, certPEM, file
+	in.SealedReadKey, err = components.Seal(certPEM, components.RepositoryCredentialNamespace, components.RepositoryCredentialName, components.RepositoryCredentialItem, []byte("another"))
+	require.NoError(t, err)
+	_, err = components.Hosting(in)
+	assert.NoError(t, err, "the hosting set refuses what Seal sealed")
 }
 
 // podTemplates returns each pod template of the manifest's workloads, keyed by the workload's namespace and name.
@@ -292,33 +321,32 @@ func TestHosting_AddsToTheDefaultSetAndLeavesItAsItIs(t *testing.T) {
 }
 
 func TestHosting_RefusesInputsItCannotBoot(t *testing.T) {
-	otherKey, _, otherCert := testutil.SealedSecretsKeyPair(t)
+	_, _, otherCert := testutil.SealedSecretsKeyPair(t)
 	cases := map[string]struct {
 		change func(*components.HostingInputs)
 		want   string
 	}{
 		"a seal key of 31 bytes":       {func(in *components.HostingInputs) { in.SealKey = in.SealKey[:31] }, "the seal key is 31 bytes, want 32"},
 		"a certificate of another key": {func(in *components.HostingInputs) { in.SealedSecretsCertPEM = otherCert }, "certifies another key"},
-		"an App key sealed to another pair": {func(in *components.HostingInputs) {
-			in.SealedAppKey = testutil.SealedAppKey(t, &otherKey.PublicKey, testutil.AppKey)
-		}, "not sealed to the Sealed Secrets key pair"},
-		"an App key in another namespace": {func(in *components.HostingInputs) {
-			in.SealedAppKey = bytes.Replace(in.SealedAppKey, []byte("namespace: "+components.SealedAppKeyNamespace), []byte("namespace: default"), 1)
-		}, "want bitnami.com/v1alpha1 SealedSecret mitstack-node/github-app-key"},
-		"a reader key sealed to another pair": {func(in *components.HostingInputs) {
-			in.SealedReaderKey = testutil.SealedReaderKey(t, &otherKey.PublicKey, testutil.ReaderKey(t))
-		}, "the sealed reader key is not sealed to the Sealed Secrets key pair"},
-		"a reader key under another name": {func(in *components.HostingInputs) {
-			in.SealedReaderKey = bytes.Replace(in.SealedReaderKey, []byte("name: "+components.ReaderCredentialName), []byte("name: other"), 1)
-		}, "want bitnami.com/v1alpha1 SealedSecret argocd/" + components.ReaderCredentialName},
-		"a reader key with a username sealed beside it": {func(in *components.HostingInputs) {
-			in.SealedReaderKey = bytes.Replace(in.SealedReaderKey, []byte("encryptedData:\n"), []byte("encryptedData:\n    username: c2VhbGVk\n"), 1)
-		}, "the sealed reader key's encryptedData holds 2 items, want only " + components.ReaderCredentialItem},
-		"a reader App id that is not a number": {func(in *components.HostingInputs) { in.ReaderAppID = "abc" }, `the reader App id "abc" is not a number`},
-		"no reader installation id":            {func(in *components.HostingInputs) { in.ReaderInstallationID = "" }, `the reader App's installation id "" is not a number`},
+		"a write key sealed to another pair": {func(in *components.HostingInputs) {
+			in.SealedWriteKey = testutil.SealedWriteKey(t, otherCert, testutil.WriteKey(t))
+		}, "the sealed write key is not sealed to the Sealed Secrets key pair"},
+		"a write key in another namespace": {func(in *components.HostingInputs) {
+			in.SealedWriteKey = bytes.Replace(in.SealedWriteKey, []byte("namespace: "+components.DeployKeyNamespace), []byte("namespace: default"), 1)
+		}, "want bitnami.com/v1alpha1 SealedSecret mitstack-node/" + components.DeployKeySecret},
+		"a read key sealed to another pair": {func(in *components.HostingInputs) {
+			in.SealedReadKey = testutil.SealedReadKey(t, otherCert, testutil.ReadKey(t))
+		}, "the sealed read key is not sealed to the Sealed Secrets key pair"},
+		"a read key under another name": {func(in *components.HostingInputs) {
+			in.SealedReadKey = bytes.Replace(in.SealedReadKey, []byte("name: "+components.RepositoryCredentialName), []byte("name: other"), 1)
+		}, "want bitnami.com/v1alpha1 SealedSecret argocd/" + components.RepositoryCredentialName},
+		"a read key with a username sealed beside it": {func(in *components.HostingInputs) {
+			item := regexp.MustCompile(`(?m)^(\s*)` + components.RepositoryCredentialItem + `:`)
+			in.SealedReadKey = item.ReplaceAll(in.SealedReadKey, []byte("${1}username: c2VhbGVk\n${1}"+components.RepositoryCredentialItem+":"))
+		}, "the sealed read key's encryptedData holds 2 items, want only " + components.RepositoryCredentialItem},
 		"an init Job image named by tag alone": {func(in *components.HostingInputs) { in.Init.ToolsImage = "ghcr.io/x/tools:v1" }, "OpenBao's init Job: tools image"},
-		"an App key file with a second object": {func(in *components.HostingInputs) {
-			in.SealedAppKey = append(in.SealedAppKey, []byte("---\napiVersion: v1\nkind: Secret\n")...)
+		"a write key file with a second object": {func(in *components.HostingInputs) {
+			in.SealedWriteKey = append(in.SealedWriteKey, []byte("---\napiVersion: v1\nkind: Secret\n")...)
 		}, "more than one document"},
 		"two nodes":              {func(in *components.HostingInputs) { in.Nodes = in.Nodes[:2] }, "2 nodes are named, want one for each of OpenBao's 3 members"},
 		"a node named twice":     {func(in *components.HostingInputs) { in.Nodes = []string{"a", "b", "a"} }, "a node is named twice"},
@@ -379,10 +407,33 @@ func initJob(t *testing.T, set components.Set) (testutil.CiliumEndpoint, map[str
 	return testutil.Endpoint(testutil.Field(t, job, "metadata", "namespace").(string), nil, labels), env
 }
 
-func TestHosting_LetsTheInitJobReachOnlyClusterDNSOpenBaoAndGitHubsAPIAndOpenBaoTakeItsCalls(t *testing.T) {
+func TestHosting_TheInitJobTrustsTheSSHHostKeysArgoCDTrustsForGitHubOn443(t *testing.T) {
+	set := hostingSet(t, testutil.HostingInputs(t))
+	argo := namedDocument(t, testutil.Manifest(t, "argocd", set.Served), "ConfigMap", "argocd-ssh-known-hosts-cm")
+	init := namedDocument(t, testutil.Manifest(t, "mitstack-openbao-init", set.Inline), "ConfigMap", "mitstack-openbao-init")
+
+	onPort443 := func(knownHosts string) []string {
+		var lines []string
+		for line := range strings.Lines(knownHosts) {
+			if strings.HasPrefix(line, "[ssh.github.com]:443 ") {
+				lines = append(lines, strings.TrimSpace(line))
+			}
+		}
+		return lines
+	}
+
+	want := onPort443(testutil.Field(t, argo, "data", "ssh_known_hosts").(string))
+	require.NotEmpty(t, want, "Argo CD trusts no host key for ssh.github.com on 443")
+	assert.Equal(t, want, onPort443(testutil.Field(t, init, "data", "known_hosts").(string)))
+}
+
+func TestHosting_LetsTheInitJobReachOnlyClusterDNSOpenBaoAndGitHubsSSHOn443AndOpenBaoTakeItsCalls(t *testing.T) {
 	set := hostingSet(t, testutil.HostingInputs(t))
 	initPod, env := initJob(t, set)
-	github := strings.TrimPrefix(env["MITSTACK_GITHUB_API_URL"], "https://")
+	repository, err := url.Parse(env["MITSTACK_REPOSITORY_URL"])
+	require.NoError(t, err)
+	github := repository.Hostname()
+	require.Equal(t, "ssh.github.com", github, "the host the init Job pushes to")
 	policy := namedDocument(t, testutil.Manifest(t, "mitstack-hosting-flows", set.Served), "CiliumClusterwideNetworkPolicy", "mitstack-hosting-flows")
 	pods := map[string]testutil.CiliumEndpoint{
 		"cluster DNS":  testutil.Endpoint("kube-system", nil, map[string]string{"k8s-app": "kube-dns"}),

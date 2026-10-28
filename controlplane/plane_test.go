@@ -45,6 +45,9 @@ type harness struct {
 	// installed holds each cluster the Installed hook received, and installErr is what the hook answers.
 	installed  []nodeconfig.Cluster
 	installErr error
+	// hostingKeys holds the keys each call to a hosting plane's DeployKeys hook received, and deployKeysErr is what it answers.
+	hostingKeys   []controlplane.HostingKeys
+	deployKeysErr error
 	// waits holds how many Hetzner actions each call waited on.
 	waits      []int
 	sequential bool
@@ -218,7 +221,7 @@ func TestPlane_EveryNodeBootsFromTheClustersOwnSnapshot(t *testing.T) {
 
 	h.built()
 
-	snaps, err := h.cloud.ListSnapshots(context.Background(), h.plane.Selector())
+	snaps, err := h.cloud.ListSnapshots(context.Background(), h.plane.RoleSelector(controlplane.RoleImage))
 	require.NoError(t, err)
 	require.Len(t, snaps, 1, "snapshots")
 	nodes := h.byRole(controlplane.RoleNode)

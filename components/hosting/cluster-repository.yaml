@@ -1,4 +1,4 @@
-# Argo CD's credential template for every mitstack-eu repository: the read-only reader App's key, sealed in the strict scope to the boot key pair, with its ids in plain.
+# Argo CD's credential for the cluster repository: its read-only deploy key, sealed in the strict scope to the boot key pair, with its URL in plain.
 apiVersion: bitnami.com/v1alpha1
 kind: SealedSecret
 metadata:
@@ -12,9 +12,7 @@ spec:
       name: {{ .Name }}
       namespace: {{ .Namespace }}
       labels:
-        argocd.argoproj.io/secret-type: repo-creds
+        argocd.argoproj.io/secret-type: repository
     data:
       type: git
       url: {{ .URL }}
-      githubAppID: "{{ .AppID }}"
-      githubAppInstallationID: "{{ .InstallationID }}"

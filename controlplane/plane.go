@@ -33,6 +33,8 @@ type Plane struct {
 	Installed func(ctx context.Context, network Network, cluster nodeconfig.Cluster) error
 	// AppsOnWorkers keeps every pod without a toleration off the control-plane nodes.
 	AppsOnWorkers bool
+	// Hosting makes the cluster host the platform; nil builds one that hosts none.
+	Hosting *Hosting
 }
 
 // Refusal is a request the plane will not carry out, which no retry of the same call fixes. Class is
@@ -111,6 +113,14 @@ var GatewayLocation = Locations[0]
 const (
 	apiAddress     = "10.0.0.3"
 	ingressAddress = "10.0.0.4"
+)
+
+// The builders and the serving server join at fixed addresses high in the subnet, so the serving server knows the
+// one client it serves, and none takes another's address or a node's, whatever order they attach in.
+const (
+	BuilderAddress       = "10.0.0.250"
+	ServingAddress       = "10.0.0.251"
+	WorkerBuilderAddress = "10.0.0.252"
 )
 
 // ServerTypes are x86, since the image is amd64, hold a control plane with Cilium and Argo CD, and are each one the

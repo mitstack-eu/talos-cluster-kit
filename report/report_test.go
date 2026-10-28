@@ -144,16 +144,19 @@ func runReport(t *testing.T, fakes map[string]string, env ...string) (*testutil.
 	return tools, posted, out, err
 }
 
-func TestReport_PostsEachNodeWithItsTalosVersionTheEtcdMembershipAndEachApplicationsHealthAndAppliedObjects(t *testing.T) {
+func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipAndEachApplicationsHealthAndAppliedObjects(t *testing.T) {
 	tools, posted, out, err := runReport(t, nil)
 
 	require.NoError(t, err, out)
 	assert.Equal(t, "Bearer report-token-fixture", posted.authorization)
 	assert.Equal(t, "sub_0123456789ab", posted.body["subscriptionId"])
 	assert.Equal(t, []any{
-		map[string]any{"name": "poc-talos4-cp1", "ready": true, "talosVersion": "v1.14.4", "kubeletVersion": "v1.37.1", "internalIP": "10.0.0.5"},
-		map[string]any{"name": "poc-talos4-cp2", "ready": true, "talosVersion": "v1.14.4", "kubeletVersion": "v1.37.1", "internalIP": "10.0.0.6"},
-		map[string]any{"name": "poc-talos4-cp3", "ready": false, "talosVersion": "v1.14.3", "kubeletVersion": "v1.37.1", "internalIP": "10.0.0.7"},
+		map[string]any{"name": "poc-talos4-cp1", "ready": true, "talosVersion": "v1.14.4", "kubeletVersion": "v1.37.1", "internalIP": "10.0.0.5",
+			"allocatable": map[string]any{"cpu": "3950m", "memory": "7712Mi", "pods": "110"}},
+		map[string]any{"name": "poc-talos4-cp2", "ready": true, "talosVersion": "v1.14.4", "kubeletVersion": "v1.37.1", "internalIP": "10.0.0.6",
+			"allocatable": map[string]any{"cpu": "4", "memory": "15622080Ki", "pods": "110"}},
+		map[string]any{"name": "poc-talos4-cp3", "ready": false, "talosVersion": "v1.14.3", "kubeletVersion": "v1.37.1", "internalIP": "10.0.0.7",
+			"allocatable": map[string]any{"cpu": "1950m", "memory": "3615Mi", "pods": "110"}},
 	}, posted.body["nodes"])
 	assert.Equal(t, map[string]any{"members": []any{
 		map[string]any{"id": "25afe91c7e8956f1", "hostname": "poc-talos4-cp2", "peerURLs": []any{"https://10.0.0.6:2380"}, "learner": false},

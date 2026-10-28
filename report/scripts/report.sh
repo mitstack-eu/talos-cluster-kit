@@ -162,7 +162,8 @@ body() {
         ready: ready,
         talosVersion: talos_version,
         kubeletVersion: .status.nodeInfo.kubeletVersion,
-        internalIP: ([.status.addresses[]? | select(.type == "InternalIP") | .address] | first)
+        internalIP: ([.status.addresses[]? | select(.type == "InternalIP") | .address] | first),
+        allocatable: .status.allocatable
       }],
       etcd: {members: [$members | split("\n") | .[1:][] | select(test("\\S")) | [splits("\\s+")] | {
         id: .[1], hostname: .[2], peerURLs: (.[3] | split(",")), learner: (.[5] == "true")

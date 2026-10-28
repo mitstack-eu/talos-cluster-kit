@@ -167,12 +167,13 @@ A call then runs in this order:
    change waits on one Hetzner action at most.
 
 When `NextStep` returns no change, the work in flight is Hetzner's or the
-nodes', such as the builder writing the snapshot. The block answers pending,
-and the platform calls it again later. `Problems` names what is wrong with a
+nodes', such as the builder writing the snapshot. The block answers that the
+subscription is still converging, and the platform calls it again later. `Problems` names what is wrong with a
 plane that stands, `Outputs` gives the private API endpoint and the ingress
 address the block provides, and `Delete` removes everything the labels find.
 
-`Installed` runs once, in the call that renders the cluster's configuration.
+`Installed` runs once, inside the `NextStep` change that creates the gateway
+and the builder, since that change renders the cluster's configuration.
 That call is the only moment the cluster's keys exist outside the snapshot,
 so a block that adds workers renders them there with
 `nodeconfig.RenderWorker`. When `Installed` returns an error, the plane

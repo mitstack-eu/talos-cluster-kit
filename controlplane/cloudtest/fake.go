@@ -313,13 +313,21 @@ func (f *Fake) SetNetworkLabels(_ context.Context, id int64, labels map[string]s
 	return nil
 }
 
-// AddVSwitchSubnet refuses a second subnet for one vSwitch and a range another subnet holds, as Hetzner does.
+// AddVSwitchSubnet takes a vSwitch already coupled at ipRange as coupled, and refuses another range for it or a range
+// another vSwitch holds, as Hetzner does.
 func (f *Fake) AddVSwitchSubnet(_ context.Context, networkID, vswitchID int64, ipRange string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	n, ok := f.Networks[networkID]
 	if !ok {
 		return fmt.Errorf("coupling vSwitch %d to network %d: not_found", vswitchID, networkID)
+	}
+	if n.VSwitchSubnets[vswitchID] == ipRange {
+		if !n.ExposeRoutesToVSwitch {
+			f.write(false)
+			n.ExposeRoutesToVSwitch = true
+		}
+		return nil
 	}
 	if _, ok := n.VSwitchSubnets[vswitchID]; ok || slices.Contains(slices.Collect(maps.Values(n.VSwitchSubnets)), ipRange) {
 		return fmt.Errorf("coupling vSwitch %d to network %d at %s: vswitch_id_already_used or ip_range overlaps (invalid_input)", vswitchID, networkID, ipRange)

@@ -236,6 +236,7 @@ func TestHetznerAdapter_ReadsWhichServerTypesTheLocationCanOrder(t *testing.T) {
 
 func TestHetznerAdapter_CouplesTheVSwitchThroughItsSubnetAndExposesTheNetworksRoutesToIt(t *testing.T) {
 	api, bodies := recordHetzner(t, map[string]string{
+		"GET /networks/3":                     `{"network": {"id": 3, "name": "net", "ip_range": "10.0.0.0/16", "subnets": []}}`,
 		"POST /networks/3/actions/add_subnet": `{"action": ` + finishedAction + `}`,
 		"PUT /networks/3":                     `{"network": {"id": 3, "name": "net", "ip_range": "10.0.0.0/16", "expose_routes_to_vswitch": true}}`,
 	})
@@ -244,6 +245,21 @@ func TestHetznerAdapter_CouplesTheVSwitchThroughItsSubnetAndExposesTheNetworksRo
 
 	assert.Equal(t, map[string]any{"type": "vswitch", "network_zone": "eu-central", "ip_range": "10.0.1.0/24", "vswitch_id": float64(87417)},
 		bodies["POST /networks/3/actions/add_subnet"], "the vSwitch subnet")
+	assert.Equal(t, true, bodies["PUT /networks/3"]["expose_routes_to_vswitch"], "the network exposes its routes to the vSwitch")
+}
+
+// A retry after the subnet landed but the route exposure failed must finish the coupling, since Hetzner refuses a
+// second subnet for one vSwitch.
+func TestHetznerAdapter_AVSwitchAlreadyCoupledOnlyHasTheNetworksRoutesExposedToIt(t *testing.T) {
+	api, bodies := recordHetzner(t, map[string]string{
+		"GET /networks/3": `{"network": {"id": 3, "name": "net", "ip_range": "10.0.0.0/16", "expose_routes_to_vswitch": false, "subnets": [
+			{"type": "vswitch", "ip_range": "10.0.1.0/24", "network_zone": "eu-central", "gateway": "10.0.0.1", "vswitch_id": 87417}]}}`,
+		"PUT /networks/3": `{"network": {"id": 3, "name": "net", "ip_range": "10.0.0.0/16", "expose_routes_to_vswitch": true}}`,
+	})
+
+	require.NoError(t, api.AddVSwitchSubnet(context.Background(), 3, 87417, "10.0.1.0/24"))
+
+	assert.NotContains(t, bodies, "POST /networks/3/actions/add_subnet", "a second subnet for the coupled vSwitch")
 	assert.Equal(t, true, bodies["PUT /networks/3"]["expose_routes_to_vswitch"], "the network exposes its routes to the vSwitch")
 }
 

@@ -230,15 +230,17 @@ complete.
 The plane reaches the cluster only through Hetzner's API, and the gateway
 answers nothing from outside the private network, so the builder carries the
 signal. `controlplane/scripts/build-image.sh`, which both builders run, builds
-the image while the mirror fills, then asks `https://10.0.0.2/v2/` under the gateway's CA until it
-answers, every 10 seconds for about 25 minutes at most. Only then does it write its disk and power off. The plane creates a
-node only from the snapshot of that disk, so every node boots after the mirror
-is complete. While the builder waits, `NextStep` returns no change and
-`Problems` says the builder is building the image or waiting for the mirror.
+the image while the mirror fills, then asks `https://10.0.0.2/v2/` under the
+gateway's CA every 10 seconds, for about 40 minutes at most, until it answers.
+Only then does it write its disk and power off. The plane creates a node only
+from the snapshot of that disk, so every node boots after the mirror is
+complete. While the builder waits, `NextStep` returns no change and `Problems`
+says the builder is building the image or waiting for the mirror.
 
-`BuildDeadline`, 45 minutes from the builder's creation, covers the build, that
-wait and the disk write, so a mirror that never answers fails the script first. The plane deletes a builder still running
-past it and refuses the cluster as `image-build-failed`, naming where the
+`BuildDeadline`, 60 minutes from the builder's creation, covers the build, that
+wait and the disk write, so a mirror that never answers fails the script first.
+The plane deletes a builder still running past it and refuses the cluster as
+`image-build-failed`, naming where the
 builder's CPU and disk last moved.
 
 ## What the configuration holds

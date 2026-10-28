@@ -97,7 +97,7 @@ const (
 	httpsNodePort = 30081
 
 	// BuildDeadline bounds the builder from its creation to powering itself off once its image and the mirror are done.
-	BuildDeadline = 45 * time.Minute
+	BuildDeadline = 60 * time.Minute
 )
 
 // GatewayServerTypes are the gateway's types by preference, so one sold-out type does not stop a cluster.

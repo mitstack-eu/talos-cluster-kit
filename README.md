@@ -200,7 +200,9 @@ control-plane nodes keep Talos's `NoSchedule` taint, a mark Kubernetes reads
 as "schedule no pod here unless the pod tolerates it", so an app's pods run
 only on the workers. Cilium, the cluster's network, ztunnel, the mesh's agent
 on each node, and the log collector tolerate the taint and still run on every
-node. Every other pod, Argo CD, the node report and the registration Job among
+node. The node report and the etcd member removal Job tolerate it too, and run
+only on control-plane nodes, since each reads etcd through the Talos API of
+the node it runs on. Every other pod, Argo CD and the registration Job among
 them, waits Pending until a worker joins. A cluster that hosts the platform
 leaves `AppsOnWorkers` off, because its web entry point, Traefik, tolerates no
 taint and serves only from the node it runs on.

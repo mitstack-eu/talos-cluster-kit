@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -202,8 +203,47 @@ func runPrepare(t *testing.T, manifestSHA256 string) prepareRun {
 	require.NoError(t, os.Mkdir(filepath.Join(run.dir, "bin"), 0o755))
 
 	run.out, run.err = testutil.RunBash(t, script, run.tools.Env("PREPARE_BIN_DIR="+filepath.Join(run.dir, "bin")),
-		toolsEnv, images, manifests, filepath.Join(run.dir, "manifests"))
+		toolsEnv, images, manifests, filepath.Join(run.dir, "manifests"), run.completionFile())
 	return run
+}
+
+// completionFile is where the run's prepare writes that the mirror and the manifests are in place.
+func (r prepareRun) completionFile() string {
+	return filepath.Join(r.dir, "state", "mirror-complete")
+}
+
+func TestPrepareScript_MarksTheMirrorCompleteOnlyOnceEveryImageAndManifestIsInPlace(t *testing.T) {
+	done := runPrepare(t, sha256Of("bytes of https://example.test/argocd.yaml"))
+	refused := runPrepare(t, sha256Of("other bytes"))
+
+	require.NoError(t, done.err, done.out)
+	assert.FileExists(t, done.completionFile(), "a prepare that filled the mirror and fetched every manifest")
+	require.Error(t, refused.err)
+	assert.NoFileExists(t, refused.completionFile(), "a prepare that refused a manifest marked the mirror complete")
+}
+
+// The cloud-config's own path for the file prepare writes last, which Caddy waits for.
+const mirrorComplete = "/var/lib/mitstack-gateway/mirror-complete"
+
+func TestRender_ServesNoMirrorRequestBeforePrepareHasFinished(t *testing.T) {
+	rendered, err := gateway.Render(inputs(t))
+	require.NoError(t, err)
+	var runcmd [][]string
+	for _, c := range testutil.Field(t, testutil.Documents(t, rendered)[0], "runcmd").([]any) {
+		var args []string
+		for _, a := range c.([]any) {
+			args = append(args, a.(string))
+		}
+		runcmd = append(runcmd, args)
+	}
+
+	assert.Contains(t, writtenFile(t, "/etc/systemd/system/mitstack-caddy.service"), "\nConditionPathExists="+mirrorComplete+"\n",
+		"Caddy can start, at the first boot or any later one, before prepare has filled the mirror")
+	prepare := slices.IndexFunc(runcmd, func(c []string) bool { return c[0] == "/usr/local/bin/mitstack-gateway-prepare" })
+	require.GreaterOrEqual(t, prepare, 0, "the cloud-config runs no prepare: %v", runcmd)
+	assert.Equal(t, mirrorComplete, runcmd[prepare][len(runcmd[prepare])-1], "the file prepare writes once it has finished")
+	start := slices.IndexFunc(runcmd, func(c []string) bool { return slices.Equal(c, []string{"systemctl", "start", "mitstack-caddy"}) })
+	assert.Greater(t, start, prepare, "Caddy is not started once prepare has finished: %v", runcmd)
 }
 
 func TestPrepareScript_InstallsThePinnedToolsMirrorsByDigestAndFetchesTheManifests(t *testing.T) {

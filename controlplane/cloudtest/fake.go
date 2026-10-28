@@ -42,6 +42,8 @@ type Fake struct {
 	waits, writes int
 	// InstantBuild powers each builder off as it is powered on, and images each snapshot as it starts.
 	InstantBuild bool
+	// MirrorTakes is how long the gateway's mirror fills from its power-on; no builder powers itself off before then.
+	MirrorTakes time.Duration
 	// FailNext, when set, fails the next server list with it.
 	FailNext error
 	// FailDelete, when set, fails the next server delete with it.
@@ -515,12 +517,15 @@ func (f *Fake) DeleteSnapshot(_ context.Context, id int64) error {
 }
 
 // Advance plays what Hetzner and the builders finish on their own: a builder powers itself off build after its
-// power-on, unless build is zero, and a snapshot is available image after it started.
+// power-on, unless build is zero, and no sooner than the gateway's mirror completes, and a snapshot is available
+// image after it started.
 func (f *Fake) Advance(build, image time.Duration) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	complete, mirrored := f.mirrorCompleteAt()
 	for id, s := range f.Servers {
-		if builds(s.Labels) && s.Status == controlplane.ServerRunning && build > 0 && !f.now().Before(f.started[id].Add(build)) {
+		if builds(s.Labels) && s.Status == controlplane.ServerRunning && build > 0 && !f.now().Before(f.started[id].Add(build)) &&
+			mirrored && !f.now().Before(complete) {
 			s.Status = controlplane.ServerOff
 		}
 	}
@@ -529,6 +534,23 @@ func (f *Fake) Advance(build, image time.Duration) {
 			snap.Status = controlplane.SnapshotAvailable
 		}
 	}
+}
+
+// MirrorCompleteAt is when the gateway's mirror completes, MirrorTakes after the gateway's power-on; with no gateway
+// powered on, the mirror is complete only when MirrorTakes is zero.
+func (f *Fake) MirrorCompleteAt() (time.Time, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.mirrorCompleteAt()
+}
+
+func (f *Fake) mirrorCompleteAt() (time.Time, bool) {
+	for id, s := range f.Servers {
+		if started, ok := f.started[id]; ok && role(s.Labels) == controlplane.RoleGateway {
+			return started.Add(f.MirrorTakes), true
+		}
+	}
+	return time.Time{}, f.MirrorTakes == 0
 }
 
 // Resources is every resource but the builders and the serving server, as text, so a later read shows any change to

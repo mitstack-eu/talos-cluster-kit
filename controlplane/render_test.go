@@ -152,7 +152,30 @@ func TestBuilder_EmbedsAConfigurationThatCarriesTheReportTheCredentialsAndTheApp
 	require.Len(t, clusterDocs, 1, "KubeClusterConfig documents")
 	endpoint := testutil.Field(t, clusterDocs[0], "endpoint")
 	assert.Equal(t, "https://"+h.loadBalancer(controlplane.RoleAPI).PrivateIPs[h.network().ID]+":6443", endpoint, "the control-plane endpoint")
-	assert.Equal(t, []string{controlplane.BuilderScriptPath, image.PinnedImager, controlplane.BuilderConfigPath, controlplane.RouterAddress}, c.RunCmd[0], "the build command")
+	assert.Equal(t, []string{controlplane.BuilderScriptPath, image.PinnedImager, controlplane.BuilderConfigPath, controlplane.RouterAddress,
+		builderMirrorURL, builderGatewayCA}, c.RunCmd[0], "the build command")
+}
+
+// The builder asks the gateway's mirror, at the gateway's fixed address, under the CA its user data carries.
+const (
+	builderMirrorURL = "https://" + controlplane.GatewayAddress + "/v2/"
+	builderGatewayCA = "/root/mitstack-build/gateway-ca.crt"
+)
+
+func TestBuilder_BothBuildersWaitForTheGatewaysMirrorUnderTheGatewaysOwnCA(t *testing.T) {
+	h := installedOnce(t)
+	require.Len(t, h.installed, 1, "installs")
+
+	for _, r := range []controlplane.Role{controlplane.RoleBuilder, controlplane.RoleWorkerBuilder} {
+		c := decodeCloudConfig(t, h.cloud.SpecFor(t, r).UserData)
+
+		require.Len(t, c.RunCmd, 1, "the %s's commands", r)
+		require.GreaterOrEqual(t, len(c.RunCmd[0]), 6, "the %s's build command: %v", r, c.RunCmd[0])
+		assert.Equal(t, []string{builderMirrorURL, builderGatewayCA}, c.RunCmd[0][4:6], "where the %s asks for the mirror, and the CA it trusts", r)
+		ca := c.file(t, builderGatewayCA)
+		assert.Equal(t, string(h.installed[0].GatewayCA), ca.Content, "the CA the %s trusts for the mirror", r)
+		assert.Equal(t, "0644", ca.Permissions, "the %s's gateway CA's permissions", r)
+	}
 }
 
 func TestBuilder_TheAPIServersCertificateNamesTheAPILoadBalancer(t *testing.T) {

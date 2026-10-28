@@ -501,7 +501,9 @@ The install calls `DeployKeys` once, in the change that creates the gateway
 and the builders, with the 32-byte OpenBao seal key and a 4096-bit Sealed
 Secrets key pair it has just minted. Those keys exist only in that call's
 memory and in what the hook keeps of them. An error from the hook stops the
-install before any server exists.
+install before any server exists. An install that fails after the hook leaves
+its deploy keys on the repository, with their private halves gone, so the
+block's hook deletes keys it created earlier before it creates new ones.
 
 `components.Hosting` checks what the hook returns. It refuses a seal key that
 is not 32 bytes, a certificate of another key, and a deploy key not sealed to
@@ -593,10 +595,13 @@ block reuses it to serve any one file to one client.
 
 This section is for an engineer who builds a cluster block that hosts
 mitstack's platform, and for anyone checking which key such a cluster reads
-its code with. It uses four terms.
+its code with. It uses seven terms.
 
 | Term | Meaning here |
 |---|---|
+| Platform-hosting cluster | A cluster that runs mitstack's own control plane |
+| Hosting set | The manifests `components.Hosting` returns for a platform-hosting cluster, which the install renders from the keys it mints |
+| Inline manifest | A manifest of the set that travels inside each node's machine configuration instead of being served over the network, which is where every secret goes |
 | Cluster block | A block, a unit of infrastructure an app subscribes to, whose Go program imports this module and installs a Talos cluster, such as hcloud-hrobot-talos-cluster |
 | Cluster repository | The GitHub repository the block creates for each cluster, whose manifests Argo CD applies to the cluster |
 | Deploy key | An SSH key GitHub grants access to one repository alone, read-only or with write access, and that the repository's admin can revoke on its own |

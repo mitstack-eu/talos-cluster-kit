@@ -27,8 +27,7 @@ const (
 	adminTalosconfigTTL = 2 * time.Hour
 )
 
-// installation is what one install renders: each server's user data, the cluster, the enrolment digest and the
-// issuer bucket. A cluster that hosts no platform has no serving server.
+// installation is what one install renders, with no serving server for a cluster that hosts no platform.
 type installation struct {
 	gatewayUserData, builderUserData, servingUserData, workerBuilderUserData string
 	cluster                                                                  nodeconfig.Cluster

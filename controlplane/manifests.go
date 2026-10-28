@@ -38,9 +38,7 @@ const (
 	manifestDir        = "manifests/"
 )
 
-// clusterComponents adds the node report, the enrolment and token renewal, and the Argo CD application inline, so
-// the configuration carries them and the gateway mirrors their image. A hosting cluster reads its repository with
-// the sealed read-only deploy key, so the platform's tokens give it the report token alone.
+// clusterComponents carries the node report, the enrolment and the Argo CD application inline, so the gateway mirrors their image.
 func (p Plane) clusterComponents(set components.Set, enrolmentToken string) (components.Set, error) {
 	reportManifests, err := report.Manifests(report.Inputs{URL: p.PlatformURL + clusterReportsPath, SubscriptionID: p.Subscription, ToolsImage: toolsImage()})
 	if err != nil {

@@ -67,9 +67,7 @@ type hostingFetch struct {
 	url, pin string
 }
 
-// builderUserData holds every key the configuration does, which is why a builder is deleted once its disk is a
-// snapshot. The configuration and the script are gzipped, since as text they are over Hetzner's user data limit, and
-// a result still over it is refused.
+// builderUserData carries the configuration and the script gzipped, since as text they pass Hetzner's limit, and refuses a result still over it.
 func builderUserData(what string, machineConfig []byte, fetch *hostingFetch) (string, error) {
 	config, err := serve.Gzipped(machineConfig)
 	if err != nil {

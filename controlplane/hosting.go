@@ -24,8 +24,7 @@ type Hosting struct {
 	Repository string
 	// Recipient is the armored OpenPGP public key OpenBao's keys leave the cluster encrypted to.
 	Recipient []byte
-	// DeployKeys gives the cluster repository its deploy keys and returns each sealed with the install's certificate.
-	// It receives the install's keys in the one call they exist, to keep what it must of them; an error stops the install.
+	// DeployKeys, called once with the keys the install mints, returns the deploy keys sealed to them; an error stops the install.
 	DeployKeys func(ctx context.Context, keys HostingKeys) (SealedDeployKeys, error)
 }
 

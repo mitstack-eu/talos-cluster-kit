@@ -32,7 +32,7 @@ var Program string
 
 const (
 	DefaultPort = 8443
-	// Dir holds every file the server writes, so one directory is all it serves from.
+	// Dir holds every file the server writes.
 	Dir         = "/root/mitstack-serve"
 	CertPath    = Dir + "/tls.crt"
 	KeyPath     = Dir + "/tls.key"

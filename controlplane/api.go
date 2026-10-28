@@ -34,7 +34,8 @@ type API interface {
 	// SetNetworkLabels replaces the network's labels with labels.
 	SetNetworkLabels(ctx context.Context, id int64, labels map[string]string) error
 	// AddVSwitchSubnet couples the vSwitch to the network through a subnet of ipRange and exposes the network's routes
-	// to it, so a dedicated server on the vSwitch routes through the network's gateway.
+	// to it, so a dedicated server on the vSwitch routes through the network's gateway. A vSwitch already coupled at
+	// ipRange counts as coupled, so a retry finishes what an earlier call began.
 	AddVSwitchSubnet(ctx context.Context, networkID, vswitchID int64, ipRange string) error
 	DeleteNetwork(ctx context.Context, id int64) error
 	ListFirewalls(ctx context.Context, labelSelector string) ([]Firewall, error)
@@ -390,15 +391,26 @@ func (a *hcloudAPI) AddVSwitchSubnet(ctx context.Context, networkID, vswitchID i
 	if err != nil {
 		return err
 	}
-	network := &hcloud.Network{ID: networkID}
-	action, _, err := a.client.Network.AddSubnet(ctx, network, hcloud.NetworkAddSubnetOpts{Subnet: hcloud.NetworkSubnet{
-		Type: hcloud.NetworkSubnetTypeVSwitch, NetworkZone: hcloud.NetworkZone(networkZone), IPRange: subnetRange, VSwitchID: vswitchID,
-	}})
+	network, _, err := a.client.Network.GetByID(ctx, networkID)
 	if err != nil {
-		return fmt.Errorf("coupling vSwitch %d to network %d at %s: %w", vswitchID, networkID, ipRange, err)
+		return fmt.Errorf("reading network %d: %w", networkID, err)
 	}
-	if err := a.wait(ctx, action, fmt.Sprintf("vSwitch %d to couple to network %d", vswitchID, networkID)); err != nil {
-		return err
+	if network == nil {
+		return fmt.Errorf("coupling vSwitch %d to network %d: the network does not exist", vswitchID, networkID)
+	}
+	if networkFromHcloud(network).VSwitchSubnets[vswitchID] != ipRange {
+		action, _, err := a.client.Network.AddSubnet(ctx, network, hcloud.NetworkAddSubnetOpts{Subnet: hcloud.NetworkSubnet{
+			Type: hcloud.NetworkSubnetTypeVSwitch, NetworkZone: hcloud.NetworkZone(networkZone), IPRange: subnetRange, VSwitchID: vswitchID,
+		}})
+		if err != nil {
+			return fmt.Errorf("coupling vSwitch %d to network %d at %s: %w", vswitchID, networkID, ipRange, err)
+		}
+		if err := a.wait(ctx, action, fmt.Sprintf("vSwitch %d to couple to network %d", vswitchID, networkID)); err != nil {
+			return err
+		}
+	}
+	if network.ExposeRoutesToVSwitch {
+		return nil
 	}
 	if _, _, err := a.client.Network.Update(ctx, network, hcloud.NetworkUpdateOpts{ExposeRoutesToVSwitch: hcloud.Ptr(true)}); err != nil {
 		return fmt.Errorf("exposing the routes of network %d to its vSwitch: %w", networkID, err)

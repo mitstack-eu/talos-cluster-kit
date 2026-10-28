@@ -51,7 +51,7 @@ type Cluster struct {
 	// ServiceAccountIssuer is the issuer every service-account token names, where AWS reads the cluster's key set.
 	ServiceAccountIssuer *url.URL
 	// AppsOnWorkers keeps Talos's NoSchedule taint on the control-plane nodes, so only a pod that tolerates it, such as
-	// every DaemonSet of the component set, runs there.
+	// Cilium's, ztunnel's, the CNI agent's and the log collector's, runs there.
 	AppsOnWorkers bool
 }
 

@@ -155,7 +155,12 @@ address the block provides, and `Delete` removes everything the labels find.
 A block that adds workers renders them there with `nodeconfig.RenderWorker`.
 An error from it rolls the install back. `AppsOnWorkers` keeps Talos's
 `NoSchedule` taint on the control-plane nodes, so an app's pods run only on
-the workers and the component set's DaemonSets still run everywhere.
+the workers. Cilium, ztunnel, the CNI agent and the log collector tolerate the
+taint and still run on every node. The hosting set's Traefik tolerates no
+taint and its Service keeps traffic on the node it reaches, so a cluster that
+hosts the platform leaves `AppsOnWorkers` off. Every other pod, Argo CD, the
+node report and the enrolment Job among them, waits Pending until a worker
+joins.
 
 `plane.go`, `converge.go`, `install.go` and `observe.go` hold the plane, and
 `api.go` holds the Hetzner Cloud client behind the `API` interface. The

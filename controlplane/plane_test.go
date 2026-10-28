@@ -28,7 +28,7 @@ const (
 	testApp      = "shop"
 	testRepoURL  = "https://github.com/acme/shop-cluster"
 	platformURL  = "https://api.mitstack.dev"
-	settleBudget = 60 * time.Minute
+	settleBudget = controlplane.BuildDeadline + 15*time.Minute
 	mib          = 1 << 20
 )
 

@@ -268,12 +268,16 @@ func (c Cluster) manifestDocuments() ([]config.Document, error) {
 		docs = append(docs, doc)
 	}
 	for _, m := range inline {
-		doc := k8s.NewKubeInlineManifestConfigV1Alpha1()
-		doc.MetaName = m.Name
-		doc.ManifestSpec = string(m.Bytes)
-		docs = append(docs, doc)
+		docs = append(docs, inlineDocument(m))
 	}
 	return docs, nil
+}
+
+func inlineDocument(m components.Manifest) config.Document {
+	doc := k8s.NewKubeInlineManifestConfigV1Alpha1()
+	doc.MetaName = m.Name
+	doc.ManifestSpec = string(m.Bytes)
+	return doc
 }
 
 // ManifestURL is where gateway serves a served manifest.

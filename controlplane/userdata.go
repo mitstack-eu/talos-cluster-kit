@@ -2,9 +2,7 @@ package controlplane
 
 import (
 	"bytes"
-	"compress/gzip"
 	_ "embed"
-	"encoding/base64"
 	"fmt"
 	"mime/multipart"
 	"net/textproto"
@@ -13,6 +11,7 @@ import (
 
 	"github.com/mitstack-eu/talos-cluster-kit/gateway"
 	"github.com/mitstack-eu/talos-cluster-kit/image"
+	"github.com/mitstack-eu/talos-cluster-kit/serve"
 	"go.yaml.in/yaml/v4"
 )
 
@@ -63,45 +62,41 @@ func (c cloudConfig) render() (string, error) {
 	return cloudConfigHeader + string(out), nil
 }
 
-// builderUserData holds every key of the cluster, which is why the builder is deleted once its disk is a snapshot.
-// The configuration is gzipped, since as text it is over Hetzner's user data limit, and a result still over it is refused.
-func builderUserData(machineConfig []byte) (string, error) {
-	config, err := gzipBase64(machineConfig)
+// hostingFetch is where a builder fetches the hosting set from, and the pin of the serving server's key.
+type hostingFetch struct {
+	url, pin string
+}
+
+// builderUserData holds every key the configuration does, which is why a builder is deleted once its disk is a
+// snapshot. The configuration and the script are gzipped, since as text they are over Hetzner's user data limit, and
+// a result still over it is refused.
+func builderUserData(what string, machineConfig []byte, fetch *hostingFetch) (string, error) {
+	config, err := serve.Gzipped(machineConfig)
 	if err != nil {
 		return "", err
 	}
+	script, err := serve.Gzipped([]byte(buildImageScript))
+	if err != nil {
+		return "", err
+	}
+	run := []string{builderScriptPath, image.PinnedImager, builderConfigPath, routerAddress}
+	if fetch != nil {
+		run = append(run, fetch.url, fetch.pin)
+	}
 	out, err := cloudConfig{
 		WriteFiles: []cloudFile{
-			{Path: builderConfigPath, Permissions: "0600", Content: config, Encoding: gzipBase64Encoding},
-			{Path: builderScriptPath, Permissions: "0755", Content: buildImageScript},
+			{Path: builderConfigPath, Permissions: "0600", Content: config, Encoding: serve.GzipBase64},
+			{Path: builderScriptPath, Permissions: "0755", Content: script, Encoding: serve.GzipBase64},
 		},
-		RunCmd: [][]string{{builderScriptPath, image.PinnedImager, builderConfigPath, routerAddress}},
+		RunCmd: [][]string{run},
 	}.render()
 	if err != nil {
 		return "", err
 	}
 	if len(out) > gateway.UserDataLimit {
-		return "", fmt.Errorf("the builder's user data is %d bytes, over Hetzner's %d", len(out), gateway.UserDataLimit)
+		return "", fmt.Errorf("the %s's user data is %d bytes, over Hetzner's %d", what, len(out), gateway.UserDataLimit)
 	}
 	return out, nil
-}
-
-// gzipBase64Encoding is the write_files encoding cloud-init decodes as base64 and then gunzips.
-const gzipBase64Encoding = "gz+b64"
-
-func gzipBase64(content []byte) (string, error) {
-	var zipped bytes.Buffer
-	w, err := gzip.NewWriterLevel(&zipped, gzip.BestCompression)
-	if err != nil {
-		return "", fmt.Errorf("compressing the builder's configuration: %w", err)
-	}
-	if _, err := w.Write(content); err != nil {
-		return "", fmt.Errorf("compressing the builder's configuration: %w", err)
-	}
-	if err := w.Close(); err != nil {
-		return "", fmt.Errorf("compressing the builder's configuration: %w", err)
-	}
-	return base64.StdEncoding.EncodeToString(zipped.Bytes()), nil
 }
 
 // firstNodeBootstrap is the gateway's one etcd bootstrap: an admin talosconfig and the time it expires.

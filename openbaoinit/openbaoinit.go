@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
@@ -27,32 +28,28 @@ var job = tmpl.Must("OpenBao's init Job", jobTemplate)
 
 const InitFile = "openbao-init.asc"
 
+// The write deploy key the Job pushes InitFile with, sealed into the namespace the Job runs in.
 const (
-	AppKeyNamespace = "mitstack-node"
-	AppKeySecret    = "github-app-key"
-	AppKeyItem      = "private-key"
+	DeployKeyNamespace = "mitstack-node"
+	DeployKeySecret    = "github-deploy-key"
+	DeployKeyItem      = "ssh-privatekey"
 )
 
 type Inputs struct {
 	// ToolsImage is the image built from tools/Dockerfile, by digest.
-	ToolsImage            string
-	Repository            string
-	AppID, InstallationID string
+	ToolsImage string
+	Repository string
 	// Recipient is the ASCII-armored OpenPGP public key behind openbaoSealKeyRecipient, which the Job encrypts to.
 	Recipient []byte
+	// KnownHosts are the host keys the Job accepts for GitHub's SSH endpoint, in known_hosts form.
+	KnownHosts string
 }
 
-var (
-	repositoryRe = regexp.MustCompile(`^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$`)
-	githubIDRe   = regexp.MustCompile(`^[1-9][0-9]{0,19}$`)
-)
+var repositoryRe = regexp.MustCompile(`^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$`)
 
-// CheckGitHubID fails unless id is the positive decimal number GitHub gives an App or an installation, calling it what.
-func CheckGitHubID(what, id string) error {
-	if !githubIDRe.MatchString(id) {
-		return fmt.Errorf("%s %q is not a number", what, id)
-	}
-	return nil
+// RepositoryURL reaches a GitHub repository over SSH on port 443, since the gateway forwards no other port.
+func RepositoryURL(repository string) string {
+	return "ssh://git@ssh.github.com:443/" + repository + ".git"
 }
 
 func Manifests(in Inputs) ([]byte, error) {
@@ -60,15 +57,14 @@ func Manifests(in Inputs) ([]byte, error) {
 		return nil, err
 	}
 	return tmpl.Execute(job, map[string]string{
-		"Namespace":      AppKeyNamespace,
-		"AppKeySecret":   AppKeySecret,
-		"AppKeyItem":     AppKeyItem,
-		"Image":          in.ToolsImage,
-		"Repository":     in.Repository,
-		"AppID":          in.AppID,
-		"InstallationID": in.InstallationID,
-		"Recipient":      string(in.Recipient),
-		"Script":         initScript,
+		"Namespace":       DeployKeyNamespace,
+		"DeployKeySecret": DeployKeySecret,
+		"DeployKeyItem":   DeployKeyItem,
+		"Image":           in.ToolsImage,
+		"RepositoryURL":   RepositoryURL(in.Repository),
+		"Recipient":       string(in.Recipient),
+		"KnownHosts":      in.KnownHosts,
+		"Script":          initScript,
 	})
 }
 
@@ -80,11 +76,8 @@ func (in Inputs) validate() error {
 	if !repositoryRe.MatchString(in.Repository) {
 		errs = append(errs, fmt.Errorf("repository %q is not owner/name", in.Repository))
 	}
-	if err := CheckGitHubID("GitHub App id", in.AppID); err != nil {
-		errs = append(errs, err)
-	}
-	if err := CheckGitHubID("installation id", in.InstallationID); err != nil {
-		errs = append(errs, err)
+	if strings.TrimSpace(in.KnownHosts) == "" {
+		errs = append(errs, errors.New("no host key is known for GitHub's SSH endpoint"))
 	}
 	if err := canEncryptTo(in.Recipient); err != nil {
 		errs = append(errs, err)

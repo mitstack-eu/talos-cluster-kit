@@ -32,19 +32,22 @@ const OpenBaoMembers = 3
 
 const SealKeyBytes = 32
 
+// The write deploy key OpenBao's init Job pushes with.
 const (
-	SealedAppKeyNamespace = openbaoinit.AppKeyNamespace
-	SealedAppKeyName      = openbaoinit.AppKeySecret
-	SealedAppKeyItem      = openbaoinit.AppKeyItem
+	DeployKeyNamespace = openbaoinit.DeployKeyNamespace
+	DeployKeySecret    = openbaoinit.DeployKeySecret
+	DeployKeyItem      = openbaoinit.DeployKeyItem
 )
 
-// The reader credential is the Secret Argo CD lends to every repository under readerCredentialURL that carries no credential of its own.
+// The repository credential is the Secret Argo CD reads the cluster repository with, holding its read-only deploy key.
 const (
-	ReaderCredentialNamespace = "argocd"
-	ReaderCredentialName      = "mitstack-eu-repo-creds"
-	ReaderCredentialItem      = "githubAppPrivateKey"
-	readerCredentialURL       = "https://github.com/mitstack-eu/"
+	RepositoryCredentialNamespace = "argocd"
+	RepositoryCredentialName      = "mitstack-cluster-repository"
+	RepositoryCredentialItem      = "sshPrivateKey"
 )
+
+// RepositorySSHURL is the URL Argo CD and the init Job reach a repository at with its deploy key.
+func RepositorySSHURL(repository string) string { return openbaoinit.RepositoryURL(repository) }
 
 func UserVolumePath(name string) string {
 	return "/var/mnt/" + name
@@ -54,12 +57,13 @@ type HostingInputs struct {
 	SealKey []byte
 	// SealedSecretsKeyPEM and SealedSecretsCertPEM are the RSA key pair Sealed Secrets opens with, as PKCS #1 and X.509 PEM.
 	SealedSecretsKeyPEM, SealedSecretsCertPEM []byte
-	SealedAppKey                              []byte
-	// SealedReaderKey is the SealedSecret that opens to the read-only reader App's key, as ReaderCredentialItem of ReaderCredentialName.
-	SealedReaderKey                   []byte
-	ReaderAppID, ReaderInstallationID string
-	Nodes                             []string
-	Init                              openbaoinit.Inputs
+	// SealedWriteKey is the SealedSecret that opens to the cluster repository's write deploy key, as DeployKeyItem.
+	SealedWriteKey []byte
+	// SealedReadKey is the SealedSecret that opens to the cluster repository's read-only deploy key, as RepositoryCredentialItem.
+	SealedReadKey []byte
+	Nodes         []string
+	// Init takes the cluster repository Argo CD reads; its known hosts are the ones Argo CD trusts.
+	Init openbaoinit.Inputs
 }
 
 // sealedFile names the one value a block's SealedSecret file may hold, and what an error calls the file.
@@ -68,13 +72,13 @@ type sealedFile struct {
 }
 
 var (
-	appKeyFile    = sealedFile{"the sealed App key", SealedAppKeyNamespace, SealedAppKeyName, SealedAppKeyItem}
-	readerKeyFile = sealedFile{"the sealed reader key", ReaderCredentialNamespace, ReaderCredentialName, ReaderCredentialItem}
+	writeKeyFile = sealedFile{"the sealed write key", DeployKeyNamespace, DeployKeySecret, DeployKeyItem}
+	readKeyFile  = sealedFile{"the sealed read key", RepositoryCredentialNamespace, RepositoryCredentialName, RepositoryCredentialItem}
 )
 
 // sealedValues are the sealed values the hosting set renders, each read from its block file.
 type sealedValues struct {
-	appKey, readerKey string
+	writeKey, readKey string
 }
 
 var (
@@ -100,20 +104,20 @@ var (
 	sealKeyTemplate string
 	//go:embed hosting/sealed-secrets-key.yaml
 	sealedSecretsKeyTemplate string
-	//go:embed hosting/sealed-app-key.yaml
-	sealedAppKeyTemplate string
-	//go:embed hosting/reader-repo-creds.yaml
-	readerRepoCredsTemplate string
+	//go:embed hosting/deploy-key.yaml
+	deployKeyTemplate string
+	//go:embed hosting/cluster-repository.yaml
+	clusterRepositoryTemplate string
 	//go:embed hosting/storage.yaml
 	storageTemplate string
 )
 
 var (
-	sealKey          = tmpl.Must("OpenBao's seal key", sealKeyTemplate)
-	sealedSecretsKey = tmpl.Must("the Sealed Secrets key pair", sealedSecretsKeyTemplate)
-	sealedAppKey     = tmpl.Must("the sealed App key", sealedAppKeyTemplate)
-	readerRepoCreds  = tmpl.Must("Argo CD's credential template", readerRepoCredsTemplate)
-	storage          = tmpl.Must("OpenBao's volumes", storageTemplate)
+	sealKey           = tmpl.Must("OpenBao's seal key", sealKeyTemplate)
+	sealedSecretsKey  = tmpl.Must("the Sealed Secrets key pair", sealedSecretsKeyTemplate)
+	deployKey         = tmpl.Must("the sealed write key", deployKeyTemplate)
+	clusterRepository = tmpl.Must("Argo CD's cluster repository", clusterRepositoryTemplate)
+	storage           = tmpl.Must("OpenBao's volumes", storageTemplate)
 )
 
 // Hosting renders every manifest that holds one of in's secrets inline, since the gateway serves its manifests to every node.
@@ -151,12 +155,12 @@ func (in HostingInputs) inlineManifests(sealed sealedValues) ([]Manifest, error)
 	}{
 		{"mitstack-openbao-seal-key", "components/hosting/seal-key.yaml", sealKey, map[string]string{"Key": base64.StdEncoding.EncodeToString(in.SealKey)}},
 		{"mitstack-sealed-secrets-key", "components/hosting/sealed-secrets-key.yaml", sealedSecretsKey, map[string]string{"Cert": string(in.SealedSecretsCertPEM), "Key": string(in.SealedSecretsKeyPEM)}},
-		{"mitstack-sealed-app-key", "components/hosting/sealed-app-key.yaml", sealedAppKey, map[string]string{
-			"Namespace": SealedAppKeyNamespace, "Name": SealedAppKeyName, "Item": SealedAppKeyItem, "Sealed": sealed.appKey,
+		{"mitstack-openbao-deploy-key", "components/hosting/deploy-key.yaml", deployKey, map[string]string{
+			"Namespace": DeployKeyNamespace, "Name": DeployKeySecret, "Item": DeployKeyItem, "Sealed": sealed.writeKey,
 		}},
-		{"mitstack-reader-repo-creds", "components/hosting/reader-repo-creds.yaml", readerRepoCreds, map[string]string{
-			"Namespace": ReaderCredentialNamespace, "Name": ReaderCredentialName, "Item": ReaderCredentialItem, "Sealed": sealed.readerKey,
-			"URL": readerCredentialURL, "AppID": in.ReaderAppID, "InstallationID": in.ReaderInstallationID,
+		{"mitstack-cluster-repository", "components/hosting/cluster-repository.yaml", clusterRepository, map[string]string{
+			"Namespace": RepositoryCredentialNamespace, "Name": RepositoryCredentialName, "Item": RepositoryCredentialItem,
+			"Sealed": sealed.readKey, "URL": RepositorySSHURL(in.Init.Repository),
 		}},
 		{"mitstack-openbao-storage", "components/hosting/storage.yaml", storage, map[string]any{"Nodes": in.Nodes, "Path": UserVolumePath(OpenBaoVolume)}},
 	}
@@ -168,7 +172,9 @@ func (in HostingInputs) inlineManifests(sealed sealedValues) ([]Manifest, error)
 		}
 		manifests = append(manifests, Manifest{Name: p.name, Path: p.path, Bytes: out})
 	}
-	initJob, err := openbaoinit.Manifests(in.Init)
+	init := in.Init
+	init.KnownHosts = githubKnownHosts
+	initJob, err := openbaoinit.Manifests(init)
 	if err != nil {
 		return nil, fmt.Errorf("OpenBao's init Job: %w", err)
 	}
@@ -183,16 +189,10 @@ func (in HostingInputs) validate() (sealedValues, error) {
 	key, err := sealedSecretsKeyPair(in.SealedSecretsKeyPEM, in.SealedSecretsCertPEM)
 	errs = append(errs, err)
 	var sealed sealedValues
-	sealed.appKey, err = readOpenable(key, in.SealedAppKey, appKeyFile)
+	sealed.writeKey, err = readOpenable(key, in.SealedWriteKey, writeKeyFile)
 	errs = append(errs, err)
-	sealed.readerKey, err = readOpenable(key, in.SealedReaderKey, readerKeyFile)
+	sealed.readKey, err = readOpenable(key, in.SealedReadKey, readKeyFile)
 	errs = append(errs, err)
-	if err := openbaoinit.CheckGitHubID("the reader App id", in.ReaderAppID); err != nil {
-		errs = append(errs, err)
-	}
-	if err := openbaoinit.CheckGitHubID("the reader App's installation id", in.ReaderInstallationID); err != nil {
-		errs = append(errs, err)
-	}
 	errs = append(errs, validateNodes(in.Nodes))
 	return sealed, errors.Join(errs...)
 }

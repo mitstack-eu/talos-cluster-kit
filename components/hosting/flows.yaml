@@ -75,7 +75,7 @@ specs:
         k8s:app.kubernetes.io/name: mitstack-openbao-init
     toPorts:
     - ports: [{port: "8200", protocol: TCP}, {port: "15008", protocol: TCP}]
-- description: "OpenBao's init Job looks names up through Cilium's DNS proxy, reaches OpenBao, and reaches GitHub's API, which the gateway forwards."
+- description: "OpenBao's init Job looks names up through Cilium's DNS proxy, reaches OpenBao, and reaches GitHub's SSH endpoint on 443, which the gateway forwards."
   endpointSelector:
     matchLabels:
       k8s:io.kubernetes.pod.namespace: mitstack-node
@@ -97,7 +97,7 @@ specs:
     toPorts:
     - ports: [{port: "8200", protocol: TCP}, {port: "15008", protocol: TCP}]
   - toFQDNs:
-    - matchName: api.github.com
+    - matchName: ssh.github.com
     toPorts:
     - ports: [{port: "443", protocol: TCP}]
 - description: "Traefik takes web traffic from the load balancers on its NodePorts, reaches the API server, and reaches the app slices."

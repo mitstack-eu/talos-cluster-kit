@@ -14,7 +14,9 @@ type State struct {
 	Firewalls     []Firewall
 	Servers       map[Role][]Server
 	LoadBalancers map[Role][]LoadBalancer
-	Snapshots     []Snapshot
+	// Snapshots are the cluster's own images, and WorkerSnapshots the worker images.
+	Snapshots       []Snapshot
+	WorkerSnapshots []Snapshot
 }
 
 // Read lists every resource of the plane's subscription.
@@ -41,8 +43,16 @@ func (p Plane) Read(ctx context.Context) (State, error) {
 	if st.Firewalls, err = p.API.ListFirewalls(ctx, sel); err != nil {
 		return st, fmt.Errorf("listing the subscription's firewalls: %w", err)
 	}
-	if st.Snapshots, err = p.API.ListSnapshots(ctx, sel); err != nil {
+	snapshots, err := p.API.ListSnapshots(ctx, sel)
+	if err != nil {
 		return st, fmt.Errorf("listing the subscription's snapshots: %w", err)
+	}
+	for _, snap := range snapshots {
+		if Role(snap.Labels[KeyRole]) == RoleWorkerImage {
+			st.WorkerSnapshots = append(st.WorkerSnapshots, snap)
+		} else {
+			st.Snapshots = append(st.Snapshots, snap)
+		}
 	}
 	return st, nil
 }
@@ -54,6 +64,8 @@ func (st State) Firewall() (Firewall, bool) { return onlyOne(st.Firewalls) }
 func (st State) Server(r Role) (Server, bool) { return onlyOne(st.Servers[r]) }
 
 func (st State) Snapshot() (Snapshot, bool) { return onlyOne(st.Snapshots) }
+
+func (st State) WorkerSnapshot() (Snapshot, bool) { return onlyOne(st.WorkerSnapshots) }
 
 func (st State) NodeIn(loc string) (Server, bool) {
 	return onlyOne(ServersIn(st.Servers[RoleNode], loc))
@@ -91,7 +103,7 @@ func (st State) HasServers() bool {
 }
 
 func (st State) Empty() bool {
-	count := len(st.Networks) + len(st.Firewalls) + len(st.Snapshots)
+	count := len(st.Networks) + len(st.Firewalls) + len(st.Snapshots) + len(st.WorkerSnapshots)
 	for _, s := range st.Servers {
 		count += len(s)
 	}
@@ -112,7 +124,8 @@ func (st State) Duplicates() []string {
 	add("network", IDs(st.Networks, func(n Network) int64 { return n.ID }))
 	add("firewall", IDs(st.Firewalls, func(f Firewall) int64 { return f.ID }))
 	add("snapshot", IDs(st.Snapshots, func(s Snapshot) int64 { return s.ID }))
-	for _, r := range []Role{RoleGateway, RoleBuilder} {
+	add("worker image snapshot", IDs(st.WorkerSnapshots, func(s Snapshot) int64 { return s.ID }))
+	for _, r := range []Role{RoleGateway, RoleBuilder, RoleServing, RoleWorkerBuilder} {
 		add(string(r)+" server", IDs(st.Servers[r], ServerID))
 	}
 	for _, loc := range Locations {

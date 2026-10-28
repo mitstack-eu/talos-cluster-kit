@@ -66,17 +66,30 @@ type site struct {
 }
 
 // nodeStep builds anew only a cluster with neither node nor gateway left, since the cluster's keys live only in its
-// nodes, its snapshot and a builder.
+// nodes, its snapshot and a builder. The worker image is built beside the cluster's own, while that waits.
 func (p Plane) nodeStep(ctx context.Context, st State, s site) (Step, bool, error) {
+	step, ok, err := p.controlPlaneStep(ctx, st, s)
+	if err != nil || ok {
+		return step, ok, err
+	}
+	return p.workerImageStep(ctx, st, s)
+}
+
+func (p Plane) controlPlaneStep(ctx context.Context, st State, s site) (Step, bool, error) {
 	gw, hasGateway := st.Server(RoleGateway)
 	hasNode := len(st.Servers[RoleNode]) > 0
 	builder, hasBuilder := st.Server(RoleBuilder)
+	serving, hasServing := st.Server(RoleServing)
 	snap, hasSnapshot := st.Snapshot()
 	imaged := hasSnapshot && snap.Status == SnapshotAvailable
 	switch {
 	case hasNode && !hasGateway:
 		return Step{}, false, refuse("gateway-lost",
 			"the cluster's nodes are running, but no gateway carries this subscription's labels, so no node can pull an image and nothing was changed; the gateway's certificate authority is gone with it, so unsubscribe and subscribe again to rebuild the cluster")
+	case hasServing && (!hasBuilder || hasSnapshot || p.overdue(builder)):
+		return Step{"delete the serving server, whose file holds the hosting set's keys, once the builder is done with it", func(ctx context.Context) error {
+			return p.API.DeleteServer(ctx, serving.ID)
+		}}, true, nil
 	case hasBuilder && (hasNode || imaged):
 		return Step{"delete the builder, whose disk holds every key of the cluster, beside its snapshot", func(ctx context.Context) error {
 			return p.API.DeleteServer(ctx, builder.ID)
@@ -90,8 +103,12 @@ func (p Plane) nodeStep(ctx context.Context, st State, s site) (Step, bool, erro
 			return p.API.AttachServerToNetwork(ctx, gw.ID, s.network.ID, GatewayAddress)
 		}}, true, nil
 	case hasBuilder && builder.PrivateIPs[s.network.ID] == "":
-		return Step{"attach the builder to the network once the gateway holds its address", func(ctx context.Context) error {
-			return p.API.AttachServerToNetwork(ctx, builder.ID, s.network.ID, "")
+		return Step{"attach the builder to the network at its fixed address", func(ctx context.Context) error {
+			return p.API.AttachServerToNetwork(ctx, builder.ID, s.network.ID, BuilderAddress)
+		}}, true, nil
+	case hasServing && serving.PrivateIPs[s.network.ID] == "":
+		return Step{"attach the serving server to the network at its fixed address", func(ctx context.Context) error {
+			return p.API.AttachServerToNetwork(ctx, serving.ID, s.network.ID, ServingAddress)
 		}}, true, nil
 	case gw.Status == ServerOff:
 		return Step{"power on the gateway", func(ctx context.Context) error { return p.API.PowerOnServer(ctx, gw.ID) }}, true, nil
@@ -99,29 +116,63 @@ func (p Plane) nodeStep(ctx context.Context, st State, s site) (Step, bool, erro
 		return p.missingNodeStep(st, s, snap)
 	case hasSnapshot:
 		return Step{}, false, nil
+	case hasServing && serving.Status == ServerOff:
+		return Step{"power on the serving server before the builder fetches from it", func(ctx context.Context) error {
+			return p.API.PowerOnServer(ctx, serving.ID)
+		}}, true, nil
 	case hasBuilder:
-		return p.builderStep(ctx, builder)
+		return p.builderStep(ctx, builder, clusterImage)
 	default:
 		return Step{}, false, refuse("cluster-secrets-lost",
 			"the gateway exists but neither the builder nor the cluster's snapshot does, so the cluster's keys, which only they held, are gone; unsubscribe and subscribe again to rebuild the cluster")
 	}
 }
 
-// installStep first deletes a builder or snapshot left from a cluster whose gateway is gone, since the keys they hold
-// match no gateway.
+// workerImageStep builds the worker image once the gateway the worker builder routes through runs, and deletes the
+// builder, whose disk holds the worker's join keys, beside the snapshot.
+func (p Plane) workerImageStep(ctx context.Context, st State, s site) (Step, bool, error) {
+	builder, hasBuilder := st.Server(RoleWorkerBuilder)
+	snap, hasSnapshot := st.WorkerSnapshot()
+	gw, hasGateway := st.Server(RoleGateway)
+	switch {
+	case !hasBuilder:
+		return Step{}, false, nil
+	case hasSnapshot && snap.Status == SnapshotAvailable:
+		return Step{"delete the worker builder beside its snapshot", func(ctx context.Context) error {
+			return p.API.DeleteServer(ctx, builder.ID)
+		}}, true, nil
+	case hasSnapshot:
+		return Step{}, false, nil
+	case builder.PrivateIPs[s.network.ID] == "":
+		return Step{"attach the worker builder to the network at its fixed address", func(ctx context.Context) error {
+			return p.API.AttachServerToNetwork(ctx, builder.ID, s.network.ID, WorkerBuilderAddress)
+		}}, true, nil
+	case !hasGateway || gw.Status != ServerRunning:
+		return Step{}, false, nil
+	default:
+		return p.builderStep(ctx, builder, workerImage)
+	}
+}
+
+// installStep first deletes what is left of a cluster whose gateway is gone, since the keys it holds match no gateway.
 func (p Plane) installStep(st State, s site) Step {
-	if len(st.Servers[RoleBuilder]) == 0 && len(st.Snapshots) == 0 {
+	var servers []Server
+	for _, r := range []Role{RoleBuilder, RoleServing, RoleWorkerBuilder} {
+		servers = append(servers, st.Servers[r]...)
+	}
+	snapshots := append(slices.Clone(st.Snapshots), st.WorkerSnapshots...)
+	if len(servers) == 0 && len(snapshots) == 0 {
 		api, _ := st.LoadBalancerIn(RoleAPI, GatewayLocation)
 		s.apiAddress = api.PrivateIPs[s.network.ID]
-		return Step{"create the gateway and the builder", func(ctx context.Context) error { return p.install(ctx, s) }}
+		return Step{"create the gateway and the builders", func(ctx context.Context) error { return p.install(ctx, s) }}
 	}
-	return Step{"delete the builder and snapshot of a cluster with no gateway", func(ctx context.Context) error {
-		for _, builder := range st.Servers[RoleBuilder] {
-			if err := p.API.DeleteServer(ctx, builder.ID); err != nil {
-				return fmt.Errorf("deleting the builder %d of a cluster with no gateway: %w", builder.ID, err)
+	return Step{"delete the builders and snapshots of a cluster with no gateway", func(ctx context.Context) error {
+		for _, server := range servers {
+			if err := p.API.DeleteServer(ctx, server.ID); err != nil {
+				return fmt.Errorf("deleting the %s %d of a cluster with no gateway: %w", server.Labels[KeyRole], server.ID, err)
 			}
 		}
-		for _, snap := range st.Snapshots {
+		for _, snap := range snapshots {
 			if err := p.API.DeleteSnapshot(ctx, snap.ID); err != nil {
 				return fmt.Errorf("deleting the snapshot %d of a cluster with no gateway: %w", snap.ID, err)
 			}
@@ -130,22 +181,37 @@ func (p Plane) installStep(st State, s site) Step {
 	}}
 }
 
+// imageBuild names what a builder builds: the snapshot's role, what a message calls it and the class of its failure.
+type imageBuild struct {
+	role                   Role
+	builder, what, failure string
+}
+
+var (
+	clusterImage = imageBuild{RoleImage, "builder", "the cluster's image", "image-build-failed"}
+	workerImage  = imageBuild{RoleWorkerImage, "worker builder", "the worker image", "worker-image-build-failed"}
+)
+
+func (p Plane) overdue(builder Server) bool {
+	return builder.Status == ServerRunning && p.now().Sub(builder.Created) >= BuildDeadline
+}
+
 // builderStep powers on a builder that has never run, snapshots one that ran and powered itself off, and deletes one
 // still running past BuildDeadline, since its script leaves a failed build running and only the deadline tells.
-func (p Plane) builderStep(ctx context.Context, builder Server) (Step, bool, error) {
+func (p Plane) builderStep(ctx context.Context, builder Server, img imageBuild) (Step, bool, error) {
 	switch builder.Status {
 	case ServerRunning:
-		if p.now().Sub(builder.Created) < BuildDeadline {
+		if !p.overdue(builder) {
 			return Step{}, false, nil
 		}
-		return Step{"delete the builder that did not finish", func(ctx context.Context) error {
+		return Step{"delete the " + img.builder + " that did not finish", func(ctx context.Context) error {
 			metrics := p.readBuilderMetrics(ctx, builder)
 			if err := p.API.DeleteServer(ctx, builder.ID); err != nil {
-				return fmt.Errorf("deleting the builder %d that did not finish: %w", builder.ID, err)
+				return fmt.Errorf("deleting the %s %d that did not finish: %w", img.builder, builder.ID, err)
 			}
-			return refuse("image-build-failed",
-				"the builder did not power itself off within %s of its creation, so the cluster's image was not built and the builder is deleted; %s; unsubscribe and subscribe again to rebuild the cluster",
-				BuildDeadline, metrics.stall())
+			return refuse(img.failure,
+				"the %s did not power itself off within %s of its creation, so %s was not built and the %s is deleted; %s; unsubscribe and subscribe again to rebuild the cluster",
+				img.builder, BuildDeadline, img.what, img.builder, metrics.stall())
 		}}, true, nil
 	case ServerOff:
 		started, err := p.API.ServerStarted(ctx, builder.ID)
@@ -153,10 +219,10 @@ func (p Plane) builderStep(ctx context.Context, builder Server) (Step, bool, err
 			return Step{}, false, err
 		}
 		if !started {
-			return Step{"power on the builder", func(ctx context.Context) error { return p.API.PowerOnServer(ctx, builder.ID) }}, true, nil
+			return Step{"power on the " + img.builder, func(ctx context.Context) error { return p.API.PowerOnServer(ctx, builder.ID) }}, true, nil
 		}
-		return Step{"start the snapshot of the builder's disk", func(ctx context.Context) error {
-			_, err := p.API.StartSnapshot(ctx, builder.ID, SnapshotSpec{Description: p.Name(RoleImage), Labels: p.Labels(RoleImage)})
+		return Step{"start the snapshot of the " + img.builder + "'s disk", func(ctx context.Context) error {
+			_, err := p.API.StartSnapshot(ctx, builder.ID, SnapshotSpec{Description: p.Name(img.role), Labels: p.Labels(img.role)})
 			return err
 		}}, true, nil
 	default:

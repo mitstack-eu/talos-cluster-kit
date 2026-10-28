@@ -25,12 +25,21 @@ func (p Plane) Problems(ctx context.Context, st State) []string {
 		missing = append(missing, "no firewall carries this subscription's labels")
 	}
 	if builder, ok := st.Server(RoleBuilder); ok {
-		missing = append(missing, p.buildDetail(ctx, builder))
+		missing = append(missing, p.buildDetail(ctx, builder, clusterImage))
 	}
 	if snap, ok := st.Snapshot(); !ok {
 		missing = append(missing, "no snapshot of the cluster's image carries this subscription's labels")
 	} else if snap.Status != SnapshotAvailable {
 		missing = append(missing, fmt.Sprintf("snapshot %d of the cluster's image is %s", snap.ID, snap.Status))
+	}
+	if serving, ok := st.Server(RoleServing); ok {
+		missing = append(missing, fmt.Sprintf("serving server %d still holds the hosting set", serving.ID))
+	}
+	if builder, ok := st.Server(RoleWorkerBuilder); ok {
+		missing = append(missing, p.buildDetail(ctx, builder, workerImage))
+	}
+	if snap, ok := st.WorkerSnapshot(); ok && snap.Status != SnapshotAvailable {
+		missing = append(missing, fmt.Sprintf("snapshot %d of the worker image is %s", snap.ID, snap.Status))
 	}
 	if firewallOK && firewall.RuleCount > 0 {
 		missing = append(missing, fmt.Sprintf("firewall %d holds %d rules, and the cluster's firewall holds none", firewall.ID, firewall.RuleCount))
@@ -44,17 +53,17 @@ func (p Plane) Problems(ctx context.Context, st State) []string {
 	return missing
 }
 
-// buildDetail says where the builder stands, judged against BuildDeadline as builderStep judges it.
-func (p Plane) buildDetail(ctx context.Context, b Server) string {
+// buildDetail says where a builder stands, judged against BuildDeadline as builderStep judges it.
+func (p Plane) buildDetail(ctx context.Context, b Server, img imageBuild) string {
 	created := b.Created.UTC().Format(time.RFC3339)
 	if b.Status != ServerRunning {
-		return fmt.Sprintf("builder %d, created at %s, is %s", b.ID, created, b.Status)
+		return fmt.Sprintf("%s %d, created at %s, is %s", img.builder, b.ID, created, b.Status)
 	}
-	state := "is building the cluster's image"
-	if p.now().Sub(b.Created) >= BuildDeadline {
+	state := "is building " + img.what
+	if p.overdue(b) {
 		state = fmt.Sprintf("did not power itself off within %s", BuildDeadline)
 	}
-	return fmt.Sprintf("builder %d, created at %s, %s; %s", b.ID, created, state, p.readBuilderMetrics(ctx, b).summary())
+	return fmt.Sprintf("%s %d, created at %s, %s; %s", img.builder, b.ID, created, state, p.readBuilderMetrics(ctx, b).summary())
 }
 
 func (st State) gatewayProblems(network Network, firewall Firewall) []string {
@@ -198,7 +207,7 @@ func (p Plane) Delete(ctx context.Context) error {
 			}
 		}
 	}
-	for _, snap := range st.Snapshots {
+	for _, snap := range append(st.Snapshots, st.WorkerSnapshots...) {
 		if err := p.API.DeleteSnapshot(ctx, snap.ID); err != nil {
 			return fmt.Errorf("deleting the cluster snapshot %d: %w", snap.ID, err)
 		}

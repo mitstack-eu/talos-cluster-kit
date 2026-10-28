@@ -83,6 +83,20 @@ func RenderWorker(c Cluster, n Node) ([]byte, error) {
 	return c.render(machine.TypeWorker, n)
 }
 
+// InlineManifests renders manifests as the inline manifest documents Render adds, so a configuration rendered without
+// them takes them by appending.
+func InlineManifests(manifests []components.Manifest) ([]byte, error) {
+	docs := make([]config.Document, 0, len(manifests))
+	for _, m := range manifests {
+		docs = append(docs, inlineDocument(m))
+	}
+	cfg, err := container.New(docs...)
+	if err != nil {
+		return nil, fmt.Errorf("assemble the inline manifests: %w", err)
+	}
+	return cfg.EncodeBytes(encoder.WithComments(encoder.CommentsDisabled))
+}
+
 func (c Cluster) render(role machine.Type, n Node) ([]byte, error) {
 	if err := c.validate(n); err != nil {
 		return nil, err

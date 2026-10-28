@@ -1,4 +1,4 @@
-# OpenBao's init Job, whose namespace components/hosting/sealed-app-key.yaml creates, since the hosting set carries both.
+# OpenBao's init Job, whose namespace components/hosting/deploy-key.yaml creates, since the hosting set carries both.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -7,6 +7,8 @@ metadata:
 data:
   recipient.asc: |
 {{ indent 4 .Recipient }}
+  known_hosts: |
+{{ indent 4 .KnownHosts }}
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -51,18 +53,14 @@ spec:
               value: https://openbao-0.openbao-internal.openbao.svc:8200
             - name: MITSTACK_OPENBAO_CA
               value: /etc/mitstack/openbao-ca/ca.crt
-            - name: MITSTACK_GITHUB_API_URL
-              value: https://api.github.com
-            - name: MITSTACK_REPOSITORY
-              value: {{ printf "%q" .Repository }}
-            - name: MITSTACK_GITHUB_APP_ID
-              value: {{ printf "%q" .AppID }}
-            - name: MITSTACK_GITHUB_INSTALLATION_ID
-              value: {{ printf "%q" .InstallationID }}
+            - name: MITSTACK_REPOSITORY_URL
+              value: {{ printf "%q" .RepositoryURL }}
             - name: MITSTACK_RECIPIENT_FILE
-              value: /etc/mitstack/recipient/recipient.asc
-            - name: MITSTACK_APP_KEY_FILE
-              value: /etc/mitstack/github-app/{{ .AppKeyItem }}
+              value: /etc/mitstack/init/recipient.asc
+            - name: MITSTACK_KNOWN_HOSTS_FILE
+              value: /etc/mitstack/init/known_hosts
+            - name: MITSTACK_DEPLOY_KEY_FILE
+              value: /etc/mitstack/deploy-key/{{ .DeployKeyItem }}
             - name: GNUPGHOME
               value: /tmp/gnupg
             - name: HOME
@@ -75,27 +73,27 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
-            - name: recipient
-              mountPath: /etc/mitstack/recipient
+            - name: init
+              mountPath: /etc/mitstack/init
               readOnly: true
             - name: openbao-ca
               mountPath: /etc/mitstack/openbao-ca
               readOnly: true
-            - name: github-app
-              mountPath: /etc/mitstack/github-app
+            - name: deploy-key
+              mountPath: /etc/mitstack/deploy-key
               readOnly: true
       volumes:
         - name: tmp
           emptyDir:
             medium: Memory
             sizeLimit: 16Mi
-        - name: recipient
+        - name: init
           configMap:
             name: mitstack-openbao-init
         - name: openbao-ca
           configMap:
             name: openbao-ca
-        - name: github-app
+        - name: deploy-key
           secret:
-            secretName: {{ .AppKeySecret }}
+            secretName: {{ .DeployKeySecret }}
             defaultMode: 0440

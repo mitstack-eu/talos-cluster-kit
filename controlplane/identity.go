@@ -39,6 +39,11 @@ const (
 	RoleImage   Role = "image"
 	RoleAPI     Role = "api"
 	RoleIngress Role = "ingress"
+	// RoleServing is the short-lived server that hands the builder a hosting cluster's hosting set.
+	RoleServing Role = "serving"
+	// RoleWorkerBuilder builds the worker image, which RoleWorkerImage labels once it is a snapshot.
+	RoleWorkerBuilder Role = "worker-builder"
+	RoleWorkerImage   Role = "worker-image"
 )
 
 var labelValueRe = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9_.-]{0,61}[A-Za-z0-9])?$`)

@@ -10,6 +10,7 @@ readonly INIT_FILE=openbao-init.asc
 WAIT=${MITSTACK_RETRY_SECONDS:-10}
 root=""
 recovery_lost=""
+work=""
 
 say() {
   echo "openbao-init: $*" >&2
@@ -62,57 +63,30 @@ bao() {
   esac
 }
 
-# github sends one request to GitHub's API with the bearer token on stdin, and prints the body, a newline and the status.
-github() {
-  local method=$1 url=$2 token=$3
-  shift 3
-  printf 'Authorization: Bearer %s\n' "$token" | curl -sS --proto '=https' --tlsv1.2 --connect-timeout 5 --max-time 30 \
-    -X "$method" -H @- -H 'X-GitHub-Api-Version: 2022-11-28' -w '\n%{http_code}' "$@" "$url"
+# use_deploy_key has Git reach GitHub only with the write deploy key and only a host key it already knows. ssh refuses
+# a key file others may read, so the key is copied to a file of this user's own.
+use_deploy_key() {
+  install -m 0600 "$MITSTACK_DEPLOY_KEY_FILE" "$work/deploy-key"
+  export GIT_SSH_COMMAND="ssh -i $work/deploy-key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$MITSTACK_KNOWN_HOSTS_FILE -o BatchMode=yes -o ConnectTimeout=10"
+  export GIT_TERMINAL_PROMPT=0
 }
 
-b64url() {
-  openssl base64 -A | tr '+/' '-_' | tr -d '='
-}
-
-# app_jwt prints the App's JWT, signed RS256 with its key, issued a minute in the past for clock drift, alive ten minutes.
-app_jwt() {
-  local now header claims signature
-  now=$(date +%s)
-  if ! header=$(printf '{"alg":"RS256","typ":"JWT"}' | b64url) ||
-    ! claims=$(jq -cn --arg iss "$MITSTACK_GITHUB_APP_ID" --argjson now "$now" '{iat: ($now - 60), exp: ($now + 540), iss: $iss}' | b64url) ||
-    ! signature=$(printf '%s.%s' "$header" "$claims" | openssl dgst -sha256 -sign "$MITSTACK_APP_KEY_FILE" -binary | b64url); then
-    say "signing the App's JWT with $MITSTACK_APP_KEY_FILE failed"
+# fetch clones the repository afresh, so each try reads what its default branch holds now.
+fetch() {
+  rm -rf "$work/repository"
+  if ! git clone --quiet "$MITSTACK_REPOSITORY_URL" "$work/repository" 2> "$work/git.log"; then
+    say "cloning the cluster repository failed: $(tail -n 3 "$work/git.log")"
     return 1
   fi
-  printf '%s.%s.%s' "$header" "$claims" "$signature"
-}
-
-# app_token mints a one-hour installation token scoped to the cluster repository's contents, to read or to write.
-app_token() {
-  local access=$1 jwt request answer
-  jwt=$(app_jwt) || return 1
-  request=$(jq -cn --arg repo "${MITSTACK_REPOSITORY#*/}" --arg access "$access" '{repositories: [$repo], permissions: {contents: $access}}')
-  answer=$(github POST "$MITSTACK_GITHUB_API_URL/app/installations/$MITSTACK_GITHUB_INSTALLATION_ID/access_tokens" "$jwt" \
-    -H 'Accept: application/vnd.github+json' -H 'Content-Type: application/json' --data-binary "$request") || return 1
-  if [ "$(status "$answer")" != 201 ]; then
-    say "GitHub answered $(status "$answer") to the App's request for a token that may $access the repository"
-    return 1
-  fi
-  body "$answer" | jq -er .token
-}
-
-init_file() {
-  github GET "$MITSTACK_GITHUB_API_URL/repos/$MITSTACK_REPOSITORY/contents/$INIT_FILE" "$1" -H 'Accept: application/vnd.github.raw+json'
 }
 
 init_file_state() {
-  local token answer
-  token=$(app_token read) && answer=$(init_file "$token") || return 1
-  case $(status "$answer") in
-    200) echo committed ;;
-    404) echo absent ;;
-    *) say "GitHub answered $(status "$answer") to reading $INIT_FILE"; return 1 ;;
-  esac
+  fetch || return 1
+  if [ -e "$work/repository/$INIT_FILE" ]; then
+    echo committed
+  else
+    echo absent
+  fi
 }
 
 init_state() {
@@ -169,25 +143,21 @@ seal_root() {
   printf '%s' "$root" | encrypt
 }
 
-# commit creates openbao-init.asc holding messages, and succeeds too when a lost answer hid that an earlier try did.
+# commit pushes openbao-init.asc holding messages, and succeeds too when a lost answer hid that an earlier push landed.
 commit() {
-  local messages=$1 token answer request
-  token=$(app_token write) && answer=$(init_file "$token") || return 1
-  case $(status "$answer") in
-    200)
-      [ "$(body "$answer")" = "$(printf '%s' "$messages")" ] && return 0
-      say "the cluster repository holds another $INIT_FILE, which this Job does not replace"
-      return 1
-      ;;
-    404) ;;
-    *) say "GitHub answered $(status "$answer") to reading $INIT_FILE"; return 1 ;;
-  esac
-  request=$(printf '%s' "$messages" | openssl base64 -A |
-    jq -cR '{message: "Record OpenBao'"'"'s root token and recovery key, each a PGP message to the cluster'"'"'s recipient key", content: .}')
-  answer=$(github PUT "$MITSTACK_GITHUB_API_URL/repos/$MITSTACK_REPOSITORY/contents/$INIT_FILE" "$token" -o /dev/null \
-    -H 'Accept: application/vnd.github+json' -H 'Content-Type: application/json' --data-binary "$request") || return 1
-  if [ "$(status "$answer")" != 201 ]; then
-    say "GitHub answered $(status "$answer") to committing $INIT_FILE"
+  local messages=$1 repository=$work/repository
+  fetch || return 1
+  if [ -e "$repository/$INIT_FILE" ]; then
+    [ "$(cat "$repository/$INIT_FILE")" = "$(printf '%s' "$messages")" ] && return 0
+    say "the cluster repository holds another $INIT_FILE, which this Job does not replace"
+    return 1
+  fi
+  printf '%s' "$messages" > "$repository/$INIT_FILE"
+  git -C "$repository" add "$INIT_FILE"
+  git -C "$repository" -c user.name="mitstack OpenBao init" -c user.email=openbao-init@mitstack.dev commit --quiet \
+    -m "Record OpenBao's root token and recovery key, each a PGP message to the cluster's recipient key"
+  if ! git -C "$repository" push --quiet origin HEAD 2> "$work/git.log"; then
+    say "pushing $INIT_FILE failed: $(tail -n 3 "$work/git.log")"
     return 1
   fi
 }
@@ -227,13 +197,16 @@ set_up() {
 
 main() {
   local name initialised file
-  for name in MITSTACK_OPENBAO_ADDR MITSTACK_OPENBAO_CA MITSTACK_GITHUB_API_URL MITSTACK_REPOSITORY MITSTACK_GITHUB_APP_ID \
-    MITSTACK_GITHUB_INSTALLATION_ID MITSTACK_RECIPIENT_FILE MITSTACK_APP_KEY_FILE GNUPGHOME KUBERNETES_SERVICE_HOST; do
+  for name in MITSTACK_OPENBAO_ADDR MITSTACK_OPENBAO_CA MITSTACK_REPOSITORY_URL MITSTACK_RECIPIENT_FILE \
+    MITSTACK_KNOWN_HOSTS_FILE MITSTACK_DEPLOY_KEY_FILE GNUPGHOME KUBERNETES_SERVICE_HOST; do
     [ -n "${!name:-}" ] || fail "$name is not set"
   done
   mkdir -p "$GNUPGHOME"
   chmod 0700 "$GNUPGHOME"
   printf probe | encrypt > /dev/null || fail "gpg cannot encrypt to the recipient key, so OpenBao was left uninitialised"
+  work=$(mktemp -d)
+  trap 'rm -rf "$work"' EXIT
+  use_deploy_key
 
   initialised=$(retry "reading OpenBao's init state" init_state)
   file=$(retry "reading $INIT_FILE" init_file_state)
@@ -248,7 +221,7 @@ main() {
 
   initialise
   retry "committing $INIT_FILE" commit "$messages"
-  say "committed $INIT_FILE to $MITSTACK_REPOSITORY"
+  say "committed $INIT_FILE to the cluster repository"
   set_up
   say "enabled kv and Kubernetes auth, and wrote the policy app-secrets-reader"
   [ -z "$recovery_lost" ] ||

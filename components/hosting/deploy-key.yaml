@@ -1,4 +1,4 @@
-# The hosting GitHub App's key, sealed in the strict scope to the boot key pair, so only this cluster opens it.
+# The cluster repository's write deploy key for OpenBao's init Job, sealed in the strict scope to the boot key pair, so only this cluster opens it.
 apiVersion: v1
 kind: Namespace
 metadata:

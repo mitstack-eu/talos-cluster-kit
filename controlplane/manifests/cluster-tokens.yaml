@@ -2,7 +2,9 @@
 # for the report token and the cluster repository's token, and a CronJob that
 # renews the repository tokens, which GitHub expires within an hour. Their
 # identity may write only the two Secrets they fill, and each app slice's
-# Role lets it patch that slice's repository Secret.
+# Role lets it patch that slice's repository Secret. A cluster that reads its
+# repository with a deploy key takes the report token alone, and runs neither
+# the renewal nor any write in argocd.
 apiVersion: v1
 kind: Secret
 metadata:
@@ -44,6 +46,7 @@ subjects:
   - kind: ServiceAccount
     name: mitstack-repo-token
     namespace: {{ .Namespace }}
+{{- if eq .RepositoryCredential "platform-token" }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -72,6 +75,7 @@ subjects:
   - kind: ServiceAccount
     name: mitstack-repo-token
     namespace: {{ .Namespace }}
+{{- end }}
 ---
 apiVersion: batch/v1
 kind: Job
@@ -107,6 +111,8 @@ spec:
               value: {{ printf "%q" .SubscriptionID }}
             - name: REPO_URL
               value: {{ printf "%q" .RepoURL }}
+            - name: REPOSITORY_CREDENTIAL
+              value: {{ .RepositoryCredential }}
             - name: HOME
               value: /tmp
           securityContext:
@@ -127,6 +133,7 @@ spec:
             defaultMode: 0440
         - name: tmp
           emptyDir: {}
+{{- if eq .RepositoryCredential "platform-token" }}
 ---
 apiVersion: batch/v1
 kind: CronJob
@@ -168,6 +175,8 @@ spec:
                   value: {{ printf "%q" .SubscriptionID }}
                 - name: REPO_URL
                   value: {{ printf "%q" .RepoURL }}
+                - name: REPOSITORY_CREDENTIAL
+                  value: {{ .RepositoryCredential }}
                 - name: HOME
                   value: /tmp
               securityContext:
@@ -188,3 +197,4 @@ spec:
                 defaultMode: 0440
             - name: tmp
               emptyDir: {}
+{{- end }}

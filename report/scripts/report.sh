@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Posts the node report: nodes, etcd members, each node's STATE and EPHEMERAL encryption, Argo CD's health,
+# Posts the node report: nodes, etcd members, each node's STATE and EPHEMERAL encryption, Argo CD's health with each Application's applied objects,
 # CloudNativePG's objects, the objects labelled mitstack.dev/subscription, the API server's key set and a checks member.
 # When a read or the body fails or times out, it posts a report whose error names it instead, then exits non-zero.
 # Usage: REPORT_URL=<https url> SUBSCRIPTION_ID=<id> HOST_IP=<this pod's node> [REPORT_TOKEN_FILE=/var/run/mitstack/token] [REPORT_READ_SECONDS=25] report.sh
@@ -105,9 +105,10 @@ report_failure() {
   fail "$name ended with status $status, and the report names it"
 }
 
-# body prints the report; a member line is NODE ID HOSTNAME PEER-URLS CLIENT-URLS LEARNER.
+# body prints the report on one line, so its length is what jq measures; a member line is NODE ID HOSTNAME PEER-URLS
+# CLIENT-URLS LEARNER. Every Application's applied objects are carried only while the body fits the platform's 256 KiB.
 body() {
-  limited jq -n \
+  limited jq -c -n \
     --arg subscription "$SUBSCRIPTION_ID" \
     --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --slurpfile nodes "$work/nodes.json" \
@@ -144,6 +145,8 @@ body() {
       if $status != 0 then {exitStatus: $status, stderr: $stderr[-1024:]}
       else try read catch {exitStatus: 0, stderr: $refusal}
       end;
+    # An applied object carries no field but these five, so the list holds no Secret's contents.
+    def applied: {group: (.group // ""), kind: .kind, namespace: (.namespace // null), name: .name, sync: (.status // "Unknown")};
     # A kind is listed whole or not at all, and 1000 objects keep the body inside the platform's 256 KiB.
     def subscription_resources:
       reduce $kinds[] as $read ({objects: [], kinds: []};
@@ -171,7 +174,8 @@ body() {
       argocd: {applications: [$applications[0].items[] | {
         name: .metadata.name,
         health: (.status.health.status // "Unknown"),
-        sync: (.status.sync.status // "Unknown")
+        sync: (.status.sync.status // "Unknown"),
+        resources: [.status.resources[]? | applied]
       }]},
       cloudNativePG: beside($cnpg_status; $cnpg_err;
         "kubectl exited 0, and its output is not the CloudNativePG objects this report reads";
@@ -180,7 +184,7 @@ body() {
       subscriptionResourceKinds: $listed.kinds,
       jwks: $jwks[0],
       checks: {contract: "node-report/v1", names: []}
-    }
+    } | if tojson | utf8bytelength < 256 * 1024 then . else del(.argocd.applications[].resources) end
 JQ
 }
 

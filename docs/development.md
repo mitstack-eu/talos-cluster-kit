@@ -97,6 +97,9 @@ code embeds it with `go:embed`.
 | `gateway/scripts/prepare.sh` | The gateway, once at first boot | Installs talosctl and kubectl, copies each image into the local registry by digest, and fetches each served manifest | `gateway/gateway_test.go` |
 | `report/scripts/report.sh` | The node report's CronJob, inline in its command | Reads the nodes, the etcd members, every node's volume statuses, the Argo CD Applications with the objects each one applied, CloudNativePG's objects, the objects of thirteen Kubernetes object types, such as Namespace and Deployment, labelled `mitstack.dev/subscription` and the API server's key set, and posts the report on one line with a `checks` member that names none of the platform verdict's checks. An applied object carries its API group, object type, namespace, name and sync status alone, and no Application carries its applied objects when they would take the body past the platform's 256 KiB. Each read and the body build runs under `REPORT_READ_SECONDS`, 25 by default, and the thirteen labelled-object reads share one such limit. When the nodes, Applications, key set or etcd members read or the body build fails or times out, the script posts a report holding only an `error` naming it, in place of the full report, and exits non-zero. A failed volume or CloudNativePG read stays inline in a full report, and an object type whose read fails is left out of `subscriptionResourceKinds`, the list of object types the report read whole | `report/report_test.go` |
 | `openbaoinit/scripts/openbao-init.sh` | OpenBao's init Job, inline in its command | Initialises OpenBao once, commits `openbao-init.asc`, then enables kv and Kubernetes auth and writes `app-secrets-reader` | `openbaoinit/openbaoinit_test.go` |
+| `controlplane/scripts/build-image.sh` | A Cloud control plane's builder server, from its user data | Builds the cluster's Talos disk image with imager, writes it over the builder's own disk from a tmpfs and powers the builder off, so the block can snapshot that disk | `controlplane/scripts_test.go` |
+| `controlplane/scripts/bootstrap-first-node.sh` | A Cloud control plane's gateway, once at first boot | Finds the first node among the addresses the gateway has seen, proves it is the cluster's by its Talos API's certificate, bootstraps etcd on it and deletes the admin talosconfig | `controlplane/scripts_test.go` |
+| `controlplane/scripts/cluster-tokens.sh` | A Job and a CronJob in the Cloud control plane's cluster | Spends the enrolment token for the report token and the cluster repository's token, and renews them with each app slice's repository token | `controlplane/scripts_test.go` |
 | `scripts/render-components.sh` | A workstation and CI | Renders the component set | The `components` CI job |
 
 The member removal Job, the node report and OpenBao's init Job run in the
@@ -162,6 +165,16 @@ that log to check the order of the calls.
 | `TestHosting_RendersNoExternalSecretGeneratorOrOtherWriterOfArgoCDRepositoryCredentials` | What `components.Hosting` returns holds no ExternalSecret or ClusterExternalSecret, the namespaced and cluster-wide External Secrets objects that write a Secret. It holds no object of the API group `generators.external-secrets.io`, whose objects mint values such as GitHub tokens. Argo CD reads a Secret labelled `argocd.argoproj.io/secret-type` as a credential: `repository` for one repository, `repo-creds` for a credential template, and `repository-write` and `repo-write-creds` for their forms that write to Git, which would hand the cluster write access to code. The only object so labelled is the SealedSecret `TestHosting_GivesArgoCDOneCredentialTemplateForEveryMitstackEURepositoryFromTheSealedReaderKey` checks | Every document of every manifest `components.Hosting` returns |
 | `TestHosting_LetsTheInitJobReachOnlyClusterDNSOpenBaoAndGitHubsAPIAndOpenBaoTakeItsCalls` | The init Job's pod may reach cluster DNS, OpenBao on 8200 or 15008 and `api.github.com` on 443 and nothing else, and OpenBao takes its calls | Cilium's view of each pod's labels |
 | `TestPrepareScript_RefusesAManifestWhoseBytesDifferFromItsPin` | The gateway installs no manifest whose sha256 differs from the list, and stops | Fake curl and skopeo |
+| `TestPlane_BuildsANodeInEachOfFsn1Nbg1AndHel1OnOneNetwork` | Calling `NextStep` until it returns none builds a node in each location on one network, a gateway and a builder in `fsn1`, and deletes the builder once its snapshot exists | `controlplane/cloudtest`, a fake of the Hetzner Cloud API |
+| `TestPlane_EachCallWaitsOnOneHetznerActionAtMostAndCreatesOneNodeAtMost` | No call waits on more than one Hetzner action or creates more than one node | The same fake |
+| `TestPlane_RefusesAnAmbiguousClusterBeforeAnyChange` | Two resources of one role refuse with class `ambiguous-cluster` and change nothing | The same fake |
+| `TestPlane_TheInstalledHookReceivesTheClusterWithItsKeysInTheInstallsCall` | The block's `Installed` hook gets the rendered cluster with its secrets in the call that installs it, and a worker rendered from it trusts the control plane's machine CA and joins with its cluster token | The same fake |
+| `TestPlane_AnInstalledHookThatFailsRollsTheInstallBack` | A hook that returns an error leaves neither a gateway nor a builder behind | The same fake |
+| `TestPlane_AppsOnWorkersKeepsTheControlPlanesTaint` | With `AppsOnWorkers` the control-plane configuration keeps Talos's `NoSchedule` taint, and without it the configuration carries no taint | The configuration the builder embeds |
+| `TestPlane_DeleteRemovesEveryResourceItBuilt` | `Delete` leaves nothing that carries the subscription's labels | The same fake |
+| `TestPlane_TheKitRequiresNeitherBlockKitNorOperatorKit` | The kit's `go.mod` names neither block framework | `go.mod` |
+| `TestCluster_RendersTheRecordedComponentsMirrorAndBuilderApartFromTheNodeReport` | A default cluster's components, mirror list and builder user data match their recording | `controlplane/testdata/default-cluster.golden` |
+| `TestHetznerAdapter_CouplesTheVSwitchThroughItsSubnetAndExposesTheNetworksRoutesToIt` | `AddVSwitchSubnet` sends a `vswitch` subnet with the vSwitch's id and turns on `expose_routes_to_vswitch` | A local HTTP server playing Hetzner's Cloud API |
 
 The fixtures in `testutil/testdata/` are throwaway keys made for these tests:
 a Talos secrets bundle, a gateway CA with its certificate and key, and a log
@@ -192,7 +205,8 @@ and a manual run. Every job runs on the runner the repository variable
 
 ## What the kit leaves to its blocks
 
-The kit renders bytes, so each of these stays with the block that calls it:
+Every package but `controlplane` renders bytes, so each of these stays with
+the block that calls it:
 
 | Step | Why the kit does not do it |
 |---|---|
@@ -200,4 +214,4 @@ The kit renders bytes, so each of these stays with the block that calls it:
 | Taking an etcd snapshot and storing it | Where a snapshot lives is the block's choice |
 | Renewing a gateway's certificate | `CA.Issue` takes the validity, and the block re-renders the gateway before it ends |
 | Writing the report token into `mitstack-report-token` | The token comes from the platform at enrolment |
-| A dedicated node's addresses and its vSwitch, Hetzner's private network between dedicated servers | The Talos trial on a dedicated test server decides them |
+| A dedicated node's address and its vSwitch, Hetzner's private network between dedicated servers | Which dedicated servers a cluster adopts, and over which vSwitch, is the block's choice |

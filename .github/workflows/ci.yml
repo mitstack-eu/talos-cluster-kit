@@ -75,7 +75,7 @@ jobs:
         run: kyverno test components/admission/tests
 
       - name: shellcheck
-        run: shellcheck -x scripts/*.sh scripts/lib/*.sh etcd/scripts/*.sh gateway/scripts/*.sh report/scripts/*.sh openbaoinit/scripts/*.sh
+        run: shellcheck -x scripts/*.sh scripts/lib/*.sh etcd/scripts/*.sh gateway/scripts/*.sh report/scripts/*.sh openbaoinit/scripts/*.sh controlplane/scripts/*.sh
 
   tools-image:
     name: tools image

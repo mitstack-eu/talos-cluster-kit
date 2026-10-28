@@ -59,7 +59,7 @@ func (p Plane) buildDetail(ctx context.Context, b Server, img imageBuild) string
 	if b.Status != ServerRunning {
 		return fmt.Sprintf("%s %d, created at %s, is %s", img.builder, b.ID, created, b.Status)
 	}
-	state := "is building " + img.what
+	state := "is building " + img.what + " or waiting for the gateway's mirror to complete"
 	if p.overdue(b) {
 		state = fmt.Sprintf("did not power itself off within %s", BuildDeadline)
 	}

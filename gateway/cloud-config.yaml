@@ -106,6 +106,7 @@ write_files:
       Description=TLS for the mirror and the served manifests on the private network
       After=docker.service mitstack-registry.service
       Requires=docker.service
+      ConditionPathExists=/var/lib/mitstack-gateway/mirror-complete
       [Service]
       ExecStartPre=-/usr/bin/docker rm -f mitstack-caddy
       ExecStart=/usr/bin/docker run --rm --name mitstack-caddy --network host -v /etc/mitstack-gateway:/etc/mitstack-gateway:ro -v /srv/mitstack/manifests:/srv/mitstack/manifests:ro {{ .CaddyImage }} caddy run --config /etc/mitstack-gateway/Caddyfile --adapter caddyfile
@@ -136,4 +137,5 @@ runcmd:
   - [systemctl, enable, --now, nftables]
   - [systemctl, daemon-reload]
   - [systemctl, enable, --now, mitstack-record-dns-ntp, mitstack-record-flows, mitstack-registry, mitstack-caddy]
-  - [/usr/local/bin/mitstack-gateway-prepare, /etc/mitstack-gateway/tools.env, /etc/mitstack-gateway/images.txt, /etc/mitstack-gateway/manifests.txt, /srv/mitstack/manifests]
+  - [/usr/local/bin/mitstack-gateway-prepare, /etc/mitstack-gateway/tools.env, /etc/mitstack-gateway/images.txt, /etc/mitstack-gateway/manifests.txt, /srv/mitstack/manifests, /var/lib/mitstack-gateway/mirror-complete]
+  - [systemctl, start, mitstack-caddy]

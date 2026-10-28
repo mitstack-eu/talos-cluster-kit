@@ -200,7 +200,9 @@ control-plane nodes keep Talos's `NoSchedule` taint, a mark Kubernetes reads
 as "schedule no pod here unless the pod tolerates it", so an app's pods run
 only on the workers. Cilium, the cluster's network, ztunnel, the mesh's agent
 on each node, and the log collector tolerate the taint and still run on every
-node. Every other pod, Argo CD, the node report and the registration Job among
+node. The node report and the etcd member removal Job tolerate it too, and run
+only on control-plane nodes, since each reads etcd through the Talos API of
+the node it runs on. Every other pod, Argo CD and the registration Job among
 them, waits Pending until a worker joins. A cluster that hosts the platform
 leaves `AppsOnWorkers` off, because its web entry point, Traefik, tolerates no
 taint and serves only from the node it runs on.
@@ -209,6 +211,37 @@ taint and serves only from the node it runs on.
 `api.go` holds the Hetzner Cloud client behind the `API` interface. The
 package's tests run against the fake in `controlplane/cloudtest`, which a
 block's tests can share.
+
+### The order a cluster boots in
+
+A cluster boots in one order: the gateway, then a complete mirror, then the
+nodes. A node's kubelet pulls its image from the gateway's mirror once, with
+no fallback to a public registry, and Talos restarts a failed kubelet only when
+its inputs change. A node that boots before the mirror holds its images
+therefore stays down until Talos's boot timeout reboots it, about 70 minutes
+later.
+
+The gateway's `gateway/scripts/prepare.sh` fills the mirror, fetches the
+served manifests, and only then writes `/var/lib/mitstack-gateway/mirror-complete`.
+Caddy, which serves both on the private network, starts only once that file
+exists, so the gateway answers no `/v2/` request before the mirror is
+complete.
+
+The plane reaches the cluster only through Hetzner's API, and the gateway
+answers nothing from outside the private network, so the builder carries the
+signal. `controlplane/scripts/build-image.sh`, which both builders run, builds
+the image while the mirror fills, then asks `https://10.0.0.2/v2/` under the
+gateway's CA every 10 seconds, for about 40 minutes at most, until it answers.
+Only then does it write its disk and power off. The plane creates a node only
+from the snapshot of that disk, so every node boots after the mirror is
+complete. While the builder waits, `NextStep` returns no change and `Problems`
+says the builder is building the image or waiting for the mirror.
+
+`BuildDeadline`, 60 minutes from the builder's creation, covers the build, that
+wait and the disk write, so a mirror that never answers fails the script first.
+The plane deletes a builder still running past it and refuses the cluster as
+`image-build-failed`, naming where the
+builder's CPU and disk last moved.
 
 ## What the configuration holds
 
@@ -585,8 +618,8 @@ build before imager starts.
 The plane deletes the serving server once the builder is gone, once the
 snapshot exists, or once the build is overdue. A build that fails therefore
 takes the serving server with it. The tests in `controlplane/hosting_test.go`
-log the builder's user data size: 29,056 bytes with a 4096-bit Sealed Secrets
-key.
+log the builder's user data size, about 30,200 bytes with a 4096-bit Sealed
+Secrets key, against Hetzner's limit of 32,768.
 
 The `serve` package holds the server's key, its files and its command, and a
 block reuses it to serve any one file to one client.

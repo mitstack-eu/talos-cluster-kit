@@ -191,14 +191,14 @@ func (p Plane) render(ctx context.Context, apiAddr netip.Addr, now time.Time) (i
 			return installation{}, err
 		}
 	}
-	if inst.builderUserData, err = builderUserData("builder", config, fetch); err != nil {
+	if inst.builderUserData, err = builderUserData("builder", config, gatewayCA.Cert, fetch); err != nil {
 		return installation{}, err
 	}
 	workerConfig, err := nodeconfig.RenderWorker(cluster, nodeconfig.Node{})
 	if err != nil {
 		return installation{}, err
 	}
-	if inst.workerBuilderUserData, err = builderUserData("worker builder", workerConfig, nil); err != nil {
+	if inst.workerBuilderUserData, err = builderUserData("worker builder", workerConfig, gatewayCA.Cert, nil); err != nil {
 		return installation{}, err
 	}
 	if inst.gatewayUserData, err = p.renderGateway(apiAddr, now, gatewayCA, set, secrets); err != nil {

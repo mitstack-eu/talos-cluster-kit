@@ -14,10 +14,12 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
+	"github.com/mitstack-eu/talos-cluster-kit/gateway"
 	"github.com/mitstack-eu/talos-cluster-kit/serve"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 	"github.com/stretchr/testify/assert"
@@ -125,8 +127,65 @@ func runBuild(t *testing.T, imagerExit int, extraEnv ...string) scriptRun {
 	return runBuildOf(t, imagerExit, "machine: {token: secret}", nil, extraEnv...)
 }
 
-// runBuildOf runs the build on config, with fetch as the hosting set's URL and key pin when it holds them.
+// runBuildOf runs the build on config, with fetch as the hosting set's URL and key pin when it holds them, against a
+// gateway mirror that answers at once.
 func runBuildOf(t *testing.T, imagerExit int, config string, fetch []string, extraEnv ...string) scriptRun {
+	t.Helper()
+	return runBuildAgainst(t, newGatewayMirror(t, 0), imagerExit, config, fetch, extraEnv...)
+}
+
+// gatewayMirror stands in for the gateway's mirror over TLS, refusing the first unready requests with 503, and
+// records for each request whether imager had run and whether the disk had been written.
+type gatewayMirror struct {
+	server  *httptest.Server
+	ca      string
+	unready int
+	tools   string
+	disk    string
+	mu      sync.Mutex
+	seen    []mirrorRequest
+}
+
+type mirrorRequest struct {
+	path                      string
+	imagerHadRun, diskWritten bool
+}
+
+func newGatewayMirror(t *testing.T, unready int) *gatewayMirror {
+	t.Helper()
+	m := &gatewayMirror{unready: unready}
+	m.server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		_, imagerErr := os.Stat(filepath.Join(m.tools, "imager-config"))
+		_, diskErr := os.Stat(m.disk)
+		m.seen = append(m.seen, mirrorRequest{path: r.URL.Path, imagerHadRun: imagerErr == nil, diskWritten: diskErr == nil})
+		if len(m.seen) <= m.unready {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte("{}"))
+	}))
+	t.Cleanup(m.server.Close)
+	m.ca = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: m.server.Certificate().Raw}))
+	return m
+}
+
+// watch names the run's fake commands, where imager's record lands, and its disk.
+func (m *gatewayMirror) watch(tools, disk string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.tools, m.disk = tools, disk
+}
+
+func (m *gatewayMirror) requests() []mirrorRequest {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return slices.Clone(m.seen)
+}
+
+// runBuildAgainst runs the build against mirror, trusting the CA the mirror's certificate is issued under.
+func runBuildAgainst(t *testing.T, mirror *gatewayMirror, imagerExit int, config string, fetch []string, extraEnv ...string) scriptRun {
 	t.Helper()
 	dir := t.TempDir()
 	tools := testutil.NewTools(t, buildFakes(imagerExit))
@@ -140,11 +199,15 @@ func runBuildOf(t *testing.T, imagerExit int, config string, fetch []string, ext
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "net", "docker0"), 0o755))
 	configPath := filepath.Join(dir, "config.yaml")
 	require.NoError(t, os.WriteFile(configPath, []byte(config), 0o600))
+	caPath := filepath.Join(dir, "gateway-ca.crt")
+	require.NoError(t, os.WriteFile(caPath, []byte(mirror.ca), 0o644))
+	mirror.watch(tools.Dir, filepath.Join(dir, "disk"))
 	env := tools.Env(append([]string{"BUILD_WORK_DIR=" + filepath.Join(dir, "work"), "BUILD_OUT_DIR=" + filepath.Join(dir, "out"),
 		"BUILD_DISK=" + filepath.Join(dir, "disk"), "BUILD_RESOLV_CONF=" + filepath.Join(dir, "resolv.conf"),
 		"BUILD_PROC=" + filepath.Join(dir, "proc"), "BUILD_PULL_ATTEMPTS=1", "BUILD_NET_CLASS=" + filepath.Join(dir, "net"),
-		"BUILD_ADDRESS_WAIT=5"}, extraEnv...)...)
-	out, err := testutil.RunBash(t, controlplane.BuildImageScript, env, append([]string{testImager, configPath, controlplane.RouterAddress}, fetch...)...)
+		"BUILD_ADDRESS_WAIT=5", "BUILD_MIRROR_DELAY=1"}, extraEnv...)...)
+	args := append([]string{testImager, configPath, controlplane.RouterAddress, mirror.server.URL + "/v2/", caPath}, fetch...)
+	out, err := testutil.RunBash(t, controlplane.BuildImageScript, env, args...)
 	return scriptRun{out: out, err: err, tools: tools, dir: dir}
 }
 
@@ -217,6 +280,51 @@ func TestBuildImage_RoutesThroughTheGatewayBuildsWritesTheDiskAndPowersOff(t *te
 	assert.Equal(t, "nameserver 185.12.64.1\nnameserver 185.12.64.2\n", string(resolv))
 	assert.NoFileExists(t, filepath.Join(dir, "config.yaml"), "the configuration outlives the build")
 	assert.NotContains(t, run.out, "every key of the cluster", "imager's output reached the log")
+}
+
+func TestBuildImage_WritesTheDiskOnlyOnceTheGatewaysMirrorAnswersAndBuildsWhileItFills(t *testing.T) {
+	mirror := newGatewayMirror(t, 2)
+
+	run := runBuildAgainst(t, mirror, 0, "machine: {token: secret}", nil)
+
+	require.NoError(t, run.err, run.out)
+	requests := mirror.requests()
+	require.Len(t, requests, 3, "the build asks the mirror until it answers, and no more")
+	for i, r := range requests {
+		assert.Equal(t, "/v2/", r.path, "request %d", i)
+		assert.True(t, r.imagerHadRun, "request %d came before imager ran, so the build waited on the mirror instead of beside it", i)
+		assert.False(t, r.diskWritten, "request %d came after the disk was written", i)
+	}
+	disk, _ := os.ReadFile(filepath.Join(run.dir, "disk"))
+	assert.Equal(t, "talos image", string(disk), "the disk holds the image")
+	sysrq, _ := os.ReadFile(filepath.Join(run.dir, "proc", "sysrq-trigger"))
+	assert.Equal(t, "o", string(sysrq), "the builder powers off once the mirror answers")
+}
+
+func TestBuildImage_AMirrorThatNeverAnswersLeavesTheDiskUnwrittenAndTheBuilderRunning(t *testing.T) {
+	mirror := newGatewayMirror(t, 1000)
+
+	run := runBuildAgainst(t, mirror, 0, "machine: {token: secret}", nil, "BUILD_MIRROR_ATTEMPTS=1")
+
+	require.Error(t, run.err)
+	assert.Contains(t, run.out, "the gateway's mirror at "+mirror.server.URL+"/v2/ did not answer")
+	assert.Len(t, mirror.requests(), 2, "the build asks once and retries BUILD_MIRROR_ATTEMPTS times")
+	assert.NotContains(t, run.tools.Calls(t), "fsfreeze -f /", "the root filesystem froze before the mirror answered")
+	assert.NoFileExists(t, filepath.Join(run.dir, "disk"), "the disk was written before the mirror answered")
+	assert.NoFileExists(t, filepath.Join(run.dir, "proc", "sysrq-trigger"), "the builder powered off before the mirror answered")
+}
+
+func TestBuildImage_TrustsTheMirrorOnlyUnderTheGatewaysCA(t *testing.T) {
+	mirror := newGatewayMirror(t, 0)
+	other, err := gateway.NewCA(time.Now(), time.Hour)
+	require.NoError(t, err)
+	mirror.ca = string(other.Cert)
+
+	run := runBuildAgainst(t, mirror, 0, "machine: {token: secret}", nil, "BUILD_MIRROR_ATTEMPTS=0")
+
+	require.Error(t, run.err)
+	assert.Empty(t, mirror.requests(), "the build sent a request to a mirror whose certificate the gateway's CA did not issue")
+	assert.NoFileExists(t, filepath.Join(run.dir, "disk"), "the disk was written on an untrusted mirror's answer")
 }
 
 func TestBuildImage_WaitsForThePrivateInterfacesLeaseBeforeRoutingThroughTheGateway(t *testing.T) {
@@ -400,7 +508,7 @@ func servingRun(t *testing.T) (config string, fetch []string, served string) {
 		}
 		return err == nil
 	}, 10*time.Second, 50*time.Millisecond, "the serving server never listened")
-	fetch = slices.Clone(builder.RunCmd[0][4:])
+	fetch = slices.Clone(builder.RunCmd[0][6:])
 	fetch[0] = strings.Replace(fetch[0], controlplane.ServingAddress+":"+strconv.Itoa(serve.DefaultPort), "127.0.0.1:"+strconv.Itoa(port), 1)
 	return builder.file(t, controlplane.BuilderConfigPath).Content, fetch, local[controlplane.ServingFile]
 }

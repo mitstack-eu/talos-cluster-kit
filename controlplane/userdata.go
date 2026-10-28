@@ -25,8 +25,11 @@ var (
 const (
 	cloudConfigHeader = "#cloud-config\n"
 
-	builderConfigPath = "/root/mitstack-build/config.yaml"
-	builderScriptPath = "/usr/local/bin/mitstack-build-image"
+	builderConfigPath    = "/root/mitstack-build/config.yaml"
+	builderScriptPath    = "/usr/local/bin/mitstack-build-image"
+	builderGatewayCAPath = "/root/mitstack-build/gateway-ca.crt"
+	// gatewayMirrorURL answers only once the gateway's prepare has filled the mirror.
+	gatewayMirrorURL = "https://" + GatewayAddress + "/v2/"
 
 	bootstrapTalosconfigPath = "/etc/mitstack-gateway/admin-talosconfig"
 	bootstrapScriptPath      = "/usr/local/bin/mitstack-bootstrap-first-node"
@@ -68,7 +71,7 @@ type hostingFetch struct {
 }
 
 // builderUserData carries the configuration and the script gzipped, since as text they pass Hetzner's limit, and refuses a result still over it.
-func builderUserData(what string, machineConfig []byte, fetch *hostingFetch) (string, error) {
+func builderUserData(what string, machineConfig, gatewayCA []byte, fetch *hostingFetch) (string, error) {
 	config, err := serve.Gzipped(machineConfig)
 	if err != nil {
 		return "", err
@@ -77,7 +80,7 @@ func builderUserData(what string, machineConfig []byte, fetch *hostingFetch) (st
 	if err != nil {
 		return "", err
 	}
-	run := []string{builderScriptPath, image.PinnedImager, builderConfigPath, routerAddress}
+	run := []string{builderScriptPath, image.PinnedImager, builderConfigPath, routerAddress, gatewayMirrorURL, builderGatewayCAPath}
 	if fetch != nil {
 		run = append(run, fetch.url, fetch.pin)
 	}
@@ -85,6 +88,7 @@ func builderUserData(what string, machineConfig []byte, fetch *hostingFetch) (st
 		WriteFiles: []cloudFile{
 			{Path: builderConfigPath, Permissions: "0600", Content: config, Encoding: serve.GzipBase64},
 			{Path: builderScriptPath, Permissions: "0755", Content: script, Encoding: serve.GzipBase64},
+			{Path: builderGatewayCAPath, Permissions: "0644", Content: string(gatewayCA)},
 		},
 		RunCmd: [][]string{run},
 	}.render()

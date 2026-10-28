@@ -34,7 +34,7 @@ func SwapToolsImage(t testing.TB, image string) {
 }
 
 func BuilderUserData(machineConfig []byte) (string, error) {
-	return builderUserData("builder", machineConfig, nil)
+	return builderUserData("builder", machineConfig, nil, nil)
 }
 
 func (p Plane) ClusterComponents(enrolmentToken string) (components.Set, error) {

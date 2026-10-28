@@ -28,7 +28,7 @@ const (
 	testApp      = "shop"
 	testRepoURL  = "https://github.com/acme/shop-cluster"
 	platformURL  = "https://api.mitstack.dev"
-	settleBudget = 60 * time.Minute
+	settleBudget = controlplane.BuildDeadline + 15*time.Minute
 	mib          = 1 << 20
 )
 
@@ -296,9 +296,40 @@ func TestPlane_RefusesTheBuilderStillRunningPastItsDeadlineAsAFailedBuild(t *tes
 	err := h.settle(nil)
 
 	assert.Equal(t, "image-build-failed", refusalClass(t, err))
+	assert.Contains(t, err.Error(), "the cluster's image was not built or the gateway's mirror never completed")
 	assert.Less(t, h.now.Sub(created), controlplane.BuildDeadline+5*time.Minute, "how long the plane waited on a failed build")
 	assert.Empty(t, h.byRole(controlplane.RoleBuilder), "the builder past its deadline")
 	assert.Empty(t, h.byRole(controlplane.RoleNode), "a node with no image")
+}
+
+func TestPlane_CreatesNoNodeBeforeTheBuilderReportsTheGatewaysMirrorComplete(t *testing.T) {
+	h := newHarness(t)
+	h.cloud.MirrorTakes = 40 * time.Minute
+
+	h.built()
+
+	complete, ok := h.cloud.MirrorCompleteAt()
+	require.True(t, ok, "the gateway never ran")
+	nodes := h.byRole(controlplane.RoleNode)
+	require.Len(t, nodes, 3, "nodes")
+	for _, node := range nodes {
+		assert.False(t, node.Created.Before(complete), "node %s was created at %s, before the gateway's mirror completed at %s",
+			node.Name, node.Created.Format(time.RFC3339), complete.Format(time.RFC3339))
+	}
+}
+
+func TestPlane_AnswersProgressWhileTheBuilderWaitsForTheGatewaysMirror(t *testing.T) {
+	h := newHarness(t)
+	h.cloud.MirrorTakes = 40 * time.Minute
+	waiting := testStart.Add(35 * time.Minute)
+
+	err := h.settle(func() bool { return !h.now.Before(waiting) })
+
+	require.NoError(t, err, "the plane gave up on a builder waiting for the gateway's mirror")
+	require.True(t, h.building(), "the builder no longer runs while the mirror fills")
+	assert.Empty(t, h.byRole(controlplane.RoleNode), "a node created before the gateway's mirror completed")
+	assert.Contains(t, strings.Join(h.plane.Problems(context.Background(), h.read()), "; "),
+		"is building the cluster's image or waiting for the gateway's mirror to complete")
 }
 
 func TestPlane_TheFailedBuildSaysWhereTheBuildStopped(t *testing.T) {

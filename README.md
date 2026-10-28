@@ -121,46 +121,74 @@ node without `VSwitch` runs Talos's default DHCP on every link.
 
 ## How a block drives the Cloud control plane
 
-A block's verb can run for only a few minutes, while a control plane takes
-longer to build, so `controlplane.Plane` keeps no state of its own. Every
-resource it creates carries the labels `mitstack.dev/block`,
-`mitstack.dev/subscription` and `mitstack.dev/role`, and each call reads them
-back and takes the one change still missing. A block names its plane once per
-call, from its own id and the subscription:
+The Cloud control plane is the part of a cluster that runs on Hetzner Cloud
+servers: a Talos node in each of `fsn1`, `nbg1` and `hel1`, which run
+Kubernetes itself, and the gateway, a Cloud server that gives the nodes their
+only route out and serves them their images and manifests. The plane builds
+the nodes from the cluster's own snapshot, a Hetzner disk image that a
+short-lived builder server writes and that holds every key of the cluster.
+
+The platform calls a block's verbs, such as subscribe, and gives each call
+two minutes, while a control plane takes far longer to build. So
+`controlplane.Plane` keeps no state of its own. Every resource it creates
+carries the labels `mitstack.dev/block`, `mitstack.dev/subscription` and
+`mitstack.dev/role`, the role being `gateway`, `builder`, `node`, `image` for
+the snapshot, `api` or `ingress`. Each call reads the labels back and takes
+the one change still missing, such as creating the firewall once the network
+exists. A block names its plane once per call, from its own id and the
+subscription:
 
 ```go
 plane := controlplane.Plane{
-	API:           controlplane.NewAPI(token, "hcloud-hrobot-talos-cluster"),
+	API:           controlplane.NewAPI(token, "hcloud-hrobot-talos-cluster"), // token: the app's Hetzner Cloud API token
 	Block:         "hcloud-hrobot-talos-cluster",
 	Subscription:  "sub_0123456789ab",
 	AppName:       "shop",
 	ServerType:    "cx33",
-	Boundary:      boundary,      // the block's MIME boundary for the gateway's user data
-	PlatformURL:   platformURL,   // where every node enrols and reports
-	RepoURL:       repoURL,       // the cluster repository Argo CD syncs
-	Installed:     installWorker, // receives the rendered cluster, its keys included
+	Boundary:      "mitstack-hcloud-hrobot-talos-cluster", // separates the parts of the gateway's user data
+	PlatformURL:   "https://api.mitstack.dev",             // where every node registers and reports
+	RepoURL:       "https://github.com/acme/shop-cluster", // the Git repository Argo CD applies to the cluster
+	Installed:     installWorker,                          // the block's own func(ctx, controlplane.Network, nodeconfig.Cluster) error
 	AppsOnWorkers: true,
 }
 st, err := plane.Read(ctx)
-// plane.Refusal(st), then plane.EnsureNetwork(ctx, st), then plane.NextStep(ctx, st, network)
 ```
 
-`NextStep` returns the next change with a name, such as `create the firewall`,
-or none while only Hetzner or the nodes can finish the work in flight. Each
-step waits on one Hetzner action at most. `Problems` names what is wrong with
-a plane that stands, `Outputs` gives the private API endpoint and the ingress
+A call then runs in this order:
+
+1. `plane.Refusal(st)` returns a `*Refusal` when the labelled resources are
+   ambiguous, such as two gateways. The block stops and answers it as its
+   framework's refusal, with the `Class` and `Message` it carries, before any
+   change.
+2. `plane.EnsureNetwork(ctx, st)` creates the network when none exists and
+   returns it.
+3. `plane.NextStep(ctx, st, network)` returns the next change with a name,
+   such as `create the firewall`, and the block runs it with `Step.Take`. Each
+   change waits on one Hetzner action at most.
+
+When `NextStep` returns no change, the work in flight is Hetzner's or the
+nodes', such as the builder writing the snapshot. The block answers pending,
+and the platform calls it again later. `Problems` names what is wrong with a
+plane that stands, `Outputs` gives the private API endpoint and the ingress
 address the block provides, and `Delete` removes everything the labels find.
 
-`Installed` is the one moment the cluster's keys exist outside the snapshot.
-A block that adds workers renders them there with `nodeconfig.RenderWorker`.
-An error from it rolls the install back. `AppsOnWorkers` keeps Talos's
-`NoSchedule` taint on the control-plane nodes, so an app's pods run only on
-the workers. Cilium, ztunnel, the CNI agent and the log collector tolerate the
-taint and still run on every node. The hosting set's Traefik tolerates no
-taint and its Service keeps traffic on the node it reaches, so a cluster that
-hosts the platform leaves `AppsOnWorkers` off. Every other pod, Argo CD, the
-node report and the enrolment Job among them, waits Pending until a worker
-joins.
+`Installed` runs once, in the call that renders the cluster's configuration.
+That call is the only moment the cluster's keys exist outside the snapshot,
+so a block that adds workers renders them there with
+`nodeconfig.RenderWorker`. When `Installed` returns an error, the plane
+deletes the gateway and builder it just created, and a later call starts the
+install again.
+
+`AppsOnWorkers` decides where an app's pods run. Off, as for a cluster with
+Cloud nodes alone, every pod may run on the control-plane nodes. On, the
+control-plane nodes keep Talos's `NoSchedule` taint, a mark Kubernetes reads
+as "schedule no pod here unless the pod tolerates it", so an app's pods run
+only on the workers. Cilium, the cluster's network, ztunnel, the mesh's agent
+on each node, and the log collector tolerate the taint and still run on every
+node. Every other pod, Argo CD, the node report and the registration Job among
+them, waits Pending until a worker joins. A cluster that hosts the platform
+leaves `AppsOnWorkers` off, because its web entry point, Traefik, tolerates no
+taint and serves only from the node it runs on.
 
 `plane.go`, `converge.go`, `install.go` and `observe.go` hold the plane, and
 `api.go` holds the Hetzner Cloud client behind the `API` interface. The

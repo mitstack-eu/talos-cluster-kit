@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+# Builds the cluster's Talos disk image on the builder server with imager,
+# writes it over the builder's own disk and powers the builder off, so the
+# block can snapshot that disk for the node to boot from. It freezes the root
+# filesystem first and runs the overwrite from copies in a tmpfs, so once the
+# image starts landing, nothing it runs writes to or runs from that disk. A
+# failure in that overwrite ends it before the power-off.
+# It waits a second before the power-off: an unproven guard against cpx32 builders staying on.
+# It waits for the private interface's DHCP lease before routing, since cloud-init can start it before Hetzner's hc-net-ifup has one.
+# Usage: build-image.sh <imager image by digest> <machine configuration> <network router>
+#   BUILD_WORK_DIR, BUILD_OUT_DIR, BUILD_DISK, BUILD_PULL_ATTEMPTS,
+#   BUILD_RESOLV_CONF, BUILD_PROC, BUILD_NET_CLASS and BUILD_ADDRESS_WAIT
+#   default to /mnt/mitstack-build, /var/lib/mitstack-build, /dev/sda, 30,
+#   /etc/resolv.conf, /proc, /sys/class/net and 120 seconds.
+# It exists because the image embeds every key of the cluster, so it is built
+# inside the cluster's own Hetzner project and imager's output, which prints
+# that configuration, is discarded. A failed step leaves the builder running,
+# which the block reads as a failed build once its deadline passes.
+set -euo pipefail
+
+readonly work=${BUILD_WORK_DIR:-/mnt/mitstack-build}
+# out lies on the disk, since imager writes its whole 4.2 GiB raw disk there before compressing it.
+readonly out=${BUILD_OUT_DIR:-/var/lib/mitstack-build}
+readonly disk=${BUILD_DISK:-/dev/sda}
+readonly attempts=${BUILD_PULL_ATTEMPTS:-30}
+readonly resolv_conf=${BUILD_RESOLV_CONF:-/etc/resolv.conf}
+readonly proc=${BUILD_PROC:-/proc}
+readonly net_class=${BUILD_NET_CLASS:-/sys/class/net}
+readonly address_wait=${BUILD_ADDRESS_WAIT:-120}
+readonly staged="$work/bin"
+readonly resolvers=("185.12.64.1" "185.12.64.2")
+
+fail() {
+  echo "build-image: $*" >&2
+  exit 1
+}
+
+# private_interface prints the builder's one ethernet interface, its private network's, since it has no public one.
+private_interface() {
+  local links=("$net_class"/en*)
+  if [ "${#links[@]}" -ne 1 ] || [ ! -e "${links[0]}" ]; then
+    fail "found no single ethernet interface in $net_class: ${links[*]##*/}"
+  fi
+  echo "${links[0]##*/}"
+}
+
+# await_lease waits for the private interface's DHCP lease, whose address and route to the router the default route needs.
+await_lease() {
+  local router=$1 link waited
+  link=$(private_interface)
+  for ((waited = 0; waited < address_wait; waited++)); do
+    if ip -4 -o route get "$router" 2> /dev/null | grep -q " dev $link "; then
+      return 0
+    fi
+    sleep 1
+  done
+  fail "the private interface $link has no IPv4 address routing to $router after $address_wait seconds"
+}
+
+# route_through_gateway sends the builder's traffic to the network's router, which forwards it to the gateway.
+route_through_gateway() {
+  ip route replace default via "$1"
+  rm -f "$resolv_conf"
+  printf 'nameserver %s\n' "${resolvers[@]}" > "$resolv_conf"
+}
+
+pull_imager() {
+  local attempt
+  for ((attempt = 1; attempt <= attempts; attempt++)); do
+    if docker pull --quiet "$1" > /dev/null; then
+      return 0
+    fi
+    sleep 10
+  done
+  fail "could not pull $1 after $attempts attempts"
+}
+
+# build runs imager with the kit's arguments and discards its output, since it prints every key of the configuration.
+build() {
+  local imager=$1 config=$2
+  mkdir -p "$work"
+  mountpoint -q "$work" || mount -t tmpfs -o size=2g tmpfs "$work"
+  mkdir -p "$work/in" "$out"
+  install -m 0600 "$config" "$work/in/config.yaml"
+  rm -f "$config"
+  if ! docker run --rm --privileged -v /dev:/dev -v "$work/in:/in:ro" -v "$out:/out" \
+    "$imager" hcloud --arch amd64 --embedded-config-path /in/config.yaml > /dev/null 2>&1; then
+    rm -f "$work/in/config.yaml"
+    fail "imager failed; its output is discarded because it holds every cluster key"
+  fi
+  rm -f "$work/in/config.yaml"
+}
+
+# stage copies a program, its libraries and its loader, as ldd resolves them on the builder, into the tmpfs.
+stage() {
+  local program name arrow library
+  program=$(command -v "$1")
+  cp -L "$program" "$staged/"
+  ldd "$program" | while read -r name arrow library _; do
+    if [ "$arrow" = "=>" ] && [ "$library" = "not" ]; then
+      fail "ldd could not resolve $name for $program"
+    elif [ "$arrow" = "=>" ] && [ "${library#/}" != "$library" ]; then
+      cp -L "$library" "$staged/"
+    elif [ "${name#/}" != "$name" ]; then
+      cp -L "$name" "$staged/ld.so"
+    fi
+  done
+}
+
+# overwrite_disk is the final stage, run by the tmpfs bash, and prints nothing, since a write to the frozen disk blocks.
+overwrite_disk() {
+  local staged=$1 image=$2 disk=$3 proc=$4
+  exec > /dev/null 2>&1
+  "$staged/ld.so" --inhibit-cache --library-path "$staged" "$staged/zstd" -dc "$image" |
+    "$staged/ld.so" --inhibit-cache --library-path "$staged" "$staged/dd" of="$disk" bs=4M oflag=direct conv=fsync status=none
+  "$staged/ld.so" --inhibit-cache --library-path "$staged" "$staged/sleep" 1
+  printf o > "$proc/sysrq-trigger"
+}
+
+# write_disk freezes the root filesystem, which flushes the removed out, then execs the final stage from the tmpfs in
+# the C locale, which reads no locale file from the disk.
+write_disk() {
+  local images=("$out"/*.raw.zst) program
+  if [ "${#images[@]}" -ne 1 ] || [ ! -f "${images[0]}" ]; then
+    fail "imager left no single image in $out"
+  fi
+  cp "${images[0]}" "$work/image.raw.zst"
+  rm -rf "$out"
+  mkdir -p "$staged"
+  for program in bash zstd dd sleep; do
+    stage "$program"
+  done
+  printf '%s\n' "set -euo pipefail" "$(declare -f overwrite_disk)" "overwrite_disk \"\$@\"" > "$staged/overwrite-disk"
+  echo "build-image: writing the image to $disk and powering off"
+  fsfreeze -f /
+  LC_ALL=C exec "$staged/ld.so" --inhibit-cache --library-path "$staged" "$staged/bash" "$staged/overwrite-disk" \
+    "$staged" "$work/image.raw.zst" "$disk" "$proc"
+}
+
+main() {
+  [ "$#" -eq 3 ] || fail "usage: build-image.sh <imager image> <machine configuration> <network router>"
+  await_lease "$3"
+  route_through_gateway "$3"
+  pull_imager "$1"
+  build "$1" "$2"
+  write_disk
+}
+
+main "$@"

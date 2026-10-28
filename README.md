@@ -6,11 +6,11 @@ its cluster starts with, or how etcd recovers. A block is a unit of
 infrastructure an app subscribes to, as
 [the workspace glossary](https://github.com/mitstack-eu/mitstack-workspace/blob/main/docs/glossary.md)
 defines. hcloud-talos-cluster imports this module to run a cluster on Hetzner
-Cloud servers. A block whose control plane runs on Cloud servers and whose
-workers run on Hetzner dedicated servers builds those workers from the
-module's worker render, as
+Cloud servers. hcloud-hrobot-talos-cluster runs its control plane on Cloud
+servers from the `controlplane` package, and builds its workers on Hetzner
+dedicated servers from the module's worker render, as
 [ADR 0103](https://github.com/mitstack-eu/mitstack/blob/main/docs/adr/0103-mitstack-offers-five-hetzner-capacity-blocks-and-keeps-the-k3s-block.md)
-decides.
+decides. hcloud-talos-cluster still keeps its own copy of that control plane.
 
 Talos Linux is an operating system that runs only Kubernetes and is managed
 through an API, with no shell and no SSH. The module follows the fourth Talos
@@ -20,11 +20,14 @@ and the design that
 [ADR 0095](https://github.com/mitstack-eu/mitstack/blob/main/docs/adr/0095-mitstack-clusters-run-talos-across-fsn1-nbg1-and-hel1-with-a-load-balancer-per-location.md)
 accepts.
 
-The module renders and the block acts. Nothing here calls Hetzner, GitHub or
-the platform: each function takes its inputs as values and returns bytes, or
-runs one local command. The block decides when to render, mints the secrets
-that go in, and creates the servers. Keeping the install in one module means a
-fix to the boot or to etcd recovery lands once and reaches every block.
+The module renders and the block acts. Every package but `controlplane` takes
+its inputs as values and returns bytes, or runs one local command, and calls
+neither Hetzner, GitHub nor the platform. `controlplane` is the one package
+that calls Hetzner: it creates and deletes a Cloud control plane through
+Hetzner's Cloud API, with the token the block hands it. It imports neither
+block-kit nor operator-kit, so any block framework can drive it. Keeping the
+install in one module means a fix to the boot, to etcd recovery or to the
+Cloud control plane lands once and reaches every block.
 
 ## What a cluster is built from
 
@@ -45,6 +48,7 @@ the order a block uses them.
 | `etcd` | Renders the Job that removes a lost node's etcd member and then its Node object, and holds the gateway's script that bootstraps etcd empty or from a snapshot | `RemoveMemberJob`, `BootstrapScript`, `Bootstrap.Args` |
 | `report` | Renders the node report, a CronJob that posts each node, its Talos version, the etcd membership, how each node's `STATE` and `EPHEMERAL` are encrypted, Argo CD's health with the objects each Application applied, CloudNativePG's clusters, databases and roles, the objects a block labels with its subscription, and the API server's key set to the platform, with a `checks` member declaring which of the platform verdict's checks it carries. When any read but the volume, CloudNativePG and labelled-object reads fails or times out, it posts a report holding only an `error` that names the read, in place of the full report. The report holds no right on Secrets | `Manifests` |
 | `openbaoinit` | Renders OpenBao's init Job, which the hosting set carries: it initialises a hosting cluster's OpenBao once, commits the root token and recovery key to the cluster repository as PGP messages, then writes the policy each slice's External Secrets reads with | `Manifests`, `Inputs`, `InitFile` |
+| `controlplane` | Builds and deletes a Talos control plane on Hetzner Cloud: a network, a firewall, a gateway, a builder that makes the cluster's own snapshot, a node in each of `fsn1`, `nbg1` and `hel1`, and an API and an ingress load balancer. Each call reads the resources by their labels and takes the one change still missing. A refusal is a `*Refusal` with a `Class` and a `Message`, which the block answers as its own framework's refusal | `Plane`, `Plane.Read`, `Plane.EnsureNetwork`, `Plane.NextStep`, `Plane.Problems`, `Plane.Outputs`, `Plane.Delete`, `NewAPI`, `Refusal` |
 | `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image and the gateway both install, and `tools/jq.env`, which pins the tools image's jq, and names the tools image a release published | `Env`, `Pin`, `Image` |
 | `testutil` | Holds the fixtures, fakes and decoders this module's tests and a block's tests share | `NewCluster`, `NewTools`, `Golden` |
 
@@ -114,6 +118,83 @@ documents that booted the node in the workspace note
 [Talos on a Hetzner Robot server behind a vSwitch gateway](https://github.com/mitstack-eu/mitstack-workspace/blob/main/product/knowledge/2026-10-28-talos-on-a-hetzner-robot-server-behind-a-vswitch-gateway.md).
 `vswitchDocuments` in `nodeconfig/documents.go` renders them, and a Metal
 node without `VSwitch` runs Talos's default DHCP on every link.
+
+## How a block drives the Cloud control plane
+
+The Cloud control plane is the part of a cluster that runs on Hetzner Cloud
+servers: a Talos node in each of `fsn1`, `nbg1` and `hel1`, which run
+Kubernetes itself, and the gateway, a Cloud server that gives the nodes their
+only route out and serves them their images and manifests. The plane builds
+the nodes from the cluster's own snapshot, a Hetzner disk image that a
+short-lived builder server writes and that holds every key of the cluster.
+
+The platform calls a block's verbs, such as subscribe, and gives each call
+two minutes, while a control plane takes far longer to build. So
+`controlplane.Plane` keeps no state of its own. Every resource it creates
+carries the labels `mitstack.dev/block`, `mitstack.dev/subscription` and
+`mitstack.dev/role`, the role being `gateway`, `builder`, `node`, `image` for
+the snapshot, `api` or `ingress`. Each call reads the labels back and takes
+the one change still missing, such as creating the firewall once the network
+exists. A block names its plane once per call, from its own id and the
+subscription:
+
+```go
+plane := controlplane.Plane{
+	API:           controlplane.NewAPI(token, "hcloud-hrobot-talos-cluster"), // token: the app's Hetzner Cloud API token
+	Block:         "hcloud-hrobot-talos-cluster",
+	Subscription:  "sub_0123456789ab",
+	AppName:       "shop",
+	ServerType:    "cx33",
+	Boundary:      "mitstack-hcloud-hrobot-talos-cluster", // separates the parts of the gateway's user data
+	PlatformURL:   "https://api.mitstack.dev",             // where every node registers and reports
+	RepoURL:       "https://github.com/acme/shop-cluster", // the Git repository Argo CD applies to the cluster
+	Installed:     installWorker,                          // the block's own func(ctx, controlplane.Network, nodeconfig.Cluster) error
+	AppsOnWorkers: true,
+}
+st, err := plane.Read(ctx)
+```
+
+A call then runs in this order:
+
+1. `plane.Refusal(st)` returns a `*Refusal` when the labelled resources are
+   ambiguous, such as two gateways. The block stops and answers it as its
+   framework's refusal, with the `Class` and `Message` it carries, before any
+   change.
+2. `plane.EnsureNetwork(ctx, st)` creates the network when none exists and
+   returns it.
+3. `plane.NextStep(ctx, st, network)` returns the next change with a name,
+   such as `create the firewall`, and the block runs it with `Step.Take`. Each
+   change waits on one Hetzner action at most.
+
+When `NextStep` returns no change, the work in flight is Hetzner's or the
+nodes', such as the builder writing the snapshot. The block answers that the
+subscription is still converging, and the platform calls it again later. `Problems` names what is wrong with a
+plane that stands, `Outputs` gives the private API endpoint and the ingress
+address the block provides, and `Delete` removes everything the labels find.
+
+`Installed` runs once, inside the `NextStep` change that creates the gateway
+and the builder, since that change renders the cluster's configuration.
+That call is the only moment the cluster's keys exist outside the snapshot,
+so a block that adds workers renders them there with
+`nodeconfig.RenderWorker`. When `Installed` returns an error, the plane
+deletes the gateway and builder it just created, and a later call starts the
+install again.
+
+`AppsOnWorkers` decides where an app's pods run. Off, as for a cluster with
+Cloud nodes alone, every pod may run on the control-plane nodes. On, the
+control-plane nodes keep Talos's `NoSchedule` taint, a mark Kubernetes reads
+as "schedule no pod here unless the pod tolerates it", so an app's pods run
+only on the workers. Cilium, the cluster's network, ztunnel, the mesh's agent
+on each node, and the log collector tolerate the taint and still run on every
+node. Every other pod, Argo CD, the node report and the registration Job among
+them, waits Pending until a worker joins. A cluster that hosts the platform
+leaves `AppsOnWorkers` off, because its web entry point, Traefik, tolerates no
+taint and serves only from the node it runs on.
+
+`plane.go`, `converge.go`, `install.go` and `observe.go` hold the plane, and
+`api.go` holds the Hetzner Cloud client behind the `API` interface. The
+package's tests run against the fake in `controlplane/cloudtest`, which a
+block's tests can share.
 
 ## What the configuration holds
 

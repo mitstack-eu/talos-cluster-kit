@@ -17,7 +17,7 @@
 #   BUILD_FETCH_ATTEMPTS, BUILD_FETCH_DELAY, BUILD_MIRROR_ATTEMPTS and
 #   BUILD_MIRROR_DELAY default to /mnt/mitstack-build, /var/lib/mitstack-build,
 #   /dev/sda, 30, /etc/resolv.conf, /proc, /sys/class/net, 120 seconds, 60,
-#   5 seconds, 270 and 10 seconds.
+#   5 seconds, 150 and 10 seconds.
 # It exists because the image embeds every key of the cluster, so it is built
 # inside the cluster's own Hetzner project and imager's output, which prints
 # that configuration, is discarded. A failed step leaves the builder running,
@@ -35,7 +35,8 @@ readonly net_class=${BUILD_NET_CLASS:-/sys/class/net}
 readonly address_wait=${BUILD_ADDRESS_WAIT:-120}
 readonly fetch_attempts=${BUILD_FETCH_ATTEMPTS:-60}
 readonly fetch_delay=${BUILD_FETCH_DELAY:-5}
-readonly mirror_attempts=${BUILD_MIRROR_ATTEMPTS:-270}
+# The imager build, about 25 minutes of retries and the disk write together stay inside the plane's BuildDeadline.
+readonly mirror_attempts=${BUILD_MIRROR_ATTEMPTS:-150}
 readonly mirror_delay=${BUILD_MIRROR_DELAY:-10}
 readonly staged="$work/bin"
 readonly resolvers=("185.12.64.1" "185.12.64.2")

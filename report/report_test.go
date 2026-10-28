@@ -144,7 +144,7 @@ func runReport(t *testing.T, fakes map[string]string, env ...string) (*testutil.
 	return tools, posted, out, err
 }
 
-func TestReport_PostsEachNodeWithItsTalosVersionTheEtcdMembershipAndArgoCDsHealth(t *testing.T) {
+func TestReport_PostsEachNodeWithItsTalosVersionTheEtcdMembershipAndEachApplicationsHealthAndAppliedObjects(t *testing.T) {
 	tools, posted, out, err := runReport(t, nil)
 
 	require.NoError(t, err, out)
@@ -160,10 +160,7 @@ func TestReport_PostsEachNodeWithItsTalosVersionTheEtcdMembershipAndArgoCDsHealt
 		map[string]any{"id": "a48f107742a8605c", "hostname": "poc-talos4-cp1", "peerURLs": []any{"https://10.0.0.5:2380"}, "learner": false},
 		map[string]any{"id": "1948ccd42e0e52cd", "hostname": "poc-talos4-cp4", "peerURLs": []any{"https://10.0.0.7:2380"}, "learner": true},
 	}}, posted.body["etcd"])
-	assert.Equal(t, map[string]any{"applications": []any{
-		map[string]any{"name": "cluster-root", "health": "Healthy", "sync": "Synced"},
-		map[string]any{"name": "shop", "health": "Degraded", "sync": "OutOfSync"},
-	}}, posted.body["argocd"])
+	assert.Equal(t, readJSON(t, "testdata", "golden", "argocd.json"), posted.body["argocd"], "a Secret is among the applied objects, each with five fields")
 	wantCalls := []string{
 		"kubectl get nodes -o json",
 		"kubectl get applications.argoproj.io -n argocd -o json",
@@ -176,6 +173,18 @@ func TestReport_PostsEachNodeWithItsTalosVersionTheEtcdMembershipAndArgoCDsHealt
 		wantCalls = append(wantCalls, "kubectl "+subscriptionRead(kind))
 	}
 	assert.Equal(t, wantCalls, tools.Calls(t))
+}
+
+func TestReport_LeavesOutEveryApplicationsAppliedObjectsWhenCarryingThemWouldPassThePlatformsLimit(t *testing.T) {
+	crowded := `jq '.items[0].status.resources = [range(4000) | {version: "v1", kind: "ConfigMap", namespace: "app-shop", name: "settings-\(.)", status: "Synced"}]' testdata/applications.json`
+
+	_, posted, out, err := runReport(t, map[string]string{"kubectl": kubectlAnswering(map[string]string{applicationsRead: crowded})})
+
+	require.NoError(t, err, out)
+	assert.LessOrEqual(t, len(posted.raw), 256<<10, "the body fits the platform's limit")
+	assert.Equal(t, readJSON(t, "testdata", "golden", "argocd-without-applied.json"), posted.body["argocd"],
+		"no Application carries a list, so no observer reads a left-out object absent")
+	assert.Len(t, posted.body["nodes"], 3, "the rest of the report stays whole")
 }
 
 func readJSON(t *testing.T, path ...string) any {
@@ -288,7 +297,7 @@ func TestReport_NamesAFailedVolumeOrCloudNativePGReadInlineWithItsExitStatusAsAN
 
 			require.NoError(t, err, out)
 			assert.Len(t, posted.body["nodes"], 3)
-			assert.Len(t, testutil.Field(t, posted.body, "argocd", "applications"), 2)
+			assert.Len(t, testutil.Field(t, posted.body, "argocd", "applications"), 3)
 			assert.Equal(t, map[string]any{"contract": "node-report/v1", "names": []any{}}, posted.body["checks"])
 			assert.Equal(t, tc.want, posted.body[tc.key])
 		})

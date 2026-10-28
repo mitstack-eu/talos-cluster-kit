@@ -1,0 +1,52 @@
+{
+  "applications": [
+    {
+      "name": "cluster-root",
+      "health": "Healthy",
+      "sync": "Synced",
+      "resources": [
+        {
+          "group": "",
+          "kind": "Namespace",
+          "namespace": null,
+          "name": "app-shop",
+          "sync": "Synced"
+        },
+        {
+          "group": "argoproj.io",
+          "kind": "Application",
+          "namespace": "argocd",
+          "name": "app-shop",
+          "sync": "Synced"
+        }
+      ]
+    },
+    {
+      "name": "repository-credentials",
+      "health": "Healthy",
+      "sync": "OutOfSync",
+      "resources": [
+        {
+          "group": "",
+          "kind": "Secret",
+          "namespace": "app-shop",
+          "name": "app-repository-shop",
+          "sync": "Synced"
+        },
+        {
+          "group": "rbac.authorization.k8s.io",
+          "kind": "Role",
+          "namespace": "app-shop",
+          "name": "app-repository-shop",
+          "sync": "OutOfSync"
+        }
+      ]
+    },
+    {
+      "name": "shop",
+      "health": "Degraded",
+      "sync": "OutOfSync",
+      "resources": []
+    }
+  ]
+}

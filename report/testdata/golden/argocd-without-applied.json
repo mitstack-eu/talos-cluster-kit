@@ -1,0 +1,19 @@
+{
+  "applications": [
+    {
+      "name": "cluster-root",
+      "health": "Healthy",
+      "sync": "Synced"
+    },
+    {
+      "name": "repository-credentials",
+      "health": "Healthy",
+      "sync": "OutOfSync"
+    },
+    {
+      "name": "shop",
+      "health": "Degraded",
+      "sync": "OutOfSync"
+    }
+  ]
+}

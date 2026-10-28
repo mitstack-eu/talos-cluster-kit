@@ -89,8 +89,28 @@ with `Profile` set to `nodeconfig.Metal`:
 ```go
 robot := cluster // the Cluster the control plane rendered from
 robot.Profile = nodeconfig.Metal
-cfg, err := nodeconfig.RenderWorker(robot, nodeconfig.Node{Hostname: "wk-fsn1"})
+cfg, err := nodeconfig.RenderWorker(robot, nodeconfig.Node{
+	Hostname: "wk-hel1",
+	VSwitch: &nodeconfig.VSwitch{
+		MAC:     mac,  // the public card's permanent MAC, read in the rescue system, such as 9c:6b:00:55:d8:f5
+		VLAN:    4000, // the vSwitch's VLAN in Robot
+		Address: netip.MustParsePrefix("10.0.1.2/24"), // the node's address in the network's vSwitch subnet
+	},
+})
 ```
+
+A dedicated server reaches the cluster's network over a vSwitch, Robot's
+private VLAN between dedicated servers, which a Hetzner Cloud network couples
+to. `Node.VSwitch` gives the node three documents. A `LinkAliasConfig` names
+the public card `pub0` by its permanent MAC, since Talos's names for links
+are not known before the first boot. A `LinkConfig` brings `pub0` up with no
+address, which keeps Talos's default DHCP off it. A `VLANConfig` gives the
+node its address on `vsw0`, with MTU 1400 and its default route through the
+vSwitch subnet's first address, Hetzner's vSwitch gateway. These are the
+documents that booted the node in the workspace note
+[Talos on a Hetzner Robot server behind a vSwitch gateway](https://github.com/mitstack-eu/mitstack-workspace/blob/main/product/knowledge/2026-10-28-talos-on-a-hetzner-robot-server-behind-a-vswitch-gateway.md).
+`vswitchDocuments` in `nodeconfig/documents.go` renders them, and a Metal
+node without `VSwitch` runs Talos's default DHCP on every link.
 
 ## What the configuration holds
 
@@ -106,7 +126,7 @@ where the last row says.
 | Components | Cilium, its policy CRD, Argo CD, Kyverno, the CloudNativePG operator, the local path provisioner and Istio's four charts come from the first gateway over TLS. The metadata policy, the four admission policies, the `cnpg-system` and `local-path-storage` namespaces, the database-slice policy, the provisioner's flow policy, the mesh's policies and the Collector sit in the configuration | `manifestDocuments` |
 | Logs | Talos sends service and kernel logs to the node-local Collector on `127.0.0.1`, which exports them over OTLP with TLS verified. A cluster whose `Logs` is the zero `LogExport` runs no Collector and keeps its logs on the node | `adaptV1Alpha1`, `kernelLogDocument`, `components.LogCollector` |
 | Networking | Flannel and kube-proxy are off, since Cilium replaces both, and etcd and the kubelet bind to the private network | `adapt` |
-| Default route | A Cloud node keeps DHCP on `eth0` and routes everything outside the network through Hetzner's router at the network's first address. The block's network route of `0.0.0.0/0` then carries that traffic to the gateway. Hetzner's DHCP gives the node no default route, and Talos runs no default DHCP on a link that has a `LinkConfig` | `routeDocuments` |
+| Default route | A Cloud node keeps DHCP on `eth0` and routes everything outside the network through Hetzner's router at the network's first address. The block's network route of `0.0.0.0/0` then carries that traffic to the gateway. Hetzner's DHCP gives the node no default route, and Talos runs no default DHCP on a link that has a `LinkConfig`. A dedicated node with a vSwitch routes through the vSwitch gateway instead | `routeDocuments`, `vswitchDocuments` |
 | Talos API from pods | Only pods in `mitstack-node` may hold a Talos identity, with `os:admin`, `os:etcd:backup` or `os:reader` | `talosAPIAccessDocument` |
 | Disk encryption | `STATE` and `EPHEMERAL` are LUKS2 volumes, each under a key Talos derives from the node's UUID and the volume's name. `EPHEMERAL`'s key also takes the random salt its node's `STATE` holds. Talos 1.14's disk image holds neither volume, so every node formats and encrypts both on its first boot, under its own UUID and its own salt. The keys protect a disk that leaves its server, and not against whoever holds the Hetzner project's token | `systemVolumeDocuments` |
 | User volumes | Each user volume the set names, `local-path-provisioner` on every cluster and OpenBao's in the hosting set, is a directory Talos mounts at `/var/mnt/<name>` | `userVolumeDocuments` |

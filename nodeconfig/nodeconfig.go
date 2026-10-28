@@ -4,6 +4,7 @@ package nodeconfig
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"net/url"
 	"regexp"
@@ -54,7 +55,20 @@ type Cluster struct {
 type Node struct {
 	// Hostname names a Metal node, which has no metadata service, and stays empty on a Cloud node.
 	Hostname string
+	// VSwitch puts a Metal node on a Hetzner vSwitch; without one, Talos runs its default DHCP on every link.
+	VSwitch *VSwitch
 }
+
+// VSwitch is a dedicated node's one address, on a VLAN of the card found by its permanent MAC, routed through the subnet's first address.
+type VSwitch struct {
+	MAC     net.HardwareAddr
+	VLAN    uint16
+	Address netip.Prefix
+}
+
+const VSwitchMTU = 1400
+
+func (v VSwitch) gateway() netip.Addr { return v.Address.Masked().Addr().Next() }
 
 // Render returns a control-plane node's multi-document machine configuration, validated against Talos's schema.
 func Render(c Cluster, n Node) ([]byte, error) {
@@ -162,12 +176,33 @@ func (c Cluster) validateNode(n Node) error {
 		if n.Hostname != "" {
 			return fmt.Errorf("a Cloud node takes its name from Hetzner's metadata service, so hostname %q is refused", n.Hostname)
 		}
+		if n.VSwitch != nil {
+			return errors.New("a Cloud node has no vSwitch, since it joins the network through its own private interface")
+		}
 	case Metal:
 		if err := check.DNS1123Label(n.Hostname); err != nil {
 			return fmt.Errorf("a dedicated node needs its own hostname: %w", err)
 		}
+		if n.VSwitch != nil {
+			return c.validateVSwitch(*n.VSwitch)
+		}
 	default:
 		return fmt.Errorf("profile %q is neither %q nor %q", c.Profile, HCloud, Metal)
+	}
+	return nil
+}
+
+func (c Cluster) validateVSwitch(v VSwitch) error {
+	addr := v.Address.Addr()
+	switch {
+	case len(v.MAC) != 6:
+		return fmt.Errorf("the vSwitch card's MAC %s is not six bytes", v.MAC)
+	case v.VLAN == 0 || v.VLAN > 4094:
+		return fmt.Errorf("VLAN %d is no VLAN id", v.VLAN)
+	case !addr.Is4() || !c.Network.Contains(addr) || !c.Network.Contains(v.Address.Masked().Addr()):
+		return fmt.Errorf("vSwitch address %s lies outside the cluster network %s", v.Address, c.Network)
+	case addr == v.gateway() || addr == v.Address.Masked().Addr():
+		return fmt.Errorf("vSwitch address %s is the subnet's own or the vSwitch gateway's", v.Address)
 	}
 	return nil
 }

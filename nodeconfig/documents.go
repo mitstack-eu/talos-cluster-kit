@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strconv"
 
+	"github.com/siderolabs/talos/pkg/machinery/cel"
+	"github.com/siderolabs/talos/pkg/machinery/cel/celenv"
 	"github.com/siderolabs/talos/pkg/machinery/config/config"
 	"github.com/siderolabs/talos/pkg/machinery/config/machine"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/block"
@@ -89,6 +91,7 @@ func (c Cluster) documents(role machine.Type, n Node) ([]config.Document, error)
 	}
 	docs := []config.Document{resolverDocument(), timeSyncDocument(), hostnameDocument(n), c.trustedRootsDocument()}
 	docs = append(docs, c.routeDocuments()...)
+	docs = append(docs, vswitchDocuments(n)...)
 	if !c.Logs.IsZero() {
 		docs = append(docs, kernelLogDocument())
 	}
@@ -160,6 +163,31 @@ func (c Cluster) routeDocuments() []config.Document {
 // router is the network's first address, which Hetzner's router answers on in every Cloud network.
 func (c Cluster) router() netip.Addr {
 	return c.Network.Masked().Addr().Next()
+}
+
+const (
+	publicLink  = "pub0"
+	vswitchLink = "vsw0"
+)
+
+// vswitchDocuments name the public card by its MAC, bring it up with no address, which keeps Talos's default DHCP off
+// it, and give the node its address on a VLAN of that card.
+func vswitchDocuments(n Node) []config.Document {
+	if n.VSwitch == nil {
+		return nil
+	}
+	v := *n.VSwitch
+	alias := network.NewLinkAliasConfigV1Alpha1(publicLink)
+	alias.Selector.Match = cel.MustExpression(cel.ParseBooleanExpression(fmt.Sprintf("mac(link.permanent_addr) == %q", v.MAC.String()), celenv.LinkLocator()))
+	link := network.NewLinkConfigV1Alpha1(publicLink)
+	link.LinkUp = new(true)
+	vlan := network.NewVLANConfigV1Alpha1(vswitchLink)
+	vlan.VLANIDConfig = v.VLAN
+	vlan.ParentLinkConfig = publicLink
+	vlan.LinkMTU = VSwitchMTU
+	vlan.LinkAddresses = []network.AddressConfig{{AddressAddress: v.Address}}
+	vlan.LinkRoutes = []network.RouteConfig{{RouteGateway: meta.Addr{Addr: v.gateway()}}}
+	return []config.Document{alias, link, vlan}
 }
 
 func timeSyncDocument() config.Document {

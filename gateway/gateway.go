@@ -31,7 +31,7 @@ const httpsPort = 443
 const (
 	registryImage = "docker.io/library/registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373"
 	caddyImage    = "docker.io/library/caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d"
-	// skopeoImage copies the mirror. Ubuntu 24.04's skopeo 1.13.3 cannot copy an OCI index with its digests preserved.
+	// skopeoImage copies the mirror, since Ubuntu 24.04's skopeo 1.13.3 cannot copy an OCI index with its digests kept.
 	skopeoImage = "quay.io/skopeo/stable:v1.20.0@sha256:47853bb9fb24202af9110531ebd6e43c5f97701254ca290596640290d17942f4"
 )
 

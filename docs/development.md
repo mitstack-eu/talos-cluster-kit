@@ -119,8 +119,17 @@ pins it.
 
 The script tests run the script a rendered manifest carries, so they test what
 a node would run. `testutil.NewTools` writes fake `talosctl`, `kubectl`,
-`curl`, `skopeo` and `docker` commands that log each call, and each test reads
-that log to check the order of the calls.
+`curl`, `skopeo`, `docker` and `systemctl` commands that log each call, and
+each test reads that log to check the order of the calls.
+
+One check needs Docker and the network, so the default `go test ./...` leaves
+it out and CI runs it as its own `mirror check` step. It copies
+trust-manager's image index from quay.io into the gateway's own registry image
+with the gateway's own skopeo image, then reads the digest the registry serves:
+
+```bash
+go test -tags mirror -count=1 -run '^TestPrepareScript_Mirrors' ./gateway/
+```
 
 | Test | What it proves | Against what |
 |---|---|---|
@@ -169,7 +178,11 @@ that log to check the order of the calls.
 | `TestHosting_RendersNoExternalSecretGeneratorOrOtherWriterOfArgoCDRepositoryCredentials` | What `components.Hosting` returns holds no ExternalSecret or ClusterExternalSecret, the namespaced and cluster-wide External Secrets objects that write a Secret. It holds no object of the API group `generators.external-secrets.io`, whose objects mint values such as GitHub tokens. Argo CD reads a Secret labelled `argocd.argoproj.io/secret-type` as a credential, and the only object so labelled is the SealedSecret `TestHosting_GivesArgoCDTheClusterRepositoryOverSSHOnPort443FromTheSealedReadKey` checks | Every document of every manifest `components.Hosting` returns |
 | `TestHosting_TheInitJobTrustsTheSSHHostKeysArgoCDTrustsForGitHubOn443` | The init Job's known hosts are exactly the `[ssh.github.com]:443` entries of `argocd-ssh-known-hosts-cm` | The vendored Argo CD manifest |
 | `TestHosting_LetsTheInitJobReachOnlyClusterDNSOpenBaoAndGitHubsSSHOn443AndOpenBaoTakeItsCalls` | The init Job's pod may reach cluster DNS, OpenBao on 8200 or 15008 and `ssh.github.com` on 443 and nothing else, and OpenBao takes its calls | Cilium's view of each pod's labels |
-| `TestPrepareScript_RefusesAManifestWhoseBytesDifferFromItsPin` | The gateway installs no manifest whose sha256 differs from the list, and stops | Fake curl and skopeo |
+| `TestPrepareScript_RefusesAManifestWhoseBytesDifferFromItsPin` | The gateway installs no manifest whose sha256 differs from the list, and stops | Fake curl and docker |
+| `TestPrepareScript_InstallsThePinnedToolsMirrorsByDigestAndFetchesTheManifests` | Every copy runs the skopeo image the gateway's `tools.env` pins by digest, through Docker with `--all --preserve-digests`, and never the host's own skopeo | Fake curl, docker and skopeo |
+| `TestPrepareScript_PowersTheGatewayOffAndLeavesTheMirrorIncompleteWhenACopyFails` | A copy that fails runs `systemctl poweroff`, names the image, and writes no completion file | A fake docker that fails one image |
+| `TestPrepareScript_MirrorsTrustManagersIndexIntoTheGatewaysRegistryWithItsDigest` | trust-manager's OCI image index copies into the gateway's registry, and the registry serves the digest the hosting set pins. It runs only under the `mirror` build tag | The real skopeo image, registry image and quay.io, through Docker |
+| `TestPlane_RefusesTheBuildNamingTheGatewaysImageMirrorOnceTheGatewayPowersItselfOff` | When the gateway powers off while the builder runs, the plane deletes the builder, refuses with class `gateway-mirror-failed` at least 30 minutes before `BuildDeadline`, and leaves the gateway off | `controlplane/cloudtest` |
 | `TestPlane_BuildsANodeInEachOfFsn1Nbg1AndHel1OnOneNetwork` | Calling `NextStep` until it returns none builds a node in each location on one network, a gateway and a builder in `fsn1`, and deletes the builder once its snapshot exists | `controlplane/cloudtest`, a fake of the Hetzner Cloud API |
 | `TestPlane_EachCallWaitsOnOneHetznerActionAtMostAndCreatesOneNodeAtMost` | No call waits on more than one Hetzner action or creates more than one node | The same fake |
 | `TestPlane_RefusesAnAmbiguousClusterBeforeAnyChange` | Two resources of one role refuse with class `ambiguous-cluster` and change nothing | The same fake |

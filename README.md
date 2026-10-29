@@ -261,6 +261,16 @@ The plane deletes a builder still running past it and refuses the cluster as
 `image-build-failed`, naming where the
 builder's CPU and disk last moved.
 
+The gateway copies each image with the skopeo image `skopeoImage` in
+`gateway/gateway.go` pins by digest, run through the gateway's own Docker.
+Ubuntu 24.04's own skopeo, version 1.13.3, cannot copy an OCI image index with
+its digests preserved, and trust-manager's image is one. A copy that fails
+powers the gateway off, since the plane holds no credential into the cluster
+and reads only what Hetzner reports. When the gateway has run and is off before
+the builder finished, `NextStep` deletes the builder and refuses the cluster as
+`gateway-mirror-failed`, naming the gateway's image mirror, minutes after the
+copy failed rather than at `BuildDeadline`.
+
 ## What the configuration holds
 
 `nodeconfig.Render` starts from the configuration Talos itself generates for a

@@ -8933,7 +8933,9 @@ spec:
         - --providers.kubernetesingress
         - --providers.kubernetesingress.allowEmptyServices=true
         - --providers.kubernetesingress.ingressendpoint.publishedservice=traefik/traefik
+        - --entryPoints.web.proxyProtocol.trustedIPs=10.0.0.0/16
         - --entryPoints.websecure.http.tls=true
+        - --entryPoints.websecure.proxyProtocol.trustedIPs=10.0.0.0/16
         - --log.level=INFO
         env:
         - name: POD_NAME
@@ -8946,7 +8948,7 @@ spec:
               fieldPath: metadata.namespace
         - name: USER
           value: traefik
-        image: docker.io/traefik:v3.7.13@sha256:24841fe2de7304c149343d877d2923b4c8800a38ba015dea9174c23b20e344a0
+        image: docker.io/library/traefik:v3.7.13@sha256:24841fe2de7304c149343d877d2923b4c8800a38ba015dea9174c23b20e344a0
         imagePullPolicy: IfNotPresent
         lifecycle: null
         livenessProbe:

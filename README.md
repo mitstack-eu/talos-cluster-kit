@@ -225,6 +225,11 @@ of a private target. The plane adds the target only once the block has
 coupled that subnet, and removes any control-plane target the load balancer
 holds.
 
+The load balancer sends a PROXY protocol header on both ports, which carries
+the client's address. Traefik's `web` and `websecure` entry points read that
+header only from the cluster network, `10.0.0.0/16`, where the load balancer's
+private address sits.
+
 `plane.go`, `converge.go`, `install.go` and `observe.go` hold the plane, and
 `api.go` holds the Hetzner Cloud client behind the `API` interface. The
 package's tests run against the fake in `controlplane/cloudtest`, which a
@@ -611,7 +616,9 @@ is not one armored public key able to encrypt.
 
 Each chart renders from a version pinned with the sha256 its repository's
 `index.yaml` publishes. Every image is named by digest, and `mirror.List`
-returns each one for the gateway's mirror.
+returns each one for the gateway's mirror. A node asks the mirror for a Docker
+Hub image under its full name, as `docker.io/library/traefik`, so `mirror.List`
+refuses a name such as `docker.io/traefik` that leaves out the namespace.
 
 | Component | What it does here | Values |
 |---|---|---|

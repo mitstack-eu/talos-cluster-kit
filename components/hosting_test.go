@@ -499,12 +499,11 @@ func TestHosting_RunsOpenBaosMembersOnTheTaintedControlPlaneNodesAndEveryOtherHo
 	members := podTemplates(t, testutil.Manifest(t, "openbao", set.Served))["openbao/openbao"]
 	require.NotNil(t, members, "the openbao manifest has no openbao/openbao workload")
 	assert.True(t, toleratesControlPlane(t, members), "OpenBao's members cannot run on the control-plane nodes their volumes are pinned to")
-	checked := 0
 	for _, name := range []string{"traefik", "cert-manager", "trust-manager", "external-secrets", "sealed-secrets", "argocd", "mitstack-openbao-init"} {
-		for workload, template := range podTemplates(t, testutil.Manifest(t, name, set.Served, set.Inline)) {
-			checked++
+		templates := podTemplates(t, testutil.Manifest(t, name, set.Served, set.Inline))
+		assert.NotEmpty(t, templates, "the %s manifest renders no workload", name)
+		for workload, template := range templates {
 			assert.False(t, toleratesControlPlane(t, template), "%s runs on the control-plane nodes", workload)
 		}
 	}
-	assert.GreaterOrEqual(t, checked, 7, "the hosting set runs fewer workloads than it renders")
 }

@@ -483,6 +483,56 @@ func TestHosting_LetsTheInitJobReachOnlyClusterDNSOpenBaoAndGitHubsSSHOn443AndOp
 	assert.Contains(t, openBaoFlows, "ingress with the init Job on 8200/TCP 15008/TCP", "OpenBao refuses the init Job's calls")
 }
 
+func TestHosting_IssuesAppCertificatesFromLetsEncryptProductionThroughTraefikAfterCertManagersWebhook(t *testing.T) {
+	set := hostingSet(t, testutil.HostingInputs(t))
+	var issuers []map[string]any
+	var carrier components.Manifest
+	for _, m := range slices.Concat(set.Served, set.Inline) {
+		for _, doc := range testutil.Kind(testutil.Documents(t, m.Bytes), "ClusterIssuer") {
+			issuers, carrier = append(issuers, doc), m
+		}
+	}
+
+	require.Len(t, issuers, 1, "the hosting set's ClusterIssuers")
+	assert.Equal(t, "letsencrypt-production", testutil.Field(t, issuers[0], "metadata", "name"))
+	assert.Equal(t, map[string]any{"acme": map[string]any{
+		"server":              "https://acme-v02.api.letsencrypt.org/directory",
+		"privateKeySecretRef": map[string]any{"name": "letsencrypt-production-account-key"},
+		"solvers": []any{map[string]any{"http01": map[string]any{"ingress": map[string]any{
+			"ingressClassName": "traefik",
+			"serviceType":      "ClusterIP",
+			"podTemplate":      map[string]any{"metadata": map[string]any{"labels": map[string]any{"mitstack.dev/app": "acme-http01-solver"}}},
+		}}}},
+	}}, issuers[0]["spec"])
+	assert.Greater(t, carrier.TalosName(), testutil.Manifest(t, "cert-manager", set.Served).TalosName(),
+		"Talos applies the ClusterIssuer before cert-manager's webhook, which abandons the pass")
+}
+
+func TestHosting_LetsCertManagerReachOnlyTheAPIServerClusterDNSLetsEncryptOn443AndAppHostnamesOn80(t *testing.T) {
+	set := hostingSet(t, testutil.HostingInputs(t))
+	policy := namedDocument(t, testutil.Manifest(t, "mitstack-hosting-flows", set.Served), "CiliumClusterwideNetworkPolicy", "mitstack-hosting-flows")
+	pods := map[string]testutil.CiliumEndpoint{
+		"cluster DNS":  testutil.Endpoint("kube-system", nil, map[string]string{"k8s-app": "kube-dns"}),
+		"OpenBao":      testutil.Endpoint("openbao", nil, map[string]string{"app.kubernetes.io/name": "openbao"}),
+		"an app":       testutil.Endpoint("app-shop", map[string]string{"mitstack.dev/subscription": "sub_1"}, map[string]string{"mitstack.dev/app": "shop"}),
+		"cert-manager": testutil.Endpoint("cert-manager", nil, map[string]string{"app.kubernetes.io/name": "cert-manager", "mitstack.dev/app": "cert-manager"}),
+	}
+
+	var egress []string
+	for _, grant := range testutil.Grants(t, policy, pods, "cert-manager") {
+		if strings.HasPrefix(grant, "egress") {
+			egress = append(egress, grant)
+		}
+	}
+
+	assert.Equal(t, []string{
+		"egress to *.apps.mitstack.dev on 80/TCP",
+		"egress to acme-v02.api.letsencrypt.org on 443/TCP",
+		"egress to entity kube-apiserver",
+		"egress with cluster DNS on 53/UDP 53/TCP through the DNS proxy",
+	}, egress, "cert-manager's flows")
+}
+
 func TestHosting_KeepsTheMembersAloneOnOpenBaosClusterPortAndEveryoneOffItsOtherPorts(t *testing.T) {
 	set := hostingSet(t, testutil.HostingInputs(t))
 	policy := namedDocument(t, testutil.Manifest(t, "mitstack-hosting-mesh", set.Served), "AuthorizationPolicy", "mitstack-openbao-ports")

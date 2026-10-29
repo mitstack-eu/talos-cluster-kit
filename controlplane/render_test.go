@@ -16,6 +16,7 @@ import (
 	"mime/multipart"
 	"net/mail"
 	"net/netip"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -240,6 +241,17 @@ func TestGateway_StartsTheMirrorBesideItsFirewallAndPassesPullsThroughIt(t *test
 		"  route /v2/* {\n    reverse_proxy @pull 127.0.0.1:5000\n    respond 405\n  }\n", "the mirror tries the registry for a pull before refusing")
 	assert.JSONEq(t, `{"iptables": false, "ip6tables": false, "bridge": "none"}`, kit.file(t, "/etc/docker/daemon.json").Content,
 		"Docker writes iptables rules the gateway's nftables deletes, so the mirror never starts")
+}
+
+func TestGateway_ForwardsPort80ToTheIngressLoadBalancersPublicAddressAlone(t *testing.T) {
+	h := installedOnce(t)
+	ingress := h.loadBalancer(controlplane.RoleIngress)
+
+	nftables := h.gatewayKitPart().file(t, "/etc/nftables.conf").Content
+
+	require.NotEmpty(t, ingress.PublicIPv4, "the ingress load balancer's public address")
+	assert.Contains(t, nftables, " ip daddr "+ingress.PublicIPv4+" tcp dport 80 accept\n", "cert-manager's HTTP-01 self-check to an app's hostname")
+	assert.Len(t, regexp.MustCompile(`\b80\b`).FindAllString(nftables, -1), 1, "the gateway's rules naming port 80")
 }
 
 func TestBuilder_TheNodeRoutesThroughTheNetworksRouterAndKeepsItsDHCPAddress(t *testing.T) {

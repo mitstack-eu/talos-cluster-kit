@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -30,6 +31,7 @@ func inputs(t *testing.T) gateway.Inputs {
 	return gateway.Inputs{
 		Address:         netip.MustParseAddr("10.0.0.2"),
 		Network:         netip.MustParsePrefix("10.0.0.0/16"),
+		Ingress:         netip.MustParseAddr("198.51.100.7"),
 		TLS:             testutil.GatewayTLS(t),
 		Components:      components.Default(),
 		ExtraImages:     []components.Image{tools},
@@ -61,6 +63,30 @@ func TestRender_WithNoLogReceiverForwardsHTTPSAloneAndChangesNothingElse(t *test
 
 	require.NoError(t, err)
 	assert.Equal(t, strings.Replace(string(withReceiver), withLogPort, httpsAlone, 1), string(got))
+}
+
+func TestRender_ForwardsPort80ToTheIngressLoadBalancerAloneAndNowhereWithoutOne(t *testing.T) {
+	const toIngress = "          ip saddr 10.0.0.0/16 ip daddr 198.51.100.7 tcp dport 80 accept\n"
+	in := inputs(t)
+	in.Ingress = netip.Addr{}
+	withIngress, err := gateway.Render(inputs(t))
+	require.NoError(t, err)
+
+	got, err := gateway.Render(in)
+
+	require.NoError(t, err)
+	require.Contains(t, string(withIngress), toIngress, "cert-manager's HTTP-01 self-check to an app's hostname")
+	assert.Len(t, regexp.MustCompile(`\b80\b`).FindAllString(writtenFile(t, "/etc/nftables.conf"), -1), 1, "the firewall's rules naming port 80")
+	assert.Equal(t, strings.Replace(string(withIngress), toIngress, "", 1), string(got))
+}
+
+func TestRender_RefusesAnIngressAddressInsideTheNetwork(t *testing.T) {
+	in := inputs(t)
+	in.Ingress = netip.MustParseAddr("10.0.0.4")
+
+	_, err := gateway.Render(in)
+
+	assert.ErrorContains(t, err, "ingress address 10.0.0.4 is inside network 10.0.0.0/16")
 }
 
 func TestRender_LeavesTheFirewallToNftablesAndRunsEveryContainerOnTheHostNetwork(t *testing.T) {

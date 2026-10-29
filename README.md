@@ -304,6 +304,33 @@ bootstrap accepts only `os:admin`, its full-rights role, so the gateway runs
 it once with a short-lived talosconfig from `Secrets.AdminTalosconfig` and
 deletes that file on exit.
 
+### The order the manifests apply in
+
+Talos applies a control-plane node's manifests in the order of their names,
+after it moves every Namespace and then every CRD to the front. A create that
+fails for any reason but a malformed object ends the pass, and Talos tries the
+whole pass again later. A webhook that cannot answer yet therefore holds back
+every object after the one it refuses.
+
+`applyOrder` in `components/order.go` sets that order, and `TalosName` puts
+each manifest's place in it before its name. A node's configuration therefore
+names Cilium `00-cilium`, and the gateway serves it at `/manifests/00-cilium.yaml`.
+The order runs in four groups.
+
+| Group | Manifests | Why it comes there |
+|---|---|---|
+| Mesh dataplane | Cilium, its policy CRD, Istio's base chart, istiod, istio-cni and ztunnel | A pod outside `kube-system`, `istio-system` and `kyverno` starts only once istio-cni and ztunnel run |
+| Cluster reporting | The node report, the cluster tokens and the Collector | A component that never starts still leaves the platform its report |
+| Components and policies | Every other component, policy, key and volume | No object here waits on a webhook but Istio's, whose pod runs outside the mesh |
+| What a webhook validates | external-secrets and trust-manager, whose charts hold cert-manager objects, then `mitstack-hosting-tls` | cert-manager's and trust-manager's webhooks answer only once their pods run |
+
+A new manifest takes a place in `applyOrder`, since `TalosName` panics on one
+it leaves out. `TestBuilder_TalosAppliesEveryObjectAWebhookInterceptsAfterTheWebhookTheMeshAndTheNodeReport`
+in `controlplane/render_test.go` sorts the Default and hosting sets as Talos
+v1.14.4 does. It fails when an object a webhook's rules intercept applies
+before the webhook's own manifests, ztunnel or istio-cni, or before the node
+report and the cluster tokens.
+
 ## How AWS comes to trust a cluster's tokens
 
 A pod on the cluster can call AWS, such as to pull an image from a private

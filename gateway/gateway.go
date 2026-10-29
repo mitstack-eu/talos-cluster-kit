@@ -153,7 +153,7 @@ func (in Inputs) egressPorts() (string, error) {
 func (in Inputs) manifestList() string {
 	var lines []string
 	for _, m := range in.Components.Served {
-		lines = append(lines, fmt.Sprintf("%s.yaml %s %s/%s", m.Name, m.SHA256(), in.ManifestBaseURL, m.Path))
+		lines = append(lines, fmt.Sprintf("%s.yaml %s %s/%s", m.TalosName(), m.SHA256(), in.ManifestBaseURL, m.Path))
 	}
 	return strings.Join(lines, "\n")
 }

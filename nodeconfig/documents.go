@@ -263,7 +263,7 @@ func (c Cluster) manifestDocuments() ([]config.Document, error) {
 	var docs []config.Document
 	for _, m := range c.Components.Served {
 		doc := k8s.NewKubeExternalManifestConfigV1Alpha1()
-		doc.MetaName = m.Name
+		doc.MetaName = m.TalosName()
 		doc.URLSpec = meta.URL{URL: ManifestURL(c.Gateways[0], m)}
 		docs = append(docs, doc)
 	}
@@ -275,12 +275,12 @@ func (c Cluster) manifestDocuments() ([]config.Document, error) {
 
 func inlineDocument(m components.Manifest) config.Document {
 	doc := k8s.NewKubeInlineManifestConfigV1Alpha1()
-	doc.MetaName = m.Name
+	doc.MetaName = m.TalosName()
 	doc.ManifestSpec = string(m.Bytes)
 	return doc
 }
 
 // ManifestURL is where gateway serves a served manifest.
 func ManifestURL(gateway netip.Addr, m components.Manifest) *url.URL {
-	return &url.URL{Scheme: "https", Host: gateway.String(), Path: "/manifests/" + m.Name + ".yaml"}
+	return &url.URL{Scheme: "https", Host: gateway.String(), Path: "/manifests/" + m.TalosName() + ".yaml"}
 }

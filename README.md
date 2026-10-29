@@ -798,6 +798,15 @@ hosting set carries that label. The Cilium policy `mitstack-hosting-flows` in
 | OpenBao's init Job | Lookups through Cilium's DNS proxy, calls to OpenBao on 8200, and SSH to `ssh.github.com` on 443, which the gateway forwards |
 | Traefik | Web traffic from outside the cluster on its two ports, calls to the API server, and calls to the app slices |
 
+The API server runs on each control-plane node's host network. Cilium names
+its call to a pod on the same node `kube-apiserver`, and its call to a pod on
+another node by that node's identity. A webhook port therefore takes a second
+rule, which admits the nodes labelled `node-role.kubernetes.io/control-plane`.
+Cilium gives a node an identity by that label because
+`components/render/cilium-values.yaml` sets `nodeSelectorLabels` and
+`nodeLabels`. A worker's host and every other node stay off the webhook ports,
+so the Robot worker that runs apps cannot call a webhook.
+
 Each flow between two pods on a named port also admits port 15008, where the
 call arrives inside the mesh. The AuthorizationPolicy `mitstack-openbao-ports`
 in `components/hosting/mesh.yaml` keeps the ports themselves: OpenBao takes

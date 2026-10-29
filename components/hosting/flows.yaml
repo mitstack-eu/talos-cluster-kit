@@ -15,6 +15,11 @@ specs:
   - fromEntities: [kube-apiserver]
     toPorts:
     - ports: [{port: "10250", protocol: TCP}, {port: "6443", protocol: TCP}]
+  - fromNodes:
+    - matchLabels:
+        node-role.kubernetes.io/control-plane: ""
+    toPorts:
+    - ports: [{port: "10250", protocol: TCP}, {port: "6443", protocol: TCP}]
 - description: "External Secrets reaches the API server and OpenBao, and the API server reaches its webhook."
   endpointSelector:
     matchLabels:
@@ -35,6 +40,11 @@ specs:
     - ports: [{port: "8200", protocol: TCP}, {port: "15008", protocol: TCP}]
   ingress:
   - fromEntities: [kube-apiserver]
+    toPorts:
+    - ports: [{port: "10250", protocol: TCP}]
+  - fromNodes:
+    - matchLabels:
+        node-role.kubernetes.io/control-plane: ""
     toPorts:
     - ports: [{port: "10250", protocol: TCP}]
 - description: "OpenBao's members reach each other and the API server, and External Secrets and the init Job reach their API."

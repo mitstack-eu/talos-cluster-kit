@@ -261,15 +261,21 @@ The plane deletes a builder still running past it and refuses the cluster as
 `image-build-failed`, naming where the
 builder's CPU and disk last moved.
 
-The gateway copies each image with the skopeo image `skopeoImage` in
-`gateway/gateway.go` pins by digest, run through the gateway's own Docker.
-Ubuntu 24.04's own skopeo, version 1.13.3, cannot copy an OCI image index with
-its digests preserved, and trust-manager's image is one. A copy that fails
-powers the gateway off, since the plane holds no credential into the cluster
-and reads only what Hetzner reports. When the gateway has run and is off before
-the builder finished, `NextStep` deletes the builder and refuses the cluster as
-`gateway-mirror-failed`, naming the gateway's image mirror, minutes after the
-copy failed rather than at `BuildDeadline`.
+The gateway copies each image with skopeo, a tool that copies container images
+between registries. `skopeoImage` in `gateway/gateway.go` pins the skopeo
+image by digest, the rendered `tools.env` names it as `SKOPEO_IMAGE`, and
+`prepare.sh` runs it through the gateway's own Docker. Ubuntu 24.04's packaged
+skopeo, version 1.13.3, cannot copy an OCI image index, the list that names one
+image per CPU architecture, and keep its digest unchanged. trust-manager, one of
+the hosting set's components, ships as such an index.
+
+A copy that fails powers the gateway off, because the plane holds no
+credential into the cluster and reads only what Hetzner reports. When the
+gateway has run and is off before the builder finished, `NextStep` deletes the
+builder and refuses the cluster with the class `gateway-mirror-failed`, whose
+message names the gateway's image mirror. That refusal comes on the plane's
+next call after the gateway powers off, and the plane's tests require it at
+least 30 minutes before `BuildDeadline`.
 
 ## What the configuration holds
 

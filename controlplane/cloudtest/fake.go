@@ -480,6 +480,43 @@ func (f *Fake) AddLoadBalancerTarget(_ context.Context, id int64, labelSelector 
 	return nil
 }
 
+// AddLoadBalancerIPTarget refuses a private address outside every vSwitch subnet of the load balancer's networks, as
+// Hetzner's load balancer FAQ says it does.
+func (f *Fake) AddLoadBalancerIPTarget(_ context.Context, id int64, ip string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	lb, err := f.lbStep("add-ip-target", id)
+	if err != nil {
+		return err
+	}
+	if !slices.ContainsFunc(slices.Collect(maps.Keys(lb.PrivateIPs)), func(networkID int64) bool {
+		n, ok := f.Networks[networkID]
+		return ok && n.InVSwitchSubnet(ip)
+	}) {
+		return fmt.Errorf("invalid_input: %s is in no vSwitch subnet of a network load balancer %d is attached to", ip, id)
+	}
+	if slices.Contains(lb.TargetIPs, ip) {
+		return fmt.Errorf("target_already_defined: load balancer %d", id)
+	}
+	lb.TargetIPs = append(lb.TargetIPs, ip)
+	return nil
+}
+
+func (f *Fake) RemoveLoadBalancerTarget(_ context.Context, id int64, labelSelector string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	lb, err := f.lbStep("remove-target", id)
+	if err != nil {
+		return err
+	}
+	i := slices.Index(lb.TargetSelectors, labelSelector)
+	if i < 0 {
+		return fmt.Errorf("target_not_found: load balancer %d", id)
+	}
+	lb.TargetSelectors = slices.Delete(lb.TargetSelectors, i, i+1)
+	return nil
+}
+
 func (f *Fake) DeleteLoadBalancer(_ context.Context, id int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

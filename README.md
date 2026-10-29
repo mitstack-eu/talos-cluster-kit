@@ -141,16 +141,17 @@ subscription:
 
 ```go
 plane := controlplane.Plane{
-	API:           controlplane.NewAPI(token, "hcloud-hrobot-talos-cluster"), // token: the app's Hetzner Cloud API token
-	Block:         "hcloud-hrobot-talos-cluster",
-	Subscription:  "sub_0123456789ab",
-	AppName:       "shop",
-	ServerType:    "cx33",
-	Boundary:      "mitstack-hcloud-hrobot-talos-cluster", // separates the parts of the gateway's user data
-	PlatformURL:   "https://api.mitstack.dev",             // where every node registers and reports
-	RepoURL:       "https://github.com/acme/shop-cluster", // the Git repository Argo CD applies to the cluster
-	Installed:     installWorker,                          // the block's own func(ctx, controlplane.Network, nodeconfig.Cluster) error
-	AppsOnWorkers: true,
+	API:             controlplane.NewAPI(token, "hcloud-hrobot-talos-cluster"), // token: the app's Hetzner Cloud API token
+	Block:           "hcloud-hrobot-talos-cluster",
+	Subscription:    "sub_0123456789ab",
+	AppName:         "shop",
+	ServerType:      "cx33",
+	Boundary:        "mitstack-hcloud-hrobot-talos-cluster", // separates the parts of the gateway's user data
+	PlatformURL:     "https://api.mitstack.dev",             // where every node registers and reports
+	RepoURL:         "https://github.com/acme/shop-cluster", // the Git repository Argo CD applies to the cluster
+	Installed:       installWorker,                          // the block's own func(ctx, controlplane.Network, nodeconfig.Cluster) error
+	AppsOnWorkers:   true,
+	WorkerAddresses: []string{"10.0.1.2"}, // the Robot worker's address in the network's vSwitch subnet
 }
 st, err := plane.Read(ctx)
 ```
@@ -206,6 +207,16 @@ the node it runs on. Every other pod, Argo CD and the registration Job among
 them, waits Pending until a worker joins. A cluster that hosts the platform
 leaves `AppsOnWorkers` off, because its web entry point, Traefik, tolerates no
 taint and serves only from the node it runs on.
+
+Traefik runs where apps run, so `AppsOnWorkers` also moves the ingress load
+balancer's targets. Off, it targets the nodes by their label. On, it targets
+each address in `WorkerAddresses` and no control-plane node, so the nodes
+that hold etcd and the Kubernetes API take no internet traffic. A worker
+address must sit in a vSwitch subnet of the network, as Hetzner's [load
+balancer FAQ](https://docs.hetzner.com/networking/load-balancers/faq/) requires
+of a private target. The plane adds the target only once the block has
+coupled that subnet, and removes any control-plane target the load balancer
+holds.
 
 `plane.go`, `converge.go`, `install.go` and `observe.go` hold the plane, and
 `api.go` holds the Hetzner Cloud client behind the `API` interface. The

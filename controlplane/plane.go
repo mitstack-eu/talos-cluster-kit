@@ -31,8 +31,12 @@ type Plane struct {
 	// Installed receives the cluster the install rendered, its keys included, in the one call they exist, so the block
 	// can install its workers from it. An error rolls the install back.
 	Installed func(ctx context.Context, network Network, cluster nodeconfig.Cluster) error
-	// AppsOnWorkers keeps every pod without a toleration off the control-plane nodes.
+	// AppsOnWorkers keeps every pod without a toleration off the control-plane nodes, and the ingress load balancer's
+	// traffic with them, so it targets each of WorkerAddresses and no control-plane node.
 	AppsOnWorkers bool
+	// WorkerAddresses are the private addresses of the workers outside Hetzner Cloud, each inside a vSwitch subnet of
+	// the network.
+	WorkerAddresses []string
 	// Hosting makes the cluster host the platform; nil builds one that hosts none.
 	Hosting *Hosting
 }

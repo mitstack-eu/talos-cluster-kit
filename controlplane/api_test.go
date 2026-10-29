@@ -1,8 +1,8 @@
 package controlplane_test
 
 // The adapter on the wire: a node with no user data and no public address, a private load balancer with no public
-// interface, a server Hetzner cannot place refused, a snapshot started unwaited, a start read from its action, and a
-// server's metrics read a minute a point.
+// interface, a server Hetzner cannot place refused, a snapshot started unwaited, a start read from its action, a
+// server's metrics read a minute a point, and a worker targeted by its address.
 
 import (
 	"context"
@@ -279,4 +279,26 @@ func TestHetznerAdapter_ReadsANetworksVSwitchSubnetsAndReplacesItsLabels(t *test
 	assert.Equal(t, map[int64]string{87417: "10.0.1.0/24"}, networks[0].VSwitchSubnets, "the network's vSwitch subnets")
 	assert.True(t, networks[0].ExposeRoutesToVSwitch, "the network exposes its routes to the vSwitch")
 	assert.Equal(t, map[string]any{"labels": map[string]any{"a": "b", "c": "d"}}, bodies["PUT /networks/3"], "the label update")
+}
+
+func TestHetznerAdapter_TargetsAWorkerByItsAddressRemovesALabelTargetAndReadsBoth(t *testing.T) {
+	const lb = "POST /load_balancers/9/actions/"
+	api, bodies := recordHetzner(t, map[string]string{
+		lb + "add_target":    `{"action": ` + finishedAction + `}`,
+		lb + "remove_target": `{"action": ` + finishedAction + `}`,
+		"GET /load_balancers": `{"load_balancers": [{"id": 9, "name": "ingress", "public_net": {"enabled": true}, "private_net": [], "services": [],
+			"targets": [{"type": "label_selector", "label_selector": {"selector": "` + nodes + `"}}, {"type": "ip", "ip": {"ip": "10.0.1.2"}}]}]}`,
+	})
+	ctx := context.Background()
+
+	require.NoError(t, api.AddLoadBalancerIPTarget(ctx, 9, "10.0.1.2"))
+	assert.Equal(t, map[string]any{"type": "ip", "ip": map[string]any{"ip": "10.0.1.2"}}, bodies[lb+"add_target"], "the address target")
+	require.NoError(t, api.RemoveLoadBalancerTarget(ctx, 9, nodes))
+	assert.Equal(t, map[string]any{"type": "label_selector", "label_selector": map[string]any{"selector": nodes}}, bodies[lb+"remove_target"],
+		"the label target removed")
+	lbs, err := api.ListLoadBalancers(ctx, "a=b")
+	require.NoError(t, err)
+	require.Len(t, lbs, 1)
+	assert.Equal(t, []string{nodes}, lbs[0].TargetSelectors, "the label targets read")
+	assert.Equal(t, []string{"10.0.1.2"}, lbs[0].TargetIPs, "the address targets read")
 }

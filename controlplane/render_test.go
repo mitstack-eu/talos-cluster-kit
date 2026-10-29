@@ -10,10 +10,12 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
 	"net/mail"
+	"net/netip"
 	"slices"
 	"strings"
 	"testing"
@@ -24,6 +26,7 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane/cloudtest"
 	"github.com/mitstack-eu/talos-cluster-kit/gateway"
 	"github.com/mitstack-eu/talos-cluster-kit/image"
+	"github.com/mitstack-eu/talos-cluster-kit/nodeconfig"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 	"github.com/mitstack-eu/talos-cluster-kit/tools"
 	"github.com/stretchr/testify/assert"
@@ -130,7 +133,7 @@ func inlineManifests(t *testing.T, config []map[string]any) map[string][]map[str
 	t.Helper()
 	manifests := map[string][]map[string]any{}
 	for _, doc := range testutil.Kind(config, "KubeInlineManifestConfig") {
-		manifests[doc["name"].(string)] = testutil.Documents(t, []byte(doc["manifest"].(string)))
+		manifests[testutil.ManifestName(doc["name"].(string))] = testutil.Documents(t, []byte(doc["manifest"].(string)))
 	}
 	return manifests
 }
@@ -145,7 +148,7 @@ func TestBuilder_EmbedsAConfigurationThatCarriesTheReportTheCredentialsAndTheApp
 	docs := testutil.Documents(t, []byte(config.Content))
 	var inline []string
 	for _, doc := range testutil.Kind(docs, "KubeInlineManifestConfig") {
-		inline = append(inline, doc["name"].(string))
+		inline = append(inline, testutil.ManifestName(doc["name"].(string)))
 	}
 	assert.Subset(t, inline, []string{"mitstack-node-report", "mitstack-cluster-tokens", "mitstack-cluster-application"})
 	clusterDocs := testutil.Kind(docs, "KubeClusterConfig")
@@ -251,12 +254,13 @@ func TestBuilder_TheNodeRoutesThroughTheNetworksRouterAndKeepsItsDHCPAddress(t *
 func TestBuilder_TheClusterRunsKyvernoAndCloudNativePGFromManifestsTheGatewayServes(t *testing.T) {
 	config := builderConfiguration(t, installedOnce(t))
 
-	served := map[string]any{}
+	served := map[string]map[string]any{}
 	for _, doc := range testutil.Kind(config, "KubeExternalManifestConfig") {
-		served[doc["name"].(string)] = doc["url"]
+		served[testutil.ManifestName(doc["name"].(string))] = doc
 	}
 	for _, name := range []string{"kyverno", "cloudnative-pg"} {
-		assert.Equal(t, "https://"+controlplane.GatewayAddress+"/manifests/"+name+".yaml", served[name], "where the node fetches the %s manifest", name)
+		require.Contains(t, served, name, "the served manifests the node applies")
+		assert.Equal(t, "https://"+controlplane.GatewayAddress+"/manifests/"+served[name]["name"].(string)+".yaml", served[name]["url"], "where the node fetches the %s manifest", name)
 	}
 }
 
@@ -505,4 +509,109 @@ func defaultClusterRecord(t *testing.T) []byte {
 		record("document", cmp.Or(kind, version), name)
 	}
 	return []byte(out.String())
+}
+
+// appliedManifests are the manifests a control-plane node of h's cluster applies, keyed by their name in its
+// configuration, a served one read from served at the URL the node fetches it from.
+func appliedManifests(t *testing.T, h *harness, served []components.Manifest) map[string][]byte {
+	t.Helper()
+	config := builderConfiguration(t, h)
+	if h.plane.Hosting != nil {
+		config = append(config, servingFile(t, h)...)
+	}
+	manifests := map[string][]byte{}
+	for _, doc := range testutil.Kind(config, "KubeInlineManifestConfig") {
+		manifests[doc["name"].(string)] = []byte(doc["manifest"].(string))
+	}
+	for _, doc := range testutil.Kind(config, "KubeExternalManifestConfig") {
+		i := slices.IndexFunc(served, func(m components.Manifest) bool { return manifestURL(m) == doc["url"] })
+		require.GreaterOrEqual(t, i, 0, "no served manifest at %v", doc["url"])
+		manifests[doc["name"].(string)] = served[i].Bytes
+	}
+	return manifests
+}
+
+func manifestURL(m components.Manifest) string {
+	return nodeconfig.ManifestURL(netip.MustParseAddr(controlplane.GatewayAddress), m).String()
+}
+
+// webhookOrderFaults names each object a webhook intercepts that Talos creates before the webhook's configuration, the
+// Service it calls, ztunnel and istio-cni have all applied, or before the node report and cluster tokens have.
+func webhookOrderFaults(t *testing.T, order []testutil.AppliedObject) []string {
+	t.Helper()
+	last := map[string]int{}
+	services := map[string]string{}
+	for i, o := range order {
+		last[testutil.ManifestName(o.Manifest)] = i
+		if o.Doc["kind"] == "Service" {
+			services[testutil.Field(t, o.Doc, "metadata", "namespace").(string)+"/"+testutil.Field(t, o.Doc, "metadata", "name").(string)] = o.Manifest
+		}
+	}
+	plurals := testutil.Plurals(t, order)
+	var faults []string
+	for _, w := range testutil.Webhooks(t, order) {
+		needs := []string{testutil.ManifestName(w.Configuration.Manifest), "ztunnel", "istio-cni"}
+		if w.Service != "" {
+			require.Contains(t, services, w.Service, "the Service the webhook %s calls", w.Name)
+			needs = append(needs, testutil.ManifestName(services[w.Service]))
+		}
+		needs = slices.Compact(slices.Sorted(slices.Values(needs)))
+		for i, o := range order {
+			if !w.Intercepts(o, plurals) {
+				continue
+			}
+			for _, needed := range needs {
+				require.Contains(t, last, needed, "a manifest the webhook %s needs", w.Name)
+				if last[needed] > i {
+					faults = append(faults, fmt.Sprintf("%s applies before %s, which the webhook %s needs", o, needed, w.Name))
+				}
+			}
+			for _, reporter := range []string{"mitstack-node-report", "mitstack-cluster-tokens"} {
+				require.Contains(t, last, reporter, "the manifests the node applies")
+				if last[reporter] > i {
+					faults = append(faults, fmt.Sprintf("%s applies after %s, which the webhook %s can refuse", reporter, o, w.Name))
+				}
+			}
+		}
+	}
+	return faults
+}
+
+// Every webhook counts whatever it does when it cannot answer, since istiod turns its validators from Ignore to Fail.
+func TestBuilder_TalosAppliesEveryObjectAWebhookInterceptsAfterTheWebhookTheMeshAndTheNodeReport(t *testing.T) {
+	hostingSet, err := components.Hosting(testutil.HostingInputs(t))
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		name   string
+		opts   []func(*harness)
+		served []components.Manifest
+	}{
+		{"the default set", nil, components.Default().Served},
+		{"the hosting set", []func(*harness){hosting}, hostingSet.Served},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, tc.opts...)
+			require.NoError(t, h.converge())
+
+			order := testutil.TalosOrder(t, appliedManifests(t, h, tc.served))
+
+			assert.Empty(t, webhookOrderFaults(t, order), "objects Talos creates before a webhook that intercepts them can answer")
+		})
+	}
+}
+
+func TestBuilder_TheNodeFetchesEachServedManifestUnderItsNameWhereTheGatewayServesIt(t *testing.T) {
+	h := installedOnce(t)
+
+	external := testutil.Kind(builderConfiguration(t, h), "KubeExternalManifestConfig")
+
+	served := strings.Fields(h.gatewayKitPart().file(t, "/etc/mitstack-gateway/manifests.txt").Content)
+	require.Len(t, external, len(components.Default().Served), "the served manifests the node applies")
+	for _, doc := range external {
+		name := doc["name"].(string)
+		m := testutil.Manifest(t, testutil.ManifestName(name), components.Default().Served)
+		assert.Equal(t, manifestURL(m), doc["url"], "where the node fetches %s", name)
+		assert.Equal(t, "https://"+controlplane.GatewayAddress+"/manifests/"+name+".yaml", doc["url"], "the path the node fetches %s at", name)
+		assert.Contains(t, served, name+".yaml", "the file the gateway serves %s from", name)
+	}
 }

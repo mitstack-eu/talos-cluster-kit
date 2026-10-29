@@ -74,7 +74,7 @@ func pinOf(t *testing.T, certPEM string) string {
 func names(docs []map[string]any) []string {
 	var out []string
 	for _, doc := range testutil.Kind(docs, "KubeInlineManifestConfig") {
-		out = append(out, doc["name"].(string))
+		out = append(out, testutil.ManifestName(doc["name"].(string)))
 	}
 	return out
 }

@@ -149,7 +149,8 @@ func TestRender_WithNoLogReceiverLeavesOutTheCollectorAndBothLogSinksAndNothingE
 func withoutLogParts(docs []map[string]any) []map[string]any {
 	var kept []map[string]any
 	for _, doc := range docs {
-		if doc["kind"] == "KmsgLogConfig" || doc["name"] == "mitstack-node-logs" {
+		name, _ := doc["name"].(string)
+		if doc["kind"] == "KmsgLogConfig" || testutil.ManifestName(name) == "mitstack-node-logs" {
 			continue
 		}
 		if machine, ok := doc["machine"].(map[string]any); ok {
@@ -456,7 +457,7 @@ func TestRender_AdmitsZtunnelsPortWhereverArgoCDsChartAdmitsACallBetweenItsPods(
 func documentNames(docs []map[string]any) []any {
 	var names []any
 	for _, doc := range docs {
-		names = append(names, doc["name"])
+		names = append(names, testutil.ManifestName(doc["name"].(string)))
 	}
 	return names
 }

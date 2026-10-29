@@ -510,6 +510,25 @@ func TestHosting_ServesTraefikOnNodePorts30080And30081OnEveryNode(t *testing.T) 
 	namedDocument(t, traefik, "DaemonSet", "traefik")
 }
 
+func TestHosting_TraefikTrustsTheLoadBalancersProxyProtocolOnWebAndWebsecureFromTheClusterNetworkAlone(t *testing.T) {
+	set := hostingSet(t, testutil.HostingInputs(t))
+	daemonSet := namedDocument(t, testutil.Manifest(t, "traefik", set.Served), "DaemonSet", "traefik")
+
+	var proxyArgs []string
+	for _, container := range testutil.Field(t, daemonSet, "spec", "template", "spec", "containers").([]any) {
+		for _, arg := range listOf(container.(map[string]any)["args"]) {
+			if strings.Contains(arg.(string), "proxyProtocol") {
+				proxyArgs = append(proxyArgs, arg.(string))
+			}
+		}
+	}
+
+	assert.ElementsMatch(t, []string{
+		"--entryPoints.web.proxyProtocol.trustedIPs=10.0.0.0/16",
+		"--entryPoints.websecure.proxyProtocol.trustedIPs=10.0.0.0/16",
+	}, proxyArgs)
+}
+
 // toleratesControlPlane is whether a pod template schedules past Talos's NoSchedule taint on the control-plane nodes.
 func toleratesControlPlane(t *testing.T, template map[string]any) bool {
 	t.Helper()

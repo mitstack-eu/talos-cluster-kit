@@ -1,4 +1,3 @@
-// Package mirror renders the image list a cluster's private mirror holds.
 package mirror
 
 import (
@@ -10,8 +9,7 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/components"
 )
 
-// List returns every image the nodes pull, the set's and extra, sorted and each once, and refuses an image from a
-// registry the nodes do not send to the mirror, since that pull would leave the cluster's network.
+// List returns every image the nodes pull, sorted and each once, and refuses one the mirror cannot serve under the name a node asks for.
 func List(set components.Set, extra ...components.Image) ([]components.Image, error) {
 	images, err := set.Images()
 	if err != nil {
@@ -23,6 +21,9 @@ func List(set components.Set, extra ...components.Image) ([]components.Image, er
 	for _, image := range images {
 		if !slices.Contains(components.MirroredRegistries, image.Registry()) {
 			return nil, fmt.Errorf("image %s is on %s, which no node sends to the mirror", image.Ref(), image.Registry())
+		}
+		if repository, ok := strings.CutPrefix(image.Name, "docker.io/"); ok && !strings.Contains(repository, "/") {
+			return nil, fmt.Errorf("image %s names Docker Hub without its namespace, and a node asks the mirror for docker.io/library/%s", image.Ref(), repository)
 		}
 	}
 	return images, nil

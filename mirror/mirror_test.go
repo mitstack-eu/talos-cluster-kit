@@ -32,13 +32,11 @@ func TestList_AddsTheExtraImagesOnceInOrder(t *testing.T) {
 	assert.Equal(t, strings.Join(want, "\n")+"\n", string(mirror.Render(images)))
 }
 
-func TestList_RefusesAnImageFromARegistryNoNodeSendsToTheMirror(t *testing.T) {
-	other := components.Image{Name: "registry.gitlab.com/acme/tool", Tag: "1", Digest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
-
-	_, err := mirror.List(components.Set{}, other)
-
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "registry.gitlab.com")
+func TestList_RefusesAnImageFromARegistryNoNodeSendsToTheMirrorOrADockerHubNameWithoutItsNamespace(t *testing.T) {
+	for name, want := range map[string]string{"registry.gitlab.com/acme/tool": "registry.gitlab.com", "docker.io/traefik": "docker.io/library/traefik"} {
+		_, err := mirror.List(components.Set{}, components.Image{Name: name, Tag: "1", Digest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"})
+		assert.ErrorContains(t, err, want, name)
+	}
 }
 
 func TestList_HoldsEveryImageTheHostingSetPullsByDigest(t *testing.T) {

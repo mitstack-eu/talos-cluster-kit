@@ -1,4 +1,5 @@
 image:
+  repository: library/traefik
   tag: v3.7.13@sha256:24841fe2de7304c149343d877d2923b4c8800a38ba015dea9174c23b20e344a0
 # One pod on every node, so each location's load balancer reaches a local Traefik and the Service keeps the client's address.
 deployment:
@@ -13,8 +14,12 @@ updateStrategy:
 ports:
   web:
     nodePort: 30080
+    proxyProtocol:
+      trustedIPs: [10.0.0.0/16]
   websecure:
     nodePort: 30081
+    proxyProtocol:
+      trustedIPs: [10.0.0.0/16]
   metrics: null
 metrics:
   prometheus: null

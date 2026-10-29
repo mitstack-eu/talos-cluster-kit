@@ -204,9 +204,16 @@ on each node, and the log collector tolerate the taint and still run on every
 node. The node report and the etcd member removal Job tolerate it too, and run
 only on control-plane nodes, since each reads etcd through the Talos API of
 the node it runs on. Every other pod, Argo CD and the registration Job among
-them, waits Pending until a worker joins. A cluster that hosts the platform
-leaves `AppsOnWorkers` off, because its web entry point, Traefik, tolerates no
-taint and serves only from the node it runs on.
+them, waits Pending until a worker joins.
+
+A cluster that hosts the platform keeps its stores on the control plane and
+its web traffic on the workers. OpenBao's three members tolerate the taint,
+and the local volumes the hosting set pins to the control-plane nodes keep one
+member on each. Traefik, cert-manager, trust-manager, External Secrets,
+Sealed Secrets and OpenBao's init Job tolerate no taint, so they run on the
+workers with Argo CD and the apps. Each member mounts the certificate
+cert-manager issues, so the members start only once a worker has joined and
+runs cert-manager.
 
 Traefik runs where apps run, so `AppsOnWorkers` also moves the ingress load
 balancer's targets. Off, it targets the nodes by their label. On, it targets
@@ -565,12 +572,12 @@ returns each one for the gateway's mirror.
 
 | Component | What it does here | Values |
 |---|---|---|
-| OpenBao 2.7.1 | Three Raft members, one per node. The listener serves TLS 1.3 only, with the certificate cert-manager issues, and reloads it when it is renewed. The static seal reads its key from `/openbao/seal/key` | `components/render/openbao-values.yaml` |
+| OpenBao 2.7.1 | Three Raft members, one per control-plane node, each tolerating the control-plane taint. The listener serves TLS 1.3 only, with the certificate cert-manager issues, and reloads it when it is renewed. The static seal reads its key from `/openbao/seal/key` | `components/render/openbao-values.yaml` |
 | cert-manager v1.21.2 | Issues OpenBao's serving certificate from OpenBao's own authority, and the External Secrets webhook's certificate | `components/render/cert-manager-values.yaml` |
 | trust-manager v0.25.0 | Copies that authority into the ConfigMap `openbao-ca`, under `ca.crt`, in every namespace | `components/render/trust-manager-values.yaml` |
 | External Secrets v2.11.0 | Copies values from OpenBao into Kubernetes Secrets | `components/render/external-secrets-values.yaml` |
 | Sealed Secrets 0.40.0 | Opens a `SealedSecret` with the block's key pair, and never mints or renews a key | `components/render/sealed-secrets-values.yaml` |
-| Traefik v3.7.13 | Serves web traffic on NodePorts 30080 and 30081, with one pod on every node | `components/render/traefik-values.yaml` |
+| Traefik v3.7.13 | Serves web traffic on NodePorts 30080 and 30081, with one pod on every node that takes apps | `components/render/traefik-values.yaml` |
 
 The authority and the certificates sit in `components/hosting/tls.yaml`. A
 `SecretStore`, the External Secrets object that names a store, verifies

@@ -477,3 +477,33 @@ func TestHosting_ServesTraefikOnNodePorts30080And30081OnEveryNode(t *testing.T) 
 	assert.Equal(t, map[any]any{"web": 30080, "websecure": 30081}, nodePorts)
 	namedDocument(t, traefik, "DaemonSet", "traefik")
 }
+
+// toleratesControlPlane is whether a pod template schedules past Talos's NoSchedule taint on the control-plane nodes.
+func toleratesControlPlane(t *testing.T, template map[string]any) bool {
+	t.Helper()
+	tolerations, _ := testutil.Field(t, template, "spec").(map[string]any)["tolerations"].([]any)
+	for _, toleration := range tolerations {
+		tol := toleration.(map[string]any)
+		key, effect := tol["key"], tol["effect"]
+		anyKey := key == nil && tol["operator"] == "Exists"
+		if (key == "node-role.kubernetes.io/control-plane" || anyKey) && (effect == "NoSchedule" || effect == nil) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestHosting_RunsOpenBaosMembersOnTheTaintedControlPlaneNodesAndEveryOtherHostingWorkloadOnTheWorkers(t *testing.T) {
+	set := hostingSet(t, testutil.HostingInputs(t))
+
+	members := podTemplates(t, testutil.Manifest(t, "openbao", set.Served))["openbao/openbao"]
+	require.NotNil(t, members, "the openbao manifest has no openbao/openbao workload")
+	assert.True(t, toleratesControlPlane(t, members), "OpenBao's members cannot run on the control-plane nodes their volumes are pinned to")
+	for _, name := range []string{"traefik", "cert-manager", "trust-manager", "external-secrets", "sealed-secrets", "argocd", "mitstack-openbao-init"} {
+		templates := podTemplates(t, testutil.Manifest(t, name, set.Served, set.Inline))
+		assert.NotEmpty(t, templates, "the %s manifest renders no workload", name)
+		for workload, template := range templates {
+			assert.False(t, toleratesControlPlane(t, template), "%s runs on the control-plane nodes", workload)
+		}
+	}
+}

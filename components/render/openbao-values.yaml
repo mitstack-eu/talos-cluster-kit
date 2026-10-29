@@ -24,6 +24,11 @@ server:
         allowPrivilegeEscalation: false
         capabilities:
           drop: [ALL]
+  # The pinned volumes sit on the control-plane nodes, which keep their NoSchedule taint once apps run on workers.
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
   # Each member's claim binds the local volume the hosting set pins to one node, so a member keeps its node and its data.
   dataStorage:
     size: 10Gi

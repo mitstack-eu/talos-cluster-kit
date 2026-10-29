@@ -225,10 +225,12 @@ of a private target. The plane adds the target only once the block has
 coupled that subnet, and removes any control-plane target the load balancer
 holds.
 
-The load balancer sends a PROXY protocol header on both ports, which carries
-the client's address. Traefik's `web` and `websecure` entry points read that
-header only from the cluster network, `10.0.0.0/16`, where the load balancer's
-private address sits.
+The load balancer forwards ports 80 and 443 to Traefik's NodePorts 30080 and
+30081, where Traefik's two entry points listen: `web` for HTTP and `websecure`
+for HTTPS. On both ports it sends a PROXY protocol header, which carries the
+client's address. Traefik sees the load balancer's private address as the
+sender, so each entry point reads that header from the cluster network,
+`10.0.0.0/16`, and from no other address.
 
 `plane.go`, `converge.go`, `install.go` and `observe.go` hold the plane, and
 `api.go` holds the Hetzner Cloud client behind the `API` interface. The
@@ -616,9 +618,11 @@ is not one armored public key able to encrypt.
 
 Each chart renders from a version pinned with the sha256 its repository's
 `index.yaml` publishes. Every image is named by digest, and `mirror.List`
-returns each one for the gateway's mirror. A node asks the mirror for a Docker
-Hub image under its full name, as `docker.io/library/traefik`, so `mirror.List`
-refuses a name such as `docker.io/traefik` that leaves out the namespace.
+returns each one for the gateway's mirror. The gateway copies each image under
+the name the list gives it. A node's containerd expands a Docker Hub name that
+has no namespace, so it asks the mirror for `docker.io/library/traefik` when a
+pod names `docker.io/traefik`. `mirror.List` therefore refuses such a name, and
+every Docker Hub image goes on the list under its full name.
 
 | Component | What it does here | Values |
 |---|---|---|

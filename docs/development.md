@@ -119,8 +119,18 @@ pins it.
 
 The script tests run the script a rendered manifest carries, so they test what
 a node would run. `testutil.NewTools` writes fake `talosctl`, `kubectl`,
-`curl`, `skopeo` and `docker` commands that log each call, and each test reads
-that log to check the order of the calls.
+`curl`, `skopeo`, `docker` and `systemctl` commands that log each call, and
+each test reads that log to check the order of the calls.
+
+One check needs Docker and the network, so the default `go test ./...` leaves
+it out and CI runs it as its own `mirror check` step. It starts a registry from
+the image the gateway runs its mirror from, copies trust-manager's image index
+from quay.io into it with the skopeo image the gateway pins, then reads the
+digest the registry serves for the tag:
+
+```bash
+go test -tags mirror -count=1 -run '^TestPrepareScript_Mirrors' ./gateway/
+```
 
 | Test | What it proves | Against what |
 |---|---|---|
@@ -169,7 +179,12 @@ that log to check the order of the calls.
 | `TestHosting_RendersNoExternalSecretGeneratorOrOtherWriterOfArgoCDRepositoryCredentials` | What `components.Hosting` returns holds no ExternalSecret or ClusterExternalSecret, the namespaced and cluster-wide External Secrets objects that write a Secret. It holds no object of the API group `generators.external-secrets.io`, whose objects mint values such as GitHub tokens. Argo CD reads a Secret labelled `argocd.argoproj.io/secret-type` as a credential, and the only object so labelled is the SealedSecret `TestHosting_GivesArgoCDTheClusterRepositoryOverSSHOnPort443FromTheSealedReadKey` checks | Every document of every manifest `components.Hosting` returns |
 | `TestHosting_TheInitJobTrustsTheSSHHostKeysArgoCDTrustsForGitHubOn443` | The init Job's known hosts are exactly the `[ssh.github.com]:443` entries of `argocd-ssh-known-hosts-cm` | The vendored Argo CD manifest |
 | `TestHosting_LetsTheInitJobReachOnlyClusterDNSOpenBaoAndGitHubsSSHOn443AndOpenBaoTakeItsCalls` | The init Job's pod may reach cluster DNS, OpenBao on 8200 or 15008 and `ssh.github.com` on 443 and nothing else, and OpenBao takes its calls | Cilium's view of each pod's labels |
-| `TestPrepareScript_RefusesAManifestWhoseBytesDifferFromItsPin` | The gateway installs no manifest whose sha256 differs from the list, and stops | Fake curl and skopeo |
+| `TestPrepareScript_RefusesAManifestWhoseBytesDifferFromItsPin` | The gateway installs no manifest whose sha256 differs from the list, and stops | Fake curl and docker |
+| `TestPrepareScript_InstallsThePinnedToolsMirrorsByDigestAndFetchesTheManifests` | Every copy runs the skopeo image `skopeoImage` in `gateway/gateway.go` pins by digest, which the rendered `tools.env` names as `SKOPEO_IMAGE`, through Docker with `--all --preserve-digests` | Fake curl and docker, and a fake skopeo that no copy may call |
+| `TestPrepareScript_PowersTheGatewayOffAndLeavesTheMirrorIncompleteWhenACopyFails` | A copy that fails runs `systemctl poweroff`, names the image, and writes no completion file | A fake docker that fails one image |
+| `TestPrepareScript_MirrorsTrustManagersIndexIntoTheGatewaysRegistryWithItsDigest` | trust-manager's OCI image index copies into the gateway's registry, and the registry serves the digest `testutil.HostingImages` pins for it. It runs only under the `mirror` build tag | The real skopeo image, registry image and quay.io, through Docker |
+| `TestPlane_RefusesTheBuildNamingTheGatewaysImageMirrorOnceTheGatewayPowersItselfOff` | When the gateway powers off while the builder runs, the plane deletes the builder, refuses with class `gateway-mirror-failed` at least 30 minutes before `BuildDeadline`, the 60 minutes a builder has, and leaves the gateway off | `controlplane/cloudtest` |
+| `TestPlane_PowersOnAGatewayFoundOffOnceTheBuilderHasFinished` | A gateway found off once the builder ran and powered itself off is powered on, since its mirror completed | `controlplane/cloudtest` |
 | `TestPlane_BuildsANodeInEachOfFsn1Nbg1AndHel1OnOneNetwork` | Calling `NextStep` until it returns none builds a node in each location on one network, a gateway and a builder in `fsn1`, and deletes the builder once its snapshot exists | `controlplane/cloudtest`, a fake of the Hetzner Cloud API |
 | `TestPlane_EachCallWaitsOnOneHetznerActionAtMostAndCreatesOneNodeAtMost` | No call waits on more than one Hetzner action or creates more than one node | The same fake |
 | `TestPlane_RefusesAnAmbiguousClusterBeforeAnyChange` | Two resources of one role refuse with class `ambiguous-cluster` and change nothing | The same fake |
@@ -213,7 +228,7 @@ and a manual run. Every job runs on the runner the repository variable
 
 | Job | What it proves |
 |---|---|
-| `test` | `go vet ./...` and `go test -race ./...` pass on Go 1.26.10 |
+| `test` | `go vet ./...` and `go test -race ./...` pass on Go 1.26.10, and the `mirror check` step copies trust-manager's index through the gateway's skopeo into its registry |
 | `components` | Each rendered component matches a fresh render, and shellcheck passes on every script |
 | `tools image` | The tools image builds and each of its commands runs |
 | `pr key gate` | A pull request's title or commits name a board key |

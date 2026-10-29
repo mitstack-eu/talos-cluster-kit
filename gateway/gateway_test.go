@@ -185,10 +185,20 @@ type prepareRun struct {
 	err   error
 }
 
+const cilium = "quay.io/cilium/cilium:v1.19.9@sha256:f3014d42121a04272cb4a5f4f96dbe7836c9a7919990f17e9b6838e8fd4aa33a"
+
 func runPrepare(t *testing.T, manifestSHA256 string) prepareRun {
 	t.Helper()
+	return prepare(t, map[string]string{"skopeo": "", "docker": ""}, manifestSHA256, cilium)
+}
+
+// prepare runs the rendered prepare script over images with fake curl, systemctl and the fakes given, and a tools.env
+// that pins fake talosctl and kubectl downloads beside every other line of the gateway's own.
+func prepare(t *testing.T, fakes map[string]string, manifestSHA256 string, images ...string) prepareRun {
+	t.Helper()
 	script := writtenFile(t, "/usr/local/bin/mitstack-gateway-prepare")
-	run := prepareRun{tools: testutil.NewTools(t, map[string]string{"curl": fakeCurl, "skopeo": ""}), dir: t.TempDir()}
+	fakes["curl"], fakes["systemctl"] = fakeCurl, ""
+	run := prepareRun{tools: testutil.NewTools(t, fakes), dir: t.TempDir()}
 	write := func(name, content string) string {
 		path := filepath.Join(run.dir, name)
 		require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
@@ -196,15 +206,35 @@ func runPrepare(t *testing.T, manifestSHA256 string) prepareRun {
 	}
 	talosctl := "https://github.com/siderolabs/talos/releases/download/v9.9.9/talosctl-linux-amd64"
 	kubectl := "https://dl.k8s.io/release/v9.9.9/bin/linux/amd64/kubectl"
-	toolsEnv := write("tools.env", "TALOS_VERSION=v9.9.9\nTALOSCTL_SHA256="+sha256Of("bytes of "+talosctl)+
-		"\nKUBERNETES_VERSION=v9.9.9\nKUBECTL_SHA256="+sha256Of("bytes of "+kubectl)+"\n")
-	images := write("images.txt", "quay.io/cilium/cilium:v1.19.9@sha256:f3014d42121a04272cb4a5f4f96dbe7836c9a7919990f17e9b6838e8fd4aa33a\n")
+	env := "TALOS_VERSION=v9.9.9\nTALOSCTL_SHA256=" + sha256Of("bytes of "+talosctl) +
+		"\nKUBERNETES_VERSION=v9.9.9\nKUBECTL_SHA256=" + sha256Of("bytes of "+kubectl) + "\n"
+	for line := range strings.Lines(writtenFile(t, "/etc/mitstack-gateway/tools.env")) {
+		if !strings.HasPrefix(line, "TALOS") && !strings.HasPrefix(line, "KUBE") {
+			env += line
+		}
+	}
+	toolsEnv := write("tools.env", env)
+	imageList := write("images.txt", strings.Join(images, "\n")+"\n")
 	manifests := write("manifests.txt", "argocd.yaml "+manifestSHA256+" https://example.test/argocd.yaml\n")
 	require.NoError(t, os.Mkdir(filepath.Join(run.dir, "bin"), 0o755))
 
 	run.out, run.err = testutil.RunBash(t, script, run.tools.Env("PREPARE_BIN_DIR="+filepath.Join(run.dir, "bin")),
-		toolsEnv, images, manifests, filepath.Join(run.dir, "manifests"), run.completionFile())
+		toolsEnv, imageList, manifests, filepath.Join(run.dir, "manifests"), run.completionFile())
 	return run
+}
+
+// skopeoImage is the skopeo image the gateway's tools.env pins, which prepare runs every copy with.
+func skopeoImage(t *testing.T) string {
+	t.Helper()
+	for line := range strings.Lines(writtenFile(t, "/etc/mitstack-gateway/tools.env")) {
+		if ref, ok := strings.CutPrefix(strings.TrimSpace(line), "SKOPEO_IMAGE="); ok {
+			_, err := components.ParseImage(ref)
+			require.NoError(t, err, "the gateway's skopeo image is not pinned by its digest")
+			return ref
+		}
+	}
+	require.Fail(t, "the gateway's tools.env pins no SKOPEO_IMAGE")
+	return ""
 }
 
 // completionFile is where the run's prepare writes that the mirror and the manifests are in place.
@@ -253,9 +283,26 @@ func TestPrepareScript_InstallsThePinnedToolsMirrorsByDigestAndFetchesTheManifes
 	assert.FileExists(t, filepath.Join(run.dir, "bin", "talosctl"))
 	assert.FileExists(t, filepath.Join(run.dir, "bin", "kubectl"))
 	assert.FileExists(t, filepath.Join(run.dir, "manifests", "argocd.yaml"))
-	assert.Contains(t, run.tools.Calls(t), "skopeo copy --all --preserve-digests --retry-times 3 --dest-tls-verify=false "+
+	calls := run.tools.Calls(t)
+	assert.Contains(t, calls, "docker run --rm --network host "+skopeoImage(t)+
+		" copy --all --preserve-digests --retry-times 3 --dest-tls-verify=false "+
 		"docker://quay.io/cilium/cilium@sha256:f3014d42121a04272cb4a5f4f96dbe7836c9a7919990f17e9b6838e8fd4aa33a "+
 		"docker://127.0.0.1:5000/quay.io/cilium/cilium:v1.19.9")
+	assert.False(t, slices.ContainsFunc(calls, func(c string) bool { return strings.HasPrefix(c, "skopeo ") }),
+		"prepare ran the host's own skopeo, which no pin names: %v", calls)
+}
+
+func TestPrepareScript_PowersTheGatewayOffAndLeavesTheMirrorIncompleteWhenACopyFails(t *testing.T) {
+	const trustManager = "quay.io/jetstack/trust-manager:v0.25.0@sha256:0521921c2a46d14d0417336b20bcde69215ef3164f2977cc939d53c6e5224a17"
+	failTrustManager := `case "$*" in *trust-manager*) echo 'Instructed to preserve digests' >&2; exit 1 ;; esac`
+
+	run := prepare(t, map[string]string{"docker": failTrustManager}, sha256Of("bytes of https://example.test/argocd.yaml"),
+		cilium, trustManager)
+
+	require.Error(t, run.err)
+	assert.NoFileExists(t, run.completionFile(), "a prepare whose copy failed marked the mirror complete")
+	assert.Contains(t, run.tools.Calls(t), "systemctl poweroff", "the gateway stays up with its mirror incomplete")
+	assert.Contains(t, run.out, trustManager)
 }
 
 func TestPrepareScript_RefusesAManifestWhoseBytesDifferFromItsPin(t *testing.T) {

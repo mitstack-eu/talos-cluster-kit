@@ -302,6 +302,35 @@ func TestPlane_RefusesTheBuilderStillRunningPastItsDeadlineAsAFailedBuild(t *tes
 	assert.Empty(t, h.byRole(controlplane.RoleNode), "a node with no image")
 }
 
+func TestPlane_RefusesTheBuildNamingTheGatewaysImageMirrorOnceTheGatewayPowersItselfOff(t *testing.T) {
+	h := newHarness(t)
+	h.buildingBuilder()
+	created := h.byRole(controlplane.RoleBuilder)[0].Created
+	h.now = h.now.Add(5 * time.Minute)
+	h.cloud.PowerOff(h.byRole(controlplane.RoleGateway)[0].ID)
+
+	err := h.settle(nil)
+
+	assert.Equal(t, "gateway-mirror-failed", refusalClass(t, err))
+	assert.Contains(t, err.Error(), "the gateway's image mirror")
+	assert.LessOrEqual(t, h.now.Sub(created), controlplane.BuildDeadline-30*time.Minute, "how long the plane waited on a gateway that powered itself off")
+	assert.Empty(t, h.byRole(controlplane.RoleBuilder), "the builder, whose disk holds every key of the cluster")
+	assert.Equal(t, controlplane.ServerOff, h.byRole(controlplane.RoleGateway)[0].Status, "the gateway was powered back on")
+	assert.Equal(t, "gateway-mirror-failed", refusalClass(t, h.ensure()), "the next call's refusal")
+}
+
+func TestPlane_PowersOnAGatewayFoundOffOnceTheBuilderHasFinished(t *testing.T) {
+	h := newHarness(t)
+	h.buildingBuilder()
+	h.cloud.PowerOff(h.byRole(controlplane.RoleBuilder)[0].ID)
+	h.cloud.PowerOff(h.byRole(controlplane.RoleGateway)[0].ID)
+
+	require.NoError(t, h.ensure())
+
+	assert.Equal(t, controlplane.ServerRunning, h.byRole(controlplane.RoleGateway)[0].Status, "the gateway of a builder that finished")
+	assert.Len(t, h.byRole(controlplane.RoleBuilder), 1, "builders")
+}
+
 func TestPlane_CreatesNoNodeBeforeTheBuilderReportsTheGatewaysMirrorComplete(t *testing.T) {
 	h := newHarness(t)
 	h.cloud.MirrorTakes = 40 * time.Minute

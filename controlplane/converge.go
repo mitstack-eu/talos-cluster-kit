@@ -120,8 +120,10 @@ func (p Plane) controlPlaneStep(ctx context.Context, st State, s site) (Step, bo
 		return Step{"attach the serving server to the network at its fixed address", func(ctx context.Context) error {
 			return p.API.AttachServerToNetwork(ctx, serving.ID, s.network.ID, ServingAddress)
 		}}, true, nil
+	case gw.Status == ServerOff && !hasSnapshot:
+		return p.gatewayOffStep(ctx, gw, builder, hasBuilder)
 	case gw.Status == ServerOff:
-		return Step{"power on the gateway", func(ctx context.Context) error { return p.API.PowerOnServer(ctx, gw.ID) }}, true, nil
+		return p.powerOnGateway(gw), true, nil
 	case imaged:
 		return p.missingNodeStep(st, s, snap)
 	case hasSnapshot:
@@ -136,6 +138,42 @@ func (p Plane) controlPlaneStep(ctx context.Context, st State, s site) (Step, bo
 		return Step{}, false, refuse("cluster-secrets-lost",
 			"the gateway exists but neither the builder nor the cluster's snapshot does, so the cluster's keys, which only they held, are gone; unsubscribe and subscribe again to rebuild the cluster")
 	}
+}
+
+func (p Plane) powerOnGateway(gw Server) Step {
+	return Step{"power on the gateway", func(ctx context.Context) error { return p.API.PowerOnServer(ctx, gw.ID) }}
+}
+
+// gatewayOffStep powers on a gateway that never ran or whose builder finished, and refuses the build of one that ran and
+// is off before then, since its prepare powers it off only when a copy into its image mirror fails.
+func (p Plane) gatewayOffStep(ctx context.Context, gw, builder Server, hasBuilder bool) (Step, bool, error) {
+	started, err := p.API.ServerStarted(ctx, gw.ID)
+	if err != nil {
+		return Step{}, false, err
+	}
+	if !started {
+		return p.powerOnGateway(gw), true, nil
+	}
+	if hasBuilder && builder.Status == ServerOff {
+		finished, err := p.API.ServerStarted(ctx, builder.ID)
+		if err != nil {
+			return Step{}, false, err
+		}
+		if finished {
+			return p.powerOnGateway(gw), true, nil
+		}
+	}
+	refusal := refuse("gateway-mirror-failed",
+		"the gateway powered itself off before the builder finished, as it does when a copy into the gateway's image mirror fails, so the cluster's image cannot be built; unsubscribe and subscribe again to rebuild the cluster")
+	if !hasBuilder {
+		return Step{}, false, refusal
+	}
+	return Step{"delete the builder, whose disk holds every key of the cluster, beside a gateway whose image mirror failed", func(ctx context.Context) error {
+		if err := p.API.DeleteServer(ctx, builder.ID); err != nil {
+			return fmt.Errorf("deleting the builder %d beside a gateway whose image mirror failed: %w", builder.ID, err)
+		}
+		return refusal
+	}}, true, nil
 }
 
 // workerImageStep builds the worker image once the gateway the worker builder routes through runs, and deletes the

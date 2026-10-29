@@ -77,7 +77,6 @@ var deployKeys struct {
 	write, read string
 }
 
-// WriteKey is the throwaway OpenSSH private key HostingInputs seals as the init Job's write deploy key.
 func WriteKey(t *testing.T) string {
 	t.Helper()
 	deployKeys.Do(func() { deployKeys.write, deployKeys.read = DeployKey(t), DeployKey(t) })
@@ -91,7 +90,6 @@ func ReadKey(t *testing.T) string {
 	return deployKeys.read
 }
 
-// DeployKey mints an Ed25519 key in the OpenSSH PEM form a deploy key's private half takes.
 func DeployKey(t *testing.T) string {
 	t.Helper()
 	_, private, err := ed25519.GenerateKey(rand.Reader)
@@ -111,7 +109,6 @@ func AuthorizedKey(t *testing.T, private string) string {
 
 const InitRepository = "mitstack-eu/shop-cluster"
 
-// InitInputs returns throwaway inputs for OpenBao's init Job, encrypting to Recipient's key.
 func InitInputs(t *testing.T) openbaoinit.Inputs {
 	t.Helper()
 	_, armored := Recipient(t)
@@ -139,7 +136,6 @@ func Recipient(t *testing.T) (*openpgp.Entity, []byte) {
 	return recipientKey.entity, recipientKey.armored
 }
 
-// ArmoredPublicKey returns the ASCII-armored public key of entity, as `gpg --armor --export` writes one.
 func ArmoredPublicKey(t *testing.T, entity *openpgp.Entity) []byte {
 	t.Helper()
 	var out bytes.Buffer
@@ -224,7 +220,6 @@ func SealedReadKey(t *testing.T, certPEM []byte, value string) []byte {
 	return sealed
 }
 
-// OpenedSecret is the Secret the Sealed Secrets controller writes when it opens a SealedSecret.
 type OpenedSecret struct {
 	Namespace, Name string
 	Data            map[string]string

@@ -6,7 +6,7 @@
 # and holds the etcd bootstrap script. nftables.conf is its whole firewall:
 # Docker writes no rule and runs every container on the host network.
 package_update: true
-packages: [docker.io, nftables, tcpdump, conntrack, skopeo, curl]
+packages: [docker.io, nftables, tcpdump, conntrack, curl]
 write_files:
   - path: /etc/docker/daemon.json
     content: |

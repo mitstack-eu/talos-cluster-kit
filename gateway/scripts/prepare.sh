@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Prepares a gateway once its packages are installed: installs the talosctl
 # and kubectl that tools.env pins after checking their sha256, copies every
-# image of the mirror list into the local registry by digest, and fetches
-# every served manifest, refusing one whose sha256 differs from the list.
-# Only then does it write the completion file, which Caddy waits for.
+# image of the mirror list into the local registry by digest with the skopeo
+# image tools.env pins, and fetches every served manifest, refusing one whose
+# sha256 differs from the list. Only then does it write the completion file,
+# which Caddy waits for. A copy that fails powers the gateway off, which the
+# plane reads from Hetzner as a failed mirror.
 # Usage: prepare.sh <tools.env> <images.txt> <manifests.txt> <manifest dir> <completion file>
 #   images.txt holds one name:tag@sha256:digest per line, and manifests.txt
 #   one "<file name> <sha256> <url>" per line. PREPARE_BIN_DIR names where the
@@ -45,8 +47,11 @@ mirror_image() {
   local ref=$1 name_tag digest
   name_tag=${ref%@*}
   digest=${ref##*@}
-  skopeo copy --all --preserve-digests --retry-times 3 --dest-tls-verify=false \
-    "docker://${name_tag%:*}@${digest}" "docker://${registry}/${name_tag}"
+  if ! docker run --rm --network host "$SKOPEO_IMAGE" copy --all --preserve-digests --retry-times 3 --dest-tls-verify=false \
+    "docker://${name_tag%:*}@${digest}" "docker://${registry}/${name_tag}"; then
+    systemctl poweroff
+    fail "$ref did not copy into the gateway's image mirror, so the gateway powers itself off"
+  fi
 }
 
 main() {

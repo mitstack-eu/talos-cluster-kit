@@ -1,9 +1,10 @@
 #cloud-config
 # A cluster's gateway, an Ubuntu 24.04 Cloud server with the only public
-# address of the cluster. It forwards the nodes' DNS, NTP and HTTPS and drops
-# every other flow, records each DNS and NTP packet and each new flow, serves
-# the image mirror and the served manifests over TLS on the private network,
-# and holds the etcd bootstrap script. nftables.conf is its whole firewall:
+# address of the cluster. It forwards the nodes' DNS, NTP and HTTPS, and HTTP
+# to the ingress load balancer alone, and drops every other flow. It records
+# each DNS and NTP packet and each new flow, serves the image mirror and the
+# served manifests over TLS on the private network, and holds the etcd
+# bootstrap script. nftables.conf is its whole firewall:
 # Docker writes no rule and runs every container on the host network.
 package_update: true
 packages: [docker.io, nftables, tcpdump, conntrack, curl]
@@ -32,6 +33,9 @@ write_files:
           ip saddr {{ .Network }} ip daddr { {{ .Resolvers }} } meta l4proto { tcp, udp } th dport 53 accept
           ip saddr {{ .Network }} udp dport 123 accept
           ip saddr {{ .Network }} tcp dport { {{ .EgressPorts }} } accept
+{{- if .Ingress }}
+          ip saddr {{ .Network }} ip daddr {{ .Ingress }} tcp dport 80 accept
+{{- end }}
         }
       }
       table ip mitstack-gateway-nat {

@@ -34,7 +34,8 @@ Cloud control plane lands once and reaches every block.
 A node boots from a disk image that embeds its whole machine configuration, so
 the server needs no user data. The nodes have no public address. A gateway in
 each location is the cluster's only server with one: it forwards the nodes'
-DNS, NTP and HTTPS, records that traffic, and serves the image mirror and the
+DNS, NTP and HTTPS, and HTTP to the cluster's ingress load balancer alone. It
+records that traffic, and serves the image mirror and the
 larger manifests over TLS on the private network. The table names the parts in
 the order a block uses them.
 
@@ -231,6 +232,20 @@ for HTTPS. On both ports it sends a PROXY protocol header, which carries the
 client's address. Traefik sees the load balancer's private address as the
 sender, so each entry point reads that header from the cluster network,
 `10.0.0.0/16`, and from no other address.
+
+An app's Ingress asks for its certificate from the ClusterIssuer
+`letsencrypt-production`, which the hosting set carries in
+`components/hosting/tls.yaml`. It orders from Let's Encrypt's production
+directory and answers the HTTP-01 challenge with a solver pod that Traefik
+reaches in the app's namespace. That pod sits behind a ClusterIP Service,
+since an app's quota allows no NodePort Service. Before Let's Encrypt
+validates, cert-manager fetches the challenge itself from the app's public
+hostname on port 80. The hosting flows therefore let cert-manager look names
+up through Cilium's DNS proxy, reach `acme-v02.api.letsencrypt.org` on 443 and
+`*.apps.mitstack.dev` on 80, and nothing else. That fetch leaves through the
+gateway, which forwards port 80 to the ingress load balancer's public address
+alone. Hetzner fixes a server's user data when it creates the server, so only
+a cluster built on v0.27.0 or later carries that rule.
 
 `plane.go`, `converge.go`, `install.go` and `observe.go` hold the plane, and
 `api.go` holds the Hetzner Cloud client behind the `API` interface. The

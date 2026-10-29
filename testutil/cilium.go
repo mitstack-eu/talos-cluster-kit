@@ -57,8 +57,12 @@ func ports(t *testing.T, rule map[string]any) string {
 	return strings.Join(got, " ")
 }
 
+// peerFields are the keys by which a Cilium rule names its peers; a rule with none of them reaches every peer.
+var peerFields = []string{"toEntities", "fromEntities", "toEndpoints", "fromEndpoints", "toFQDNs", "toCIDR", "toCIDRSet", "fromNodes", "toNodes"}
+
 // Grants lists what a Cilium policy allows endpoints[pod], as "<direction> with <peer> on <ports>", "<direction> to
-// entity <entity>" or "egress to <DNS name> on <ports>".
+// entity <entity>", "egress to <DNS name or pattern> on <ports>", "egress to CIDR <range> on <ports>" or
+// "<direction> with any peer on <ports>".
 func Grants(t *testing.T, policy map[string]any, endpoints map[string]CiliumEndpoint, pod string) []string {
 	t.Helper()
 	var got []string
@@ -76,7 +80,21 @@ func Grants(t *testing.T, policy map[string]any, endpoints map[string]CiliumEndp
 				}
 				names, _ := r["toFQDNs"].([]any)
 				for _, name := range names {
-					got = append(got, fmt.Sprintf("egress to %v on %s", Field(t, name, "matchName"), ports(t, r)))
+					fqdn := Field(t, name, "matchName")
+					if fqdn == nil {
+						fqdn = Field(t, name, "matchPattern")
+					}
+					got = append(got, fmt.Sprintf("egress to %v on %s", fqdn, ports(t, r)))
+				}
+				cidrs, _ := r["toCIDR"].([]any)
+				for _, set := range listOf(r["toCIDRSet"]) {
+					cidrs = append(cidrs, Field(t, set, "cidr"))
+				}
+				for _, cidr := range cidrs {
+					got = append(got, fmt.Sprintf("egress to CIDR %v on %s", cidr, ports(t, r)))
+				}
+				if !slices.ContainsFunc(peerFields, func(k string) bool { _, has := r[k]; return has }) {
+					got = append(got, fmt.Sprintf("%s with any peer on %s", direction, ports(t, r)))
 				}
 				selectors, _ := r[peers].([]any)
 				for _, s := range selectors {
@@ -91,4 +109,9 @@ func Grants(t *testing.T, policy map[string]any, endpoints map[string]CiliumEndp
 	}
 	slices.Sort(got)
 	return slices.Compact(got)
+}
+
+func listOf(v any) []any {
+	l, _ := v.([]any)
+	return l
 }

@@ -819,10 +819,19 @@ hosting set carries that label. The Cilium policy `mitstack-hosting-flows` in
 | Pods | What the policy allows |
 |---|---|
 | cert-manager and trust-manager | Calls to the API server, and the API server's calls to their webhooks |
-| External Secrets | Calls to the API server, to cluster DNS and to OpenBao on 8200, and the API server's calls to its webhook |
+| External Secrets | Calls to the API server and to OpenBao on 8200, lookups through Cilium's DNS proxy, calls to `sts.amazonaws.com`, `sts.*.amazonaws.com` and `api.ecr.*.amazonaws.com` on 443, and the API server's calls to its webhook |
 | OpenBao | Calls between members on 8200 and 8201, to the API server and to cluster DNS, and the calls of External Secrets and the init Job on 8200 |
 | OpenBao's init Job | Lookups through Cilium's DNS proxy, calls to OpenBao on 8200, and SSH to `ssh.github.com` on 443, which the gateway forwards |
 | Traefik | Web traffic from outside the cluster on its two ports, calls to the API server, and calls to the app slices |
+
+External Secrets' `ECRAuthorizationToken` generator trades a service
+account's token for AWS credentials at STS, then asks ECR's API for a pull
+token. Cilium admits a call by name only after its DNS proxy saw the lookup
+that returned the address, so the lookups go through the proxy. In the middle
+of a Cilium `matchPattern`, a `*` matches characters other than a dot
+([Cilium's FQDN selector at v1.19.9](https://github.com/cilium/cilium/blob/v1.19.9/pkg/policy/api/fqdn.go#L42-L61)).
+`sts.*.amazonaws.com` therefore admits a regional endpoint such as
+`sts.eu-central-1.amazonaws.com`, and admits no name with a further label.
 
 The API server runs on each control-plane node's host network. When it calls a
 webhook pod on another node, Cilium gives the call that node's identity rather

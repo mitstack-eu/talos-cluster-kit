@@ -454,57 +454,57 @@ volumeType: directory
 ---
 apiVersion: v1alpha1
 kind: KubeExternalManifestConfig
-name: cilium
-url: https://10.0.0.2/manifests/cilium.yaml
+name: 00-cilium
+url: https://10.0.0.2/manifests/00-cilium.yaml
 ---
 apiVersion: v1alpha1
 kind: KubeExternalManifestConfig
-name: cilium-policy-crd
-url: https://10.0.0.2/manifests/cilium-policy-crd.yaml
+name: 01-cilium-policy-crd
+url: https://10.0.0.2/manifests/01-cilium-policy-crd.yaml
 ---
 apiVersion: v1alpha1
 kind: KubeExternalManifestConfig
-name: argocd
-url: https://10.0.0.2/manifests/argocd.yaml
+name: 09-argocd
+url: https://10.0.0.2/manifests/09-argocd.yaml
 ---
 apiVersion: v1alpha1
 kind: KubeExternalManifestConfig
-name: kyverno
-url: https://10.0.0.2/manifests/kyverno.yaml
+name: 13-kyverno
+url: https://10.0.0.2/manifests/13-kyverno.yaml
 ---
 apiVersion: v1alpha1
 kind: KubeExternalManifestConfig
-name: cloudnative-pg
-url: https://10.0.0.2/manifests/cloudnative-pg.yaml
+name: 11-cloudnative-pg
+url: https://10.0.0.2/manifests/11-cloudnative-pg.yaml
 ---
 apiVersion: v1alpha1
 kind: KubeExternalManifestConfig
-name: local-path-provisioner
-url: https://10.0.0.2/manifests/local-path-provisioner.yaml
+name: 14-local-path-provisioner
+url: https://10.0.0.2/manifests/14-local-path-provisioner.yaml
 ---
 apiVersion: v1alpha1
 kind: KubeExternalManifestConfig
-name: istio-base
-url: https://10.0.0.2/manifests/istio-base.yaml
+name: 02-istio-base
+url: https://10.0.0.2/manifests/02-istio-base.yaml
 ---
 apiVersion: v1alpha1
 kind: KubeExternalManifestConfig
-name: istiod
-url: https://10.0.0.2/manifests/istiod.yaml
+name: 03-istiod
+url: https://10.0.0.2/manifests/03-istiod.yaml
 ---
 apiVersion: v1alpha1
 kind: KubeExternalManifestConfig
-name: istio-cni
-url: https://10.0.0.2/manifests/istio-cni.yaml
+name: 04-istio-cni
+url: https://10.0.0.2/manifests/04-istio-cni.yaml
 ---
 apiVersion: v1alpha1
 kind: KubeExternalManifestConfig
-name: ztunnel
-url: https://10.0.0.2/manifests/ztunnel.yaml
+name: 05-ztunnel
+url: https://10.0.0.2/manifests/05-ztunnel.yaml
 ---
 apiVersion: v1alpha1
 kind: KubeInlineManifestConfig
-name: mitstack-metadata-block
+name: 26-mitstack-metadata-block
 manifest: |
     # Keeps every pod on the pod network from Hetzner's metadata service, which
     # serves each server's data. Default deny stays off in both directions, so
@@ -524,7 +524,7 @@ manifest: |
 ---
 apiVersion: v1alpha1
 kind: KubeInlineManifestConfig
-name: mitstack-require-app-label
+name: 31-mitstack-require-app-label
 manifest: |
     apiVersion: policies.kyverno.io/v1
     kind: ValidatingPolicy
@@ -554,7 +554,7 @@ manifest: |
 ---
 apiVersion: v1alpha1
 kind: KubeInlineManifestConfig
-name: mitstack-generate-default-deny
+name: 20-mitstack-generate-default-deny
 manifest: |
     apiVersion: policies.kyverno.io/v1
     kind: GeneratingPolicy
@@ -593,7 +593,7 @@ manifest: |
 ---
 apiVersion: v1alpha1
 kind: KubeInlineManifestConfig
-name: cloudnative-pg-namespace
+name: 12-cloudnative-pg-namespace
 manifest: |
     # The namespace the CloudNativePG operator runs in. Its pod meets the
     # restricted Pod Security Standard, so the namespace enforces it.
@@ -607,7 +607,7 @@ manifest: |
 ---
 apiVersion: v1alpha1
 kind: KubeInlineManifestConfig
-name: mitstack-database-slices
+name: 19-mitstack-database-slices
 manifest: |
     apiVersion: cilium.io/v2
     kind: CiliumClusterwideNetworkPolicy
@@ -667,7 +667,7 @@ manifest: |
 ---
 apiVersion: v1alpha1
 kind: KubeInlineManifestConfig
-name: local-path-provisioner-namespace
+name: 15-local-path-provisioner-namespace
 manifest: |
     # The provisioner's helper pods mount the node's user volume through hostPath to create and delete each claim's
     # directory, and only the privileged Pod Security Standard admits a hostPath volume.
@@ -680,7 +680,7 @@ manifest: |
 ---
 apiVersion: v1alpha1
 kind: KubeInlineManifestConfig
-name: mitstack-local-path-flows
+name: 23-mitstack-local-path-flows
 manifest: |
     # local-path-storage starts from mitstack-default-deny, and this names its pods' one flow, which the helper pods share.
     apiVersion: cilium.io/v2
@@ -697,7 +697,7 @@ manifest: |
 ---
 apiVersion: v1alpha1
 kind: KubeInlineManifestConfig
-name: mitstack-strict-mtls
+name: 35-mitstack-strict-mtls
 manifest: |
     # In istio-system with no selector, this is the mesh-wide policy: every pod in the mesh refuses a call that presents
     # no workload certificate.
@@ -712,7 +712,7 @@ manifest: |
 ---
 apiVersion: v1alpha1
 kind: KubeInlineManifestConfig
-name: mitstack-ambient-probes
+name: 16-mitstack-ambient-probes
 manifest: |
     # Istio's CNI agent rewrites the source of the kubelet's health probes to 169.254.7.127, which Cilium does not read as
     # the node, so a default-deny namespace would drop them. Default deny stays off, so this opens that one source alone.
@@ -731,7 +731,7 @@ manifest: |
 ---
 apiVersion: v1alpha1
 kind: KubeInlineManifestConfig
-name: mitstack-mesh-cloudnative-pg
+name: 25-mitstack-mesh-cloudnative-pg
 manifest: |
     # The API server holds no workload identity, so the operator's webhook port alone takes its calls without one.
     apiVersion: security.istio.io/v1
@@ -774,7 +774,7 @@ manifest: |
 ---
 apiVersion: v1alpha1
 kind: KubeInlineManifestConfig
-name: mitstack-mesh-argocd
+name: 24-mitstack-mesh-argocd
 manifest: |
     # Argo CD's chart admits each call to the repo server and Redis on its own port, and in the mesh that call arrives on
     # ztunnel's port 15008, so these admit 15008 from the same pods.
@@ -842,7 +842,7 @@ manifest: |
 ---
 apiVersion: v1alpha1
 kind: KubeInlineManifestConfig
-name: mitstack-require-mesh
+name: 32-mitstack-require-mesh
 manifest: |
     apiVersion: policies.kyverno.io/v1
     kind: ValidatingPolicy
@@ -874,7 +874,7 @@ manifest: |
 ---
 apiVersion: v1alpha1
 kind: KubeInlineManifestConfig
-name: mitstack-require-strict-mtls
+name: 33-mitstack-require-strict-mtls
 manifest: |
     apiVersion: policies.kyverno.io/v1
     kind: ValidatingPolicy
@@ -913,7 +913,7 @@ manifest: |
 ---
 apiVersion: v1alpha1
 kind: KubeInlineManifestConfig
-name: mitstack-node-logs
+name: 08-mitstack-node-logs
 manifest: |
     # The node-local OpenTelemetry Collector. Talos sends its service and kernel
     # logs over plain TCP to the loopback address, where this Collector listens on

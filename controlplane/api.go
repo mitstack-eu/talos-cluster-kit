@@ -49,6 +49,10 @@ type API interface {
 	AddLoadBalancerService(ctx context.Context, id int64, service Service) error
 	// AddLoadBalancerTarget reaches every server labelSelector matches by its private address.
 	AddLoadBalancerTarget(ctx context.Context, id int64, labelSelector string) error
+	// AddLoadBalancerIPTarget reaches ip over the load balancer's network, which Hetzner allows for an address inside
+	// one of that network's vSwitch subnets.
+	AddLoadBalancerIPTarget(ctx context.Context, id int64, ip string) error
+	RemoveLoadBalancerTarget(ctx context.Context, id int64, labelSelector string) error
 	DeleteLoadBalancer(ctx context.Context, id int64) error
 	ListSnapshots(ctx context.Context, labelSelector string) ([]Snapshot, error)
 	// StartSnapshot returns once Hetzner has begun imaging the server's disk, which can outlast one call; the snapshot
@@ -144,6 +148,7 @@ type LoadBalancer struct {
 	PrivateIPs      map[int64]string
 	Services        []Service
 	TargetSelectors []string
+	TargetIPs       []string
 }
 
 // Service forwards a listen port to a port on each target over TCP.
@@ -153,7 +158,7 @@ type Service struct {
 }
 
 // LoadBalancerSpec creates a load balancer on NetworkID, when set, that reaches every server TargetSelector matches by
-// its private address.
+// its private address. The plane adds each of TargetIPs once the load balancer is on the network.
 type LoadBalancerSpec struct {
 	Name, Type, Location string
 	Labels               map[string]string
@@ -161,6 +166,7 @@ type LoadBalancerSpec struct {
 	PublicInterface      bool
 	Services             []Service
 	TargetSelector       string
+	TargetIPs            []string
 }
 
 type Snapshot struct {
@@ -561,6 +567,22 @@ func (a *hcloudAPI) AddLoadBalancerTarget(ctx context.Context, id int64, labelSe
 	return a.wait(ctx, action, fmt.Sprintf("load balancer %d to target %s", id, labelSelector))
 }
 
+func (a *hcloudAPI) AddLoadBalancerIPTarget(ctx context.Context, id int64, ip string) error {
+	action, _, err := a.client.LoadBalancer.AddIPTarget(ctx, &hcloud.LoadBalancer{ID: id}, hcloud.LoadBalancerAddIPTargetOpts{IP: net.ParseIP(ip)})
+	if err != nil {
+		return fmt.Errorf("adding %s as a target of load balancer %d: %w", ip, id, err)
+	}
+	return a.wait(ctx, action, fmt.Sprintf("load balancer %d to target %s", id, ip))
+}
+
+func (a *hcloudAPI) RemoveLoadBalancerTarget(ctx context.Context, id int64, labelSelector string) error {
+	action, _, err := a.client.LoadBalancer.RemoveLabelSelectorTarget(ctx, &hcloud.LoadBalancer{ID: id}, labelSelector)
+	if err != nil {
+		return fmt.Errorf("removing the target %s from load balancer %d: %w", labelSelector, id, err)
+	}
+	return a.wait(ctx, action, fmt.Sprintf("load balancer %d to stop targeting %s", id, labelSelector))
+}
+
 func (a *hcloudAPI) DeleteLoadBalancer(ctx context.Context, id int64) error {
 	_, err := a.client.LoadBalancer.Delete(ctx, &hcloud.LoadBalancer{ID: id})
 	if err != nil && !hcloud.IsError(err, hcloud.ErrorCodeNotFound) {
@@ -697,8 +719,11 @@ func loadBalancerFromHcloud(lb *hcloud.LoadBalancer) LoadBalancer {
 		out.Services = append(out.Services, Service{ListenPort: s.ListenPort, DestinationPort: s.DestinationPort, ProxyProtocol: s.Proxyprotocol})
 	}
 	for _, t := range lb.Targets {
-		if t.Type == hcloud.LoadBalancerTargetTypeLabelSelector && t.LabelSelector != nil {
+		switch {
+		case t.Type == hcloud.LoadBalancerTargetTypeLabelSelector && t.LabelSelector != nil:
 			out.TargetSelectors = append(out.TargetSelectors, t.LabelSelector.Selector)
+		case t.Type == hcloud.LoadBalancerTargetTypeIP && t.IP != nil:
+			out.TargetIPs = append(out.TargetIPs, t.IP.IP)
 		}
 	}
 	return out

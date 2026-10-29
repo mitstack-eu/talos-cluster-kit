@@ -113,30 +113,41 @@ func (st State) nodeProblems(network Network, firewall Firewall) []string {
 
 func (p Plane) loadBalancerProblems(st State, network Network) []string {
 	var missing []string
-	for _, lb := range []struct {
-		role   Role
-		public bool
-	}{{RoleAPI, false}, {RoleIngress, true}} {
-		found, ok := st.LoadBalancerIn(lb.role, GatewayLocation)
+	if p.AppsOnWorkers && len(p.WorkerAddresses) == 0 {
+		missing = append(missing, "apps run on workers, but the plane names no worker address for the ingress load balancer to target")
+	}
+	for _, want := range []LoadBalancerSpec{p.apiLoadBalancer(network.ID), p.ingressLoadBalancer(network.ID)} {
+		role := want.Labels[KeyRole]
+		found, ok := st.LoadBalancerIn(Role(role), GatewayLocation)
 		if !ok {
-			missing = append(missing, "no "+string(lb.role)+" load balancer in "+GatewayLocation+" carries this subscription's labels")
+			missing = append(missing, "no "+role+" load balancer in "+GatewayLocation+" carries this subscription's labels")
 			continue
 		}
-		missing = append(missing, p.reachProblems(found, network, lb.public)...)
+		missing = append(missing, reachProblems(found, want, network)...)
 	}
 	return missing
 }
 
-func (p Plane) reachProblems(lb LoadBalancer, network Network, public bool) []string {
+func reachProblems(lb LoadBalancer, want LoadBalancerSpec, network Network) []string {
 	var missing []string
 	if lb.PrivateIPs[network.ID] == "" {
 		missing = append(missing, fmt.Sprintf("load balancer %d is not on network %d", lb.ID, network.ID))
 	}
-	if lb.PublicInterface != public {
-		missing = append(missing, fmt.Sprintf("load balancer %d's public interface is %s, want %s", lb.ID, onOff(lb.PublicInterface), onOff(public)))
+	if lb.PublicInterface != want.PublicInterface {
+		missing = append(missing, fmt.Sprintf("load balancer %d's public interface is %s, want %s", lb.ID, onOff(lb.PublicInterface), onOff(want.PublicInterface)))
 	}
-	if !slices.Contains(lb.TargetSelectors, p.RoleSelector(RoleNode)) {
+	if want.TargetSelector != "" && !slices.Contains(lb.TargetSelectors, want.TargetSelector) {
 		missing = append(missing, fmt.Sprintf("load balancer %d does not target the subscription's nodes by label", lb.ID))
+	}
+	for _, ip := range want.TargetIPs {
+		if !slices.Contains(lb.TargetIPs, ip) {
+			missing = append(missing, fmt.Sprintf("load balancer %d does not target the worker at %s", lb.ID, ip))
+		}
+	}
+	for _, sel := range lb.TargetSelectors {
+		if sel != want.TargetSelector {
+			missing = append(missing, fmt.Sprintf("load balancer %d still targets the servers %s selects", lb.ID, sel))
+		}
 	}
 	return missing
 }
@@ -181,8 +192,12 @@ func (p Plane) Outputs(st State) (map[string]string, string) {
 		"issuerBucket":         gw.Labels[KeyIssuerBucket],
 		"issuerUrl":            issuerURL(gw.Labels[KeyIssuerBucket], p.Subscription).String(),
 	}
-	detail := fmt.Sprintf("nodes %s are on network %d behind gateway %d, and an API and an ingress load balancer in %s reach them",
-		strings.Join(nodes, ", "), network.ID, gw.ID, GatewayLocation)
+	reach := "an API and an ingress load balancer in " + GatewayLocation + " reach them"
+	if p.AppsOnWorkers {
+		reach = "an API load balancer in " + GatewayLocation + " reaches them, and its ingress load balancer the workers at " +
+			strings.Join(p.WorkerAddresses, ", ")
+	}
+	detail := fmt.Sprintf("nodes %s are on network %d behind gateway %d, and %s", strings.Join(nodes, ", "), network.ID, gw.ID, reach)
 	return outputs, detail
 }
 

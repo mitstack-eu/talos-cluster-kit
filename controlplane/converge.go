@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"slices"
 	"strings"
 )
@@ -53,7 +54,7 @@ func (p Plane) NextStep(ctx context.Context, st State, network Network) (Step, b
 		{p.apiLoadBalancer(network.ID), apiAddress},
 		{p.ingressLoadBalancer(network.ID), ingressAddress},
 	} {
-		if s, ok := p.loadBalancerStep(st, lb.want, lb.address); ok {
+		if s, ok := p.loadBalancerStep(st, network, lb.want, lb.address); ok {
 			return s, true, nil
 		}
 	}
@@ -291,9 +292,10 @@ func (p Plane) apiLoadBalancer(networkID int64) LoadBalancerSpec {
 	}
 }
 
-// ingressLoadBalancer serves ports 80 and 443 on its public address to every node's edge NodePorts, with PROXY protocol.
+// ingressLoadBalancer serves ports 80 and 443 on its public address to the edge NodePorts, with PROXY protocol, of
+// every node, or of every worker when apps run on workers, since the edge runs only where apps do.
 func (p Plane) ingressLoadBalancer(networkID int64) LoadBalancerSpec {
-	return LoadBalancerSpec{
+	spec := LoadBalancerSpec{
 		Name:            p.LocatedName(RoleIngress, GatewayLocation),
 		Type:            loadBalancerType,
 		Location:        GatewayLocation,
@@ -306,11 +308,16 @@ func (p Plane) ingressLoadBalancer(networkID int64) LoadBalancerSpec {
 		},
 		TargetSelector: p.RoleSelector(RoleNode),
 	}
+	if p.AppsOnWorkers {
+		spec.TargetSelector, spec.TargetIPs = "", slices.Clone(p.WorkerAddresses)
+	}
+	return spec
 }
 
 // loadBalancerStep is the next step the load balancer lacks. It is attached before its public interface is disabled or
-// its private target added, since Hetzner refuses either on a load balancer not yet attached to a network.
-func (p Plane) loadBalancerStep(st State, want LoadBalancerSpec, address string) (Step, bool) {
+// its private target added, since Hetzner refuses either on a load balancer not yet attached to a network. A label
+// target it should not hold goes only once it holds every address target, so it is never left with none it had.
+func (p Plane) loadBalancerStep(st State, network Network, want LoadBalancerSpec, address string) (Step, bool) {
 	what := want.Labels[KeyRole] + " load balancer in " + want.Location
 	lb, ok := st.LoadBalancerIn(Role(want.Labels[KeyRole]), want.Location)
 	switch {
@@ -335,12 +342,48 @@ func (p Plane) loadBalancerStep(st State, want LoadBalancerSpec, address string)
 			}}, true
 		}
 	}
-	if !slices.Contains(lb.TargetSelectors, want.TargetSelector) {
+	if want.TargetSelector != "" && !slices.Contains(lb.TargetSelectors, want.TargetSelector) {
 		return Step{"target the nodes from the " + what, func(ctx context.Context) error {
 			return p.API.AddLoadBalancerTarget(ctx, lb.ID, want.TargetSelector)
 		}}, true
 	}
+	for _, ip := range want.TargetIPs {
+		if !slices.Contains(lb.TargetIPs, ip) && network.InVSwitchSubnet(ip) {
+			return Step{"target the worker at " + ip + " from the " + what, func(ctx context.Context) error {
+				return p.API.AddLoadBalancerIPTarget(ctx, lb.ID, ip)
+			}}, true
+		}
+	}
+	if !targetsEvery(lb.TargetIPs, want.TargetIPs) {
+		return Step{}, false
+	}
+	for _, sel := range lb.TargetSelectors {
+		if sel != want.TargetSelector {
+			return Step{"stop the " + what + " targeting the servers " + sel + " selects", func(ctx context.Context) error {
+				return p.API.RemoveLoadBalancerTarget(ctx, lb.ID, sel)
+			}}, true
+		}
+	}
 	return Step{}, false
+}
+
+func targetsEvery(have, want []string) bool {
+	return !slices.ContainsFunc(want, func(ip string) bool { return !slices.Contains(have, ip) })
+}
+
+// InVSwitchSubnet reports whether ip lies in a vSwitch subnet of the network, which Hetzner requires of a private
+// address target and a block couples only when it installs its worker.
+func (n Network) InVSwitchSubnet(ip string) bool {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return false
+	}
+	for _, r := range n.VSwitchSubnets {
+		if prefix, err := netip.ParsePrefix(r); err == nil && prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 // createLoadBalancer creates one bare, with its public interface on, since Hetzner's create takes no address on the network.

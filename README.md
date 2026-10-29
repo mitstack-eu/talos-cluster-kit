@@ -705,6 +705,19 @@ stringData:
   sshPrivateKey: <the read-only deploy key>
 ```
 
+A block that gives Argo CD another repository on a hosting cluster, such as an
+app slice's own repository, builds the same kind of credential from three
+functions in `components/seal.go`:
+
+| Function | What it returns |
+|---|---|
+| `components.NewDeployKey(comment)` | A fresh Ed25519 key, its public half in the `ssh-ed25519 AAAA...` form GitHub's `POST /repos/{owner}/{repo}/keys` takes and its private half as OpenSSH PEM |
+| `components.SealValue(cert, namespace, name, value)` | The sealed value alone, for a block that writes its own SealedSecret around it, with its own `template` |
+| `components.Open(key, namespace, name, sealed)` | The value a SealedSecret opens to, as the controller holding the key opens it, so a test can check what a block sealed |
+
+`components.Seal` wraps `SealValue` in a SealedSecret manifest that holds the
+value under one item.
+
 On a hosting cluster the enrolment Job in `controlplane/manifests/cluster-tokens.yaml`
 takes only the cluster's report token from the platform. It writes no
 repository credential, and the cluster runs no CronJob that renews one. The

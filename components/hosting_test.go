@@ -274,6 +274,38 @@ func TestSeal_SealsAValueOnlyTheKeyPairOpensInTheStrictScopeOfItsSecret(t *testi
 	assert.NoError(t, err, "the hosting set refuses what Seal sealed")
 }
 
+func TestSealValue_SealsAValueTheControllerOpensAndOpenReadsOnlyUnderItsSecret(t *testing.T) {
+	_, keyPEM, certPEM := testutil.SealedSecretsKeyPair(t)
+
+	sealed, err := components.SealValue(certPEM, "argocd", "app-repository-shop", []byte("a private key"))
+
+	require.NoError(t, err)
+	doc := map[string]any{
+		"kind":     "SealedSecret",
+		"metadata": map[string]any{"namespace": "argocd", "name": "app-repository-shop"},
+		"spec":     map[string]any{"encryptedData": map[string]any{"sshPrivateKey": sealed}},
+	}
+	assert.Equal(t, map[string]string{"sshPrivateKey": "a private key"}, testutil.Unseal(t, keyPEM, doc).Data, "what the controller opens")
+	opened, err := components.Open(keyPEM, "argocd", "app-repository-shop", sealed)
+	require.NoError(t, err)
+	assert.Equal(t, "a private key", string(opened), "what Open reads")
+	for _, other := range []struct{ namespace, name string }{{"argocd", "app-repository-other"}, {"mitstack-node", "app-repository-shop"}} {
+		_, err := components.Open(keyPEM, other.namespace, other.name, sealed)
+		assert.Error(t, err, "the value sealed for argocd/app-repository-shop opened as %s/%s", other.namespace, other.name)
+	}
+}
+
+func TestNewDeployKey_MintsAFreshEd25519KeyWhosePrivateHalfMatchesThePublicHalfARepositoryLists(t *testing.T) {
+	key, err := components.NewDeployKey("mitstack Argo CD")
+	require.NoError(t, err)
+	again, err := components.NewDeployKey("mitstack Argo CD")
+	require.NoError(t, err)
+
+	assert.Regexp(t, `^ssh-ed25519 [A-Za-z0-9+/]+=*$`, key.AuthorizedKey, "the public half GitHub is given")
+	assert.Equal(t, key.AuthorizedKey, testutil.AuthorizedKey(t, string(key.PrivateKeyPEM)), "the public half of the OpenSSH private key")
+	assert.NotEqual(t, key.AuthorizedKey, again.AuthorizedKey, "two calls minted the same key")
+}
+
 // podTemplates returns each pod template of the manifest's workloads, keyed by the workload's namespace and name.
 func podTemplates(t *testing.T, m components.Manifest) map[string]map[string]any {
 	t.Helper()

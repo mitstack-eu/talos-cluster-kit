@@ -18,5 +18,7 @@ securityContext:
     cleanCiliumState: [NET_ADMIN, SYS_ADMIN, SYS_RESOURCE]
 operator:
   replicas: 1
+nodeSelectorLabels: true
+nodeLabels: node-role.kubernetes.io/control-plane
 hubble:
   enabled: false

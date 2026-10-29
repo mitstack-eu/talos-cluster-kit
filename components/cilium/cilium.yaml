@@ -210,7 +210,10 @@ data:
   enable-health-checking: "true"
   health-check-icmp-failure-threshold: "3"
   enable-well-known-identities: "false"
-  enable-node-selector-labels: "false"
+  enable-node-selector-labels: "true"
+  # To include or exclude matched resources from cilium node identity evaluation
+  # List of labels just like --labels flag (.Values.labels)
+  node-labels: "node-role.kubernetes.io/control-plane"
   synchronize-k8s-nodes: "true"
   operator-api-serve-addr: "127.0.0.1:9234"
 

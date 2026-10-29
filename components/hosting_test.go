@@ -539,3 +539,102 @@ func TestHosting_RunsOpenBaosMembersOnTheTaintedControlPlaneNodesAndEveryOtherHo
 		}
 	}
 }
+
+// ingressPorts are the ports an ingress item opens, nil for one that names none and so opens every port.
+func ingressPorts(t *testing.T, item map[string]any) []string {
+	t.Helper()
+	var ports []string
+	for _, rule := range listOf(item["toPorts"]) {
+		for _, port := range listOf(rule.(map[string]any)["ports"]) {
+			ports = append(ports, fmt.Sprint(port.(map[string]any)["port"]))
+		}
+	}
+	return ports
+}
+
+func listOf(v any) []any {
+	list, _ := v.([]any)
+	return list
+}
+
+func admitsEntity(item map[string]any, entity string) bool {
+	return slices.Contains(listOf(item["fromEntities"]), any(entity))
+}
+
+func admitsControlPlaneNodes(item map[string]any) bool {
+	return slices.ContainsFunc(listOf(item["fromNodes"]), func(selector any) bool {
+		labels, _ := selector.(map[string]any)["matchLabels"].(map[string]any)
+		return len(labels) == 1 && labels["node-role.kubernetes.io/control-plane"] == ""
+	})
+}
+
+func ciliumSpecs(doc map[string]any) []any {
+	if spec, ok := doc["spec"].(map[string]any); ok {
+		return []any{spec}
+	}
+	return listOf(doc["specs"])
+}
+
+// apiServerIngressFaults names each port admitted from the API server that the control-plane nodes cannot reach, or that
+// another node, a host or the world can.
+func apiServerIngressFaults(t *testing.T, set components.Set) (faults []string, items int) {
+	t.Helper()
+	for _, m := range slices.Concat(set.Served, set.Inline) {
+		for _, doc := range testutil.Documents(t, m.Bytes) {
+			if doc["kind"] != "CiliumNetworkPolicy" && doc["kind"] != "CiliumClusterwideNetworkPolicy" {
+				continue
+			}
+			for _, spec := range ciliumSpecs(doc) {
+				ingress := listOf(spec.(map[string]any)["ingress"])
+				for _, raw := range ingress {
+					item := raw.(map[string]any)
+					if !admitsEntity(item, "kube-apiserver") {
+						continue
+					}
+					items++
+					ports := ingressPorts(t, item)
+					where := fmt.Sprintf("%v in %s %v", ports, m.Name, spec.(map[string]any)["description"])
+					if _, both := item["fromNodes"]; both {
+						faults = append(faults, "one item combines fromEntities and fromNodes, which Cilium refuses, at "+where)
+					}
+					if !slices.ContainsFunc(ingress, func(other any) bool {
+						return admitsControlPlaneNodes(other.(map[string]any)) && slices.Equal(ingressPorts(t, other.(map[string]any)), ports)
+					}) {
+						faults = append(faults, "no fromNodes item admits the control-plane nodes to "+where)
+					}
+					for _, other := range ingress {
+						otherPorts := ingressPorts(t, other.(map[string]any))
+						for _, entity := range []string{"remote-node", "host", "world", "cluster", "all"} {
+							if admitsEntity(other.(map[string]any), entity) && (otherPorts == nil || slices.ContainsFunc(otherPorts, func(p string) bool { return slices.Contains(ports, p) })) {
+								faults = append(faults, fmt.Sprintf("%s reaches %s", entity, where))
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return faults, items
+}
+
+func TestHosting_AdmitsTheAPIServerToEveryWebhookPortFromTheControlPlaneNodesAndNoOtherNodeOrTheWorld(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		set          components.Set
+		apiServerUse bool
+	}{
+		{"the default set", components.Default(), false},
+		{"the hosting set", hostingSet(t, testutil.HostingInputs(t)), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := namedDocument(t, testutil.Manifest(t, "cilium", tc.set.Served), "ConfigMap", "cilium-config")
+
+			faults, items := apiServerIngressFaults(t, tc.set)
+
+			assert.Empty(t, faults)
+			assert.Equal(t, tc.apiServerUse, items > 0, "ingress items that admit the API server: %d", items)
+			assert.Equal(t, "true", testutil.Field(t, config, "data", "enable-node-selector-labels"), "Cilium gives a node an identity by its labels")
+			assert.Equal(t, "node-role.kubernetes.io/control-plane", testutil.Field(t, config, "data", "node-labels"), "the node label Cilium's identities carry")
+		})
+	}
+}

@@ -61,8 +61,7 @@ func (o AppliedObject) isCRD() bool {
 	return o.kind() == "CustomResourceDefinition" && group == "apiextensions.k8s.io"
 }
 
-// TalosOrder is the order Talos v1.14.4's ManifestApplyController creates the objects of manifests in, keyed by their
-// names in the machine configuration: manifests by their id, priority 99 then the name, then Namespaces and CRDs first.
+// TalosOrder orders the objects of manifests, keyed by configuration name, as Talos v1.14.4's ManifestApplyController does.
 func TalosOrder(t *testing.T, manifests map[string][]byte) []AppliedObject {
 	t.Helper()
 	var objects []AppliedObject
@@ -97,9 +96,8 @@ func TalosOrder(t *testing.T, manifests map[string][]byte) []AppliedObject {
 type Webhook struct {
 	Name          string
 	Configuration AppliedObject
-	// Service is the namespace/name of the Service the API server calls, empty for a webhook called at a URL.
-	Service string
-	rules   []webhookRule
+	Service       string
+	rules         []webhookRule
 }
 
 type webhookRule struct {
@@ -141,7 +139,7 @@ func (w Webhook) Intercepts(o AppliedObject, plurals map[string]string) bool {
 	group, version := o.groupVersion()
 	resource, known := plurals[group+"/"+o.kind()]
 	if !known {
-		resource = strings.ToLower(o.kind()) + "s"
+		resource = guessPlural(o.kind())
 	}
 	for _, r := range w.rules {
 		if matchesAny(r.Operations, "CREATE") && matchesAny(r.APIGroups, group) && matchesAny(r.APIVersions, version) &&
@@ -150,6 +148,21 @@ func (w Webhook) Intercepts(o AppliedObject, plurals map[string]string) bool {
 		}
 	}
 	return false
+}
+
+// guessPlural names a built-in kind's resource by apimachinery's UnsafeGuessKindToResource rule.
+func guessPlural(kind string) string {
+	singular := strings.ToLower(kind)
+	switch {
+	case strings.HasSuffix(singular, "endpoints"):
+		return singular
+	case strings.HasSuffix(singular, "s"):
+		return singular + "es"
+	case strings.HasSuffix(singular, "y"):
+		return strings.TrimSuffix(singular, "y") + "ies"
+	default:
+		return singular + "s"
+	}
 }
 
 func matchesAny(values []string, want string) bool {

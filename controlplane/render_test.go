@@ -577,8 +577,7 @@ func webhookOrderFaults(t *testing.T, order []testutil.AppliedObject) []string {
 	return faults
 }
 
-// Talos abandons the rest of a pass at a create a webhook cannot answer, and a webhook's pod in the mesh runs only
-// once ztunnel and istio-cni do. Every webhook counts, since istiod turns its validators from Ignore to Fail.
+// Every webhook counts whatever it does when it cannot answer, since istiod turns its validators from Ignore to Fail.
 func TestBuilder_TalosAppliesEveryObjectAWebhookInterceptsAfterTheWebhookTheMeshAndTheNodeReport(t *testing.T) {
 	hostingSet, err := components.Hosting(testutil.HostingInputs(t))
 	require.NoError(t, err)

@@ -2,14 +2,10 @@ package components
 
 import (
 	"bytes"
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/rsa"
-	"crypto/sha256"
 	"crypto/x509"
 	_ "embed"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -278,28 +274,8 @@ func readSealed(manifest []byte, want sealedFile) (string, error) {
 	return sealed, nil
 }
 
-// opens decrypts as the controller does: a length-prefixed RSA-OAEP session key labelled namespace/name, then AES-GCM.
+// opens checks that sealed opens with key under want's Secret.
 func opens(key *rsa.PrivateKey, sealed string, want sealedFile) error {
-	raw, err := base64.StdEncoding.DecodeString(sealed)
-	if err != nil || len(raw) < 2 || len(raw) < 2+int(binary.BigEndian.Uint16(raw)) {
-		return fmt.Errorf("%s's value is not a sealed value", want.what)
-	}
-	n := 2 + int(binary.BigEndian.Uint16(raw))
-	label := []byte(want.namespace + "/" + want.name)
-	sessionKey, err := rsa.DecryptOAEP(sha256.New(), nil, key, raw[2:n], label)
-	if err != nil {
-		return fmt.Errorf("%s is not sealed to the Sealed Secrets key pair", want.what)
-	}
-	block, err := aes.NewCipher(sessionKey)
-	if err != nil {
-		return fmt.Errorf("%s's session key: %w", want.what, err)
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return fmt.Errorf("%s's session key: %w", want.what, err)
-	}
-	if _, err := gcm.Open(nil, make([]byte, gcm.NonceSize()), raw[n:], nil); err != nil {
-		return fmt.Errorf("%s does not open with its session key", want.what)
-	}
-	return nil
+	_, err := openValue(key, want.namespace, want.name, sealed, want.what)
+	return err
 }

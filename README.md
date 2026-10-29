@@ -927,17 +927,33 @@ path "kv/metadata/apps/{{identity.entity.aliases.auth_kubernetes_f1e2d3c4.metada
 }
 ```
 
-A token that logged in with a service account in namespace `shop` can then
-read only `kv/data/apps/shop/*`. The Job writes no Kubernetes auth role, so no
-service account can log in with this policy until a role names it.
+A token that logged in with a service account in namespace `app-shop` can then
+read only `kv/data/apps/app-shop/*`. The script writes the policy
+`app-secrets-writer` on the same template, which may create, read and update
+that one path and its metadata. External Secrets' PushSecret reads both before
+it writes them. Neither policy may delete or list another namespace.
+
+The script then writes one Kubernetes auth role for each policy. Each role lets
+the service account of the same name log in from any namespace named `app-*`,
+which is every slice's namespace:
+
+| Role | Who may log in | Its policy | Token lifetime |
+|---|---|---|---|
+| `app-secrets-reader` | The service account `app-secrets-reader` in any `app-*` namespace | `app-secrets-reader` | 15 minutes |
+| `app-secrets-writer` | The service account `app-secrets-writer` in any `app-*` namespace | `app-secrets-writer` | 5 minutes |
+
+A slice's SecretStore for reading names the role and service account
+`app-secrets-reader`, and the one its PushSecret writes through names
+`app-secrets-writer`. A slice therefore needs no policy or role written after
+the init, and a new slice needs nothing written at all.
 
 The root token lives in the script's memory alone. The script hands curl each
 header that carries a token on curl's standard input, through the shell's
 builtin `printf`, and never prints a token. The script retries each step while
 its pod lives. A pod lost after the commit may leave the mount, the auth method,
-its configuration or the policy unwritten, and a new pod finds the file and
-changes nothing. The owner then decrypts the root token from
-`openbao-init.asc` and writes whichever of the four is missing.
+its configuration, a policy or a role unwritten, and a new pod finds the file
+and changes nothing. The owner then decrypts the root token from
+`openbao-init.asc` and writes whichever is missing.
 
 ### The documentation the hosting set follows
 
@@ -953,6 +969,8 @@ changes nothing. The owner then decrypts the root token from
 | [OpenBao: `/sys/init`](https://openbao.org/api-docs/system/init/) | `recovery_shares`, `recovery_threshold` and `recovery_pgp_keys`, each key the base64 of its binary form, apply to an auto-unseal such as the static seal |
 | [OpenBao: HTTP API](https://openbao.org/api-docs/) | OpenBao treats `PUT` and `POST` as synonyms |
 | [OpenBao: HA with Raft on Kubernetes](https://openbao.org/docs/platform/k8s/helm/examples/ha-with-raft/) | You initialise `openbao-0`, and the other members join it |
+| [OpenBao: Kubernetes auth API](https://openbao.org/api-docs/auth/kubernetes/) and [its login check at v2.7.1](https://github.com/openbao/openbao/blob/v2.7.1/internal/builtin/credential/kubernetes/path_login.go#L361-L369) | A role binds service account names and namespaces, and a login matches each against the role's list as a glob, so `app-*` admits every slice namespace |
+| [External Secrets: PushSecret to Vault at v2.11.0](https://github.com/external-secrets/external-secrets/blob/v2.11.0/providers/v1/vault/client_push.go) | A push reads the path and its metadata, then writes the metadata and the path |
 | [OpenBao: `/sys/auth`](https://openbao.org/api-docs/system/auth/) and [`/sys/mounts`](https://openbao.org/api-docs/system/mounts/) | Each listing names a method by its path, with its `accessor`, and `options.version` set to `"2"` mounts KV v2 |
 | [OpenBao: KV v2](https://openbao.org/docs/secrets/kv/kv-v2/) | A policy names a secret under `data/` and its listing under `metadata/` |
 | [OpenBao: Kubernetes auth](https://openbao.org/docs/auth/kubernetes/) and [its API](https://openbao.org/api-docs/auth/kubernetes/) | `kubernetes_host` is required, a pod's own token and CA serve for the review, and a login's alias carries `service_account_namespace` |

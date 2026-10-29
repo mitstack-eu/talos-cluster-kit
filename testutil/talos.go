@@ -109,7 +109,7 @@ type webhookRule struct {
 	Resources   []string `yaml:"resources"`
 }
 
-// Webhooks are the admission webhooks objects configure, whatever their failurePolicy.
+// Webhooks are every admission webhook objects configure, whether or not one that cannot answer refuses a create.
 func Webhooks(t *testing.T, objects []AppliedObject) []Webhook {
 	t.Helper()
 	var webhooks []Webhook

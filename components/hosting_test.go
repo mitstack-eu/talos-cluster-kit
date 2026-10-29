@@ -533,6 +533,33 @@ func TestHosting_LetsCertManagerReachOnlyTheAPIServerClusterDNSLetsEncryptOn443A
 	}, egress, "cert-manager's flows")
 }
 
+func TestHosting_LetsExternalSecretsReachOnlyTheAPIServerClusterDNSOpenBaoAndAWSSTSAndECRByNameOn443(t *testing.T) {
+	set := hostingSet(t, testutil.HostingInputs(t))
+	policy := namedDocument(t, testutil.Manifest(t, "mitstack-hosting-flows", set.Served), "CiliumClusterwideNetworkPolicy", "mitstack-hosting-flows")
+	pods := map[string]testutil.CiliumEndpoint{
+		"cluster DNS":      testutil.Endpoint("kube-system", nil, map[string]string{"k8s-app": "kube-dns"}),
+		"OpenBao":          testutil.Endpoint("openbao", nil, map[string]string{"app.kubernetes.io/name": "openbao"}),
+		"an app":           testutil.Endpoint("app-shop", map[string]string{"mitstack.dev/subscription": "sub_1"}, map[string]string{"mitstack.dev/app": "shop"}),
+		"External Secrets": testutil.Endpoint("external-secrets", nil, map[string]string{"app.kubernetes.io/name": "external-secrets", "mitstack.dev/app": "external-secrets"}),
+	}
+
+	var egress []string
+	for _, grant := range testutil.Grants(t, policy, pods, "External Secrets") {
+		if strings.HasPrefix(grant, "egress") {
+			egress = append(egress, grant)
+		}
+	}
+
+	assert.Equal(t, []string{
+		"egress to api.ecr.*.amazonaws.com on 443/TCP",
+		"egress to entity kube-apiserver",
+		"egress to sts.*.amazonaws.com on 443/TCP",
+		"egress to sts.amazonaws.com on 443/TCP",
+		"egress with OpenBao on 8200/TCP 15008/TCP",
+		"egress with cluster DNS on 53/UDP 53/TCP through the DNS proxy",
+	}, egress, "External Secrets' flows")
+}
+
 func TestHosting_KeepsTheMembersAloneOnOpenBaosClusterPortAndEveryoneOffItsOtherPorts(t *testing.T) {
 	set := hostingSet(t, testutil.HostingInputs(t))
 	policy := namedDocument(t, testutil.Manifest(t, "mitstack-hosting-mesh", set.Served), "AuthorizationPolicy", "mitstack-openbao-ports")

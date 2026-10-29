@@ -18,7 +18,6 @@ securityContext:
     cleanCiliumState: [NET_ADMIN, SYS_ADMIN, SYS_RESOURCE]
 operator:
   replicas: 1
-# The API server calls a webhook on a worker from a control-plane node's host, so a policy admits it by this node label.
 nodeSelectorLabels: true
 nodeLabels: node-role.kubernetes.io/control-plane
 hubble:

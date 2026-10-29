@@ -1,6 +1,7 @@
-# Every event runs the Go suites, the check that each vendored component
-# matches a fresh render of its pinned chart, the Kyverno policy tests,
-# shellcheck over every script, and a build of the tools image.
+# Every event runs the Go suites, a copy through the gateway's own skopeo
+# into its own registry, the check that each vendored component matches a
+# fresh render of its pinned chart, the Kyverno policy tests, shellcheck over
+# every script, and a build of the tools image.
 # Once all of them pass on a push to main, the release job releases the
 # version .github/version names, unless that tag exists already, and the
 # record delivery job records the push's board keys on Plain. A block takes a
@@ -41,6 +42,11 @@ jobs:
       # On two cores the controlplane suite runs close to go test's default ten-minute timeout.
       - name: go test
         run: go test -race -timeout 25m ./...
+
+      # It pulls trust-manager from quay.io into the gateway's registry image through Docker, so it runs here alone.
+      - name: mirror check
+        if: ${{ !cancelled() }}
+        run: go test -tags mirror -count=1 -run '^TestPrepareScript_Mirrors' ./gateway/
 
   components:
     name: components

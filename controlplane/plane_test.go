@@ -319,6 +319,18 @@ func TestPlane_RefusesTheBuildNamingTheGatewaysImageMirrorOnceTheGatewayPowersIt
 	assert.Equal(t, "gateway-mirror-failed", refusalClass(t, h.ensure()), "the next call's refusal")
 }
 
+func TestPlane_PowersOnAGatewayFoundOffOnceTheBuilderHasFinished(t *testing.T) {
+	h := newHarness(t)
+	h.buildingBuilder()
+	h.cloud.PowerOff(h.byRole(controlplane.RoleBuilder)[0].ID)
+	h.cloud.PowerOff(h.byRole(controlplane.RoleGateway)[0].ID)
+
+	require.NoError(t, h.ensure())
+
+	assert.Equal(t, controlplane.ServerRunning, h.byRole(controlplane.RoleGateway)[0].Status, "the gateway of a builder that finished")
+	assert.Len(t, h.byRole(controlplane.RoleBuilder), 1, "builders")
+}
+
 func TestPlane_CreatesNoNodeBeforeTheBuilderReportsTheGatewaysMirrorComplete(t *testing.T) {
 	h := newHarness(t)
 	h.cloud.MirrorTakes = 40 * time.Minute

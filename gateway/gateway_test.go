@@ -192,8 +192,8 @@ func runPrepare(t *testing.T, manifestSHA256 string) prepareRun {
 	return prepare(t, map[string]string{"skopeo": "", "docker": ""}, manifestSHA256, cilium)
 }
 
-// prepare runs the rendered prepare script over images with fake curl and systemctl and the other fakes given. Its
-// tools.env pins fake talosctl and kubectl downloads and keeps every other line of the gateway's own tools.env.
+// prepare runs the rendered prepare script over images with fake curl, systemctl and the fakes given, and a tools.env
+// that pins fake talosctl and kubectl downloads beside every other line of the gateway's own.
 func prepare(t *testing.T, fakes map[string]string, manifestSHA256 string, images ...string) prepareRun {
 	t.Helper()
 	script := writtenFile(t, "/usr/local/bin/mitstack-gateway-prepare")
@@ -296,7 +296,7 @@ func TestPrepareScript_PowersTheGatewayOffAndLeavesTheMirrorIncompleteWhenACopyF
 	const trustManager = "quay.io/jetstack/trust-manager:v0.25.0@sha256:0521921c2a46d14d0417336b20bcde69215ef3164f2977cc939d53c6e5224a17"
 	failTrustManager := `case "$*" in *trust-manager*) echo 'Instructed to preserve digests' >&2; exit 1 ;; esac`
 
-	run := prepare(t, map[string]string{"docker": failTrustManager, "skopeo": failTrustManager}, sha256Of("bytes of https://example.test/argocd.yaml"),
+	run := prepare(t, map[string]string{"docker": failTrustManager}, sha256Of("bytes of https://example.test/argocd.yaml"),
 		cilium, trustManager)
 
 	require.Error(t, run.err)

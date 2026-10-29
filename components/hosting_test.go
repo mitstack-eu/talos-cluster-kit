@@ -594,6 +594,9 @@ func apiServerIngressFaults(t *testing.T, set components.Set) (faults []string, 
 					items++
 					ports := ingressPorts(t, item)
 					where := fmt.Sprintf("%v in %s %v", ports, m.Name, spec.(map[string]any)["description"])
+					if _, both := item["fromNodes"]; both {
+						faults = append(faults, "one item combines fromEntities and fromNodes, which Cilium refuses, at "+where)
+					}
 					if !slices.ContainsFunc(ingress, func(other any) bool {
 						return admitsControlPlaneNodes(other.(map[string]any)) && slices.Equal(ingressPorts(t, other.(map[string]any)), ports)
 					}) {

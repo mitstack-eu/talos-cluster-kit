@@ -508,48 +508,27 @@ func TestHosting_IssuesAppCertificatesFromLetsEncryptProductionThroughTraefikAft
 		"Talos applies the ClusterIssuer before cert-manager's webhook, which abandons the pass")
 }
 
-func TestHosting_LetsCertManagerReachOnlyTheAPIServerClusterDNSLetsEncryptOn443AndAppHostnamesOn80(t *testing.T) {
-	set := hostingSet(t, testutil.HostingInputs(t))
-	policy := namedDocument(t, testutil.Manifest(t, "mitstack-hosting-flows", set.Served), "CiliumClusterwideNetworkPolicy", "mitstack-hosting-flows")
+func hostingEgress(t *testing.T, pod testutil.CiliumEndpoint) []string {
+	policy := namedDocument(t, testutil.Manifest(t, "mitstack-hosting-flows", hostingSet(t, testutil.HostingInputs(t)).Served), "CiliumClusterwideNetworkPolicy", "mitstack-hosting-flows")
 	pods := map[string]testutil.CiliumEndpoint{
-		"cluster DNS":  testutil.Endpoint("kube-system", nil, map[string]string{"k8s-app": "kube-dns"}),
-		"OpenBao":      testutil.Endpoint("openbao", nil, map[string]string{"app.kubernetes.io/name": "openbao"}),
-		"an app":       testutil.Endpoint("app-shop", map[string]string{"mitstack.dev/subscription": "sub_1"}, map[string]string{"mitstack.dev/app": "shop"}),
-		"cert-manager": testutil.Endpoint("cert-manager", nil, map[string]string{"app.kubernetes.io/name": "cert-manager", "mitstack.dev/app": "cert-manager"}),
+		"cluster DNS": testutil.Endpoint("kube-system", nil, map[string]string{"k8s-app": "kube-dns"}),
+		"OpenBao":     testutil.Endpoint("openbao", nil, map[string]string{"app.kubernetes.io/name": "openbao"}),
+		"an app":      testutil.Endpoint("app-shop", map[string]string{"mitstack.dev/subscription": "sub_1"}, map[string]string{"mitstack.dev/app": "shop"}),
+		"the pod":     pod,
 	}
+	return slices.DeleteFunc(testutil.Grants(t, policy, pods, "the pod"), func(g string) bool { return !strings.HasPrefix(g, "egress") })
+}
 
-	var egress []string
-	for _, grant := range testutil.Grants(t, policy, pods, "cert-manager") {
-		if strings.HasPrefix(grant, "egress") {
-			egress = append(egress, grant)
-		}
-	}
-
+func TestHosting_LetsCertManagerReachOnlyTheAPIServerClusterDNSLetsEncryptOn443AndAppHostnamesOn80(t *testing.T) {
 	assert.Equal(t, []string{
 		"egress to *.apps.mitstack.dev on 80/TCP",
 		"egress to acme-v02.api.letsencrypt.org on 443/TCP",
 		"egress to entity kube-apiserver",
 		"egress with cluster DNS on 53/UDP 53/TCP through the DNS proxy",
-	}, egress, "cert-manager's flows")
+	}, hostingEgress(t, testutil.Endpoint("cert-manager", nil, map[string]string{"app.kubernetes.io/name": "cert-manager", "mitstack.dev/app": "cert-manager"})), "cert-manager's flows")
 }
 
 func TestHosting_LetsExternalSecretsReachOnlyTheAPIServerClusterDNSOpenBaoAndAWSSTSAndECRByNameOn443(t *testing.T) {
-	set := hostingSet(t, testutil.HostingInputs(t))
-	policy := namedDocument(t, testutil.Manifest(t, "mitstack-hosting-flows", set.Served), "CiliumClusterwideNetworkPolicy", "mitstack-hosting-flows")
-	pods := map[string]testutil.CiliumEndpoint{
-		"cluster DNS":      testutil.Endpoint("kube-system", nil, map[string]string{"k8s-app": "kube-dns"}),
-		"OpenBao":          testutil.Endpoint("openbao", nil, map[string]string{"app.kubernetes.io/name": "openbao"}),
-		"an app":           testutil.Endpoint("app-shop", map[string]string{"mitstack.dev/subscription": "sub_1"}, map[string]string{"mitstack.dev/app": "shop"}),
-		"External Secrets": testutil.Endpoint("external-secrets", nil, map[string]string{"app.kubernetes.io/name": "external-secrets", "mitstack.dev/app": "external-secrets"}),
-	}
-
-	var egress []string
-	for _, grant := range testutil.Grants(t, policy, pods, "External Secrets") {
-		if strings.HasPrefix(grant, "egress") {
-			egress = append(egress, grant)
-		}
-	}
-
 	assert.Equal(t, []string{
 		"egress to api.ecr.*.amazonaws.com on 443/TCP",
 		"egress to entity kube-apiserver",
@@ -557,7 +536,7 @@ func TestHosting_LetsExternalSecretsReachOnlyTheAPIServerClusterDNSOpenBaoAndAWS
 		"egress to sts.amazonaws.com on 443/TCP",
 		"egress with OpenBao on 8200/TCP 15008/TCP",
 		"egress with cluster DNS on 53/UDP 53/TCP through the DNS proxy",
-	}, egress, "External Secrets' flows")
+	}, hostingEgress(t, testutil.Endpoint("external-secrets", nil, map[string]string{"app.kubernetes.io/name": "external-secrets", "mitstack.dev/app": "external-secrets"})), "External Secrets' flows")
 }
 
 func TestHosting_KeepsTheMembersAloneOnOpenBaosClusterPortAndEveryoneOffItsOtherPorts(t *testing.T) {

@@ -41,6 +41,19 @@ func TestList_RefusesAnImageFromARegistryNoNodeSendsToTheMirror(t *testing.T) {
 	assert.Contains(t, err.Error(), "registry.gitlab.com")
 }
 
+func TestList_RefusesADockerHubImageNamedWithoutItsNamespace(t *testing.T) {
+	traefik := components.Image{Name: "docker.io/traefik", Tag: "v3.7.13", Digest: "sha256:24841fe2de7304c149343d877d2923b4c8800a38ba015dea9174c23b20e344a0"}
+	canonical := components.Image{Name: "docker.io/library/traefik", Tag: traefik.Tag, Digest: traefik.Digest}
+
+	_, err := mirror.List(components.Set{}, traefik)
+	_, canonicalErr := mirror.List(components.Set{}, canonical)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "docker.io/traefik:v3.7.13")
+	assert.Contains(t, err.Error(), "docker.io/library/traefik")
+	assert.NoError(t, canonicalErr)
+}
+
 func TestList_HoldsEveryImageTheHostingSetPullsByDigest(t *testing.T) {
 	in := testutil.HostingInputs(t)
 	set, err := components.Hosting(in)

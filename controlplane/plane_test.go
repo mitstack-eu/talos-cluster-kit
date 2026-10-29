@@ -563,6 +563,22 @@ func TestPlane_AServerAttachThatLandedButFailedItsCallIsDoneOnTheNextCall(t *tes
 	}
 }
 
+func TestPlane_CreatesNoGatewayWhileTheIngressLoadBalancerHasNoPublicAddress(t *testing.T) {
+	h := newHarness(t)
+	for range 20 {
+		if len(h.cloud.LBSpecs) == 2 {
+			break
+		}
+		require.NoError(t, h.ensure())
+	}
+	h.cloud.LoadBalancers[h.loadBalancer(controlplane.RoleIngress).ID].PublicIPv4 = ""
+
+	err := h.converge()
+
+	assert.ErrorContains(t, err, "the ingress load balancer has no public address")
+	assert.Empty(t, h.byRole(controlplane.RoleGateway), "gateways created")
+}
+
 func TestPlane_RefusesAnAmbiguousClusterBeforeAnyChange(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

@@ -65,6 +65,8 @@ type site struct {
 	network    Network
 	firewall   Firewall
 	apiAddress string
+	// ingressAddress is the ingress load balancer's public address, which the gateway forwards port 80 to.
+	ingressAddress string
 }
 
 // nodeStep builds the worker image beside the cluster's own, and deletes the worker builder of a cluster refused.
@@ -212,6 +214,8 @@ func (p Plane) installStep(st State, s site) Step {
 	if len(servers) == 0 && len(snapshots) == 0 {
 		api, _ := st.LoadBalancerIn(RoleAPI, GatewayLocation)
 		s.apiAddress = api.PrivateIPs[s.network.ID]
+		ingress, _ := st.LoadBalancerIn(RoleIngress, GatewayLocation)
+		s.ingressAddress = ingress.PublicIPv4
 		return Step{"create the gateway and the builders", func(ctx context.Context) error { return p.install(ctx, s) }}
 	}
 	return Step{"delete the builders and snapshots of a cluster with no gateway", func(ctx context.Context) error {

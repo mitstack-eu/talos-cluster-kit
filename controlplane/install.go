@@ -41,7 +41,11 @@ func (p Plane) install(ctx context.Context, s site) error {
 	if err != nil {
 		return fmt.Errorf("the API load balancer has no address on network %d: %w", s.network.ID, err)
 	}
-	inst, err := p.render(ctx, addr, p.now())
+	ingress, err := netip.ParseAddr(s.ingressAddress)
+	if err != nil {
+		return fmt.Errorf("the ingress load balancer has no public address: %w", err)
+	}
+	inst, err := p.render(ctx, addr, ingress, p.now())
 	if err != nil {
 		return err
 	}
@@ -135,7 +139,7 @@ func (p Plane) rollBackInstall(ctx context.Context, cause error) error {
 }
 
 // render mints the cluster's keys, gateway CA, enrolment token and issuer bucket, and renders every server's user data.
-func (p Plane) render(ctx context.Context, apiAddr netip.Addr, now time.Time) (installation, error) {
+func (p Plane) render(ctx context.Context, apiAddr, ingressAddr netip.Addr, now time.Time) (installation, error) {
 	secrets, err := nodeconfig.NewSecrets(now)
 	if err != nil {
 		return installation{}, err
@@ -201,13 +205,13 @@ func (p Plane) render(ctx context.Context, apiAddr netip.Addr, now time.Time) (i
 	if inst.workerBuilderUserData, err = builderUserData("worker builder", workerConfig, gatewayCA.Cert, nil); err != nil {
 		return installation{}, err
 	}
-	if inst.gatewayUserData, err = p.renderGateway(apiAddr, now, gatewayCA, set, secrets); err != nil {
+	if inst.gatewayUserData, err = p.renderGateway(apiAddr, ingressAddr, now, gatewayCA, set, secrets); err != nil {
 		return installation{}, err
 	}
 	return inst, nil
 }
 
-func (p Plane) renderGateway(apiAddr netip.Addr, now time.Time, ca gateway.CA, set components.Set, secrets *nodeconfig.Secrets) (string, error) {
+func (p Plane) renderGateway(apiAddr, ingressAddr netip.Addr, now time.Time, ca gateway.CA, set components.Set, secrets *nodeconfig.Secrets) (string, error) {
 	gatewayAddr := netip.MustParseAddr(GatewayAddress)
 	tls, err := ca.Issue(gatewayAddr, now, gatewayCertValidity)
 	if err != nil {
@@ -220,6 +224,7 @@ func (p Plane) renderGateway(apiAddr netip.Addr, now time.Time, ca gateway.CA, s
 	kitPart, err := gateway.Render(gateway.Inputs{
 		Address:         gatewayAddr,
 		Network:         netip.MustParsePrefix(NetworkIPRange),
+		Ingress:         ingressAddr,
 		TLS:             tls,
 		Components:      set,
 		ManifestBaseURL: gateway.ReleaseURL(release),

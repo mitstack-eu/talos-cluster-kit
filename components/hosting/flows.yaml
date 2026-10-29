@@ -5,12 +5,29 @@ kind: CiliumClusterwideNetworkPolicy
 metadata:
   name: mitstack-hosting-flows
 specs:
-- description: "cert-manager, its CA injector and trust-manager reach the API server, which reaches their webhooks."
+- description: "cert-manager, its CA injector and trust-manager reach the API server, which reaches their webhooks. cert-manager looks names up through Cilium's DNS proxy, reaches Let's Encrypt's ACME API on 443, and makes its HTTP-01 self-check to an app's hostname on 80."
   endpointSelector:
     matchLabels:
       k8s:io.kubernetes.pod.namespace: cert-manager
   egress:
   - toEntities: [kube-apiserver]
+  - toEndpoints:
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: kube-system
+        k8s:k8s-app: kube-dns
+    toPorts:
+    - ports: [{port: "53", protocol: UDP}, {port: "53", protocol: TCP}]
+      rules:
+        dns:
+        - matchPattern: "*"
+  - toFQDNs:
+    - matchName: acme-v02.api.letsencrypt.org
+    toPorts:
+    - ports: [{port: "443", protocol: TCP}]
+  - toFQDNs:
+    - matchPattern: "*.apps.mitstack.dev"
+    toPorts:
+    - ports: [{port: "80", protocol: TCP}]
   ingress:
   - fromEntities: [kube-apiserver]
     toPorts:

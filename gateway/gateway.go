@@ -1,5 +1,4 @@
-// Package gateway renders the cloud-config of a cluster's gateway, the one server with a public address,
-// which forwards and records the nodes' traffic and serves their image mirror and manifests.
+// Package gateway renders the cloud-config of a cluster's gateway, the one server with a public address.
 package gateway
 
 import (
@@ -24,10 +23,8 @@ import (
 // UserDataLimit is the most user data Hetzner Cloud accepts for a server, in bytes.
 const UserDataLimit = 32 * 1024
 
-// httpsPort is the port the nodes reach GitHub, the platform and the cluster's other HTTPS peers on.
 const httpsPort = 443
 
-// The gateway's own containers, by digest.
 const (
 	registryImage = "docker.io/library/registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373"
 	caddyImage    = "docker.io/library/caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d"
@@ -44,12 +41,12 @@ var (
 
 var cloudConfig = tmpl.Must("the gateway's cloud-config", cloudConfigTemplate)
 
-// Inputs are what one gateway needs.
 type Inputs struct {
 	// Address is the gateway's private address, which the network's default route points at.
 	Address netip.Addr
-	// Network is the cluster's private network.
 	Network netip.Prefix
+	// Ingress is the ingress load balancer's public address, the one host the nodes reach on port 80; zero for none.
+	Ingress netip.Addr
 	TLS     TLS
 	// Components is the cluster's component set, whose images the gateway mirrors and whose served manifests it fetches.
 	Components components.Set
@@ -61,7 +58,6 @@ type Inputs struct {
 	Logs components.LogExport
 }
 
-// ReleaseURL is where a tagged release of this kit serves its files, as v0.1.0.
 func ReleaseURL(version string) string {
 	return "https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/" + version
 }
@@ -90,6 +86,9 @@ func (in Inputs) validate() error {
 	if !in.Network.IsValid() || !in.Network.Contains(in.Address) {
 		errs = append(errs, fmt.Errorf("address %s is not inside network %s", in.Address, in.Network))
 	}
+	if in.Ingress.IsValid() && in.Network.Contains(in.Ingress) {
+		errs = append(errs, fmt.Errorf("ingress address %s is inside network %s", in.Ingress, in.Network))
+	}
 	if err := in.TLS.validate(); err != nil {
 		errs = append(errs, err)
 	}
@@ -111,11 +110,16 @@ func (in Inputs) templateData() (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	var ingress string
+	if in.Ingress.IsValid() {
+		ingress = in.Ingress.String()
+	}
 	return map[string]string{
 		"Address":         in.Address.String(),
 		"Network":         in.Network.String(),
 		"Resolvers":       joinAddrs(nodeconfig.HetznerResolvers),
 		"EgressPorts":     ports,
+		"Ingress":         ingress,
 		"CA":              string(in.TLS.CA),
 		"Cert":            string(in.TLS.Cert),
 		"Key":             string(in.TLS.Key),
@@ -129,7 +133,6 @@ func (in Inputs) templateData() (map[string]string, error) {
 	}, nil
 }
 
-// egressPorts are the TCP ports the nodes may reach past the gateway: HTTPS, and the log receiver's port if any.
 func (in Inputs) egressPorts() (string, error) {
 	if in.Logs.IsZero() {
 		return strconv.Itoa(httpsPort), nil
@@ -166,7 +169,6 @@ func joinAddrs(addrs []netip.Addr) string {
 	return strings.Join(s, ", ")
 }
 
-// TLS is the gateway's certificate authority and its serving certificate and key, all PEM.
 type TLS struct {
 	CA   []byte
 	Cert []byte

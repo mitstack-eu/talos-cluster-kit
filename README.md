@@ -940,7 +940,8 @@ A token that logged in with a service account in namespace `app-shop` can then
 read only `kv/data/apps/app-shop/*`. The script writes the policy
 `app-secrets-writer` on the same template, which may create, read and update
 that one path and its metadata. External Secrets' PushSecret reads both before
-it writes them. Neither policy may delete or list another namespace.
+it writes them. Neither policy may delete, and neither reaches another
+namespace's path.
 
 The script then writes one Kubernetes auth role for each policy. Each role lets
 the service account of the same name log in from any namespace named `app-*`,
@@ -954,7 +955,10 @@ which is every slice's namespace:
 A slice's SecretStore for reading names the role and service account
 `app-secrets-reader`, and the one its PushSecret writes through names
 `app-secrets-writer`. A slice therefore needs no policy or role written after
-the init, and a new slice needs nothing written at all.
+the init, and a new slice needs nothing written at all. Anyone who can create a
+namespace named `app-*` and a service account of either name in it can log in
+to that namespace's own path, so creating such namespaces stays with the block
+that renders slices.
 
 The root token lives in the script's memory alone. The script hands curl each
 header that carries a token on curl's standard input, through the shell's

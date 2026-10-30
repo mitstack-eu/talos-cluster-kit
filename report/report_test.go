@@ -34,6 +34,7 @@ const (
 	volumesRead       = "-n 10.0.0.5,10.0.0.6,10.0.0.7 get volumestatus -o json"
 	tokenRequest      = "create token mitstack-node-report -n mitstack-node "
 	reportProof       = "report-proof-fixture"
+	proofScript       = `exec kubectl create token "$4" -n "$3" --for "$2" --body-sha256 "$(sha256sum < "$1" | cut -d ' ' -f 1)"`
 	// failedRead writes 2000 bytes of noise, its message, the report token, a bearer header, a JWT and a NUL to stderr.
 	failedRead = `head -c 2000 /dev/zero | tr '\0' x >&2; printf '\nerror: the server is gone\n' >&2
 printf 'token ` + reportToken + `\nAuthorization: Bearer abc.def\nsigned eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln\n\0' >&2
@@ -115,9 +116,13 @@ func writeServerCA(t *testing.T, server *httptest.Server) string {
 	return path
 }
 
-func renderedScript(t *testing.T, url string) (script, proofScript string) {
+func inputs(url string) report.Inputs {
+	return report.Inputs{URL: url, SubscriptionID: "sub_0123456789ab", ToolsImage: testutil.ToolsImage, ProofScript: proofScript}
+}
+
+func renderedScript(t *testing.T, url string) (script, renderedProofScript string) {
 	t.Helper()
-	rendered, err := report.Manifests(report.Inputs{URL: url, SubscriptionID: "sub_0123456789ab", ToolsImage: testutil.ToolsImage})
+	rendered, err := report.Manifests(inputs(url))
 	require.NoError(t, err)
 	cronJobs := testutil.Kind(testutil.Documents(t, rendered), "CronJob")
 	require.Len(t, cronJobs, 1)
@@ -135,10 +140,10 @@ func runReport(t *testing.T, fakes map[string]string, env ...string) (*testutil.
 	token := filepath.Join(t.TempDir(), "token")
 	require.NoError(t, os.WriteFile(token, []byte(reportToken), 0o600))
 
-	script, proofScript := renderedScript(t, server.URL)
+	script, renderedProofScript := renderedScript(t, server.URL)
 
 	out, err := testutil.RunBash(t, script, tools.Env(append([]string{
-		"REPORT_URL=" + server.URL, "SUBSCRIPTION_ID=sub_0123456789ab", "HOST_IP=10.0.0.6", "REPORT_PROOF_SCRIPT=" + proofScript,
+		"REPORT_URL=" + server.URL, "SUBSCRIPTION_ID=sub_0123456789ab", "HOST_IP=10.0.0.6", "REPORT_PROOF_SCRIPT=" + renderedProofScript,
 		"REPORT_TOKEN_FILE=" + token, "CURL_CA_BUNDLE=" + writeServerCA(t, server)}, env...)...))
 	posted.mu.Lock()
 	defer posted.mu.Unlock()
@@ -177,11 +182,11 @@ func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipA
 		wantCalls = append(wantCalls, "kubectl "+subscriptionRead(kind))
 	}
 	assert.Equal(t, append(wantCalls, "kubectl "+proofRequest(posted)), tools.Calls(t), "the proof is minted once the body is final")
-	assert.Equal(t, reportProof, posted.proof, "the post carries the token the API server minted for its exact body")
+	assert.Equal(t, reportProof, posted.proof, "the post carries the proof the block's script printed for its exact body")
 }
 
 func proofRequest(posted *postedReport) string {
-	return fmt.Sprintf("%s--audience %s --audience report-sha256:%x --duration 10m", tokenRequest, posted.origin, sha256.Sum256(posted.raw))
+	return fmt.Sprintf("%s--for %s --body-sha256 %x", tokenRequest, posted.origin, sha256.Sum256(posted.raw))
 }
 
 func TestReport_LeavesOutEveryApplicationsAppliedObjectsWhenCarryingThemWouldPassThePlatformsLimit(t *testing.T) {
@@ -358,7 +363,7 @@ func TestReport_ThatReadsEverythingPostsAHealthyBodyByteForByte(t *testing.T) {
 }
 
 func TestManifests_LetsTheReportListEachKindItReadsAndCloudNativePGsObjectsAndMintATokenForItsOwnServiceAccountAloneAndGrantsNoVerbOnSecrets(t *testing.T) {
-	rendered, err := report.Manifests(report.Inputs{URL: "https://api.mitstack.dev/v1/cluster-reports", SubscriptionID: "sub_0123456789ab", ToolsImage: testutil.ToolsImage})
+	rendered, err := report.Manifests(inputs("https://api.mitstack.dev/v1/cluster-reports"))
 	require.NoError(t, err)
 
 	docs := testutil.Documents(t, rendered)
@@ -396,8 +401,14 @@ func TestManifests_LetsTheReportListEachKindItReadsAndCloudNativePGsObjectsAndMi
 }
 
 func TestManifests_RefusesAReportURLThatIsNotHTTPS(t *testing.T) {
-	_, err := report.Manifests(report.Inputs{URL: "http://api.mitstack.dev/v1/cluster-reports", SubscriptionID: "sub_0123456789ab", ToolsImage: testutil.ToolsImage})
+	_, err := report.Manifests(inputs("http://api.mitstack.dev/v1/cluster-reports"))
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "http://api.mitstack.dev/v1/cluster-reports")
+}
+
+func TestManifests_RefusesInputsWithoutAProofScript(t *testing.T) {
+	_, err := report.Manifests(report.Inputs{URL: "https://api.mitstack.dev/v1/cluster-reports", SubscriptionID: "sub_0123456789ab", ToolsImage: testutil.ToolsImage})
+
+	require.ErrorContains(t, err, "proof script")
 }

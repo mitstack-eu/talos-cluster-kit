@@ -1,18 +1,25 @@
-# OpenBao's own authority signs through a namespaced Issuer, so only an object in openbao can obtain a certificate
-# OpenBao's clients trust, and trust-manager copies that authority into the ConfigMap openbao-ca in every namespace.
+# mitstack-trust holds the key of every authority the hosting set creates. cert-manager reads a ClusterIssuer's key only
+# here, and trust-manager reads its sources only here, so no other namespace holds an authority's key.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mitstack-trust
+---
 apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
-  name: openbao-selfsigned
-  namespace: openbao
+  name: mitstack-trust-selfsigned
+  namespace: mitstack-trust
 spec:
   selfSigned: {}
 ---
+# OpenBao's own authority signs OpenBao's certificate alone, and trust-manager copies it into the ConfigMap openbao-ca
+# in every namespace.
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: openbao-ca
-  namespace: openbao
+  namespace: mitstack-trust
 spec:
   isCA: true
   commonName: OpenBao CA
@@ -24,13 +31,12 @@ spec:
     rotationPolicy: Never
   issuerRef:
     kind: Issuer
-    name: openbao-selfsigned
+    name: mitstack-trust-selfsigned
 ---
 apiVersion: cert-manager.io/v1
-kind: Issuer
+kind: ClusterIssuer
 metadata:
   name: openbao-ca
-  namespace: openbao
 spec:
   ca:
     secretName: openbao-ca
@@ -61,7 +67,8 @@ spec:
     size: 256
     rotationPolicy: Always
   issuerRef:
-    kind: Issuer
+    group: cert-manager.io
+    kind: ClusterIssuer
     name: openbao-ca
 ---
 apiVersion: trust.cert-manager.io/v1alpha1
@@ -76,6 +83,70 @@ spec:
   target:
     configMap:
       key: ca.crt
+---
+# The database authority signs the shared Postgres server's certificate, which postgres-db-kube asks for in its database
+# slice, and trust-manager copies it into the ConfigMap mitstack-database-ca in every namespace.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: mitstack-database-ca
+  namespace: mitstack-trust
+spec:
+  isCA: true
+  commonName: mitstack database CA
+  secretName: mitstack-database-ca
+  duration: 87600h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Never
+  issuerRef:
+    kind: Issuer
+    name: mitstack-trust-selfsigned
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: mitstack-database-ca
+spec:
+  ca:
+    secretName: mitstack-database-ca
+---
+apiVersion: trust.cert-manager.io/v1alpha1
+kind: Bundle
+metadata:
+  name: mitstack-database-ca
+spec:
+  sources:
+    - secret:
+        name: mitstack-database-ca
+        key: tls.crt
+  target:
+    configMap:
+      key: ca.crt
+---
+# A ClusterIssuer signs for any namespace that names it, and a slice's repository may hold a Certificate or an annotated
+# Ingress, so this policy keeps each authority to the namespaces whose servers it vouches for.
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: mitstack-restrict-trust-issuers
+spec:
+  validationActions: [Deny]
+  matchConstraints:
+    resourceRules:
+    - apiGroups: ["cert-manager.io"]
+      apiVersions: ["*"]
+      operations: ["CREATE", "UPDATE"]
+      resources: ["certificates", "certificaterequests"]
+  variables:
+  - name: clusterIssuer
+    expression: 'object.spec.issuerRef.?kind.orValue("Issuer") == "ClusterIssuer" ? object.spec.issuerRef.name : ""'
+  validations:
+  - expression: 'variables.clusterIssuer != "openbao-ca" || namespaceObject.metadata.name == "openbao"'
+    message: "mitstack-restrict-trust-issuers: only the openbao namespace may obtain a certificate from the ClusterIssuer openbao-ca"
+  - expression: 'variables.clusterIssuer != "mitstack-database-ca" || namespaceObject.metadata.?labels[?"mitstack.dev/database-slice"].orValue("") == "true"'
+    message: "mitstack-restrict-trust-issuers: only a namespace labelled mitstack.dev/database-slice=true may obtain a certificate from the ClusterIssuer mitstack-database-ca"
 ---
 # The webhook's certificate signs itself, and cert-manager's CA injector gives the API server that certificate.
 apiVersion: cert-manager.io/v1

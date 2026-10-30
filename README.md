@@ -642,13 +642,14 @@ every Docker Hub image goes on the list under its full name.
 | Component | What it does here | Values |
 |---|---|---|
 | OpenBao 2.7.1 | Three Raft members, one per control-plane node, each tolerating the control-plane taint. The listener serves TLS 1.3 only, with the certificate cert-manager issues, and reloads it when it is renewed. The static seal reads its key from `/openbao/seal/key` | `components/render/openbao-values.yaml` |
-| cert-manager v1.21.2 | Issues OpenBao's serving certificate from OpenBao's own authority, and the External Secrets webhook's certificate | `components/render/cert-manager-values.yaml` |
-| trust-manager v0.25.0 | Copies that authority into the ConfigMap `openbao-ca`, under `ca.crt`, in every namespace | `components/render/trust-manager-values.yaml` |
+| cert-manager v1.21.2 | Issues OpenBao's serving certificate from OpenBao's own authority, the shared Postgres server's from the database authority, and the External Secrets webhook's certificate. It reads each `ClusterIssuer`'s key in `mitstack-trust` | `components/render/cert-manager-values.yaml` |
+| trust-manager v0.25.0 | Copies each authority's certificate from `mitstack-trust` into a ConfigMap of the authority's name, under `ca.crt`, in every namespace | `components/render/trust-manager-values.yaml` |
 | External Secrets v2.11.0 | Copies values from OpenBao into Kubernetes Secrets | `components/render/external-secrets-values.yaml` |
 | Sealed Secrets 0.40.0 | Opens a `SealedSecret` with the block's key pair, and never mints or renews a key | `components/render/sealed-secrets-values.yaml` |
 | Traefik v3.7.13 | Serves web traffic on NodePorts 30080 and 30081, with one pod on every node that takes apps | `components/render/traefik-values.yaml` |
 
-The authority and the certificates sit in `components/hosting/tls.yaml`. A
+The two authorities that the next section describes, and the certificates
+they sign, sit in `components/hosting/tls.yaml`. A
 `SecretStore`, the External Secrets object that names a store, verifies
 OpenBao through its Vault provider's `caProvider`, as in this example:
 
@@ -657,6 +658,77 @@ caProvider:
   type: ConfigMap
   name: openbao-ca
   key: ca.crt
+```
+
+### How the two authorities reach every namespace
+
+A client trusts a server only when it can check the server's certificate
+against an authority, a certificate authority it already holds. The hosting
+set creates two authorities, and each one vouches for one kind of server.
+Every namespace gets both authorities' certificates. No slice, the namespace
+a block gives one app, gets either key.
+
+| Authority | `ClusterIssuer` | What it signs | ConfigMap in every namespace |
+|---|---|---|---|
+| OpenBao's | `openbao-ca` | OpenBao's serving certificate, `openbao-tls` in `openbao` | `openbao-ca` |
+| The database authority | `mitstack-database-ca` | The certificate of the Postgres server that the postgres-db-kube block runs for every app on the cluster. The block asks for it in the server's namespace, its database slice | `mitstack-database-ca` |
+
+A `ClusterIssuer` is a cert-manager authority any namespace can name, and a
+`Bundle` is trust-manager's instruction to copy a certificate into a ConfigMap
+in every namespace. Both keys sit in the namespace `mitstack-trust`. No
+workload runs there, so only cert-manager and trust-manager read it. Each
+authority's own certificate is signed by its own key, through the self-signed
+`Issuer` `mitstack-trust-selfsigned` there. cert-manager reads a `ClusterIssuer`'s key only in one namespace,
+its cluster resource namespace. trust-manager reads a `Bundle`'s sources only
+in one namespace too, its trust namespace. The set points both at
+`mitstack-trust`, through
+`clusterResourceNamespace` in `components/render/cert-manager-values.yaml` and
+`app.trust.namespace` in `components/render/trust-manager-values.yaml`. The
+`letsencrypt-production` `ClusterIssuer` keeps its Let's Encrypt account key
+there too. trust-manager can read that key, but no `Bundle` names it, so it is
+never copied.
+
+A `ClusterIssuer` signs for any namespace whose `Certificate` names it, and an
+app's repository may hold a `Certificate` or an Ingress annotated with an
+issuer. An app that obtained a certificate for `postgres-rw` from the database
+authority could pose as the Postgres server to every other app. Kyverno, the
+admission policy engine every cluster runs, therefore holds the policy
+`mitstack-restrict-trust-issuers` in `components/hosting/tls.yaml`. It refuses
+a `Certificate`, or the `CertificateRequest` that cert-manager signs, when it
+names `openbao-ca` outside `openbao`. It also refuses one naming
+`mitstack-database-ca` outside a namespace labelled
+`mitstack.dev/database-slice: "true"`.
+
+The k3s-app-slice block puts that label on a database slice's namespace when
+it creates the slice. An app cannot set it, because the slice's Argo CD project
+admits no cluster-wide object, and a Namespace is one. Kyverno's webhooks skip
+`kube-system`, `kube-public`, `kube-node-lease`, `argocd`, `kyverno`,
+`cnpg-system`, `mitstack-node` and `istio-system`. Those are the namespaces of
+Kubernetes itself and of the cluster's own components, which no app writes to.
+
+An app checks the shared Postgres server against the database authority by
+mounting its ConfigMap as a volume and connecting with `sslmode=verify-full`.
+The volume goes in the pod spec of the app's Deployment:
+
+```yaml
+volumes:
+  - name: authority
+    configMap:
+      name: mitstack-database-ca
+containers:
+  - name: app
+    volumeMounts:
+      - name: authority
+        mountPath: /authority
+        readOnly: true
+```
+
+In this example the database slice is `app-postgres`, so the server answers
+at `postgres-rw.app-postgres.svc.cluster.local`. The database and its user,
+here both `orders`, are the ones the app's database block created:
+
+```bash
+psql "host=postgres-rw.app-postgres.svc.cluster.local dbname=orders user=orders sslmode=verify-full sslrootcert=/authority/ca.crt"
 ```
 
 ### Where each secret lives
@@ -1003,7 +1075,10 @@ and changes nothing. The owner then decrypts the root token from
 | [Istio: PeerAuthentication](https://istio.io/v1.30/docs/reference/config/security/peer_authentication/) | `STRICT` in the root namespace binds the whole mesh, and `portLevelMtls` needs a selector |
 | [curl: `--header`](https://curl.se/docs/manpage.html#-H) | `-H @-` reads headers from standard input |
 | [cert-manager: CA](https://cert-manager.io/docs/configuration/ca/) and [SelfSigned](https://cert-manager.io/docs/configuration/selfsigned/) issuers | A self-signed root bootstraps the CA issuer |
+| [cert-manager: Issuer configuration](https://cert-manager.io/docs/configuration/) | A `ClusterIssuer` reads its Secrets in the cluster resource namespace, `cert-manager` unless `--cluster-resource-namespace` names another |
 | [trust-manager](https://cert-manager.io/docs/trust/trust-manager/) | A `Bundle` reads Secrets in its trust namespace and writes a ConfigMap to every namespace |
+| [CloudNativePG: certificates](https://cloudnative-pg.io/documentation/current/certificates/) | `serverTLSSecret` and `serverCASecret` may name one cert-manager Secret, and the label `cnpg.io/reload` reloads it on renewal |
+| [Kyverno: ValidatingPolicy](https://kyverno.io/docs/policy-types/validating-policy/) | A CEL validation reads the request's namespace as `namespaceObject` |
 | [External Secrets: HashiCorp Vault provider](https://external-secrets.io/latest/provider/hashicorp-vault/) | A private CA is named through `caProvider` or `caBundle` |
 | [Sealed Secrets: bring your own certificates](https://github.com/bitnami/sealed-secrets/blob/main/docs/bring-your-own-certificates.md) | The controller uses each key pair in its namespace that carries the active label |
 | [Sealed Secrets: scopes](https://github.com/bitnami/sealed-secrets#scopes) and [its crypto](https://github.com/bitnami/sealed-secrets/blob/main/docs/developer/crypto.md) | A strict-scope value is sealed with RSA-OAEP over SHA-256, labelled with its namespace and name, around an AES-GCM session key |

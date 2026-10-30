@@ -7,6 +7,6 @@ defaultPackage:
 app:
   podLabels:
     mitstack.dev/app: trust-manager
-  # trust-manager reads Secrets only here, where cert-manager keeps OpenBao's authority.
+  # trust-manager reads Secrets only here, where cert-manager keeps the key of every ClusterIssuer the hosting set creates.
   trust:
-    namespace: openbao
+    namespace: mitstack-trust

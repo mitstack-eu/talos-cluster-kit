@@ -24,6 +24,8 @@ type Plane struct {
 	Boundary string
 	// PlatformURL is where every node enrols and reports.
 	PlatformURL string
+	// ReportProofScript signs each node report, as report.Inputs.ProofScript.
+	ReportProofScript string
 	// RepoURL is the cluster repository Argo CD syncs.
 	RepoURL string
 	// Now is the clock the builder's deadline is judged against; nil reads time.Now.

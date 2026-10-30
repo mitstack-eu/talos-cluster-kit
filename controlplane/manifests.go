@@ -40,7 +40,8 @@ const (
 
 // clusterComponents carries the node report, the enrolment and the Argo CD application inline, so the gateway mirrors their image.
 func (p Plane) clusterComponents(set components.Set, enrolmentToken string) (components.Set, error) {
-	reportManifests, err := report.Manifests(report.Inputs{URL: p.PlatformURL + clusterReportsPath, SubscriptionID: p.Subscription, ToolsImage: toolsImage()})
+	reportManifests, err := report.Manifests(report.Inputs{URL: p.PlatformURL + clusterReportsPath, SubscriptionID: p.Subscription,
+		ToolsImage: toolsImage(), ProofScript: p.ReportProofScript})
 	if err != nil {
 		return components.Set{}, err
 	}

@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Posts the node report: nodes, etcd members, each node's STATE and EPHEMERAL encryption, Argo CD's health with each Application's applied objects,
-# CloudNativePG's objects, the objects labelled mitstack.dev/subscription, the API server's key set and a checks member.
-# When a read or the body fails or times out, it posts a report whose error names it instead, then exits non-zero.
-# Usage: REPORT_URL=<https url> SUBSCRIPTION_ID=<id> HOST_IP=<this pod's node> [REPORT_TOKEN_FILE=/var/run/mitstack/token] [REPORT_READ_SECONDS=25] report.sh
+# CloudNativePG's objects, the objects labelled mitstack.dev/subscription, the API server's key set and a checks member,
+# signed with a token the API server mints for the body through block-kit's token-request.sh in REPORT_PROOF_SCRIPT.
+# When a read, the body or the token request fails or times out, it posts an unsigned report whose error names it
+# instead, then exits non-zero.
+# Usage: REPORT_URL=<https url> SUBSCRIPTION_ID=<id> HOST_IP=<this pod's node> REPORT_PROOF_SCRIPT=<script> [POD_NAMESPACE=mitstack-node] [REPORT_TOKEN_FILE=/var/run/mitstack/token] [REPORT_READ_SECONDS=25] report.sh
 # It exists so the platform sees a cluster it never dials into, as ADR 0072 requires, with os:reader and no Secret right.
 set -euo pipefail
 
-# Eight limits of 25 seconds, their 5-second kill grace and the post's 20 fit the Job's activeDeadlineSeconds of 270.
+# Eight limits of 25 seconds, the token request's 5, each with a 5-second kill grace, and the post's 20 make 270, which
+# leaves 10 seconds of the Job's activeDeadlineSeconds of 280 for the tools to start.
 limit=${REPORT_READ_SECONDS:-25}
 # Kinds as kubectl --show-kind names them, as blocks name their objects; never secret, as the report holds no Secret right.
 subscription_kinds=(namespace serviceaccount service resourcequota limitrange deployment.apps
@@ -22,10 +25,10 @@ fail() {
 }
 
 limited() {
-  timeout -k 5 "$limit" "$@"
+  timeout -k 5 "$@"
 }
 
-# read_into NAME OUT COMMAND... runs one read under the time limit and reports it as failed when it does not exit 0.
+# read_into NAME OUT SECONDS COMMAND... runs one read limited to SECONDS and reports it as failed when it does not exit 0.
 read_into() {
   local name=$1 out=$2 status=0
   shift 2
@@ -34,10 +37,10 @@ read_into() {
 }
 
 collect() {
-  read_into "kubectl get nodes" "$work/nodes.json" kubectl get nodes -o json
-  read_into "kubectl get applications" "$work/applications.json" kubectl get applications.argoproj.io -n argocd -o json
-  read_into "kubectl get --raw /openid/v1/jwks" "$work/jwks.json" kubectl get --raw /openid/v1/jwks
-  read_into "talosctl etcd members" "$work/members.txt" talosctl -n "$HOST_IP" etcd members
+  read_into "kubectl get nodes" "$work/nodes.json" "$limit" kubectl get nodes -o json
+  read_into "kubectl get applications" "$work/applications.json" "$limit" kubectl get applications.argoproj.io -n argocd -o json
+  read_into "kubectl get --raw /openid/v1/jwks" "$work/jwks.json" "$limit" kubectl get --raw /openid/v1/jwks
+  read_into "talosctl etcd members" "$work/members.txt" "$limit" talosctl -n "$HOST_IP" etcd members
   read_system_volumes
   read_beside cloudnative-pg kubectl get clusters.postgresql.cnpg.io,databases.postgresql.cnpg.io,databaseroles.postgresql.cnpg.io -A -o json
   read_subscription_resources
@@ -48,7 +51,7 @@ collect() {
 read_beside() {
   local name=$1 status=0
   shift
-  limited "$@" > "$work/$name.out" 2> "$work/$name.err" || status=$?
+  limited "$limit" "$@" > "$work/$name.out" 2> "$work/$name.err" || status=$?
   printf '%s' "$status" > "$work/$name.status"
 }
 
@@ -67,7 +70,7 @@ read_subscription_resources() {
   local kind
   mkdir "$work/kinds"
   # shellcheck disable=SC2016 # the inner script expands its own arguments
-  limited bash -c 'dir=$1; shift; for kind; do
+  limited "$limit" bash -c 'dir=$1; shift; for kind; do
       kubectl get "$kind" -A -l mitstack.dev/subscription -o json > "$dir/$kind.read" && mv "$dir/$kind.read" "$dir/$kind.json"
     done' _ "$work/kinds" "${subscription_kinds[@]}" || true
   : > "$work/subscription-resources.json"
@@ -91,6 +94,7 @@ report_failure() {
     | { grep -avE '[Bb]earer|eyJ[A-Za-z0-9_-]+\.' || true; } \
     | tail -c 1024 > "$work/read.tail"
   cat "$work/read.tail" >&2
+  rm -f "$work/proof"
   jq -n \
     --arg subscription "$SUBSCRIPTION_ID" \
     --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -108,7 +112,7 @@ report_failure() {
 # body prints the report on one line, so its length is what jq measures; a member line is NODE ID HOSTNAME PEER-URLS
 # CLIENT-URLS LEARNER. Every Application's applied objects are carried only while the body fits the platform's 256 KiB.
 body() {
-  limited jq -c -n \
+  limited "$limit" jq -c -n \
     --arg subscription "$SUBSCRIPTION_ID" \
     --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --slurpfile nodes "$work/nodes.json" \
@@ -189,9 +193,15 @@ body() {
 JQ
 }
 
+sign() {
+  read_into "kubectl create token" "$work/proof" 5 bash -c "$REPORT_PROOF_SCRIPT" token-request.sh \
+    "$work/body.json" "$REPORT_URL" "${POD_NAMESPACE:-mitstack-node}" mitstack-node-report
+}
+
 post() {
   local status
   printf 'Authorization: Bearer %s\n' "$token" > "$work/headers"
+  [ ! -s "$work/proof" ] || printf 'Mitstack-Report-Proof: %s\n' "$(cat "$work/proof")" >> "$work/headers"
   status=$(curl -sS --proto '=https' --tlsv1.2 --connect-timeout 5 --max-time 20 \
     -X POST -H @"$work/headers" -H 'Content-Type: application/json' \
     --data-binary @"$work/body.json" -o /dev/null -w '%{http_code}' \
@@ -211,6 +221,7 @@ main() {
   collect
   body > "$work/body.json" 2> "$work/read.err" || status=$?
   [ "$status" -eq 0 ] || report_failure body "$status"
+  sign
   post
 }
 

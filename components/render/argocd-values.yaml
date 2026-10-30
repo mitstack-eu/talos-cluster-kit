@@ -4,6 +4,53 @@ global:
     tag: v3.5.5@sha256:13db7b10db23283b1b36f855046602e18539a8a8204c9f6f039e8896c8897518
 dex:
   enabled: false
+# Argo CD posts each Application's sync outcome to the platform. The enrolment writes argocd-notifications-secret, whose
+# platform-url and platform-token Argo CD puts in for $platform-url and $platform-token, and Talos keeps whichever
+# object it creates first, so the chart writes no Secret of its own.
+notifications:
+  secret:
+    create: false
+  notifiers:
+    service.webhook.mitstack: |
+      url: $platform-url/v1/gitops-notifications
+      headers:
+        - name: Authorization
+          value: Bearer $platform-token
+        - name: Content-Type
+          value: application/json
+  # The body sends the revision the operation synced, falling back to the compared one, and "" for the phase and
+  # message of an Application with no operation.
+  templates:
+    template.mitstack: |
+      webhook:
+        mitstack:
+          method: POST
+          body: |
+            {
+              "app": {{toJson .app.metadata.name}},
+              "project": {{toJson .app.spec.project}},
+              "sync": {{toJson .app.status.sync.status}},
+              "revision": {{toJson (dig "operationState" "syncResult" "revision" .app.status.sync.revision .app.status)}},
+              "health": {{toJson .app.status.health.status}},
+              "phase": {{toJson (dig "operationState" "phase" "" .app.status)}},
+              "message": {{toJson (dig "operationState" "message" "" .app.status)}},
+              "reconciledAt": {{toJson .app.status.reconciledAt}}
+            }
+  # on-deployed fires once per synced revision, so a resync of it posts nothing new.
+  triggers:
+    trigger.on-deployed: |
+      - when: app.status.operationState != nil and app.status.operationState.phase in ['Succeeded'] and app.status.health.status == 'Healthy'
+        oncePer: app.status.operationState?.syncResult?.revision
+        send: [mitstack]
+    trigger.on-sync-failed: |
+      - when: app.status.operationState != nil and app.status.operationState.phase in ['Error', 'Failed']
+        send: [mitstack]
+    trigger.on-health-degraded: |
+      - when: app.status.health.status == 'Degraded'
+        send: [mitstack]
+  subscriptions:
+    - recipients: [mitstack]
+      triggers: [on-deployed, on-sync-failed, on-health-degraded]
 redis:
   image:
     repository: public.ecr.aws/docker/library/redis

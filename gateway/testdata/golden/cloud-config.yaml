@@ -136,7 +136,7 @@ write_files:
     content: |
       00-cilium.yaml c5057491cfc1cdc8c019b27fc8bc48f983aea2da0198586f4f145e41e25b07de https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/cilium/cilium.yaml
       01-cilium-policy-crd.yaml 582273fd2b7d7238563ad2976ba36905ba818834ed71c58cad6e51bb4762088b https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/cilium/policy-crd.yaml
-      09-argocd.yaml fb411045350cff6403ef713a067f92d7c88e0527e6ca9c8bd115886f8c4aa17b https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/argocd/argocd.yaml
+      09-argocd.yaml a83dcef315b27221ec57431c64772e2ab3ee3d23058fde295a501d7b730942c4 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/argocd/argocd.yaml
       13-kyverno.yaml 30c3d2833991432a4d5e7ca1de8f5f8fe198a5f6933f7ec5bce6fd369bd712f3 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/kyverno/kyverno.yaml
       11-cloudnative-pg.yaml f1768c6f991b5516cf8e39cfe63b597cd8681a47add18bb7ede32fb9272cde30 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/cloudnative-pg/cloudnative-pg.yaml
       14-local-path-provisioner.yaml b2dfa76fee341a7ff10719b32edd35a857ab34d467bcd31889d6193691c30d39 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/local-path-provisioner/local-path-provisioner.yaml

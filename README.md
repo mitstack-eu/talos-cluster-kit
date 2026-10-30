@@ -395,17 +395,25 @@ cluster's signing key comes from the `Secrets` its configuration was rendered
 with. While its block keeps those secrets, the key set stays the same, so the
 report carries no proof.
 
-Each report is also signed, so the platform can tell the cluster's own report
-from one sent by whoever holds a leaked report token. The node never holds a
-private key for this. Once the body is final, the report runs the proof
-script its block passes as `Plane.ReportProofScript`, or as
-`report.Inputs.ProofScript`. A block passes block-kit's
-`reportproof.TokenRequestScript`, which asks the API server for a token for
-the report's own service account. The token names the platform's origin and
-the SHA-256 of the exact body, and it goes in the `Mitstack-Report-Proof`
-header. The Role `mitstack-node-report-sign` lets that service account create
-a token for itself by name and for no other account. An error report goes
-unsigned. block-kit's [Signing a node report](https://github.com/mitstack-eu/block-kit/blob/main/docs/helpers.md#signing-a-node-report)
+Each report is also signed. The report token, the bearer secret the
+enrolment Job in `controlplane/manifests/cluster-tokens.yaml` takes from the
+platform, proves only that the sender holds it. The signature lets the platform tell the cluster's own report
+from one sent by whoever holds a leaked copy of that token. The node never
+holds a private key for this. Once the body is final, the report runs the
+proof script its block passes as `Plane.ReportProofScript`, or as
+`report.Inputs.ProofScript`. A block passes `reportproof.TokenRequestScript`
+from block-kit, mitstack's shared Go module for writing blocks, and that
+script asks the API server for a token for the report's own service account.
+The token names the platform's origin, the scheme and host of `PlatformURL`
+such as `https://api.mitstack.dev`, and the SHA-256 of the exact body. It goes
+in the `Mitstack-Report-Proof` header. The Role `mitstack-node-report-sign`
+lets that service account create a token for itself by name and for no other
+account.
+
+An error report goes unsigned, because the token request may be what failed.
+A proof script that exits 0 and prints nothing counts as a failed token
+request too, so the report never posts a full body without a proof. block-kit's
+[Signing a node report](https://github.com/mitstack-eu/block-kit/blob/main/docs/helpers.md#signing-a-node-report)
 explains the proof and how the platform checks it.
 
 The script comes from the block because this kit requires no block framework,

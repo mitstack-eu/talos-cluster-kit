@@ -37,8 +37,7 @@ printf 'token ` + reportToken + `\nAuthorization: Bearer abc.def\nsigned eyJhbGc
 exit 3`
 )
 
-// subscriptionKinds are the kinds whose labelled objects the report lists, each as kubectl --show-kind names it, in the
-// order it reads them.
+// subscriptionKinds are the kinds whose labelled objects the report lists, in its order, as kubectl --show-kind names them.
 var subscriptionKinds = []string{"namespace", "serviceaccount", "service", "resourcequota", "limitrange", "deployment.apps",
 	"ingress.networking.k8s.io", "networkpolicy.networking.k8s.io", "role.rbac.authorization.k8s.io",
 	"rolebinding.rbac.authorization.k8s.io", "application.argoproj.io", "appproject.argoproj.io",
@@ -48,12 +47,10 @@ func subscriptionRead(kind string) string {
 	return "get " + kind + " -A -l mitstack.dev/subscription -o json"
 }
 
-// fakeKubectl answers the report's reads from the fixture cluster in testdata/, and failingCloudNativePGKubectl
-// refuses only the CloudNativePG read, as a cluster without its CRDs would.
+// failingCloudNativePGKubectl refuses only the CloudNativePG read, as a cluster without its CRDs would.
 var fakeKubectl, failingCloudNativePGKubectl = kubectlAnswering(nil), kubectlAnswering(map[string]string{
 	cloudNativePGRead: `echo 'error: the server does not have a resource type "clusters"' >&2; exit 1`})
 
-// fakeTalosctl answers the etcd members and every node's volume statuses from testdata/.
 var fakeTalosctl = talosctlAnswering("cat testdata/volumes.json")
 
 func talosctlAnswering(volumes string) string {
@@ -75,7 +72,6 @@ func kubectlAnswering(overrides map[string]string) string {
 	return script + "*) exit 1 ;;\nesac\n"
 }
 
-// postedReport is what the fake platform last received, and how many reports it took.
 type postedReport struct {
 	mu            sync.Mutex
 	posts         int
@@ -124,8 +120,7 @@ func renderedScript(t *testing.T, url string) string {
 	return testutil.Field(t, cronJobs[0], "spec", "jobTemplate", "spec", "template", "spec", "containers", "0", "command", "2").(string)
 }
 
-// runReport runs the rendered report with the tools image's jq against the fixture fakes, each of fakes replacing its
-// namesake, with env added, and returns what the fake platform received.
+// runReport runs the rendered report against the fixture fakes, each of fakes replacing its namesake, with env added.
 func runReport(t *testing.T, fakes map[string]string, env ...string) (*testutil.Tools, *postedReport, string, error) {
 	t.Helper()
 	server, posted := fakePlatform(t)

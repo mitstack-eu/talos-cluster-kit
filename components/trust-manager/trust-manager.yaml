@@ -629,7 +629,7 @@ kind: Role
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
   name: trust-manager
-  namespace: openbao
+  namespace: mitstack-trust
   labels:
     app.kubernetes.io/name: trust-manager
     helm.sh/chart: trust-manager-v0.25.0
@@ -675,7 +675,7 @@ kind: RoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
   name: trust-manager
-  namespace: openbao
+  namespace: mitstack-trust
   labels:
     app.kubernetes.io/name: trust-manager
     helm.sh/chart: trust-manager-v0.25.0
@@ -815,7 +815,7 @@ spec:
           - "--leader-election-lease-duration=15s"
           - "--leader-election-renew-deadline=10s"
             # trust
-          - "--trust-namespace=openbao"
+          - "--trust-namespace=mitstack-trust"
             # webhook
           - "--webhook-host=0.0.0.0"
           - "--webhook-port=6443"

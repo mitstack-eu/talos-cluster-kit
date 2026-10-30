@@ -107,7 +107,6 @@ func TestLocalPathProvisioner_LabelsEveryPodItStartsAndOpensTheAPIServerToItsNam
 	assert.Empty(t, testutil.Grants(t, policy, pods, "an app pod"), "the policy opens the API server beyond local-path-storage")
 }
 
-// gitBlob is the object id git gives a file's bytes, which `git rev-parse <tag>:<path>` answers.
 func gitBlob(data []byte) string {
 	sum := sha1.Sum(append(fmt.Appendf(nil, "blob %d\x00", len(data)), data...))
 	return hex.EncodeToString(sum[:])

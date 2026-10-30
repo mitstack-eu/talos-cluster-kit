@@ -27,7 +27,6 @@ func hostingSet(t *testing.T, in components.HostingInputs) components.Set {
 	return set
 }
 
-// hclBlock returns the body of the first HCL block that opens with header, matching its braces.
 func hclBlock(t *testing.T, config, header string) string {
 	t.Helper()
 	start := strings.Index(config, header+" {")
@@ -91,7 +90,6 @@ func TestHosting_ListensOnlyOnTLSKeepsRaftOnTheUserVolumeAndUnsealsWithAStaticKe
 	assert.Contains(t, set.UserVolumes, components.OpenBaoVolume)
 }
 
-// secretForms are the ways a value can appear in a manifest: as it is, base64 and hex, and each line of a PEM body.
 func secretForms(value []byte) []string {
 	forms := []string{string(value), base64.StdEncoding.EncodeToString(value), hex.EncodeToString(value)}
 	for _, line := range strings.Split(string(value), "\n") {
@@ -102,7 +100,6 @@ func secretForms(value []byte) []string {
 	return forms
 }
 
-// pemPrivateKeys returns the type of each PEM block in data that decodes as a private key, however a document indents it.
 func pemPrivateKeys(data []byte) []string {
 	var lines []string
 	for _, line := range strings.Split(string(data), "\n") {
@@ -189,7 +186,6 @@ func TestHosting_KeepsEverySecretInlineAndNoServedManifestHoldsOne(t *testing.T)
 	assert.Equal(t, []string{"RSA PRIVATE KEY"}, pemPrivateKeys(testutil.Manifest(t, "mitstack-sealed-secrets-key", set.Inline).Bytes))
 }
 
-// argoCDCredentialWriters returns, keyed "kind namespace/name", every ExternalSecret and External Secrets generator of the set, and each object labelled an Argo CD repository credential.
 func argoCDCredentialWriters(t *testing.T, set components.Set) map[string]map[string]any {
 	t.Helper()
 	writers := map[string]map[string]any{}
@@ -205,7 +201,6 @@ func argoCDCredentialWriters(t *testing.T, set components.Set) map[string]map[st
 	return writers
 }
 
-// secretType returns the Argo CD secret type an object is labelled with, a SealedSecret's being the one its template gives the Secret it opens to.
 func secretType(doc map[string]any) string {
 	if doc["kind"] == "SealedSecret" {
 		spec, _ := doc["spec"].(map[string]any)
@@ -306,7 +301,6 @@ func TestNewDeployKey_MintsAFreshEd25519KeyWhosePrivateHalfMatchesThePublicHalfA
 	assert.NotEqual(t, key.AuthorizedKey, again.AuthorizedKey, "two calls minted the same key")
 }
 
-// podTemplates returns each pod template of the manifest's workloads, keyed by the workload's namespace and name.
 func podTemplates(t *testing.T, m components.Manifest) map[string]map[string]any {
 	t.Helper()
 	templates := map[string]map[string]any{}
@@ -399,12 +393,11 @@ func TestHosting_RefusesInputsItCannotBoot(t *testing.T) {
 
 func TestHosting_ServesOpenBaoACertificateForEveryAddressItsMembersAndClientsDial(t *testing.T) {
 	set := hostingSet(t, testutil.HostingInputs(t))
-	tls := testutil.Manifest(t, "mitstack-hosting-tls", set.Served)
 	config := testutil.Field(t, namedDocument(t, testutil.Manifest(t, "openbao", set.Served), "ConfigMap", "openbao-config"), "data", "extraconfig-from-values.hcl").(string)
 
-	cert := namedDocument(t, tls, "Certificate", "openbao-tls")
+	cert := namedDocument(t, testutil.Manifest(t, "mitstack-hosting-tls", set.Served), "Certificate", "openbao-tls")
 
-	assert.Equal(t, "openbao-ca", testutil.Field(t, cert, "spec", "issuerRef", "name"))
+	assert.Equal(t, map[string]any{"group": "cert-manager.io", "kind": "ClusterIssuer", "name": "openbao-ca"}, testutil.Field(t, cert, "spec", "issuerRef"))
 	var patterns []string
 	for _, name := range testutil.Field(t, cert, "spec", "dnsNames").([]any) {
 		patterns = append(patterns, "^"+strings.ReplaceAll(regexp.QuoteMeta(name.(string)), `\*`, `[a-z0-9-]+`)+"$")
@@ -421,13 +414,29 @@ func TestHosting_ServesOpenBaoACertificateForEveryAddressItsMembersAndClientsDia
 		assert.True(t, slices.ContainsFunc(patterns, func(p string) bool { return regexp.MustCompile(p).MatchString(host) }), "the certificate does not name %s", host)
 	}
 	assert.Contains(t, testutil.Field(t, cert, "spec", "ipAddresses"), "127.0.0.1", "the probes dial OpenBao on the loopback address")
-	bundle := namedDocument(t, tls, "Bundle", "openbao-ca")
-	assert.Equal(t, map[string]any{"name": "openbao-ca", "key": "tls.crt"}, testutil.Field(t, bundle, "spec", "sources", "0", "secret"))
-	assert.Equal(t, "ca.crt", testutil.Field(t, bundle, "spec", "target", "configMap", "key"))
-	assert.Contains(t, string(testutil.Manifest(t, "trust-manager", set.Served).Bytes), `"--trust-namespace=openbao"`)
 }
 
-// initJob returns the init Job's pod as Cilium labels it, and its container's environment, from the hosting set.
+func TestHosting_KeepsEachAuthoritysKeyInTheTrustNamespacePublishesItsCertificateEverywhereAndIssuesOnlyWhereItServes(t *testing.T) {
+	set := hostingSet(t, testutil.HostingInputs(t))
+	tls := testutil.Manifest(t, "mitstack-hosting-tls", set.Served)
+	for name, ca := range map[string]map[string]any{"openbao-ca": namedDocument(t, tls, "Certificate", "openbao-ca"), "mitstack-database-ca": namedDocument(t, tls, "Certificate", "mitstack-database-ca")} {
+		assert.Equal(t, []any{"mitstack-trust", true, name}, []any{testutil.Field(t, ca, "metadata", "namespace"), testutil.Field(t, ca, "spec", "isCA"), testutil.Field(t, ca, "spec", "secretName")})
+		assert.Equal(t, map[string]any{"ca": map[string]any{"secretName": name}}, namedDocument(t, tls, "ClusterIssuer", name)["spec"])
+		assert.Equal(t, map[string]any{"sources": []any{map[string]any{"secret": map[string]any{"name": name, "key": "tls.crt"}}}, "target": map[string]any{"configMap": map[string]any{"key": "ca.crt"}}}, namedDocument(t, tls, "Bundle", name)["spec"])
+	}
+	assert.Contains(t, string(testutil.Manifest(t, "cert-manager", set.Served).Bytes), "--cluster-resource-namespace=mitstack-trust\n")
+	assert.Contains(t, string(testutil.Manifest(t, "trust-manager", set.Served).Bytes), `"--trust-namespace=mitstack-trust"`)
+	policy := namedDocument(t, tls, "ValidatingPolicy", "mitstack-restrict-trust-issuers")
+	assert.Equal(t, []any{[]any{"Deny"}, []any{"certificates", "certificaterequests"}}, []any{testutil.Field(t, policy, "spec", "validationActions"), testutil.Field(t, policy, "spec", "matchConstraints", "resourceRules", "0", "resources")})
+	for ns, labels := range map[string]map[string]any{"openbao": {}, "app-postgres": {"mitstack.dev/database-slice": "true"}, "app-shop": {}} {
+		for issuer, at := range map[string]string{"openbao-ca": "openbao", "mitstack-database-ca": "app-postgres", "letsencrypt-production": "*"} {
+			for _, kind := range []string{"ClusterIssuer", "Issuer"} {
+				assert.Equal(t, kind == "Issuer" || at == "*" || at == ns, testutil.Admits(t, policy, map[string]any{"spec": map[string]any{"issuerRef": map[string]any{"kind": kind, "name": issuer}}}, map[string]any{"metadata": map[string]any{"name": ns, "labels": labels}}), "a Certificate from the %s %s in %s", kind, issuer, ns)
+			}
+		}
+	}
+}
+
 func initJob(t *testing.T, set components.Set) (testutil.CiliumEndpoint, map[string]string) {
 	t.Helper()
 	job := namedDocument(t, testutil.Manifest(t, "mitstack-openbao-init", set.Inline), "Job", "mitstack-openbao-init")
@@ -485,16 +494,15 @@ func TestHosting_LetsTheInitJobReachOnlyClusterDNSOpenBaoAndGitHubsSSHOn443AndOp
 
 func TestHosting_IssuesAppCertificatesFromLetsEncryptProductionThroughTraefikAfterCertManagersWebhook(t *testing.T) {
 	set := hostingSet(t, testutil.HostingInputs(t))
-	var issuers []map[string]any
-	var carrier components.Manifest
+	issuers := map[string]map[string]any{}
 	for _, m := range slices.Concat(set.Served, set.Inline) {
 		for _, doc := range testutil.Kind(testutil.Documents(t, m.Bytes), "ClusterIssuer") {
-			issuers, carrier = append(issuers, doc), m
+			issuers[testutil.Field(t, doc, "metadata", "name").(string)] = doc
+			assert.Greater(t, m.TalosName(), testutil.Manifest(t, "cert-manager", set.Served).TalosName(), "Talos applies a ClusterIssuer before cert-manager's webhook, which abandons the pass")
 		}
 	}
 
-	require.Len(t, issuers, 1, "the hosting set's ClusterIssuers")
-	assert.Equal(t, "letsencrypt-production", testutil.Field(t, issuers[0], "metadata", "name"))
+	require.Contains(t, issuers, "letsencrypt-production")
 	assert.Equal(t, map[string]any{"acme": map[string]any{
 		"server":              "https://acme-v02.api.letsencrypt.org/directory",
 		"privateKeySecretRef": map[string]any{"name": "letsencrypt-production-account-key"},
@@ -503,9 +511,7 @@ func TestHosting_IssuesAppCertificatesFromLetsEncryptProductionThroughTraefikAft
 			"serviceType":      "ClusterIP",
 			"podTemplate":      map[string]any{"metadata": map[string]any{"labels": map[string]any{"mitstack.dev/app": "acme-http01-solver"}}},
 		}}}},
-	}}, issuers[0]["spec"])
-	assert.Greater(t, carrier.TalosName(), testutil.Manifest(t, "cert-manager", set.Served).TalosName(),
-		"Talos applies the ClusterIssuer before cert-manager's webhook, which abandons the pass")
+	}}, issuers["letsencrypt-production"]["spec"])
 }
 
 func hostingEgress(t *testing.T, pod testutil.CiliumEndpoint) []string {
@@ -585,7 +591,6 @@ func TestHosting_TraefikTrustsTheLoadBalancersProxyProtocolOnWebAndWebsecureFrom
 	}, proxyArgs)
 }
 
-// toleratesControlPlane is whether a pod template schedules past Talos's NoSchedule taint on the control-plane nodes.
 func toleratesControlPlane(t *testing.T, template map[string]any) bool {
 	t.Helper()
 	tolerations, _ := testutil.Field(t, template, "spec").(map[string]any)["tolerations"].([]any)
@@ -615,7 +620,6 @@ func TestHosting_RunsOpenBaosMembersOnTheTaintedControlPlaneNodesAndEveryOtherHo
 	}
 }
 
-// ingressPorts are the ports an ingress item opens, nil for one that names none and so opens every port.
 func ingressPorts(t *testing.T, item map[string]any) []string {
 	t.Helper()
 	var ports []string
@@ -650,8 +654,6 @@ func ciliumSpecs(doc map[string]any) []any {
 	return listOf(doc["specs"])
 }
 
-// apiServerIngressFaults names each port admitted from the API server that the control-plane nodes cannot reach, or that
-// another node, a host or the world can.
 func apiServerIngressFaults(t *testing.T, set components.Set) (faults []string, items int) {
 	t.Helper()
 	for _, m := range slices.Concat(set.Served, set.Inline) {

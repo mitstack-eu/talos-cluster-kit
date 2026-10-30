@@ -40,7 +40,6 @@ printf 'token ` + reportToken + `\nAuthorization: Bearer abc.def\nsigned eyJhbGc
 exit 3`
 )
 
-// subscriptionKinds are the kinds whose labelled objects the report lists, in its order, as kubectl --show-kind names them.
 var subscriptionKinds = []string{"namespace", "serviceaccount", "service", "resourcequota", "limitrange", "deployment.apps",
 	"ingress.networking.k8s.io", "networkpolicy.networking.k8s.io", "role.rbac.authorization.k8s.io",
 	"rolebinding.rbac.authorization.k8s.io", "application.argoproj.io", "appproject.argoproj.io",
@@ -50,7 +49,6 @@ func subscriptionRead(kind string) string {
 	return "get " + kind + " -A -l mitstack.dev/subscription -o json"
 }
 
-// failingCloudNativePGKubectl refuses only the CloudNativePG read, as a cluster without its CRDs would.
 var fakeKubectl, failingCloudNativePGKubectl = kubectlAnswering(nil), kubectlAnswering(map[string]string{
 	cloudNativePGRead: `echo 'error: the server does not have a resource type "clusters"' >&2; exit 1`})
 
@@ -60,7 +58,6 @@ func talosctlAnswering(volumes string) string {
 	return "case \"$*\" in\n\"" + membersRead + "\")\ncat testdata/members.txt\n;;\n\"" + volumesRead + "\")\n" + volumes + "\n;;\n*) exit 1 ;;\nesac\n"
 }
 
-// kubectlAnswering answers each kubectl call that starts with a read from the fixture cluster, except those overrides replaces.
 func kubectlAnswering(overrides map[string]string) string {
 	answers := map[string]string{nodesRead: "cat testdata/nodes.json", applicationsRead: "cat testdata/applications.json",
 		keySetRead: "cat testdata/jwks.json", cloudNativePGRead: "cat testdata/cloudnative-pg.json", tokenRequest: "echo " + reportProof}
@@ -118,7 +115,6 @@ func writeServerCA(t *testing.T, server *httptest.Server) string {
 	return path
 }
 
-// renderedScript is the rendered report's script and the proof script its env carries.
 func renderedScript(t *testing.T, url string) (script, proofScript string) {
 	t.Helper()
 	rendered, err := report.Manifests(report.Inputs{URL: url, SubscriptionID: "sub_0123456789ab", ToolsImage: testutil.ToolsImage})
@@ -129,7 +125,6 @@ func renderedScript(t *testing.T, url string) (script, proofScript string) {
 	return testutil.Field(t, container, "command", "2").(string), testutil.ContainerEnv(t, container)["REPORT_PROOF_SCRIPT"]
 }
 
-// runReport runs the rendered report against the fixture fakes, each of fakes replacing its namesake, with env added.
 func runReport(t *testing.T, fakes map[string]string, env ...string) (*testutil.Tools, *postedReport, string, error) {
 	t.Helper()
 	server, posted := fakePlatform(t)
@@ -185,7 +180,6 @@ func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipA
 	assert.Equal(t, reportProof, posted.proof, "the post carries the token the API server minted for its exact body")
 }
 
-// proofRequest is the token request that signs posted: for the platform's origin and the SHA-256 of its exact bytes.
 func proofRequest(posted *postedReport) string {
 	return fmt.Sprintf("%s--audience %s --audience report-sha256:%x --duration 10m", tokenRequest, posted.origin, sha256.Sum256(posted.raw))
 }

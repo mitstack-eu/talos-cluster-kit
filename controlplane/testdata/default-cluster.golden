@@ -3,7 +3,7 @@ served cilium components/cilium/cilium.yaml c5057491cfc1cdc8c019b27fc8bc48f983ae
 served cilium-policy-crd components/cilium/policy-crd.yaml 582273fd2b7d7238563ad2976ba36905ba818834ed71c58cad6e51bb4762088b
 served argocd components/argocd/argocd.yaml fb411045350cff6403ef713a067f92d7c88e0527e6ca9c8bd115886f8c4aa17b
 served kyverno components/kyverno/kyverno.yaml 30c3d2833991432a4d5e7ca1de8f5f8fe198a5f6933f7ec5bce6fd369bd712f3
-served cloudnative-pg components/cloudnative-pg/cloudnative-pg.yaml 6c62fe77193f3e9dbd1073cf81bc9271ab041f39097bf855417b8488d8eb8561
+served cloudnative-pg components/cloudnative-pg/cloudnative-pg.yaml f1768c6f991b5516cf8e39cfe63b597cd8681a47add18bb7ede32fb9272cde30
 served local-path-provisioner components/local-path-provisioner/local-path-provisioner.yaml b2dfa76fee341a7ff10719b32edd35a857ab34d467bcd31889d6193691c30d39
 served istio-base components/istio/istio-base.yaml 21fd1e9fea0b26e16f6d1784db982b690eee1bfd36b91ec58fee2ea06af826eb
 served istiod components/istio/istiod.yaml 228e5605e6c50962b9e307b4dad7f468bc4cb408c8fb09a7bdc46a25ff227b54
@@ -33,7 +33,7 @@ mirror docker.io/otel/opentelemetry-collector-contrib:0.163.1@sha256:1175b030030
 mirror docker.io/rancher/local-path-provisioner:v0.0.37@sha256:e757967a5ec338f6a9b371c5a9688bedaa8c3578ea3dd4db329ea0084be0a86f
 mirror ghcr.io/cloudnative-pg/cloudnative-pg:1.30.1@sha256:923c267ec29636db3bee20f993d0ec4973fa22998e1adad37da79e4d32b5bc07
 mirror ghcr.io/cloudnative-pg/pgbouncer:1.25.2@sha256:b15c428057d1ffbc19fb70496911a5f1a47066dcc1315bf794f4e85ade29e2e5
-mirror ghcr.io/cloudnative-pg/postgresql:18.6-system-trixie@sha256:f7e00138159bb45d70b624ba25e446924cb3ed1bf366d13e936c3f81b914064e
+mirror ghcr.io/cloudnative-pg/postgresql:16.15-system-trixie@sha256:8ca5699981c25db72e549e9fa69561bac233df15b9b1e3a6282847b0629bb5ea
 mirror ghcr.io/kyverno/background-controller:v1.19.1@sha256:8f1e9143373a27578cafc2d28d2c66ba0926c63b4c77e63de8d2fdd4a122859f
 mirror ghcr.io/kyverno/cleanup-controller:v1.19.1@sha256:67a48e62a8d8f8120c86914ff822b90017c54054c7b64ef8a1555645e9d9761e
 mirror ghcr.io/kyverno/kyverno:v1.19.1@sha256:b31d8511ae5fd6010e2a01ea72ebae08eb82fa51d91af14a1d9fe989949b4edb

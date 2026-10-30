@@ -4,7 +4,8 @@
 # subscription, never a Secret, and posts the result to the platform. It also creates the one namespace
 # whose pods may hold a Talos identity. Its read of the API server's key set
 # needs no rule here, since Kubernetes binds system:service-account-issuer-discovery
-# to every service account by default.
+# to every service account by default. A Role lets the report mint a token for
+# its own service account alone, which signs each report it posts.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -71,6 +72,31 @@ subjects:
     name: mitstack-node-report
     namespace: {{ .Namespace }}
 ---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mitstack-node-report-sign
+  namespace: {{ .Namespace }}
+rules:
+  - apiGroups: [""]
+    resources: [serviceaccounts/token]
+    resourceNames: [mitstack-node-report]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mitstack-node-report-sign
+  namespace: {{ .Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mitstack-node-report-sign
+subjects:
+  - kind: ServiceAccount
+    name: mitstack-node-report
+    namespace: {{ .Namespace }}
+---
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -84,7 +110,7 @@ spec:
   jobTemplate:
     spec:
       backoffLimit: 0
-      activeDeadlineSeconds: 270
+      activeDeadlineSeconds: 280
       template:
         spec:
           serviceAccountName: mitstack-node-report
@@ -118,6 +144,13 @@ spec:
                   valueFrom:
                     fieldRef:
                       fieldPath: status.hostIP
+                - name: POD_NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
+                - name: REPORT_PROOF_SCRIPT
+                  value: |
+{{ indent 20 .ProofScript }}
                 - name: HOME
                   value: /tmp
               securityContext:

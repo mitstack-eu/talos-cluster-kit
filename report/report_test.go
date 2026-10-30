@@ -1,6 +1,7 @@
 package report_test
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -31,14 +32,15 @@ const (
 	cloudNativePGRead = "get clusters.postgresql.cnpg.io,databases.postgresql.cnpg.io,databaseroles.postgresql.cnpg.io -A -o json"
 	membersRead       = "-n 10.0.0.6 etcd members"
 	volumesRead       = "-n 10.0.0.5,10.0.0.6,10.0.0.7 get volumestatus -o json"
+	tokenRequest      = "create token mitstack-node-report -n mitstack-node "
+	reportProof       = "report-proof-fixture"
+	proofScript       = `exec kubectl create token "$4" -n "$3" --for "$2" --body-sha256 "$(sha256sum < "$1" | cut -d ' ' -f 1)"`
 	// failedRead writes 2000 bytes of noise, its message, the report token, a bearer header, a JWT and a NUL to stderr.
 	failedRead = `head -c 2000 /dev/zero | tr '\0' x >&2; printf '\nerror: the server is gone\n' >&2
 printf 'token ` + reportToken + `\nAuthorization: Bearer abc.def\nsigned eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln\n\0' >&2
 exit 3`
 )
 
-// subscriptionKinds are the kinds whose labelled objects the report lists, each as kubectl --show-kind names it, in the
-// order it reads them.
 var subscriptionKinds = []string{"namespace", "serviceaccount", "service", "resourcequota", "limitrange", "deployment.apps",
 	"ingress.networking.k8s.io", "networkpolicy.networking.k8s.io", "role.rbac.authorization.k8s.io",
 	"rolebinding.rbac.authorization.k8s.io", "application.argoproj.io", "appproject.argoproj.io",
@@ -48,38 +50,35 @@ func subscriptionRead(kind string) string {
 	return "get " + kind + " -A -l mitstack.dev/subscription -o json"
 }
 
-// fakeKubectl answers the report's reads from the fixture cluster in testdata/, and failingCloudNativePGKubectl
-// refuses only the CloudNativePG read, as a cluster without its CRDs would.
 var fakeKubectl, failingCloudNativePGKubectl = kubectlAnswering(nil), kubectlAnswering(map[string]string{
 	cloudNativePGRead: `echo 'error: the server does not have a resource type "clusters"' >&2; exit 1`})
 
-// fakeTalosctl answers the etcd members and every node's volume statuses from testdata/.
 var fakeTalosctl = talosctlAnswering("cat testdata/volumes.json")
 
 func talosctlAnswering(volumes string) string {
 	return "case \"$*\" in\n\"" + membersRead + "\")\ncat testdata/members.txt\n;;\n\"" + volumesRead + "\")\n" + volumes + "\n;;\n*) exit 1 ;;\nesac\n"
 }
 
-// kubectlAnswering answers each kubectl read from the fixture cluster, except those overrides replaces.
 func kubectlAnswering(overrides map[string]string) string {
 	answers := map[string]string{nodesRead: "cat testdata/nodes.json", applicationsRead: "cat testdata/applications.json",
-		keySetRead: "cat testdata/jwks.json", cloudNativePGRead: "cat testdata/cloudnative-pg.json"}
+		keySetRead: "cat testdata/jwks.json", cloudNativePGRead: "cat testdata/cloudnative-pg.json", tokenRequest: "echo " + reportProof}
 	for _, kind := range subscriptionKinds {
 		answers[subscriptionRead(kind)] = "cat testdata/subscription-resources/" + kind + ".json"
 	}
 	maps.Copy(answers, overrides)
 	script := "case \"$*\" in\n"
 	for read, answer := range answers {
-		script += "\"" + read + "\")\n" + answer + "\n;;\n"
+		script += "\"" + read + "\"*)\n" + answer + "\n;;\n"
 	}
 	return script + "*) exit 1 ;;\nesac\n"
 }
 
-// postedReport is what the fake platform last received, and how many reports it took.
 type postedReport struct {
 	mu            sync.Mutex
 	posts         int
 	authorization string
+	proof         string
+	origin        string
 	raw           []byte
 	body          map[string]any
 }
@@ -92,6 +91,8 @@ func fakePlatform(t *testing.T) (*httptest.Server, *postedReport) {
 		defer posted.mu.Unlock()
 		posted.posts++
 		posted.authorization = r.Header.Get("Authorization")
+		posted.proof = r.Header.Get("Mitstack-Report-Proof")
+		posted.origin = "https://" + r.Host
 		data, err := io.ReadAll(r.Body)
 		posted.raw = data
 		if err == nil {
@@ -115,17 +116,20 @@ func writeServerCA(t *testing.T, server *httptest.Server) string {
 	return path
 }
 
-func renderedScript(t *testing.T, url string) string {
+func inputs(url string) report.Inputs {
+	return report.Inputs{URL: url, SubscriptionID: "sub_0123456789ab", ToolsImage: testutil.ToolsImage, ProofScript: proofScript}
+}
+
+func renderedScript(t *testing.T, url string) (script, renderedProofScript string) {
 	t.Helper()
-	rendered, err := report.Manifests(report.Inputs{URL: url, SubscriptionID: "sub_0123456789ab", ToolsImage: testutil.ToolsImage})
+	rendered, err := report.Manifests(inputs(url))
 	require.NoError(t, err)
 	cronJobs := testutil.Kind(testutil.Documents(t, rendered), "CronJob")
 	require.Len(t, cronJobs, 1)
-	return testutil.Field(t, cronJobs[0], "spec", "jobTemplate", "spec", "template", "spec", "containers", "0", "command", "2").(string)
+	container := testutil.Field(t, cronJobs[0], "spec", "jobTemplate", "spec", "template", "spec", "containers", "0")
+	return testutil.Field(t, container, "command", "2").(string), testutil.ContainerEnv(t, container)["REPORT_PROOF_SCRIPT"]
 }
 
-// runReport runs the rendered report with the tools image's jq against the fixture fakes, each of fakes replacing its
-// namesake, with env added, and returns what the fake platform received.
 func runReport(t *testing.T, fakes map[string]string, env ...string) (*testutil.Tools, *postedReport, string, error) {
 	t.Helper()
 	server, posted := fakePlatform(t)
@@ -136,15 +140,17 @@ func runReport(t *testing.T, fakes map[string]string, env ...string) (*testutil.
 	token := filepath.Join(t.TempDir(), "token")
 	require.NoError(t, os.WriteFile(token, []byte(reportToken), 0o600))
 
-	out, err := testutil.RunBash(t, renderedScript(t, server.URL), tools.Env(append([]string{
-		"REPORT_URL=" + server.URL, "SUBSCRIPTION_ID=sub_0123456789ab", "HOST_IP=10.0.0.6",
+	script, renderedProofScript := renderedScript(t, server.URL)
+
+	out, err := testutil.RunBash(t, script, tools.Env(append([]string{
+		"REPORT_URL=" + server.URL, "SUBSCRIPTION_ID=sub_0123456789ab", "HOST_IP=10.0.0.6", "REPORT_PROOF_SCRIPT=" + renderedProofScript,
 		"REPORT_TOKEN_FILE=" + token, "CURL_CA_BUNDLE=" + writeServerCA(t, server)}, env...)...))
 	posted.mu.Lock()
 	defer posted.mu.Unlock()
 	return tools, posted, out, err
 }
 
-func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipAndEachApplicationsHealthAndAppliedObjects(t *testing.T) {
+func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipAndEachApplicationsHealthAndAppliedObjectsSignedForItsExactBody(t *testing.T) {
 	tools, posted, out, err := runReport(t, nil)
 
 	require.NoError(t, err, out)
@@ -175,7 +181,12 @@ func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipA
 	for _, kind := range subscriptionKinds {
 		wantCalls = append(wantCalls, "kubectl "+subscriptionRead(kind))
 	}
-	assert.Equal(t, wantCalls, tools.Calls(t))
+	assert.Equal(t, append(wantCalls, "kubectl "+proofRequest(posted)), tools.Calls(t), "the proof is minted once the body is final")
+	assert.Equal(t, reportProof, posted.proof, "the post carries the proof the block's script printed for its exact body")
+}
+
+func proofRequest(posted *postedReport) string {
+	return fmt.Sprintf("%s--for %s --body-sha256 %x", tokenRequest, posted.origin, sha256.Sum256(posted.raw))
 }
 
 func TestReport_LeavesOutEveryApplicationsAppliedObjectsWhenCarryingThemWouldPassThePlatformsLimit(t *testing.T) {
@@ -214,7 +225,7 @@ func TestReport_ListsTheObjectsOfEachKindItReadWholeAndLeavesOutAKindWhoseReadFa
 		read, answer string
 		wantKinds    []string
 	}{
-		"every read answers":                 {"", "", subscriptionKinds},
+		"every read answers":                 {nodesRead, "cat testdata/nodes.json", subscriptionKinds},
 		"the deployment read fails":          {subscriptionRead("deployment.apps"), `echo 'error: forbidden' >&2; exit 1`, without("deployment.apps")},
 		"the deployment read prints no list": {subscriptionRead("deployment.apps"), `echo 'not json'`, without("deployment.apps")},
 		"the deployment read is cut short by the time limit": {subscriptionRead("deployment.apps"), "sleep 10",
@@ -315,12 +326,14 @@ func TestReport_ThatCannotReadPostsOneReportNamingTheReadAndExitsNonZero(t *test
 		fakes map[string]string
 		want  map[string]any
 	}{
-		"the nodes read fails":        {kubectlFailing(nodesRead, failedRead), map[string]any{"read": "kubectl get nodes", "exitStatus": float64(3)}},
-		"the applications read fails": {kubectlFailing(applicationsRead, failedRead), map[string]any{"read": "kubectl get applications", "exitStatus": float64(3)}},
-		"the key set read fails":      {kubectlFailing(keySetRead, failedRead), map[string]any{"read": "kubectl get --raw /openid/v1/jwks", "exitStatus": float64(3)}},
-		"the etcd members read fails": {map[string]string{"talosctl": failedRead}, map[string]any{"read": "talosctl etcd members", "exitStatus": float64(3)}},
-		"the key set read times out":  {kubectlFailing(keySetRead, "sleep 10"), map[string]any{"read": "kubectl get --raw /openid/v1/jwks", "timedOut": true}},
-		"jq cannot build the body":    {kubectlFailing(nodesRead, "echo 'not json'"), map[string]any{"read": "body", "exitStatus": float64(2)}},
+		"the nodes read fails":         {kubectlFailing(nodesRead, failedRead), map[string]any{"read": "kubectl get nodes", "exitStatus": float64(3)}},
+		"the applications read fails":  {kubectlFailing(applicationsRead, failedRead), map[string]any{"read": "kubectl get applications", "exitStatus": float64(3)}},
+		"the key set read fails":       {kubectlFailing(keySetRead, failedRead), map[string]any{"read": "kubectl get --raw /openid/v1/jwks", "exitStatus": float64(3)}},
+		"the etcd members read fails":  {map[string]string{"talosctl": failedRead}, map[string]any{"read": "talosctl etcd members", "exitStatus": float64(3)}},
+		"the key set read times out":   {kubectlFailing(keySetRead, "sleep 10"), map[string]any{"read": "kubectl get --raw /openid/v1/jwks", "timedOut": true}},
+		"jq cannot build the body":     {kubectlFailing(nodesRead, "echo 'not json'"), map[string]any{"read": "body", "exitStatus": float64(2)}},
+		"the token request fails":      {kubectlFailing(tokenRequest, failedRead), map[string]any{"read": "kubectl create token", "exitStatus": float64(3)}},
+		"the proof script prints none": {kubectlFailing(tokenRequest, "true"), map[string]any{"read": "kubectl create token", "exitStatus": float64(0)}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -329,6 +342,7 @@ func TestReport_ThatCannotReadPostsOneReportNamingTheReadAndExitsNonZero(t *test
 			require.Error(t, err, "the report exits non-zero once it has posted the error")
 			require.Equal(t, 1, posted.posts, out)
 			assert.Equal(t, "Bearer "+reportToken, posted.authorization)
+			assert.Empty(t, posted.proof, "an error report proves nothing, so it goes unsigned")
 			assert.Equal(t, []string{"error", "reportedAt", "subscriptionId"}, slices.Sorted(maps.Keys(posted.body)))
 			stderr := testutil.Field(t, posted.body, "error", "stderr").(string)
 			delete(posted.body["error"].(map[string]any), "stderr")
@@ -349,12 +363,22 @@ func TestReport_ThatReadsEverythingPostsAHealthyBodyByteForByte(t *testing.T) {
 	testutil.Golden(t, filepath.Join("testdata", "golden", "healthy-body.json"), posted.raw)
 }
 
-func TestManifests_LetsTheReportListEachKindItReadsAndCloudNativePGsObjectsAndGrantsNoVerbOnSecrets(t *testing.T) {
-	rendered, err := report.Manifests(report.Inputs{URL: "https://api.mitstack.dev/v1/cluster-reports", SubscriptionID: "sub_0123456789ab", ToolsImage: testutil.ToolsImage})
+func TestManifests_LetsTheReportListEachKindItReadsAndCloudNativePGsObjectsAndMintATokenForItsOwnServiceAccountAloneAndGrantsNoVerbOnSecrets(t *testing.T) {
+	rendered, err := report.Manifests(inputs("https://api.mitstack.dev/v1/cluster-reports"))
 	require.NoError(t, err)
 
-	roles := testutil.Kind(testutil.Documents(t, rendered), "ClusterRole")
+	docs := testutil.Documents(t, rendered)
 
+	roles, tokenRoles, bindings := testutil.Kind(docs, "ClusterRole"), testutil.Kind(docs, "Role"), testutil.Kind(docs, "RoleBinding")
+
+	require.Len(t, tokenRoles, 1)
+	require.Len(t, bindings, 1)
+	assert.Equal(t, "mitstack-node", testutil.Field(t, tokenRoles[0], "metadata", "namespace"))
+	assert.Equal(t, []any{map[string]any{"apiGroups": []any{""}, "resources": []any{"serviceaccounts/token"},
+		"resourceNames": []any{"mitstack-node-report"}, "verbs": []any{"create"}}}, testutil.Field(t, tokenRoles[0], "rules"))
+	assert.Equal(t, testutil.Field(t, tokenRoles[0], "metadata", "name"), testutil.Field(t, bindings[0], "roleRef", "name"))
+	assert.Equal(t, []any{map[string]any{"kind": "ServiceAccount", "name": "mitstack-node-report", "namespace": "mitstack-node"}},
+		testutil.Field(t, bindings[0], "subjects"))
 	require.Len(t, roles, 1)
 	rules := testutil.Field(t, roles[0], "rules").([]any)
 	assert.ElementsMatch(t, []any{
@@ -378,8 +402,14 @@ func TestManifests_LetsTheReportListEachKindItReadsAndCloudNativePGsObjectsAndGr
 }
 
 func TestManifests_RefusesAReportURLThatIsNotHTTPS(t *testing.T) {
-	_, err := report.Manifests(report.Inputs{URL: "http://api.mitstack.dev/v1/cluster-reports", SubscriptionID: "sub_0123456789ab", ToolsImage: testutil.ToolsImage})
+	_, err := report.Manifests(inputs("http://api.mitstack.dev/v1/cluster-reports"))
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "http://api.mitstack.dev/v1/cluster-reports")
+}
+
+func TestManifests_RefusesInputsWithoutAProofScript(t *testing.T) {
+	_, err := report.Manifests(report.Inputs{URL: "https://api.mitstack.dev/v1/cluster-reports", SubscriptionID: "sub_0123456789ab", ToolsImage: testutil.ToolsImage})
+
+	require.ErrorContains(t, err, "proof script")
 }

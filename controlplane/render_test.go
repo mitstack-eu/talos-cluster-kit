@@ -194,7 +194,7 @@ func TestBuilder_TheAPIServersCertificateNamesTheAPILoadBalancer(t *testing.T) {
 	assert.Equal(t, want, testutil.Field(t, apiServer[0], "certExtraSANs"), "the Kubernetes API's certificate names")
 }
 
-func TestBuilder_TheApplicationSyncsTheClusterRepositoryAndTheEnrolmentNamesThePlatform(t *testing.T) {
+func TestBuilder_TheApplicationSyncsTheClusterRepositoryTheEnrolmentNamesThePlatformAndTheReportRunsTheBlocksProofScript(t *testing.T) {
 	h := installedOnce(t)
 
 	manifests := inlineManifests(t, builderConfiguration(t, h))
@@ -213,6 +213,7 @@ func TestBuilder_TheApplicationSyncsTheClusterRepositoryAndTheEnrolmentNamesTheP
 	require.Len(t, cronJobs, 1, "node report CronJobs")
 	report := testutil.Field(t, cronJobs[0], "spec", "jobTemplate", "spec", "template", "spec", "containers", "0")
 	assert.Equal(t, tools.Image, testutil.Field(t, report, "image"), "the node report's image")
+	assert.Equal(t, proofScript, testutil.ContainerEnv(t, report)["REPORT_PROOF_SCRIPT"], "the script that signs each report")
 }
 
 func TestGateway_RunsTheKitsCloudConfigAndThenBootstrapsTheFirstNodeWithAShortLivedAdminTalosconfig(t *testing.T) {

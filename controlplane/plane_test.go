@@ -28,6 +28,7 @@ const (
 	testApp      = "shop"
 	testRepoURL  = "https://github.com/acme/shop-cluster"
 	platformURL  = "https://api.mitstack.dev"
+	proofScript  = "echo report-proof\n"
 	settleBudget = controlplane.BuildDeadline + 15*time.Minute
 	mib          = 1 << 20
 )
@@ -59,7 +60,7 @@ func newHarness(t *testing.T, opts ...func(*harness)) *harness {
 	h.cloud = cloudtest.New(func() time.Time { return h.now })
 	h.plane = controlplane.Plane{
 		API: h.cloud, Block: testBlock, Subscription: testSub, AppName: testApp, ServerType: controlplane.DefaultServerType,
-		Boundary: "mitstack-test-boundary", PlatformURL: platformURL, RepoURL: testRepoURL,
+		Boundary: "mitstack-test-boundary", PlatformURL: platformURL, RepoURL: testRepoURL, ReportProofScript: proofScript,
 		Now: func() time.Time { return h.now },
 		Installed: func(_ context.Context, _ controlplane.Network, c nodeconfig.Cluster) error {
 			h.installed = append(h.installed, c)

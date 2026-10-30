@@ -47,7 +47,7 @@ the order a block uses them.
 | `mirror` | Lists every image the nodes pull, each by digest | `List`, `Render` |
 | `gateway` | Renders the cloud-config of the gateway in each location, and mints the cluster's gateway CA and each gateway's certificate | `Render`, `Inputs`, `NewCA`, `CA.Issue`, `ReleaseURL` |
 | `etcd` | Renders the Job that removes a lost node's etcd member and then its Node object, and holds the gateway's script that bootstraps etcd empty or from a snapshot | `RemoveMemberJob`, `BootstrapScript`, `Bootstrap.Args` |
-| `report` | Renders the node report, a CronJob that posts each node with its Talos version and allocatable resources, the etcd membership, how each node's `STATE` and `EPHEMERAL` are encrypted, Argo CD's health with the objects each Application applied, CloudNativePG's clusters, databases and roles, the objects a block labels with its subscription, and the API server's key set to the platform, with a `checks` member declaring which of the platform verdict's checks it carries. When any read but the volume, CloudNativePG and labelled-object reads fails or times out, it posts a report holding only an `error` that names the read, in place of the full report. The report holds no right on Secrets | `Manifests` |
+| `report` | Renders the node report, a CronJob that posts each node with its Talos version and allocatable resources, the etcd membership, how each node's `STATE` and `EPHEMERAL` are encrypted, Argo CD's health with the objects each Application applied, CloudNativePG's clusters, databases and roles, the objects a block labels with its subscription, and the API server's key set to the platform, with a `checks` member declaring which of the platform verdict's checks it carries. When any read but the volume, CloudNativePG and labelled-object reads fails or times out, it posts a report holding only an `error` that names the read, in place of the full report. Each report is signed with a token the API server mints for its exact body. The report holds no right on Secrets | `Manifests` |
 | `openbaoinit` | Renders OpenBao's init Job, which the hosting set carries: it initialises a hosting cluster's OpenBao once, commits the root token and recovery key to the cluster repository as PGP messages, then writes the policy each slice's External Secrets reads with | `Manifests`, `Inputs`, `InitFile` |
 | `controlplane` | Builds and deletes a Talos control plane on Hetzner Cloud: a network, a firewall, a gateway, a builder that makes the cluster's own snapshot, a node in each of `fsn1`, `nbg1` and `hel1`, and an API and an ingress load balancer. Each call reads the resources by their labels and takes the one change still missing. A refusal is a `*Refusal` with a `Class` and a `Message`, which the block answers as its own framework's refusal | `Plane`, `Plane.Read`, `Plane.EnsureNetwork`, `Plane.NextStep`, `Plane.Problems`, `Plane.Outputs`, `Plane.Delete`, `NewAPI`, `Refusal` |
 | `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image and the gateway both install, and `tools/jq.env`, which pins the tools image's jq, and names the tools image a release published | `Env`, `Pin`, `Image` |
@@ -142,17 +142,18 @@ subscription:
 
 ```go
 plane := controlplane.Plane{
-	API:             controlplane.NewAPI(token, "hcloud-hrobot-talos-cluster"), // token: the app's Hetzner Cloud API token
-	Block:           "hcloud-hrobot-talos-cluster",
-	Subscription:    "sub_0123456789ab",
-	AppName:         "shop",
-	ServerType:      "cx33",
-	Boundary:        "mitstack-hcloud-hrobot-talos-cluster", // separates the parts of the gateway's user data
-	PlatformURL:     "https://api.mitstack.dev",             // where every node registers and reports
-	RepoURL:         "https://github.com/acme/shop-cluster", // the Git repository Argo CD applies to the cluster
-	Installed:       installWorker,                          // the block's own func(ctx, controlplane.Network, nodeconfig.Cluster) error
-	AppsOnWorkers:   true,
-	WorkerAddresses: []string{"10.0.1.2"}, // the Robot worker's address in the network's vSwitch subnet
+	API:               controlplane.NewAPI(token, "hcloud-hrobot-talos-cluster"), // token: the app's Hetzner Cloud API token
+	Block:             "hcloud-hrobot-talos-cluster",
+	Subscription:      "sub_0123456789ab",
+	AppName:           "shop",
+	ServerType:        "cx33",
+	Boundary:          "mitstack-hcloud-hrobot-talos-cluster", // separates the parts of the gateway's user data
+	PlatformURL:       "https://api.mitstack.dev",             // where every node registers and reports
+	ReportProofScript: reportproof.TokenRequestScript,         // block-kit's script that signs each node report
+	RepoURL:           "https://github.com/acme/shop-cluster", // the Git repository Argo CD applies to the cluster
+	Installed:         installWorker,                          // the block's own func(ctx, controlplane.Network, nodeconfig.Cluster) error
+	AppsOnWorkers:     true,
+	WorkerAddresses:   []string{"10.0.1.2"}, // the Robot worker's address in the network's vSwitch subnet
 }
 st, err := plane.Read(ctx)
 ```
@@ -393,6 +394,33 @@ one only with a proof, a token signed by a key in the set it holds. A
 cluster's signing key comes from the `Secrets` its configuration was rendered
 with. While its block keeps those secrets, the key set stays the same, so the
 report carries no proof.
+
+Each report is also signed. The report token, the bearer secret the
+enrolment Job in `controlplane/manifests/cluster-tokens.yaml` takes from the
+platform, proves only that the sender holds it. The signature lets the platform tell the cluster's own report
+from one sent by whoever holds a leaked copy of that token. The node never
+holds a private key for this. Once the body is final, the report runs the
+proof script its block passes as `Plane.ReportProofScript`, or as
+`report.Inputs.ProofScript`. A block passes `reportproof.TokenRequestScript`
+from block-kit, mitstack's shared Go module for writing blocks, and that
+script asks the API server for a token for the report's own service account.
+The token names the platform's origin, the scheme and host of `PlatformURL`
+such as `https://api.mitstack.dev`, and the SHA-256 of the exact body. It goes
+in the `Mitstack-Report-Proof` header. The Role `mitstack-node-report-sign`
+lets that service account create a token for itself by name and for no other
+account.
+
+An error report goes unsigned, because the token request may be what failed.
+A proof script that exits 0 and prints nothing counts as a failed token
+request too, so the report never posts a full body without a proof. block-kit's
+[Signing a node report](https://github.com/mitstack-eu/block-kit/blob/main/docs/helpers.md#signing-a-node-report)
+explains the proof and how the platform checks it.
+
+The script comes from the block because this kit requires no block framework,
+so a block on any framework release can use it. A block signs its reports
+once it is on block-kit v0.12.0 or later, the first release with
+`reportproof`. `report.Manifests` refuses inputs without a proof script, so a
+block that has not passed one finds out when it renders the report.
 
 ## How a cluster isolates each app
 

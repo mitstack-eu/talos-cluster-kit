@@ -3,9 +3,11 @@ package report
 
 import (
 	_ "embed"
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
+	"strings"
 
 	"github.com/mitstack-eu/talos-cluster-kit/internal/check"
 	"github.com/mitstack-eu/talos-cluster-kit/internal/tmpl"
@@ -32,6 +34,8 @@ type Inputs struct {
 	SubscriptionID string
 	// ToolsImage is the image built from tools/Dockerfile, by digest.
 	ToolsImage string
+	// ProofScript signs each report; a block passes block-kit's reportproof.TokenRequestScript, so this kit needs no framework.
+	ProofScript string
 }
 
 var subscriptionIDRe = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,63}$`)
@@ -48,6 +52,7 @@ func Manifests(in Inputs) ([]byte, error) {
 		"SubscriptionID": in.SubscriptionID,
 		"TokenSecret":    TokenSecret,
 		"Script":         reportScript,
+		"ProofScript":    in.ProofScript,
 	})
 }
 
@@ -61,6 +66,9 @@ func (in Inputs) validate() error {
 	}
 	if err := check.DigestRef(in.ToolsImage); err != nil {
 		return fmt.Errorf("tools image: %w", err)
+	}
+	if strings.TrimSpace(in.ProofScript) == "" {
+		return errors.New("the report has no proof script to sign it with")
 	}
 	return nil
 }

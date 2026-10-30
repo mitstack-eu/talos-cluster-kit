@@ -36,7 +36,8 @@ func renderedManifests(t *testing.T) map[string][]byte {
 	collector, err := components.LogCollector(testutil.LogExport(t))
 	require.NoError(t, err)
 	out["logs/"+collector.Name] = collector.Bytes
-	reportManifests, err := report.Manifests(report.Inputs{URL: "https://api.mitstack.dev/v1/cluster-reports", SubscriptionID: "sub_0123456789ab", ToolsImage: testutil.ToolsImage})
+	reportManifests, err := report.Manifests(report.Inputs{URL: "https://api.mitstack.dev/v1/cluster-reports", SubscriptionID: "sub_0123456789ab",
+		ToolsImage: testutil.ToolsImage, ProofScript: "echo report-proof\n"})
 	require.NoError(t, err)
 	out["report"] = reportManifests
 	removeMember, err := etcd.RemoveMemberJob(etcd.RemoveMember{Hostname: "shop-node-nbg1", ToolsImage: testutil.ToolsImage})

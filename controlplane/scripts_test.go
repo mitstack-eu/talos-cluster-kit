@@ -5,6 +5,7 @@ package controlplane_test
 import (
 	"encoding/json"
 	"encoding/pem"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -593,8 +594,17 @@ func TestBootstrapFirstNode_GivesUpAndDeletesTheTalosconfigOnceItExpires(t *test
 	assert.NoFileExists(t, talosconfig)
 }
 
+// enrolmentAnswer is what the platform answers a first enrolment.
+var enrolmentAnswer = map[string]string{"reportToken": "report-token", "repositoryToken": "repository-token", "notificationToken": "notification-token"}
+
 // platform plays the enrolment and renewal routes and the Kubernetes API's Secret patch over one TLS server.
 func platform(t *testing.T, enrolStatus int) (*httptest.Server, *[]string) {
+	t.Helper()
+	return platformAnswering(t, enrolStatus, enrolmentAnswer)
+}
+
+// platformAnswering is platform with answer as its enrolment answer.
+func platformAnswering(t *testing.T, enrolStatus int, answer map[string]string) (*httptest.Server, *[]string) {
 	t.Helper()
 	var seen []string
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -602,7 +612,7 @@ func platform(t *testing.T, enrolStatus int) (*httptest.Server, *[]string) {
 		switch r.URL.Path {
 		case "/v1/cluster-enrolments":
 			w.WriteHeader(enrolStatus)
-			_ = json.NewEncoder(w).Encode(map[string]string{"reportToken": "report-token", "repositoryToken": "repository-token"})
+			_ = json.NewEncoder(w).Encode(answer)
 		case "/v1/cluster-repository-tokens":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"repositoryToken": "fresh-token",
@@ -624,7 +634,19 @@ func runClusterTokens(t *testing.T, srv *httptest.Server, verb, token string, ex
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "token"), []byte(token), 0o600))
 	tools := testutil.NewTools(t, map[string]string{"kubectl": `case $1 in
   apply) cat > /dev/null ;;
-  get) [ "${SECRETS_PRESENT:-no}" = yes ] ;;
+  get)
+    case ${SECRETS_PRESENT:-no} in
+      yes) ;;
+      no) exit 1 ;;
+      *) [[ " $SECRETS_PRESENT " == *" $3 "* ]] ;;
+    esac ;;
+  create)
+    for arg in "$@"; do
+      case $arg in
+        --from-file=*=*) file=${arg#--from-file=}; printf '%s in %s: %s=%s\n' "$4" "$6" "${file%%=*}" "$(cat "${file#*=}")" ;;
+        --from-literal=*) printf '%s in %s: %s\n' "$4" "$6" "${arg#--from-literal=}" ;;
+      esac >> "$(dirname "$0")/secrets"
+    done ;;
   *) cat ;;
 esac`})
 	env := tools.Env("PLATFORM_URL="+srv.URL, "SUBSCRIPTION_ID="+testSub, "REPO_URL="+testRepoURL, "REPOSITORY_CREDENTIAL=platform-token",
@@ -633,20 +655,69 @@ esac`})
 	return scriptRun{out: out, err: err, tools: tools, dir: dir}
 }
 
-func TestClusterTokens_EnrolSpendsTheEnrolmentTokenAndWritesBothSecrets(t *testing.T) {
-	srv, seen := platform(t, http.StatusOK)
-
-	run := runClusterTokens(t, srv, "enrol", "enrolment-token")
-
-	require.NoError(t, run.err, run.out)
-	assert.Equal(t, []string{"POST /v1/cluster-enrolments Bearer enrolment-token"}, *seen)
+// createdSecrets names each Secret the run created, as "<name> in <namespace>".
+func createdSecrets(t *testing.T, run scriptRun) []string {
+	t.Helper()
 	var created []string
 	for _, call := range run.tools.Calls(t) {
 		if strings.HasPrefix(call, "kubectl create secret") {
 			created = append(created, strings.Fields(call)[4]+" in "+strings.Fields(call)[6])
 		}
 	}
-	assert.Equal(t, []string{"mitstack-report-token in mitstack-node", "cluster-repository in argocd"}, created)
+	return created
+}
+
+// secretKeys lists each key the run's Secrets took from a file or a literal, as "<name> in <namespace>: <key>=<value>".
+func secretKeys(t *testing.T, run scriptRun) []string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(run.tools.Dir, "secrets"))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	require.NoError(t, err)
+	return strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+}
+
+func TestClusterTokens_EnrolSpendsTheEnrolmentTokenAndWritesEachSecret(t *testing.T) {
+	srv, seen := platform(t, http.StatusOK)
+
+	run := runClusterTokens(t, srv, "enrol", "enrolment-token")
+
+	require.NoError(t, run.err, run.out)
+	assert.Equal(t, []string{"POST /v1/cluster-enrolments Bearer enrolment-token"}, *seen)
+	assert.Equal(t, []string{"mitstack-report-token in mitstack-node", "cluster-repository in argocd", "argocd-notifications-secret in argocd"},
+		createdSecrets(t, run))
+}
+
+func TestClusterTokens_EnrolGivesArgoCDsWebhookThePlatformAndTheNotificationToken(t *testing.T) {
+	for _, credential := range []string{"platform-token", "deploy-key"} {
+		t.Run(credential, func(t *testing.T) {
+			srv, _ := platform(t, http.StatusOK)
+
+			run := runClusterTokens(t, srv, "enrol", "enrolment-token", "REPOSITORY_CREDENTIAL="+credential)
+
+			require.NoError(t, run.err, run.out)
+			keys := secretKeys(t, run)
+			assert.Contains(t, keys, "argocd-notifications-secret in argocd: platform-url="+srv.URL, "the $platform-url Argo CD's webhook posts to")
+			assert.Contains(t, keys, "argocd-notifications-secret in argocd: platform-token=notification-token", "the $platform-token Argo CD's webhook sends")
+		})
+	}
+}
+
+func TestClusterTokens_EnrolRefusesAnAnswerMissingATokenBeforeWritingAnySecret(t *testing.T) {
+	for _, missing := range []string{"reportToken", "repositoryToken", "notificationToken"} {
+		t.Run(missing, func(t *testing.T) {
+			answer := maps.Clone(enrolmentAnswer)
+			delete(answer, missing)
+			srv, _ := platformAnswering(t, http.StatusOK, answer)
+
+			run := runClusterTokens(t, srv, "enrol", "enrolment-token")
+
+			require.Error(t, run.err, "an answer without %s enrolled the cluster: %s", missing, run.out)
+			assert.Contains(t, run.out, missing, "the failure names the missing token")
+			assert.Empty(t, createdSecrets(t, run), "Secrets written from an answer without %s", missing)
+		})
+	}
 }
 
 func TestClusterTokens_EnrolTreatsASpentTokenAsEnrolledOnlyWhenItsSecretsExist(t *testing.T) {
@@ -661,6 +732,22 @@ func TestClusterTokens_EnrolTreatsASpentTokenAsEnrolledOnlyWhenItsSecretsExist(t
 	assert.Contains(t, missing.out, "mitstack-report-token")
 }
 
+func TestClusterTokens_EnrolFailsASpentTokenWhoseNotificationsSecretIsMissing(t *testing.T) {
+	for _, tc := range []struct{ credential, present string }{
+		{"platform-token", "mitstack-report-token cluster-repository"},
+		{"deploy-key", "mitstack-report-token"},
+	} {
+		t.Run(tc.credential, func(t *testing.T) {
+			srv, _ := platform(t, http.StatusConflict)
+
+			run := runClusterTokens(t, srv, "enrol", "enrolment-token", "REPOSITORY_CREDENTIAL="+tc.credential, "SECRETS_PRESENT="+tc.present)
+
+			require.Error(t, run.err, "a spent token with no notifications Secret passed: %s", run.out)
+			assert.Contains(t, run.out, "argocd-notifications-secret")
+		})
+	}
+}
+
 func TestClusterTokens_RenewPatchesEachAppSlicesRepositorySecret(t *testing.T) {
 	srv, seen := platform(t, http.StatusOK)
 
@@ -673,7 +760,7 @@ func TestClusterTokens_RenewPatchesEachAppSlicesRepositorySecret(t *testing.T) {
 	}, *seen)
 }
 
-func TestClusterTokens_EnrolOnAClusterThatReadsItsRepositoryWithADeployKeyWritesTheReportTokenAlone(t *testing.T) {
+func TestClusterTokens_EnrolOnAClusterThatReadsItsRepositoryWithADeployKeyWritesNoRepositoryCredential(t *testing.T) {
 	srv, seen := platform(t, http.StatusOK)
 
 	run := runClusterTokens(t, srv, "enrol", "enrolment-token", "REPOSITORY_CREDENTIAL=deploy-key")
@@ -681,13 +768,7 @@ func TestClusterTokens_EnrolOnAClusterThatReadsItsRepositoryWithADeployKeyWrites
 	renew := runClusterTokens(t, srv, "renew", "report-token", "REPOSITORY_CREDENTIAL=deploy-key")
 
 	require.NoError(t, run.err, run.out)
-	var created []string
-	for _, call := range run.tools.Calls(t) {
-		if strings.HasPrefix(call, "kubectl create secret") {
-			created = append(created, strings.Fields(call)[4]+" in "+strings.Fields(call)[6])
-		}
-	}
-	assert.Equal(t, []string{"mitstack-report-token in mitstack-node"}, created)
+	assert.Equal(t, []string{"mitstack-report-token in mitstack-node", "argocd-notifications-secret in argocd"}, createdSecrets(t, run))
 	require.NoError(t, spent.err, spent.out)
 	require.Error(t, renew.err, "a deploy-key cluster renewed a repository token")
 	assert.NotContains(t, *seen, "POST /v1/cluster-repository-tokens Bearer report-token", "the renewal asked the platform")

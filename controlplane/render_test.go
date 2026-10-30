@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -20,6 +21,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"text/template"
 	"time"
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
@@ -214,6 +216,145 @@ func TestBuilder_TheApplicationSyncsTheClusterRepositoryTheEnrolmentNamesThePlat
 	report := testutil.Field(t, cronJobs[0], "spec", "jobTemplate", "spec", "template", "spec", "containers", "0")
 	assert.Equal(t, tools.Image, testutil.Field(t, report, "image"), "the node report's image")
 	assert.Equal(t, proofScript, testutil.ContainerEnv(t, report)["REPORT_PROOF_SCRIPT"], "the script that signs each report")
+}
+
+func TestCluster_ArgoCDsComponentAloneConfiguresItsNotificationsAndTheEnrolmentAloneWritesTheirSecret(t *testing.T) {
+	h := newHarness(t)
+
+	set, err := h.plane.ClusterComponents("enrolment-token")
+
+	require.NoError(t, err)
+	var configs, secrets []string
+	for _, m := range slices.Concat(set.Served, set.Inline) {
+		for _, doc := range testutil.Documents(t, m.Bytes) {
+			metadata, _ := doc["metadata"].(map[string]any)
+			switch {
+			case doc["kind"] == "ConfigMap" && metadata["name"] == "argocd-notifications-cm":
+				configs = append(configs, m.Name)
+			case doc["kind"] == "Secret" && metadata["name"] == "argocd-notifications-secret":
+				secrets = append(secrets, m.Name)
+			}
+		}
+	}
+	assert.Equal(t, []string{"argocd"}, configs, "manifests holding argocd-notifications-cm, of which Talos keeps the first it creates")
+	assert.Empty(t, secrets, "manifests holding argocd-notifications-secret, which would hide a spent enrolment that never wrote it")
+}
+
+type webhookHeader struct {
+	Name  string `yaml:"name"`
+	Value string `yaml:"value"`
+}
+
+type notificationsSubscription struct {
+	Recipients []string `yaml:"recipients"`
+	Triggers   []string `yaml:"triggers"`
+}
+
+// notificationsData is the served Argo CD's argocd-notifications-cm data, each value decoded from its YAML into into[key].
+func notificationsData(t *testing.T, into map[string]any) {
+	t.Helper()
+	set := components.Default()
+	configMaps := testutil.Kind(testutil.Documents(t, testutil.Manifest(t, "argocd", set.Served, set.Inline).Bytes), "ConfigMap")
+	i := slices.IndexFunc(configMaps, func(doc map[string]any) bool {
+		return testutil.Field(t, doc, "metadata", "name") == "argocd-notifications-cm"
+	})
+	require.GreaterOrEqual(t, i, 0, "argocd holds no argocd-notifications-cm")
+	for key, target := range into {
+		value, ok := testutil.Field(t, configMaps[i], "data", key).(string)
+		require.True(t, ok, "argocd-notifications-cm holds no %s", key)
+		require.NoError(t, yaml.Unmarshal([]byte(value), target), "argocd-notifications-cm's %s", key)
+	}
+}
+
+func TestArgoCD_NotifiesThePlatformTheEnrolmentNamesWithItsTokenOfEveryApplicationsOutcome(t *testing.T) {
+	var service struct {
+		URL     string          `yaml:"url"`
+		Headers []webhookHeader `yaml:"headers"`
+	}
+	var subscriptions []notificationsSubscription
+	triggers := map[string]*[]struct {
+		OncePer string   `yaml:"oncePer"`
+		Send    []string `yaml:"send"`
+	}{"on-deployed": {}, "on-sync-failed": {}, "on-health-degraded": {}}
+	into := map[string]any{"service.webhook.mitstack": &service, "subscriptions": &subscriptions}
+	for name, conditions := range triggers {
+		into["trigger."+name] = conditions
+	}
+
+	notificationsData(t, into)
+
+	assert.Equal(t, "$platform-url/v1/gitops-notifications", service.URL, "where the webhook posts, the enrolment's platform-url")
+	assert.Contains(t, service.Headers, webhookHeader{"Authorization", "Bearer $platform-token"}, "the webhook's bearer, the enrolment's platform-token")
+	assert.Equal(t, []notificationsSubscription{{Recipients: []string{"mitstack"}, Triggers: []string{"on-deployed", "on-sync-failed", "on-health-degraded"}}},
+		subscriptions, "the subscription every Application takes")
+	for name, conditions := range triggers {
+		require.Len(t, *conditions, 1, "trigger %s's conditions", name)
+		assert.Equal(t, []string{"mitstack"}, (*conditions)[0].Send, "where trigger %s sends", name)
+	}
+	assert.Equal(t, "app.status.operationState?.syncResult?.revision", (*triggers["on-deployed"])[0].OncePer, "how often on-deployed fires")
+}
+
+// argoFuncs stand in for the two sprig functions the webhook's body calls.
+var argoFuncs = template.FuncMap{
+	"toJson": func(v any) (string, error) {
+		out, err := json.Marshal(v)
+		return string(out), err
+	},
+	"dig": func(args ...any) any {
+		keys, fallback, node := args[:len(args)-2], args[len(args)-2], args[len(args)-1]
+		for _, key := range keys {
+			fields, ok := node.(map[string]any)
+			if !ok {
+				return fallback
+			}
+			if node, ok = fields[key.(string)]; !ok {
+				return fallback
+			}
+		}
+		return node
+	},
+}
+
+func TestArgoCD_TheWebhookPostsTheRevisionTheOperationSyncedElseTheComparedOne(t *testing.T) {
+	var notification struct {
+		Webhook map[string]struct {
+			Method string `yaml:"method"`
+			Body   string `yaml:"body"`
+		} `yaml:"webhook"`
+	}
+	notificationsData(t, map[string]any{"template.mitstack": &notification})
+	body, err := template.New("body").Funcs(argoFuncs).Parse(notification.Webhook["mitstack"].Body)
+	require.NoError(t, err)
+	status := func(operation map[string]any) map[string]any {
+		s := map[string]any{"sync": map[string]any{"status": "Synced", "revision": "compared"}, "health": map[string]any{"status": "Healthy"},
+			"reconciledAt": "2026-10-30T17:29:10Z"}
+		if operation != nil {
+			s["operationState"] = operation
+		}
+		return s
+	}
+	for _, tc := range []struct {
+		name   string
+		status map[string]any
+		want   map[string]string
+	}{
+		{"an Application whose operation synced a revision", status(map[string]any{"phase": "Succeeded", "message": "done", "syncResult": map[string]any{"revision": "synced"}}),
+			map[string]string{"revision": "synced", "phase": "Succeeded", "message": "done"}},
+		{"an Application with no operation", status(nil), map[string]string{"revision": "compared", "phase": "", "message": ""}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			app := map[string]any{"metadata": map[string]any{"name": "app-orbit"}, "spec": map[string]any{"project": "orbit"}, "status": tc.status}
+			var out bytes.Buffer
+
+			require.NoError(t, body.Execute(&out, map[string]any{"app": app}))
+
+			var posted map[string]string
+			require.NoError(t, json.Unmarshal(out.Bytes(), &posted), "the body is not JSON: %s", out.String())
+			assert.Equal(t, "POST", notification.Webhook["mitstack"].Method)
+			assert.Equal(t, map[string]string{"app": "app-orbit", "project": "orbit", "sync": "Synced", "health": "Healthy",
+				"reconciledAt": "2026-10-30T17:29:10Z", "revision": tc.want["revision"], "phase": tc.want["phase"], "message": tc.want["message"]}, posted)
+		})
+	}
 }
 
 func TestGateway_RunsTheKitsCloudConfigAndThenBootstrapsTheFirstNodeWithAShortLivedAdminTalosconfig(t *testing.T) {

@@ -160,13 +160,15 @@ func TestHosting_ADeployKeysHookThatFailsStopsTheInstallBeforeAnyServer(t *testi
 
 func TestHosting_TheClusterTakesOnlyItsReportTokenFromThePlatformAndArgoCDReadsItsRepositoryOverSSH(t *testing.T) {
 	for _, tc := range []struct {
-		name                   string
-		opts                   []func(*harness)
-		credential, repoURL    string
-		renews, writesInArgoCD bool
+		name                string
+		opts                []func(*harness)
+		credential, repoURL string
+		renews              bool
+		argoCDSecrets       []string
 	}{
-		{"a hosting cluster", []func(*harness){hosting}, "deploy-key", components.RepositorySSHURL(testutil.InitRepository), false, false},
-		{"a cluster that hosts no platform", nil, "platform-token", testRepoURL, true, true},
+		{"a hosting cluster", []func(*harness){hosting}, "deploy-key", components.RepositorySSHURL(testutil.InitRepository), false,
+			[]string{"argocd-notifications-secret"}},
+		{"a cluster that hosts no platform", nil, "platform-token", testRepoURL, true, []string{"cluster-repository", "argocd-notifications-secret"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t, tc.opts...)
@@ -180,13 +182,19 @@ func TestHosting_TheClusterTakesOnlyItsReportTokenFromThePlatformAndArgoCDReadsI
 			env := testutil.ContainerEnv(t, testutil.Field(t, jobs[0], "spec", "template", "spec", "containers", "0"))
 			assert.Equal(t, tc.credential, env["REPOSITORY_CREDENTIAL"], "how the cluster reads its repository")
 			assert.Equal(t, tc.renews, len(testutil.Kind(tokens, "CronJob")) == 1, "whether the cluster renews repository tokens")
-			var argocd []string
-			for _, doc := range tokens {
-				if testutil.Field(t, doc, "metadata", "namespace") == "argocd" {
-					argocd = append(argocd, doc["kind"].(string))
+			var named []string
+			for _, role := range testutil.Kind(tokens, "Role") {
+				if testutil.Field(t, role, "metadata", "namespace") != "argocd" {
+					continue
+				}
+				for _, rule := range testutil.Field(t, role, "rules").([]any) {
+					names, _ := rule.(map[string]any)["resourceNames"].([]any)
+					for _, name := range names {
+						named = append(named, name.(string))
+					}
 				}
 			}
-			assert.Equal(t, tc.writesInArgoCD, len(argocd) > 0, "whether the token identity may write in argocd: %v", argocd)
+			assert.Equal(t, tc.argoCDSecrets, named, "the Secrets the token identity may read and patch in argocd")
 			for _, app := range testutil.Kind(manifests["mitstack-cluster-application"], "Application") {
 				assert.Equal(t, tc.repoURL, testutil.Field(t, app, "spec", "source", "repoURL"), "application %s's repository", testutil.Field(t, app, "metadata", "name"))
 			}

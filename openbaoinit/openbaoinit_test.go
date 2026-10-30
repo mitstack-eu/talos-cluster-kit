@@ -227,7 +227,7 @@ func (f *fakes) run(t *testing.T, recipient []byte) (string, error) {
 	return string(out) + strings.Join(tools.Calls(t), "\n"), err
 }
 
-func TestInit_CommitsTheKeysAsPGPMessagesBeforeAnyRequestCarriesTheRootTokenThenWritesTheReadPolicyOnTheAccessorItRead(t *testing.T) {
+func TestInit_CommitsTheKeysAsPGPMessagesBeforeAnyRequestCarriesTheRootTokenThenWritesEachSlicesPoliciesAndRolesOnTheAccessorItRead(t *testing.T) {
 	_, recipient := testutil.Recipient(t)
 	f := newFakes(t)
 	f.commit("cluster/app.yaml", "kind: ConfigMap\n")
@@ -260,8 +260,11 @@ func TestInit_CommitsTheKeysAsPGPMessagesBeforeAnyRequestCarriesTheRootTokenThen
 	}
 	assert.NotContains(t, git(t, "", "--git-dir", f.repo, "log", "--format=%B", defaultBranch), fakeRootToken, "a commit message holds the root token")
 	namespace := "{{identity.entity.aliases." + fakeAccessor + ".metadata.service_account_namespace}}"
-	policy, err := json.Marshal(map[string]string{"policy": "path \"kv/data/apps/" + namespace + "/*\" {\n  capabilities = [\"read\"]\n}\n" +
+	reader, err := json.Marshal(map[string]string{"policy": "path \"kv/data/apps/" + namespace + "/*\" {\n  capabilities = [\"read\"]\n}\n" +
 		"path \"kv/metadata/apps/" + namespace + "/*\" {\n  capabilities = [\"read\", \"list\"]\n}\n"})
+	require.NoError(t, err)
+	writer, err := json.Marshal(map[string]string{"policy": "path \"kv/data/apps/" + namespace + "/*\" {\n  capabilities = [\"create\", \"read\", \"update\"]\n}\n" +
+		"path \"kv/metadata/apps/" + namespace + "/*\" {\n  capabilities = [\"create\", \"read\", \"update\"]\n}\n"})
 	require.NoError(t, err)
 	assert.Equal(t, []string{
 		"GET /v1/sys/mounts ",
@@ -270,7 +273,10 @@ func TestInit_CommitsTheKeysAsPGPMessagesBeforeAnyRequestCarriesTheRootTokenThen
 		`POST /v1/sys/auth/kubernetes {"type":"kubernetes"}`,
 		`POST /v1/auth/kubernetes/config {"kubernetes_host":"https://10.96.0.1:443"}`,
 		"GET /v1/sys/auth ",
-		"POST /v1/sys/policies/acl/app-secrets-reader " + string(policy),
+		"POST /v1/sys/policies/acl/app-secrets-reader " + string(reader),
+		"POST /v1/sys/policies/acl/app-secrets-writer " + string(writer),
+		`POST /v1/auth/kubernetes/role/app-secrets-reader {"bound_service_account_names":["app-secrets-reader"],"bound_service_account_namespaces":["app-*"],"token_policies":["app-secrets-reader"],"token_ttl":"15m"}`,
+		`POST /v1/auth/kubernetes/role/app-secrets-writer {"bound_service_account_names":["app-secrets-writer"],"bound_service_account_namespaces":["app-*"],"token_policies":["app-secrets-writer"],"token_ttl":"5m"}`,
 	}, setUp, "the setup sent these requests with the root token")
 }
 

@@ -819,10 +819,19 @@ hosting set carries that label. The Cilium policy `mitstack-hosting-flows` in
 | Pods | What the policy allows |
 |---|---|
 | cert-manager and trust-manager | Calls to the API server, and the API server's calls to their webhooks |
-| External Secrets | Calls to the API server, to cluster DNS and to OpenBao on 8200, and the API server's calls to its webhook |
+| External Secrets | Calls to the API server and to OpenBao on 8200, lookups through Cilium's DNS proxy, calls to `sts.amazonaws.com`, `sts.*.amazonaws.com` and `api.ecr.*.amazonaws.com` on 443, and the API server's calls to its webhook |
 | OpenBao | Calls between members on 8200 and 8201, to the API server and to cluster DNS, and the calls of External Secrets and the init Job on 8200 |
 | OpenBao's init Job | Lookups through Cilium's DNS proxy, calls to OpenBao on 8200, and SSH to `ssh.github.com` on 443, which the gateway forwards |
 | Traefik | Web traffic from outside the cluster on its two ports, calls to the API server, and calls to the app slices |
+
+External Secrets' `ECRAuthorizationToken` generator trades a service
+account's token for AWS credentials at STS, then asks ECR's API for a pull
+token. Cilium admits a call by name only after its DNS proxy saw the lookup
+that returned the address, so the lookups go through the proxy. In the middle
+of a Cilium `matchPattern`, a `*` matches characters other than a dot
+([Cilium's FQDN selector at v1.19.9](https://github.com/cilium/cilium/blob/v1.19.9/pkg/policy/api/fqdn.go#L42-L61)).
+`sts.*.amazonaws.com` therefore admits a regional endpoint such as
+`sts.eu-central-1.amazonaws.com`, and admits no name with a further label.
 
 The API server runs on each control-plane node's host network. When it calls a
 webhook pod on another node, Cilium gives the call that node's identity rather
@@ -927,17 +936,37 @@ path "kv/metadata/apps/{{identity.entity.aliases.auth_kubernetes_f1e2d3c4.metada
 }
 ```
 
-A token that logged in with a service account in namespace `shop` can then
-read only `kv/data/apps/shop/*`. The Job writes no Kubernetes auth role, so no
-service account can log in with this policy until a role names it.
+A token that logged in with a service account in namespace `app-shop` can then
+read only `kv/data/apps/app-shop/*`. The script writes the policy
+`app-secrets-writer` on the same template, which may create, read and update
+that one path and its metadata. External Secrets' PushSecret reads both before
+it writes them. Neither policy may delete, and neither reaches another
+namespace's path.
+
+The script then writes one Kubernetes auth role for each policy. Each role lets
+the service account of the same name log in from any namespace named `app-*`,
+which is every slice's namespace:
+
+| Role | Who may log in | Its policy | Token lifetime |
+|---|---|---|---|
+| `app-secrets-reader` | The service account `app-secrets-reader` in any `app-*` namespace | `app-secrets-reader` | 15 minutes |
+| `app-secrets-writer` | The service account `app-secrets-writer` in any `app-*` namespace | `app-secrets-writer` | 5 minutes |
+
+A slice's SecretStore for reading names the role and service account
+`app-secrets-reader`, and the one its PushSecret writes through names
+`app-secrets-writer`. A slice therefore needs no policy or role written after
+the init, and a new slice needs nothing written at all. Anyone who can create a
+namespace named `app-*` and a service account of either name in it can log in
+to that namespace's own path, so creating such namespaces stays with the block
+that renders slices.
 
 The root token lives in the script's memory alone. The script hands curl each
 header that carries a token on curl's standard input, through the shell's
 builtin `printf`, and never prints a token. The script retries each step while
 its pod lives. A pod lost after the commit may leave the mount, the auth method,
-its configuration or the policy unwritten, and a new pod finds the file and
-changes nothing. The owner then decrypts the root token from
-`openbao-init.asc` and writes whichever of the four is missing.
+its configuration, a policy or a role unwritten, and a new pod finds the file
+and changes nothing. The owner then decrypts the root token from
+`openbao-init.asc` and writes whichever is missing.
 
 ### The documentation the hosting set follows
 
@@ -953,6 +982,8 @@ changes nothing. The owner then decrypts the root token from
 | [OpenBao: `/sys/init`](https://openbao.org/api-docs/system/init/) | `recovery_shares`, `recovery_threshold` and `recovery_pgp_keys`, each key the base64 of its binary form, apply to an auto-unseal such as the static seal |
 | [OpenBao: HTTP API](https://openbao.org/api-docs/) | OpenBao treats `PUT` and `POST` as synonyms |
 | [OpenBao: HA with Raft on Kubernetes](https://openbao.org/docs/platform/k8s/helm/examples/ha-with-raft/) | You initialise `openbao-0`, and the other members join it |
+| [OpenBao: Kubernetes auth API](https://openbao.org/api-docs/auth/kubernetes/) and [its login check at v2.7.1](https://github.com/openbao/openbao/blob/v2.7.1/internal/builtin/credential/kubernetes/path_login.go#L361-L369) | A role binds service account names and namespaces, and a login matches each against the role's list as a glob, so `app-*` admits every slice namespace |
+| [External Secrets: PushSecret to Vault at v2.11.0](https://github.com/external-secrets/external-secrets/blob/v2.11.0/providers/v1/vault/client_push.go) | A push reads the path and its metadata, then writes the metadata and the path |
 | [OpenBao: `/sys/auth`](https://openbao.org/api-docs/system/auth/) and [`/sys/mounts`](https://openbao.org/api-docs/system/mounts/) | Each listing names a method by its path, with its `accessor`, and `options.version` set to `"2"` mounts KV v2 |
 | [OpenBao: KV v2](https://openbao.org/docs/secrets/kv/kv-v2/) | A policy names a secret under `data/` and its listing under `metadata/` |
 | [OpenBao: Kubernetes auth](https://openbao.org/docs/auth/kubernetes/) and [its API](https://openbao.org/api-docs/auth/kubernetes/) | `kubernetes_host` is required, a pod's own token and CA serve for the review, and a login's alias carries `service_account_namespace` |

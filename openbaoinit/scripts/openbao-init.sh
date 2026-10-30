@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Initialises a hosting cluster's OpenBao once, commits its root token and recovery key to the cluster repository
-# as openbao-init.asc, each a PGP message to the recipient key, then sets up kv, Kubernetes auth and app-secrets-reader.
+# as openbao-init.asc, each a PGP message to the recipient key, then sets up kv, Kubernetes auth and each slice's
+# policies and roles.
 # Usage: openbao-init.sh, with the variables main names set as the Job mitstack-openbao-init sets them.
 # It exists so OpenBao's keys leave the cluster only as PGP messages through Git, as ADR 0089 requires, while the root
 # token stays in this process's memory.
@@ -176,12 +177,19 @@ kubernetes_accessor() {
   bao GET sys/auth | jq -er '(.data // .)["kubernetes/"].accessor // empty | select(test("^[A-Za-z0-9_-]+$"))'
 }
 
-# reader_policy prints app-secrets-reader, which lets a token read only the apps path named for its service account's namespace.
-reader_policy() {
+# namespace_policy prints a policy granting its two capability lists on the data and the metadata of the apps path
+# named for the signed-in service account's namespace alone.
+namespace_policy() {
   local namespace="{{identity.entity.aliases.$1.metadata.service_account_namespace}}" policy
-  printf -v policy 'path "kv/data/apps/%s/*" {\n  capabilities = ["read"]\n}\npath "kv/metadata/apps/%s/*" {\n  capabilities = ["read", "list"]\n}\n' \
-    "$namespace" "$namespace"
+  printf -v policy 'path "kv/data/apps/%s/*" {\n  capabilities = [%s]\n}\npath "kv/metadata/apps/%s/*" {\n  capabilities = [%s]\n}\n' \
+    "$namespace" "$2" "$namespace" "$3"
   jq -cn --arg policy "$policy" '{policy: $policy}'
+}
+
+# slice_role prints a role that lets the service account named like its policy log in from any slice namespace.
+slice_role() {
+  jq -cn --arg name "$1" --arg ttl "$2" \
+    '{bound_service_account_names: [$name], bound_service_account_namespaces: ["app-*"], token_policies: [$name], token_ttl: $ttl}'
 }
 
 set_up() {
@@ -192,7 +200,13 @@ set_up() {
   retry "configuring Kubernetes auth" bao POST auth/kubernetes/config \
     "$(jq -cn --arg host "https://$host:${KUBERNETES_SERVICE_PORT:-443}" '{kubernetes_host: $host}')" > /dev/null
   accessor=$(retry "reading the Kubernetes auth accessor" kubernetes_accessor)
-  retry "writing the policy app-secrets-reader" bao POST sys/policies/acl/app-secrets-reader "$(reader_policy "$accessor")" > /dev/null
+  retry "writing the policy app-secrets-reader" bao POST sys/policies/acl/app-secrets-reader \
+    "$(namespace_policy "$accessor" '"read"' '"read", "list"')" > /dev/null
+  # External Secrets' PushSecret reads a path and its metadata before it writes them.
+  retry "writing the policy app-secrets-writer" bao POST sys/policies/acl/app-secrets-writer \
+    "$(namespace_policy "$accessor" '"create", "read", "update"' '"create", "read", "update"')" > /dev/null
+  retry "writing the role app-secrets-reader" bao POST auth/kubernetes/role/app-secrets-reader "$(slice_role app-secrets-reader 15m)" > /dev/null
+  retry "writing the role app-secrets-writer" bao POST auth/kubernetes/role/app-secrets-writer "$(slice_role app-secrets-writer 5m)" > /dev/null
 }
 
 main() {
@@ -223,7 +237,7 @@ main() {
   retry "committing $INIT_FILE" commit "$messages"
   say "committed $INIT_FILE to the cluster repository"
   set_up
-  say "enabled kv and Kubernetes auth, and wrote the policy app-secrets-reader"
+  say "enabled kv and Kubernetes auth, and wrote the policies and roles app-secrets-reader and app-secrets-writer"
   [ -z "$recovery_lost" ] ||
     fail "the answer to the init holds no readable recovery key, so $INIT_FILE holds the root token alone and the recovery key is lost"
 }

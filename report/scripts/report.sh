@@ -196,6 +196,7 @@ JQ
 sign() {
   read_into "kubectl create token" "$work/proof" 5 bash -c "$REPORT_PROOF_SCRIPT" token-request.sh \
     "$work/body.json" "$REPORT_URL" "${POD_NAMESPACE:-mitstack-node}" mitstack-node-report
+  [ -s "$work/proof" ] || { echo "the proof script exited 0 and printed no proof" >> "$work/read.err"; report_failure "kubectl create token" 0; }
 }
 
 post() {

@@ -250,23 +250,6 @@ metadata:
     app.kubernetes.io/part-of: argocd
     app.kubernetes.io/version: "v3.5.5-sha256-13db7b10db23283b1b36f855046602e18539a8a8204c9f6f0"
 ---
-# Source: argo-cd/templates/argocd-configs/argocd-notifications-secret.yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: argocd-notifications-secret
-  namespace: argocd
-  labels:
-    helm.sh/chart: argo-cd-10.10.5
-    app.kubernetes.io/name: argocd-notifications-controller
-    app.kubernetes.io/instance: argocd
-    app.kubernetes.io/component: notifications-controller
-    app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/part-of: argocd
-    app.kubernetes.io/version: "v3.5.5-sha256-13db7b10db23283b1b36f855046602e18539a8a8204c9f6f0"
-type: Opaque
-stringData:
----
 # Source: argo-cd/templates/argocd-configs/argocd-secret.yaml
 apiVersion: v1
 kind: Secret
@@ -508,6 +491,45 @@ metadata:
 data:
   context: |
     argocdUrl: https://argocd.example.com
+  service.webhook.mitstack: |
+    url: $platform-url/v1/gitops-notifications
+    headers:
+      - name: Authorization
+        value: Bearer $platform-token
+      - name: Content-Type
+        value: application/json
+  subscriptions: |
+    - recipients:
+      - mitstack
+      triggers:
+      - on-deployed
+      - on-sync-failed
+      - on-health-degraded
+  template.mitstack: |
+    webhook:
+      mitstack:
+        method: POST
+        body: |
+          {
+            "app": {{toJson .app.metadata.name}},
+            "project": {{toJson .app.spec.project}},
+            "sync": {{toJson .app.status.sync.status}},
+            "revision": {{toJson (dig "operationState" "syncResult" "revision" .app.status.sync.revision .app.status)}},
+            "health": {{toJson .app.status.health.status}},
+            "phase": {{toJson (dig "operationState" "phase" "" .app.status)}},
+            "message": {{toJson (dig "operationState" "message" "" .app.status)}},
+            "reconciledAt": {{toJson .app.status.reconciledAt}}
+          }
+  trigger.on-deployed: |
+    - when: app.status.operationState != nil and app.status.operationState.phase in ['Succeeded'] and app.status.health.status == 'Healthy'
+      oncePer: app.status.operationState?.syncResult?.revision
+      send: [mitstack]
+  trigger.on-health-degraded: |
+    - when: app.status.health.status == 'Degraded'
+      send: [mitstack]
+  trigger.on-sync-failed: |
+    - when: app.status.operationState != nil and app.status.operationState.phase in ['Error', 'Failed']
+      send: [mitstack]
 ---
 # Source: argo-cd/templates/argocd-configs/argocd-rbac-cm.yaml
 apiVersion: v1

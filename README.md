@@ -888,12 +888,54 @@ functions in `components/seal.go`:
 value under one item.
 
 On a hosting cluster the enrolment Job in `controlplane/manifests/cluster-tokens.yaml`
-takes only the cluster's report token from the platform. It writes no
-repository credential, and the cluster runs no CronJob that renews one. The
-environment value `REPOSITORY_CREDENTIAL=deploy-key` tells
+takes no repository token from the platform, and the cluster runs no CronJob
+that renews one. The environment value `REPOSITORY_CREDENTIAL=deploy-key` tells
 `controlplane/scripts/cluster-tokens.sh` so. A cluster that hosts no platform
 reads its repository with the short-lived token the platform issues, as
 `REPOSITORY_CREDENTIAL=platform-token`.
+
+### How Argo CD tells the platform its verdict
+
+A block that commits to the cluster repository waits for Argo CD's verdict on
+that commit: whether the Application synced it and is healthy. The platform
+answers that wait at `GET /v1/gitops-notifications`. Argo CD's notifications
+controller posts each Application's sync outcome to the platform's
+`POST /v1/gitops-notifications`, on every cluster this kit builds.
+
+The `argocd-notifications-cm` ConfigMap in `components/argocd/argocd.yaml`
+holds four parts. The webhook is the HTTP call to the platform, and its body
+is the JSON below. A trigger is a condition on an Application that sends the
+call. The subscription, in Argo CD's sense rather than a platform
+subscription, attaches every Application to all three triggers. Its values
+come from `components/render/argocd-values.yaml`.
+
+| Trigger | When it posts |
+|---|---|
+| `on-deployed` | The operation succeeded and the Application is healthy, once per synced revision |
+| `on-sync-failed` | The operation ended in `Error` or `Failed` |
+| `on-health-degraded` | The Application's health is `Degraded` |
+
+The ConfigMap names no platform and holds no token. Argo CD fills in
+`$platform-url` and `$platform-token` from `argocd-notifications-secret`,
+which the enrolment Job writes from the block's `PLATFORM_URL` and the
+`notificationToken` of the platform's enrolment answer. A post for an
+Application that synced `ea12fd5f` carries this body:
+
+```json
+{
+  "app": "app-mitstack-home",
+  "project": "default",
+  "sync": "Synced",
+  "revision": "ea12fd5f",
+  "health": "Healthy",
+  "phase": "Succeeded",
+  "message": "successfully synced (all tasks run)",
+  "reconciledAt": "2026-10-30T17:29:10Z"
+}
+```
+
+Only the enrolment answer carries the notification token, and Talos creates
+each manifest object once, so a cluster gains the wiring at its build alone.
 
 ### Where OpenBao keeps its data
 
@@ -1091,6 +1133,8 @@ and changes nothing. The owner then decrypts the root token from
 | [GitHub: managing deploy keys](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys#deploy-keys) | A deploy key reaches one repository, is read-only unless granted write access, and goes with that repository |
 | [GitHub: using SSH over the HTTPS port](https://docs.github.com/en/authentication/troubleshooting-ssh/using-ssh-over-the-https-port) | `ssh.github.com` takes SSH on port 443, at `ssh://git@ssh.github.com:443/<owner>/<repo>.git` |
 | [Argo CD: private repositories](https://argo-cd.readthedocs.io/en/stable/user-guide/private-repositories/) and [declarative setup](https://argo-cd.readthedocs.io/en/stable/operator-manual/declarative-setup/#repositories) | A Secret labelled `argocd.argoproj.io/secret-type: repository` carries `type`, `url` and `sshPrivateKey`, and SSH host keys come from `argocd-ssh-known-hosts-cm` |
+| [Argo CD: webhook notifications](https://argo-cd.readthedocs.io/en/stable/operator-manual/notifications/services/webhook/) and [notifications-engine's `replaceServiceConfigSecrets`](https://github.com/argoproj/notifications-engine/blob/0cff13b8a717/pkg/api/config.go) | A service's every string takes each `$key` from `argocd-notifications-secret`, which is how the webhook's URL and bearer come from the enrolment |
+| [Argo CD Helm chart 10.10.5: `notifications`](https://github.com/argoproj/argo-helm/blob/argo-cd-10.10.5/charts/argo-cd/values.yaml) | `notifiers`, `templates`, `triggers` and `subscriptions` fill `argocd-notifications-cm`, and `secret.create: false` leaves `argocd-notifications-secret` to another writer |
 | [OpenSSH: ssh_config](https://man.openbsd.org/ssh_config) | `StrictHostKeyChecking yes` refuses a host key missing from `UserKnownHostsFile`, and `IdentitiesOnly` offers the named key alone |
 | [Kubernetes: Secrets](https://kubernetes.io/docs/concepts/configuration/secret/#restriction-secret-must-exist) | No container of a pod starts until every Secret it requires is available |
 | [RFC 9580 section 6.1](https://www.rfc-editor.org/rfc/rfc9580#section-6.1) | ASCII armor should carry no CRC24 footer |

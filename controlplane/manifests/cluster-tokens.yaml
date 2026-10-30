@@ -1,10 +1,10 @@
 # The cluster's own credentials: a Job that spends the enrolment token once
-# for the report token and the cluster repository's token, and a CronJob that
-# renews the repository tokens, which GitHub expires within an hour. Their
-# identity may write only the two Secrets they fill, and each app slice's
-# Role lets it patch that slice's repository Secret. A cluster that reads its
-# repository with a deploy key takes the report token alone, and runs neither
-# the renewal nor any write in argocd.
+# for the report token, Argo CD's notification token and the cluster
+# repository's token, and a CronJob that renews the repository tokens, which
+# GitHub expires within an hour. Their identity may write only the Secrets
+# they fill, and each app slice's Role lets it patch that slice's repository
+# Secret. A cluster that reads its repository with a deploy key takes no
+# repository token, and runs no renewal.
 apiVersion: v1
 kind: Secret
 metadata:
@@ -46,7 +46,6 @@ subjects:
   - kind: ServiceAccount
     name: mitstack-repo-token
     namespace: {{ .Namespace }}
-{{- if eq .RepositoryCredential "platform-token" }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -59,7 +58,11 @@ rules:
     verbs: [create]
   - apiGroups: [""]
     resources: [secrets]
-    resourceNames: [cluster-repository]
+    resourceNames:
+{{- if eq .RepositoryCredential "platform-token" }}
+      - cluster-repository
+{{- end }}
+      - argocd-notifications-secret
     verbs: [get, patch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -75,7 +78,6 @@ subjects:
   - kind: ServiceAccount
     name: mitstack-repo-token
     namespace: {{ .Namespace }}
-{{- end }}
 ---
 apiVersion: batch/v1
 kind: Job

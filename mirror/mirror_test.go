@@ -39,19 +39,6 @@ func TestList_RefusesAnImageFromARegistryNoNodeSendsToTheMirrorOrADockerHubNameW
 	}
 }
 
-func TestList_MirrorsThePostgres16ImagePostgresDBKubePinsAsCloudNativePGsDefault(t *testing.T) {
-	const postgres16 = "ghcr.io/cloudnative-pg/postgresql:16.15-system-trixie@sha256:8ca5699981c25db72e549e9fa69561bac233df15b9b1e3a6282847b0629bb5ea"
-	set := components.Default()
-	operator := testutil.Manifest(t, "cloudnative-pg", set.Served, set.Inline)
-
-	images, err := mirror.List(set)
-
-	require.NoError(t, err)
-	assert.Contains(t, string(operator.Bytes), "\n  POSTGRES_IMAGE_NAME: "+postgres16+"\n")
-	assert.Contains(t, string(mirror.Render(images)), postgres16+"\n")
-	assert.NotContains(t, string(mirror.Render(images)), "postgresql:18.6")
-}
-
 func TestList_HoldsEveryImageTheHostingSetPullsByDigest(t *testing.T) {
 	in := testutil.HostingInputs(t)
 	set, err := components.Hosting(in)

@@ -21,6 +21,7 @@ import (
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/gateway"
+	"github.com/mitstack-eu/talos-cluster-kit/mirror"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 )
 
@@ -38,6 +39,19 @@ func inputs(t *testing.T) gateway.Inputs {
 		ManifestBaseURL: gateway.ReleaseURL("v0.1.0"),
 		Logs:            testutil.LogExport(t),
 	}
+}
+
+func TestList_MirrorsThePostgres16ImagePostgresDBKubePinsAsCloudNativePGsDefault(t *testing.T) {
+	const postgres16 = "ghcr.io/cloudnative-pg/postgresql:16.15-system-trixie@sha256:8ca5699981c25db72e549e9fa69561bac233df15b9b1e3a6282847b0629bb5ea"
+	set := components.Default()
+
+	images, err := mirror.List(set)
+
+	require.NoError(t, err)
+	operator := string(testutil.Manifest(t, "cloudnative-pg", set.Served, set.Inline).Bytes)
+	assert.True(t, strings.Contains(operator, "\n  POSTGRES_IMAGE_NAME: "+postgres16+"\n"), "CloudNativePG's default image is not Postgres 16.15")
+	assert.True(t, strings.Contains(string(mirror.Render(images)), postgres16+"\n"), "the mirror list lacks the Postgres 16.15 image")
+	assert.False(t, strings.Contains(string(mirror.Render(images)), "postgresql:18.6"), "the mirror list holds a Postgres 18.6 image")
 }
 
 func TestRender_MatchesTheGoldenCloudConfigWithinHetznersUserDataLimit(t *testing.T) {

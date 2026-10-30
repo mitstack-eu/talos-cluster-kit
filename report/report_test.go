@@ -326,13 +326,14 @@ func TestReport_ThatCannotReadPostsOneReportNamingTheReadAndExitsNonZero(t *test
 		fakes map[string]string
 		want  map[string]any
 	}{
-		"the nodes read fails":        {kubectlFailing(nodesRead, failedRead), map[string]any{"read": "kubectl get nodes", "exitStatus": float64(3)}},
-		"the applications read fails": {kubectlFailing(applicationsRead, failedRead), map[string]any{"read": "kubectl get applications", "exitStatus": float64(3)}},
-		"the key set read fails":      {kubectlFailing(keySetRead, failedRead), map[string]any{"read": "kubectl get --raw /openid/v1/jwks", "exitStatus": float64(3)}},
-		"the etcd members read fails": {map[string]string{"talosctl": failedRead}, map[string]any{"read": "talosctl etcd members", "exitStatus": float64(3)}},
-		"the key set read times out":  {kubectlFailing(keySetRead, "sleep 10"), map[string]any{"read": "kubectl get --raw /openid/v1/jwks", "timedOut": true}},
-		"jq cannot build the body":    {kubectlFailing(nodesRead, "echo 'not json'"), map[string]any{"read": "body", "exitStatus": float64(2)}},
-		"the token request fails":     {kubectlFailing(tokenRequest, failedRead), map[string]any{"read": "kubectl create token", "exitStatus": float64(3)}},
+		"the nodes read fails":         {kubectlFailing(nodesRead, failedRead), map[string]any{"read": "kubectl get nodes", "exitStatus": float64(3)}},
+		"the applications read fails":  {kubectlFailing(applicationsRead, failedRead), map[string]any{"read": "kubectl get applications", "exitStatus": float64(3)}},
+		"the key set read fails":       {kubectlFailing(keySetRead, failedRead), map[string]any{"read": "kubectl get --raw /openid/v1/jwks", "exitStatus": float64(3)}},
+		"the etcd members read fails":  {map[string]string{"talosctl": failedRead}, map[string]any{"read": "talosctl etcd members", "exitStatus": float64(3)}},
+		"the key set read times out":   {kubectlFailing(keySetRead, "sleep 10"), map[string]any{"read": "kubectl get --raw /openid/v1/jwks", "timedOut": true}},
+		"jq cannot build the body":     {kubectlFailing(nodesRead, "echo 'not json'"), map[string]any{"read": "body", "exitStatus": float64(2)}},
+		"the token request fails":      {kubectlFailing(tokenRequest, failedRead), map[string]any{"read": "kubectl create token", "exitStatus": float64(3)}},
+		"the proof script prints none": {kubectlFailing(tokenRequest, "true"), map[string]any{"read": "kubectl create token", "exitStatus": float64(0)}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

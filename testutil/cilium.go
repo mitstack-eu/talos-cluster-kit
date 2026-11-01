@@ -60,13 +60,25 @@ func ports(t *testing.T, rule map[string]any) string {
 // peerFields are the keys by which a Cilium rule names its peers; a rule with none of them reaches every peer.
 var peerFields = []string{"toEntities", "fromEntities", "toEndpoints", "fromEndpoints", "toFQDNs", "toCIDR", "toCIDRSet", "fromNodes", "toNodes"}
 
+// specs are a policy's rules, under spec or specs, and none for a pod outside a namespaced policy's namespace.
+func specs(t *testing.T, policy map[string]any, pod CiliumEndpoint) []any {
+	t.Helper()
+	if ns, _ := Field(t, policy, "metadata", "namespace").(string); ns != "" && pod["k8s:io.kubernetes.pod.namespace"] != ns {
+		return nil
+	}
+	if spec, ok := policy["spec"].(map[string]any); ok {
+		return []any{spec}
+	}
+	return listOf(policy["specs"])
+}
+
 // Grants lists what a Cilium policy allows endpoints[pod], as "<direction> with <peer> on <ports>", "<direction> to
 // entity <entity>", "egress to <DNS name or pattern> on <ports>", "egress to CIDR <range> on <ports>" or
 // "<direction> with any peer on <ports>".
 func Grants(t *testing.T, policy map[string]any, endpoints map[string]CiliumEndpoint, pod string) []string {
 	t.Helper()
 	var got []string
-	for _, spec := range policy["specs"].([]any) {
+	for _, spec := range specs(t, policy, endpoints[pod]) {
 		if !endpoints[pod].SelectedBy(t, Field(t, spec, "endpointSelector")) {
 			continue
 		}

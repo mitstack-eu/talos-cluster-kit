@@ -135,12 +135,18 @@ func Hosting(in HostingInputs) (Set, error) {
 		Manifest{Name: "sealed-secrets", Path: "components/sealed-secrets/sealed-secrets.yaml", Bytes: sealedSecretsManifest},
 		Manifest{Name: "traefik", Path: "components/traefik/traefik.yaml", Bytes: traefikManifest},
 		Manifest{Name: "mitstack-hosting-tls", Path: "components/hosting/tls.yaml", Bytes: hostingTLSManifest},
-		Manifest{Name: "mitstack-hosting-flows", Path: "components/hosting/flows.yaml", Bytes: hostingFlowsManifest},
-		Manifest{Name: "mitstack-hosting-mesh", Path: "components/hosting/mesh.yaml", Bytes: hostingMeshManifest},
 	)
+	set.Served = append(set.Served, HostingPolicies()...)
+	set.Served = append(set.Served, Manifest{Name: "mitstack-hosting-mesh", Path: "components/hosting/mesh.yaml", Bytes: hostingMeshManifest})
 	set.Inline = append(slices.Clone(set.Inline), inline...)
 	set.UserVolumes = append(slices.Clone(set.UserVolumes), OpenBaoVolume)
 	return set, nil
+}
+
+// HostingPolicies are the hosting set's flow policies, which a running cluster also takes from a release through the
+// rollout package, since Talos creates each object only at the build.
+func HostingPolicies() []Manifest {
+	return []Manifest{{Name: "mitstack-hosting-flows", Path: "components/hosting/flows.yaml", Bytes: hostingFlowsManifest}}
 }
 
 func (in HostingInputs) inlineManifests(sealed sealedValues) ([]Manifest, error) {

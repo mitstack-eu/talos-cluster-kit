@@ -515,14 +515,19 @@ func TestHosting_IssuesAppCertificatesFromLetsEncryptProductionThroughTraefikAft
 }
 
 func hostingEgress(t *testing.T, pod testutil.CiliumEndpoint) []string {
-	policy := namedDocument(t, testutil.Manifest(t, "mitstack-hosting-flows", hostingSet(t, testutil.HostingInputs(t)).Served), "CiliumClusterwideNetworkPolicy", "mitstack-hosting-flows")
+	flows := testutil.Documents(t, testutil.Manifest(t, "mitstack-hosting-flows", hostingSet(t, testutil.HostingInputs(t)).Served).Bytes)
 	pods := map[string]testutil.CiliumEndpoint{
 		"cluster DNS": testutil.Endpoint("kube-system", nil, map[string]string{"k8s-app": "kube-dns"}),
 		"OpenBao":     testutil.Endpoint("openbao", nil, map[string]string{"app.kubernetes.io/name": "openbao"}),
 		"an app":      testutil.Endpoint("app-shop", map[string]string{"mitstack.dev/subscription": "sub_1"}, map[string]string{"mitstack.dev/app": "shop"}),
 		"the pod":     pod,
 	}
-	return slices.DeleteFunc(testutil.Grants(t, policy, pods, "the pod"), func(g string) bool { return !strings.HasPrefix(g, "egress") })
+	var grants []string
+	for _, policy := range flows {
+		grants = append(grants, testutil.Grants(t, policy, pods, "the pod")...)
+	}
+	slices.Sort(grants)
+	return slices.DeleteFunc(slices.Compact(grants), func(g string) bool { return !strings.HasPrefix(g, "egress") })
 }
 
 func TestHosting_LetsCertManagerReachOnlyTheAPIServerClusterDNSLetsEncryptOn443AndAppHostnamesOn80(t *testing.T) {
@@ -534,10 +539,11 @@ func TestHosting_LetsCertManagerReachOnlyTheAPIServerClusterDNSLetsEncryptOn443A
 	}, hostingEgress(t, testutil.Endpoint("cert-manager", nil, map[string]string{"app.kubernetes.io/name": "cert-manager", "mitstack.dev/app": "cert-manager"})), "cert-manager's flows")
 }
 
-func TestHosting_LetsExternalSecretsReachOnlyTheAPIServerClusterDNSOpenBaoAndAWSSTSAndECRByNameOn443(t *testing.T) {
+func TestHosting_LetsExternalSecretsReachOnlyTheAPIServerClusterDNSOpenBaoAndAWSSTSECRAndSSMByNameOn443(t *testing.T) {
 	assert.Equal(t, []string{
 		"egress to api.ecr.*.amazonaws.com on 443/TCP",
 		"egress to entity kube-apiserver",
+		"egress to ssm.*.amazonaws.com on 443/TCP",
 		"egress to sts.*.amazonaws.com on 443/TCP",
 		"egress to sts.amazonaws.com on 443/TCP",
 		"egress with OpenBao on 8200/TCP 15008/TCP",

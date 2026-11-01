@@ -49,6 +49,7 @@ the order a block uses them.
 | `etcd` | Renders the Job that removes a lost node's etcd member and then its Node object, and holds the gateway's script that bootstraps etcd empty or from a snapshot | `RemoveMemberJob`, `BootstrapScript`, `Bootstrap.Args` |
 | `report` | Renders the node report, a CronJob that posts each node with its Talos version and allocatable resources, the etcd membership, how each node's `STATE` and `EPHEMERAL` are encrypted, Argo CD's health with the objects each Application applied, CloudNativePG's clusters, databases and roles, the objects a block labels with its subscription, and the API server's key set to the platform, with a `checks` member declaring which of the platform verdict's checks it carries. When any read but the volume, CloudNativePG and labelled-object reads fails or times out, it posts a report holding only an `error` that names the read, in place of the full report. Each report is signed with a token the API server mints for its exact body. The report holds no right on Secrets | `Manifests` |
 | `openbaoinit` | Renders OpenBao's init Job, which the hosting set carries: it initialises a hosting cluster's OpenBao once, commits the root token and recovery key to the cluster repository as PGP messages, then writes the policy each slice's External Secrets reads with | `Manifests`, `Inputs`, `InitFile` |
+| `rollout` | Gives a running cluster that hosts the platform a release's hosting policies: the files a block commits to the cluster repository, where Argo CD applies, changes and prunes them, and the read-back of each one from the node report | `Current`, `Release.Files`, `Release.ReadBack` |
 | `controlplane` | Builds and deletes a Talos control plane on Hetzner Cloud: a network, a firewall, a gateway, a builder that makes the cluster's own snapshot, a node in each of `fsn1`, `nbg1` and `hel1`, and an API and an ingress load balancer. Each call reads the resources by their labels and takes the one change still missing. A refusal is a `*Refusal` with a `Class` and a `Message`, which the block answers as its own framework's refusal | `Plane`, `Plane.Read`, `Plane.EnsureNetwork`, `Plane.NextStep`, `Plane.Problems`, `Plane.Outputs`, `Plane.Delete`, `NewAPI`, `Refusal` |
 | `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image and the gateway both install, and `tools/jq.env`, which pins the tools image's jq, and names the tools image a release published | `Env`, `Pin`, `Image` |
 | `testutil` | Holds the fixtures, fakes and decoders this module's tests and a block's tests share | `NewCluster`, `NewTools`, `Golden` |
@@ -961,7 +962,7 @@ hosting set carries that label. The Cilium policy `mitstack-hosting-flows` in
 | Pods | What the policy allows |
 |---|---|
 | cert-manager and trust-manager | Calls to the API server, and the API server's calls to their webhooks |
-| External Secrets | Calls to the API server and to OpenBao on 8200, lookups through Cilium's DNS proxy, calls to `sts.amazonaws.com`, `sts.*.amazonaws.com` and `api.ecr.*.amazonaws.com` on 443, and the API server's calls to its webhook |
+| External Secrets | Calls to the API server and to OpenBao on 8200, lookups through Cilium's DNS proxy, calls to `sts.amazonaws.com`, `sts.*.amazonaws.com` and `api.ecr.*.amazonaws.com` on 443, and the API server's calls to its webhook. The policy `mitstack-external-secrets-ssm` of its own adds calls to `ssm.*.amazonaws.com` on 443 |
 | OpenBao | Calls between members on 8200 and 8201, to the API server and to cluster DNS, and the calls of External Secrets and the init Job on 8200 |
 | OpenBao's init Job | Lookups through Cilium's DNS proxy, calls to OpenBao on 8200, and SSH to `ssh.github.com` on 443, which the gateway forwards |
 | Traefik | Web traffic from outside the cluster on its two ports, calls to the API server, and calls to the app slices |
@@ -990,6 +991,61 @@ in `components/hosting/mesh.yaml` keeps the ports themselves: OpenBao takes
 calls on 8200, and on 8201 from its own members alone. The same file holds the
 hosting set's four port-level exceptions that
 [the mesh section](#how-every-call-between-pods-proves-who-makes-it) lists.
+
+External Secrets reads SSM parameters, AWS's store of configuration values,
+through `mitstack-external-secrets-ssm` alone. That policy sits in
+`flows.yaml` as an object of its own, so a release that deletes it takes the
+reach back whole and leaves every other flow as it was.
+`ssm.*.amazonaws.com` admits a regional endpoint such as
+`ssm.eu-central-1.amazonaws.com`, for the same reason as the STS pattern.
+
+### How a running cluster takes a release's policies
+
+Talos creates each object of a manifest once, at the cluster's first build,
+and never changes or deletes it. Talos v1.14.4 records each object it created
+in an inventory and skips any object listed there
+(`ManifestApplyController` in Talos's
+[`manifest_apply.go`](https://github.com/siderolabs/talos/blob/v1.14.4/internal/app/machined/pkg/controllers/k8s/manifest_apply.go)).
+A policy a later release adds, changes or drops therefore reaches a running
+cluster only another way. The platform never dials into a cluster, so the
+block holds no credential for the cluster's API.
+
+The `rollout` package takes that other way through the cluster repository,
+which Argo CD already applies. A block that installs a cluster hosting the
+platform commits the two files `Release.Files` returns, in their order:
+
+| File | What it holds |
+|---|---|
+| `hosting/policies.yaml` | Every manifest `components.HostingPolicies` returns, which today is `flows.yaml`, then a ConfigMap in `argocd` named for the digest of those manifests |
+| `cluster/mitstack-hosting.yaml` | The Argo CD Application `mitstack-hosting`, which applies `hosting/` with `prune` and `selfHeal` on and carries no finalizer |
+
+The cluster's own Application applies `cluster/`, so it creates
+`mitstack-hosting`, and `mitstack-hosting` applies the policies. Argo CD
+applies over an object Talos created and tracks it from then on. A release
+that changes a policy changes the live object, and a release that drops one
+leads Argo CD to delete it. Deleting the Application leaves the policies
+standing, since it has no finalizer.
+
+The read-back comes from the node report, which lists each Argo CD
+Application with the objects it applied. `Release.ReadBack` reads the release
+back only when `mitstack-hosting` reads Synced and Healthy and lists exactly
+the objects the release states, each Synced. Argo CD's list names objects and
+no Git revision, so the ConfigMap's name carries the digest. A report made
+before Argo CD compared the release still lists the earlier ConfigMap, and
+reads nothing back. A reading for this release names each object, as in this
+example:
+
+```go
+reading, err := rollout.Current().ReadBack(reportBody) // the body of the newest node report
+// reading.Applied: [CiliumClusterwideNetworkPolicy mitstack-hosting-flows,
+//   CiliumNetworkPolicy external-secrets/mitstack-external-secrets-ssm,
+//   ConfigMap argocd/mitstack-hosting-<digest>]
+```
+
+The tests in `rollout/rollout_test.go` build a cluster from v0.32.0's flows,
+as Talos would, and run it through two upgrades. The cluster in
+`testutil/argocd.go` stands in for the cluster's API and for Argo CD, which
+applies each Application's directory and prunes what it no longer holds.
 
 ### How OpenBao is initialised
 

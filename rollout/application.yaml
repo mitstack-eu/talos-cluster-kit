@@ -1,0 +1,19 @@
+# Argo CD applies the hosting policies from hosting/, changing each one a release changes and pruning each one it
+# drops. It carries no finalizer, so deleting the Application leaves the policies standing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: {{ .Name }}
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: {{ printf "%q" .RepoURL }}
+    targetRevision: HEAD
+    path: {{ .Path }}
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

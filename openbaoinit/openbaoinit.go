@@ -47,6 +47,14 @@ type Inputs struct {
 
 var repositoryRe = regexp.MustCompile(`^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$`)
 
+// CheckRepository fails unless repository names a GitHub repository as owner/name.
+func CheckRepository(repository string) error {
+	if !repositoryRe.MatchString(repository) {
+		return fmt.Errorf("repository %q is not owner/name", repository)
+	}
+	return nil
+}
+
 // RepositoryURL reaches a GitHub repository over SSH on port 443, since the gateway forwards no other port.
 func RepositoryURL(repository string) string {
 	return "ssh://git@ssh.github.com:443/" + repository + ".git"
@@ -73,8 +81,8 @@ func (in Inputs) validate() error {
 	if err := check.DigestRef(in.ToolsImage); err != nil {
 		errs = append(errs, fmt.Errorf("tools image: %w", err))
 	}
-	if !repositoryRe.MatchString(in.Repository) {
-		errs = append(errs, fmt.Errorf("repository %q is not owner/name", in.Repository))
+	if err := CheckRepository(in.Repository); err != nil {
+		errs = append(errs, err)
 	}
 	if strings.TrimSpace(in.KnownHosts) == "" {
 		errs = append(errs, errors.New("no host key is known for GitHub's SSH endpoint"))

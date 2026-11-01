@@ -149,3 +149,20 @@ specs:
   - toEndpoints:
     - matchExpressions:
       - {key: k8s:io.cilium.k8s.namespace.labels.mitstack.dev/subscription, operator: Exists}
+---
+# External Secrets reads SSM parameters through this policy alone, so deleting it takes that reach back whole.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: mitstack-external-secrets-ssm
+  namespace: external-secrets
+spec:
+  description: "External Secrets reaches AWS SSM's regional API on 443."
+  endpointSelector:
+    matchLabels:
+      k8s:io.kubernetes.pod.namespace: external-secrets
+  egress:
+  - toFQDNs:
+    - matchPattern: "ssm.*.amazonaws.com"
+    toPorts:
+    - ports: [{port: "443", protocol: TCP}]

@@ -43,8 +43,7 @@ const (
 	tokenRequest      = "create token mitstack-node-report -n mitstack-node "
 	reportProof       = "report-proof-fixture"
 	proofScript       = `exec kubectl create token "$4" -n "$3" --for "$2" --body-sha256 "$(sha256sum < "$1" | cut -d ' ' -f 1)"`
-	// failedRead writes 2000 bytes of noise, its message, the report token, a bearer header, a JWT and a NUL to stderr.
-	failedRead = `head -c 2000 /dev/zero | tr '\0' x >&2; printf '\nerror: the server is gone\n' >&2
+	failedRead        = `head -c 2000 /dev/zero | tr '\0' x >&2; printf '\nerror: the server is gone\n' >&2
 printf 'token ` + reportToken + `\nAuthorization: Bearer abc.def\nsigned eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln\n\0' >&2
 exit 3`
 )
@@ -166,7 +165,6 @@ func stringMap(m any) map[string]string {
 	return out
 }
 
-// cronJob returns the rendered CronJob of that name, its pod's labels and its container.
 func cronJob(t *testing.T, rendered []byte, name string) (job map[string]any, labels map[string]string, container any) {
 	t.Helper()
 	job = named(t, testutil.Documents(t, rendered), "CronJob", name)
@@ -174,7 +172,6 @@ func cronJob(t *testing.T, rendered []byte, name string) (job map[string]any, la
 	return job, stringMap(testutil.Field(t, pod, "metadata", "labels")), testutil.Field(t, pod, "spec", "containers", "0")
 }
 
-// imageScripts are the scripts the tools image carries under the name of the CronJob that runs each one.
 var imageScripts = map[string]string{"mitstack-node-report": "report.sh", "mitstack-mesh-probe": "mesh-probe.sh"}
 
 func renderedScript(t *testing.T, url, name string) (script string, env map[string]string) {
@@ -187,7 +184,6 @@ func renderedScript(t *testing.T, url, name string) (script string, env map[stri
 	return string(data), testutil.ContainerEnv(t, container)
 }
 
-// meshTarget plays the mesh probe's target, answering what the component set's target serves.
 func meshTarget(t *testing.T) string {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -234,7 +230,6 @@ var argoCDRoutes = []string{"/api/v1/session/userinfo", "/api/v1/account", "/api
 	"/api/v1/repositories", "/api/v1/settings", "/api/v1/settings/plugins", "/api/v1/write-repocreds",
 	"/api/v1/write-repositories"}
 
-// argoCD plays argocd-server to a caller without a session, failing the test on any request that carries a credential.
 func argoCD(t *testing.T, userinfo string) string {
 	t.Helper()
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -263,7 +258,6 @@ type openBaoMember struct {
 
 var healthyOpenBao = []openBaoMember{{active: true}, {}, {}}
 
-// openBao serves each member's sys/seal-status and sys/leader and returns OPENBAO_MEMBERS naming them in order.
 func openBao(t *testing.T, members ...openBaoMember) string {
 	t.Helper()
 	named := make([]string, 0, len(members))

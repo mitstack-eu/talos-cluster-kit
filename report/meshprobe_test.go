@@ -28,7 +28,6 @@ func configMap(answer string) map[string]string {
 	return map[string]string{"date": reportAt, "kubectl": kubectlAnswering(map[string]string{meshProbeRead: answer})}
 }
 
-// probeResult answers the outside probe's ConfigMap read with the fixture's result changed by the jq filter edit.
 func probeResult(edit string) map[string]string {
 	return configMap("jq '.data.result |= (fromjson | " + edit + " | tojson)' testdata/mesh-probe.json")
 }
@@ -168,7 +167,6 @@ func TestManifests_LetsTheOutsideProbePatchAndTheReportReadOnlyTheProbesConfigMa
 	assert.Equal(t, "kube-system", testutil.Field(t, job, "metadata", "namespace"), "the outside probe runs where the mesh leaves it out")
 }
 
-// The target in the component set takes calls from the report and the outside probe alone, as their pods are labelled.
 func TestMeshProbe_TheTargetAdmitsOnlyTheReportAndTheOutsideProbeWhichLooksUpOnlyItsNameAndReachesOnlyItAndTheAPIServer(t *testing.T) {
 	rendered := manifests(t, reportURL)
 	set := components.Default()

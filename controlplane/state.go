@@ -83,7 +83,7 @@ func (st State) SharedGateway() (Server, bool) {
 }
 
 // SingleGateway reports whether the cluster predates a gateway in each location: no gateway carries the list label,
-// so the block holds no CA to sign another gateway with.
+// so the block holds no CA to sign another gateway with. It is transition code, to go with singleGatewayStep.
 func (st State) SingleGateway() bool {
 	return len(st.Servers[RoleGateway]) > 0 && !slices.ContainsFunc(st.Servers[RoleGateway], func(s Server) bool {
 		return s.Labels[KeyGatewayList] != ""

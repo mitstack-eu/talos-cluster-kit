@@ -147,7 +147,8 @@ func (p Plane) builtGatewayStep(ctx context.Context, st State, s site) (Step, bo
 }
 
 // singleGatewayStep keeps a cluster built before a gateway ran in each location as it stands, since no kept key can sign
-// a gateway its nodes trust, and refuses the upgrade that would replace its gateway.
+// a gateway its nodes trust, and refuses the upgrade that would replace its gateway. It is transition code, to go once
+// no cluster predates a gateway in each location.
 func (p Plane) singleGatewayStep(ctx context.Context, st State, s site) (Step, bool, error) {
 	if p.Upgrading {
 		return Step{}, false, refuse("gateway-predates-zones",
@@ -274,10 +275,11 @@ func (p Plane) powerBackStep(ctx context.Context, st State, _ site) (Step, bool,
 		if !ok || gw.Status != ServerOff {
 			continue
 		}
-		if down, _, err := p.downAfterPowerOn(ctx, gw); err != nil || down {
-			if err != nil {
-				return Step{}, false, err
-			}
+		down, _, err := p.downAfterPowerOn(ctx, gw)
+		if err != nil {
+			return Step{}, false, err
+		}
+		if down {
 			continue
 		}
 		return Step{"power the gateway in " + loc + " back on", func(ctx context.Context) error { return p.powerBack(ctx, gw) }}, true, nil

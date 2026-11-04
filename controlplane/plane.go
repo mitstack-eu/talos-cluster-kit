@@ -40,7 +40,7 @@ type Plane struct {
 	GatewayCA *gateway.CA
 	// Upgrading starts replacing each gateway built from an earlier release's pinned list, one location at a time.
 	Upgrading bool
-	// ReadGateway reads the newest node report received since since about the gateway at address; nil reads none.
+	// ReadGateway reads the gateway at address from the newest node report received after since; nil reads none.
 	ReadGateway func(ctx context.Context, address string, since time.Time) (GatewayReading, error)
 	// Notify receives each event a step records: a certificate issued, a route moved, a gateway deleted or powered on.
 	Notify func(ctx context.Context, detail string)
@@ -66,8 +66,8 @@ func refuse(class, format string, args ...any) error {
 	return &Refusal{Class: class, Message: fmt.Sprintf(format, args...)}
 }
 
-// Step is one change the plane lacks, which waits on Hetzner at most once, but for a route move, whose add waits on
-// its delete.
+// Step is one change the plane lacks, which waits on Hetzner at most once. A route move is the one exception: it waits
+// on its delete, then on its add.
 type Step struct {
 	What string
 	Run  func(ctx context.Context) error

@@ -12,14 +12,11 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/internal/check"
 	"github.com/mitstack-eu/talos-cluster-kit/internal/tmpl"
 	"github.com/mitstack-eu/talos-cluster-kit/nodeconfig"
+	"github.com/mitstack-eu/talos-cluster-kit/tools"
 )
 
-var (
-	//go:embed report.yaml
-	reportTemplate string
-	//go:embed scripts/report.sh
-	reportScript string
-)
+//go:embed report.yaml
+var reportTemplate string
 
 var manifests = tmpl.Must("the node report", reportTemplate)
 
@@ -32,7 +29,7 @@ type Inputs struct {
 	URL string
 	// SubscriptionID names the cluster's subscription in every report.
 	SubscriptionID string
-	// ToolsImage is the image built from tools/Dockerfile, by digest.
+	// ToolsImage is the image built from tools/Dockerfile, by digest, which carries the report's script.
 	ToolsImage string
 	// ProofScript signs each report; a block passes block-kit's reportproof.TokenRequestScript, so this kit needs no framework.
 	ProofScript string
@@ -51,7 +48,7 @@ func Manifests(in Inputs) ([]byte, error) {
 		"ReportURL":      in.URL,
 		"SubscriptionID": in.SubscriptionID,
 		"TokenSecret":    TokenSecret,
-		"Script":         reportScript,
+		"Script":         tools.ScriptDir + "/report.sh",
 		"ProofScript":    in.ProofScript,
 	})
 }

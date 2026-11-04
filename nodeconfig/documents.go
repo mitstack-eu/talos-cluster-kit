@@ -2,6 +2,7 @@ package nodeconfig
 
 import (
 	"fmt"
+	"maps"
 	"net/netip"
 	"net/url"
 	"slices"
@@ -39,7 +40,7 @@ var TalosAPIRoles = []string{"os:admin", "os:etcd:backup", "os:reader"}
 const TalosAPINamespace = "mitstack-node"
 
 // adapt changes the generated documents the kit keeps, turning kube-proxy off since Cilium replaces it.
-func (c Cluster) adapt(generated []config.Document) []config.Document {
+func (c Cluster) adapt(generated []config.Document, n Node) []config.Document {
 	var docs []config.Document
 	for _, doc := range generated {
 		if !keepGenerated(doc) {
@@ -54,6 +55,7 @@ func (c Cluster) adapt(generated []config.Document) []config.Document {
 			if d.LabelsConfig == nil {
 				d.LabelsConfig = map[string]string{}
 			}
+			maps.Copy(d.LabelsConfig, n.Labels)
 			d.LabelsConfig[SubscriptionLabel] = c.SubscriptionID
 			d.NodeIPConfig.NodeIPValidSubnets = []string{c.Network.String()}
 		case *k8s.KubeServiceAccountConfigV1Alpha1:

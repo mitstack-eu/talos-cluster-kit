@@ -406,7 +406,7 @@ func (a *hcloudAPI) AddVSwitchSubnet(ctx context.Context, networkID, vswitchID i
 	}
 	if networkFromHcloud(network).VSwitchSubnets[vswitchID] != ipRange {
 		action, _, err := a.client.Network.AddSubnet(ctx, network, hcloud.NetworkAddSubnetOpts{Subnet: hcloud.NetworkSubnet{
-			Type: hcloud.NetworkSubnetTypeVSwitch, NetworkZone: hcloud.NetworkZone(networkZone), IPRange: subnetRange, VSwitchID: vswitchID,
+			Type: hcloud.NetworkSubnetTypeVSwitch, NetworkZone: hcloud.NetworkZone(NetworkZone), IPRange: subnetRange, VSwitchID: vswitchID,
 		}})
 		if err != nil {
 			return fmt.Errorf("coupling vSwitch %d to network %d at %s: %w", vswitchID, networkID, ipRange, err)

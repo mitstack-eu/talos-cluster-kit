@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
-# Posts the node report: nodes, etcd members, each node's STATE and EPHEMERAL encryption, Argo CD's health with each Application's applied objects,
-# CloudNativePG's objects, the objects labelled mitstack.dev/subscription, the API server's key set and a checks member,
+# Posts the node report: nodes with their zone and region labels, etcd members, each node's STATE and EPHEMERAL encryption,
+# Argo CD's health with each Application's applied objects, CloudNativePG's objects, each claim and the default storage
+# classes, every Service's type, the objects labelled mitstack.dev/subscription, the API server's key set and a checks member,
 # signed with a token the API server mints for the body through block-kit's token-request.sh in REPORT_PROOF_SCRIPT.
 # When a read, the body or the token request fails or times out, it posts an unsigned report whose error names it
 # instead, then exits non-zero.
-# Usage: REPORT_URL=<https url> SUBSCRIPTION_ID=<id> HOST_IP=<this pod's node> REPORT_PROOF_SCRIPT=<script> [POD_NAMESPACE=mitstack-node] [REPORT_TOKEN_FILE=/var/run/mitstack/token] [REPORT_READ_SECONDS=25] report.sh
+# Usage: REPORT_URL=<https url> SUBSCRIPTION_ID=<id> HOST_IP=<this pod's node> REPORT_PROOF_SCRIPT=<script> [POD_NAMESPACE=mitstack-node] [REPORT_TOKEN_FILE=/var/run/mitstack/token] [REPORT_READ_SECONDS=21] report.sh
 # It exists so the platform sees a cluster it never dials into, as ADR 0072 requires, with os:reader and no Secret right.
 set -euo pipefail
 
-# Eight limits of 25 seconds, the token request's 5, each with a 5-second kill grace, and the post's 20 make 270, which
-# leaves 10 seconds of the Job's activeDeadlineSeconds of 280 for the tools to start.
-limit=${REPORT_READ_SECONDS:-25}
+# Nine limits of 21 seconds, the token request's 5, each with a 5-second kill grace, and the post's 20 make 264, which
+# leaves 16 seconds of the Job's activeDeadlineSeconds of 280 for the tools to start.
+limit=${REPORT_READ_SECONDS:-21}
 # Kinds as kubectl --show-kind names them, as blocks name their objects; never secret, as the report holds no Secret right.
 subscription_kinds=(namespace serviceaccount service resourcequota limitrange deployment.apps
   ingress.networking.k8s.io networkpolicy.networking.k8s.io role.rbac.authorization.k8s.io
@@ -37,12 +38,13 @@ read_into() {
 }
 
 collect() {
-  read_into "kubectl get nodes" "$work/nodes.json" "$limit" kubectl get nodes -o json
+  read_into "kubectl get nodes" "$work/nodes.json" "$limit" kubectl get nodes -o json --show-managed-fields
   read_into "kubectl get applications" "$work/applications.json" "$limit" kubectl get applications.argoproj.io -n argocd -o json
   read_into "kubectl get --raw /openid/v1/jwks" "$work/jwks.json" "$limit" kubectl get --raw /openid/v1/jwks
   read_into "talosctl etcd members" "$work/members.txt" "$limit" talosctl -n "$HOST_IP" etcd members
   read_system_volumes
   read_beside cloudnative-pg kubectl get clusters.postgresql.cnpg.io,databases.postgresql.cnpg.io,databaseroles.postgresql.cnpg.io -A -o json
+  read_beside storage-and-services kubectl get persistentvolumeclaims,storageclasses.storage.k8s.io,services -A -o json
   read_subscription_resources
 }
 
@@ -122,6 +124,9 @@ body() {
     --rawfile cnpg "$work/cloudnative-pg.out" \
     --rawfile cnpg_err "$work/cloudnative-pg.err" \
     --argjson cnpg_status "$(cat "$work/cloudnative-pg.status")" \
+    --rawfile storage "$work/storage-and-services.out" \
+    --rawfile storage_err "$work/storage-and-services.err" \
+    --argjson storage_status "$(cat "$work/storage-and-services.status")" \
     --rawfile volumes "$work/system-volumes.json" \
     --rawfile volumes_err "$work/system-volumes.err" \
     --argjson volumes_status "$(cat "$work/system-volumes.status")" \
@@ -138,6 +143,19 @@ body() {
     else
       {applied: .status.applied, message: (.status.message // null | if . then .[0:256] else . end)}
     end;
+    # zone_label_managers are the field managers whose entry in managedFields holds the zone label.
+    def zone_label_managers: [.metadata.managedFields[]?
+      | select(.fieldsV1["f:metadata"]["f:labels"]["f:topology.kubernetes.io/zone"] != null)
+      | {manager, operation, time}];
+    def storage: {
+      claims: [.items[] | select(.kind == "PersistentVolumeClaim") | {
+        namespace: .metadata.namespace, name: .metadata.name,
+        storageClass: (.spec.storageClassName // null), phase: (.status.phase // null)
+      }],
+      defaultStorageClasses: [.items[] | select(.kind == "StorageClass")
+        | select(.metadata.annotations["storageclass.kubernetes.io/is-default-class"] == "true") | .metadata.name]
+    };
+    def services: [.items[] | select(.kind == "Service") | {namespace: .metadata.namespace, name: .metadata.name, type: (.spec.type // null)}];
     def system_volume: {
       node: .node, name: .metadata.id, phase: .spec.phase,
       encryptionProvider: (.spec.encryptionProvider // "none"),
@@ -167,7 +185,10 @@ body() {
         talosVersion: talos_version,
         kubeletVersion: .status.nodeInfo.kubeletVersion,
         internalIP: ([.status.addresses[]? | select(.type == "InternalIP") | .address] | first),
-        allocatable: .status.allocatable
+        allocatable: .status.allocatable,
+        zone: (.metadata.labels["topology.kubernetes.io/zone"] // null),
+        region: (.metadata.labels["topology.kubernetes.io/region"] // null),
+        zoneLabelManagers: zone_label_managers
       }],
       etcd: {members: [$members | split("\n") | .[1:][] | select(test("\\S")) | [splits("\\s+")] | {
         id: .[1], hostname: .[2], peerURLs: (.[3] | split(",")), learner: (.[5] == "true")
@@ -185,6 +206,12 @@ body() {
       cloudNativePG: beside($cnpg_status; $cnpg_err;
         "kubectl exited 0, and its output is not the CloudNativePG objects this report reads";
         $cnpg | fromjson | [.items[] | cloudnative_pg]),
+      storage: beside($storage_status; $storage_err;
+        "kubectl exited 0, and its output is not the claims, storage classes and Services this report reads";
+        $storage | fromjson | storage),
+      services: beside($storage_status; $storage_err;
+        "kubectl exited 0, and its output is not the claims, storage classes and Services this report reads";
+        $storage | fromjson | services),
       subscriptionResources: $listed.objects,
       subscriptionResourceKinds: $listed.kinds,
       jwks: $jwks[0],

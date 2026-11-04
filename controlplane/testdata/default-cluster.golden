@@ -23,6 +23,7 @@ inline mitstack-mesh-argocd components/mesh/argocd.yaml 94a4cd7a96de7d2dcb6dc464
 inline mitstack-require-mesh components/admission/policies/mitstack-require-mesh.yaml 16664dd61ba89aedaf6b64c82f14d2391f072c7dc1ca0ee24bb1444ff336673a
 inline mitstack-require-strict-mtls components/admission/policies/mitstack-require-strict-mtls.yaml 60c1bd282b2199ffd009549fce3155d575afb9f612bc667a8ab7b6a5b625d07b
 inline mitstack-node-report report/report.yaml unrecorded
+inline mitstack-node-topology topology/topology.yaml 0eeaa559b56712cd5476a6bf7458cfa29d0229b39b32b2b35b1a3afa73a5f9bf
 inline mitstack-cluster-tokens manifests/cluster-tokens.yaml a6e3b09def1db5bcf657dd8c2172c055f2d970f0651acfed55b76ac970e35e58
 inline mitstack-cluster-application manifests/cluster-application.yaml 92e6347d03420f2609f3238107104fd76828f5957855013641259c78928a2aa6
 mirror docker.io/istio/install-cni:1.30.7-distroless@sha256:5d65fa948ff28fac54d99f272205a3f71ee84e609d7e46792eecd77db0501d79
@@ -119,5 +120,6 @@ document KubeInlineManifestConfig 24-mitstack-mesh-argocd
 document KubeInlineManifestConfig 32-mitstack-require-mesh
 document KubeInlineManifestConfig 33-mitstack-require-strict-mtls
 document KubeInlineManifestConfig 06-mitstack-node-report
+document KubeInlineManifestConfig 42-mitstack-node-topology
 document KubeInlineManifestConfig 07-mitstack-cluster-tokens
 document KubeInlineManifestConfig 17-mitstack-cluster-application

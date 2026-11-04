@@ -31,7 +31,7 @@ func (p Plane) EnsureNetwork(ctx context.Context, st State) (Network, error) {
 		Name:    p.Name("network"),
 		IPRange: NetworkIPRange,
 		Labels:  p.Labels("network"),
-		Subnet:  Subnet{NetworkZone: networkZone, IPRange: subnetIPRange},
+		Subnet:  Subnet{NetworkZone: NetworkZone, IPRange: subnetIPRange},
 		Routes:  []Route{{Destination: defaultRoute, Gateway: GatewayAddress}},
 	})
 	if err != nil {

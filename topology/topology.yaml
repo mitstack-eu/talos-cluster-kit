@@ -1,0 +1,88 @@
+# The topology labeller: a CronJob that labels each node it names with its zone
+# and the region under its own field manager. Its identity may get and patch
+# those nodes and no other object, and holds no Talos role.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Name }}
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    resourceNames:
+{{- range .NodeNames }}
+      - {{ printf "%q" . }}
+{{- end }}
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Name }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Name }}
+    namespace: {{ .Namespace }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 120
+      template:
+        spec:
+          serviceAccountName: {{ .Name }}
+          restartPolicy: Never
+          nodeSelector:
+            node-role.kubernetes.io/control-plane: ""
+          tolerations:
+            - key: node-role.kubernetes.io/control-plane
+              operator: Exists
+              effect: NoSchedule
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: label
+              image: {{ .Image }}
+              command: [bash, {{ .Script }}]
+              env:
+                - name: TOPOLOGY_NODES
+                  value: {{ printf "%q" .Nodes }}
+                - name: TOPOLOGY_REGION
+                  value: {{ printf "%q" .Region }}
+                - name: TOPOLOGY_FIELD_MANAGER
+                  value: {{ printf "%q" .FieldManager }}
+                - name: HOME
+                  value: /tmp
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: tmp
+              emptyDir: {}

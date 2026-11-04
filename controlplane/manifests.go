@@ -38,10 +38,15 @@ const (
 	manifestDir        = "manifests/"
 )
 
-// clusterComponents carries the node report, the enrolment and the Argo CD application inline, so the gateway mirrors their image.
+// clusterComponents carries the node report, the topology labeller, the enrolment and the Argo CD application inline, so the
+// gateway mirrors their image.
 func (p Plane) clusterComponents(set components.Set, enrolmentToken string) (components.Set, error) {
 	reportManifests, err := report.Manifests(report.Inputs{URL: p.PlatformURL + clusterReportsPath, SubscriptionID: p.Subscription,
 		ToolsImage: toolsImage(), ProofScript: p.ReportProofScript})
+	if err != nil {
+		return components.Set{}, err
+	}
+	labeller, err := p.topologyManifests()
 	if err != nil {
 		return components.Set{}, err
 	}
@@ -69,6 +74,7 @@ func (p Plane) clusterComponents(set components.Set, enrolmentToken string) (com
 	}
 	set.Inline = append(slices.Clone(set.Inline),
 		components.Manifest{Name: "mitstack-node-report", Path: "report/report.yaml", Bytes: reportManifests},
+		components.Manifest{Name: "mitstack-node-topology", Path: "topology/topology.yaml", Bytes: labeller},
 		components.Manifest{Name: "mitstack-cluster-tokens", Path: manifestDir + "cluster-tokens.yaml", Bytes: tokens},
 		components.Manifest{Name: "mitstack-cluster-application", Path: manifestDir + "cluster-application.yaml", Bytes: application},
 	)

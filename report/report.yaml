@@ -1,7 +1,8 @@
 # The node report: a CronJob that reads the cluster with the Talos os:reader
 # role and a Kubernetes identity that may only read Nodes, Applications,
-# CloudNativePG's objects and the kinds of object a block labels with its
-# subscription, never a Secret, and posts the result to the platform. It also creates the one namespace
+# CloudNativePG's objects, claims, storage classes and the kinds of object a
+# block labels with its subscription, never a Secret, and posts the result to
+# the platform. It also creates the one namespace
 # whose pods may hold a Talos identity. Its read of the API server's key set
 # needs no rule here, since Kubernetes binds system:service-account-issuer-discovery
 # to every service account by default. A Role lets the report mint a token for
@@ -58,6 +59,12 @@ rules:
   - apiGroups: [postgresql.cnpg.io]
     resources: [clusters, databases, databaseroles]
     verbs: [get, list]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [list]
+  - apiGroups: [storage.k8s.io]
+    resources: [storageclasses]
+    verbs: [list]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -130,11 +137,7 @@ spec:
           containers:
             - name: report
               image: {{ .Image }}
-              command:
-                - bash
-                - -c
-                - |
-{{ indent 18 .Script }}
+              command: [bash, {{ .Script }}]
               env:
                 - name: REPORT_URL
                   value: {{ printf "%q" .ReportURL }}

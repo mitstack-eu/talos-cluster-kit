@@ -69,12 +69,11 @@ func TestReport_ReadsEachGatewaysMirrorUnderTheGatewayCA(t *testing.T) {
 	_, posted, out, err := runReport(t, nil, "GATEWAYS="+gateways)
 
 	require.NoError(t, err, out)
-	got := readings(t, posted.body["gateways"])
-	assert.Equal(t, []map[string]any{
-		{"address": "10.0.0.2", "passed": true},
-		{"address": "10.0.0.248", "passed": false, "reason": "the mirror answered HTTP 503"},
-		{"address": "10.0.0.249", "passed": false, "reason": "curl ended with exit status 7"},
-	}, got)
+	assert.Equal(t, []any{
+		map[string]any{"address": "10.0.0.2", "passed": true},
+		map[string]any{"address": "10.0.0.248", "passed": false, "reason": "the mirror answered HTTP 503"},
+		map[string]any{"address": "10.0.0.249", "passed": false, "reason": "curl ended with exit status 7"},
+	}, readings(posted.body["gateways"]))
 }
 
 func TestReport_ReadsAMirrorWhoseCertificateAnotherCASignedAsFailed(t *testing.T) {
@@ -84,8 +83,8 @@ func TestReport_ReadsAMirrorWhoseCertificateAnotherCASignedAsFailed(t *testing.T
 	_, posted, out, err := runReport(t, nil, "GATEWAYS=10.0.0.2="+mirror(t, http.StatusOK), "GATEWAY_CA="+string(other.Cert))
 
 	require.NoError(t, err, out)
-	assert.Equal(t, []map[string]any{{"address": "10.0.0.2", "passed": false, "reason": "curl ended with exit status 60"}},
-		readings(t, posted.body["gateways"]))
+	assert.Equal(t, []any{map[string]any{"address": "10.0.0.2", "passed": false, "reason": "curl ended with exit status 60"}},
+		readings(posted.body["gateways"]))
 }
 
 func TestReport_ReadsATLSConnectionToTheEgressTargetAndWhyOneFailed(t *testing.T) {
@@ -94,16 +93,13 @@ func TestReport_ReadsATLSConnectionToTheEgressTargetAndWhyOneFailed(t *testing.T
 	assert.Equal(t, map[string]any{"passed": true}, posted.body["egress"], "a TLS connection the target answered")
 
 	_, posted, out, err = runReport(t, nil, "EGRESS_URL=https://127.0.0.1:1/directory")
-
 	require.NoError(t, err, out)
-	egress := readings(t, []any{posted.body["egress"]})[0]
-	assert.Equal(t, map[string]any{"passed": false,
-		"reason": "the TLS connection to https://127.0.0.1:1/directory ended with curl exit status 7"}, egress)
+	assert.Equal(t, []any{map[string]any{"passed": false,
+		"reason": "the TLS connection to https://127.0.0.1:1/directory ended with curl exit status 7"}}, readings([]any{posted.body["egress"]}))
 }
 
 func TestReport_NamesNoGatewayWhenTheClusterHasNone(t *testing.T) {
 	_, posted, out, err := runReport(t, nil, "GATEWAYS=")
-
 	require.NoError(t, err, out)
 	assert.Equal(t, []any{}, posted.body["gateways"])
 }
@@ -132,18 +128,14 @@ func TestManifests_RefusesGatewaysWithoutTheirCAsCertificate(t *testing.T) {
 }
 
 // readings drops each failed reading's reason from its first ": ", where curl's own words begin.
-func readings(t *testing.T, member any) []map[string]any {
-	t.Helper()
-	list, ok := member.([]any)
-	require.True(t, ok, "the report carries no list of readings: %v", member)
-	out := make([]map[string]any, 0, len(list))
+func readings(member any) []any {
+	list, _ := member.([]any)
 	for _, item := range list {
-		reading, ok := item.(map[string]any)
-		require.True(t, ok, "a reading that is not an object: %v", item)
-		if reason, ok := reading["reason"].(string); ok {
-			reading["reason"], _, _ = strings.Cut(reason, ": ")
+		if reading, ok := item.(map[string]any); ok {
+			if reason, ok := reading["reason"].(string); ok {
+				reading["reason"], _, _ = strings.Cut(reason, ": ")
+			}
 		}
-		out = append(out, reading)
 	}
-	return out
+	return list
 }

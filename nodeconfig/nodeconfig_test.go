@@ -325,8 +325,8 @@ func TestRender_RunsTheMeshAndItsAdmissionPoliciesOnEveryProfileAndSize(t *testi
 
 				require.NoError(t, err)
 				docs := testutil.Documents(t, got)
-				assert.Subset(t, documentNames(testutil.Kind(docs, "KubeExternalManifestConfig")), []any{"istio-base", "istiod", "istio-cni", "ztunnel"},
-					"no node fetches the mesh")
+				assert.Subset(t, documentNames(testutil.Kind(docs, "KubeExternalManifestConfig")),
+					[]any{"istio-base", "istiod", "istio-cni", "ztunnel", "mitstack-mesh-probe"}, "no node fetches the mesh or its probe target")
 				assert.Subset(t, documentNames(testutil.Kind(docs, "KubeInlineManifestConfig")),
 					[]any{"mitstack-strict-mtls", "mitstack-ambient-probes", "mitstack-require-mesh", "mitstack-require-strict-mtls"},
 					"the configuration carries no mesh-wide STRICT policy or no admission policy for it")

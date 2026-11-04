@@ -211,11 +211,15 @@ func TestBuilder_TheApplicationSyncsTheClusterRepositoryTheEnrolmentNamesThePlat
 	container := testutil.Field(t, jobs[0], "spec", "template", "spec", "containers", "0")
 	assert.Equal(t, tools.Image, testutil.Field(t, container, "image"), "the enrolment's image")
 	assert.Contains(t, testutil.Field(t, container, "env"), map[string]any{"name": "PLATFORM_URL", "value": platformURL})
-	cronJobs := testutil.Kind(manifests["mitstack-node-report"], "CronJob")
-	require.Len(t, cronJobs, 1, "node report CronJobs")
-	report := testutil.Field(t, cronJobs[0], "spec", "jobTemplate", "spec", "template", "spec", "containers", "0")
-	assert.Equal(t, tools.Image, testutil.Field(t, report, "image"), "the node report's image")
-	assert.Equal(t, proofScript, testutil.ContainerEnv(t, report)["REPORT_PROOF_SCRIPT"], "the script that signs each report")
+	cronJobs := map[string]any{}
+	for _, job := range testutil.Kind(manifests["mitstack-node-report"], "CronJob") {
+		cronJobs[testutil.Field(t, job, "metadata", "name").(string)] = testutil.Field(t, job, "spec", "jobTemplate", "spec", "template", "spec", "containers", "0")
+	}
+	require.Len(t, cronJobs, 2, "the node report's CronJob and its outside probe's")
+	for name, container := range cronJobs {
+		assert.Equal(t, tools.Image, testutil.Field(t, container, "image"), "the image %s runs", name)
+	}
+	assert.Equal(t, proofScript, testutil.ContainerEnv(t, cronJobs["mitstack-node-report"])["REPORT_PROOF_SCRIPT"], "the script that signs each report")
 }
 
 func TestCluster_ArgoCDsComponentAloneConfiguresItsNotificationsAndTheEnrolmentAloneWritesTheirSecret(t *testing.T) {

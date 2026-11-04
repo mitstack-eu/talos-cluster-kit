@@ -503,8 +503,13 @@ name: 05-ztunnel
 url: https://10.0.0.2/manifests/05-ztunnel.yaml
 ---
 apiVersion: v1alpha1
+kind: KubeExternalManifestConfig
+name: 26-mitstack-mesh-probe
+url: https://10.0.0.2/manifests/26-mitstack-mesh-probe.yaml
+---
+apiVersion: v1alpha1
 kind: KubeInlineManifestConfig
-name: 26-mitstack-metadata-block
+name: 27-mitstack-metadata-block
 manifest: |
     # Keeps every pod on the pod network from Hetzner's metadata service, which
     # serves each server's data. Default deny stays off in both directions, so
@@ -524,7 +529,7 @@ manifest: |
 ---
 apiVersion: v1alpha1
 kind: KubeInlineManifestConfig
-name: 31-mitstack-require-app-label
+name: 32-mitstack-require-app-label
 manifest: |
     apiVersion: policies.kyverno.io/v1
     kind: ValidatingPolicy
@@ -697,7 +702,7 @@ manifest: |
 ---
 apiVersion: v1alpha1
 kind: KubeInlineManifestConfig
-name: 35-mitstack-strict-mtls
+name: 36-mitstack-strict-mtls
 manifest: |
     # In istio-system with no selector, this is the mesh-wide policy: every pod in the mesh refuses a call that presents
     # no workload certificate.
@@ -842,7 +847,7 @@ manifest: |
 ---
 apiVersion: v1alpha1
 kind: KubeInlineManifestConfig
-name: 32-mitstack-require-mesh
+name: 33-mitstack-require-mesh
 manifest: |
     apiVersion: policies.kyverno.io/v1
     kind: ValidatingPolicy
@@ -874,7 +879,7 @@ manifest: |
 ---
 apiVersion: v1alpha1
 kind: KubeInlineManifestConfig
-name: 33-mitstack-require-strict-mtls
+name: 34-mitstack-require-strict-mtls
 manifest: |
     apiVersion: policies.kyverno.io/v1
     kind: ValidatingPolicy

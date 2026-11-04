@@ -144,6 +144,7 @@ write_files:
       03-istiod.yaml 228e5605e6c50962b9e307b4dad7f468bc4cb408c8fb09a7bdc46a25ff227b54 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/istio/istiod.yaml
       04-istio-cni.yaml 4e468eb1ce1722df46f859dd8318c28507127a0a129e0cb51ab8cc8060372526 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/istio/istio-cni.yaml
       05-ztunnel.yaml fac3f7016c82389be8f1340a961e9b81c47c981bbae4853a77ed2a62117c8663 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/istio/ztunnel.yaml
+      26-mitstack-mesh-probe.yaml c4943f558eee7a699cfebd9d2d79c62159268ce75986d905c53429e0beae8240 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/mesh/probe.yaml
   - path: /usr/local/bin/mitstack-gateway-prepare
     permissions: "0755"
     content: |

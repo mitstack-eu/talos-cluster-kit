@@ -20,6 +20,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/report"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 	"github.com/mitstack-eu/talos-cluster-kit/tools"
@@ -34,6 +35,7 @@ const (
 	storageRead       = "get persistentvolumeclaims,storageclasses.storage.k8s.io,services -A -o json"
 	membersRead       = "-n 10.0.0.6 etcd members"
 	volumesRead       = "-n 10.0.0.5,10.0.0.6,10.0.0.7 get volumestatus -o json"
+	meshProbeRead     = "get configmap mitstack-mesh-probe -n kube-system -o json"
 	tokenRequest      = "create token mitstack-node-report -n mitstack-node "
 	reportProof       = "report-proof-fixture"
 	proofScript       = `exec kubectl create token "$4" -n "$3" --for "$2" --body-sha256 "$(sha256sum < "$1" | cut -d ' ' -f 1)"`
@@ -64,7 +66,7 @@ func talosctlAnswering(volumes string) string {
 func kubectlAnswering(overrides map[string]string) string {
 	answers := map[string]string{nodesRead: "cat testdata/nodes.json", applicationsRead: "cat testdata/applications.json",
 		keySetRead: "cat testdata/jwks.json", cloudNativePGRead: "cat testdata/cloudnative-pg.json", storageRead: "cat testdata/storage-and-services.json",
-		tokenRequest: "echo " + reportProof}
+		tokenRequest: "echo " + reportProof, meshProbeRead: "cat testdata/mesh-probe.json"}
 	for _, kind := range subscriptionKinds {
 		answers[subscriptionRead(kind)] = "cat testdata/subscription-resources/" + kind + ".json"
 	}
@@ -123,18 +125,42 @@ func inputs(url string) report.Inputs {
 	return report.Inputs{URL: url, SubscriptionID: "sub_0123456789ab", ToolsImage: testutil.ToolsImage, ProofScript: proofScript}
 }
 
-func renderedScript(t *testing.T, url string) (script, renderedProofScript string) {
+// cronJob returns the rendered CronJob of that name, its pod's labels and its container.
+func cronJob(t *testing.T, rendered []byte, name string) (job map[string]any, labels map[string]any, container any) {
+	t.Helper()
+	for _, job := range testutil.Kind(testutil.Documents(t, rendered), "CronJob") {
+		if testutil.Field(t, job, "metadata", "name") == name {
+			pod := testutil.Field(t, job, "spec", "jobTemplate", "spec", "template")
+			return job, testutil.Field(t, pod, "metadata", "labels").(map[string]any), testutil.Field(t, pod, "spec", "containers", "0")
+		}
+	}
+	require.FailNow(t, "no CronJob "+name)
+	return nil, nil, nil
+}
+
+// imageScripts are the scripts the tools image carries under the name of the CronJob that runs each one.
+var imageScripts = map[string]string{"mitstack-node-report": "report.sh", "mitstack-mesh-probe": "mesh-probe.sh"}
+
+func renderedScript(t *testing.T, url, name string) (script string, env map[string]string) {
 	t.Helper()
 	rendered, err := report.Manifests(inputs(url))
 	require.NoError(t, err)
-	cronJobs := testutil.Kind(testutil.Documents(t, rendered), "CronJob")
-	require.Len(t, cronJobs, 1)
-	container := testutil.Field(t, cronJobs[0], "spec", "jobTemplate", "spec", "template", "spec", "containers", "0")
-	assert.Equal(t, []any{"bash", tools.ScriptDir + "/report.sh"}, testutil.Field(t, container, "command"),
-		"the CronJob runs the report the tools image carries, so the machine configuration carries no script")
-	data, err := os.ReadFile(filepath.Join("scripts", "report.sh"))
+	_, _, container := cronJob(t, rendered, name)
+	assert.Equal(t, []any{"bash", tools.ScriptDir + "/" + imageScripts[name]}, testutil.Field(t, container, "command"),
+		"the CronJob runs the script the tools image carries, so the machine configuration carries no script")
+	data, err := os.ReadFile(filepath.Join("scripts", imageScripts[name]))
 	require.NoError(t, err)
-	return string(data), testutil.ContainerEnv(t, container)["REPORT_PROOF_SCRIPT"]
+	return string(data), testutil.ContainerEnv(t, container)
+}
+
+// meshTarget plays the mesh probe's target, answering what the component set's target serves.
+func meshTarget(t *testing.T) string {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, components.MeshProbeAnswer)
+	}))
+	t.Cleanup(server.Close)
+	return server.URL + "/"
 }
 
 func runReport(t *testing.T, fakes map[string]string, env ...string) (*testutil.Tools, *postedReport, string, error) {
@@ -147,11 +173,13 @@ func runReport(t *testing.T, fakes map[string]string, env ...string) (*testutil.
 	token := filepath.Join(t.TempDir(), "token")
 	require.NoError(t, os.WriteFile(token, []byte(reportToken), 0o600))
 
-	script, renderedProofScript := renderedScript(t, server.URL)
+	script, rendered := renderedScript(t, server.URL, "mitstack-node-report")
 
 	out, err := testutil.RunBash(t, script, tools.Env(append([]string{
-		"REPORT_URL=" + server.URL, "SUBSCRIPTION_ID=sub_0123456789ab", "HOST_IP=10.0.0.6", "REPORT_PROOF_SCRIPT=" + renderedProofScript,
-		"REPORT_TOKEN_FILE=" + token, "CURL_CA_BUNDLE=" + writeServerCA(t, server)}, env...)...))
+		"REPORT_URL=" + server.URL, "SUBSCRIPTION_ID=sub_0123456789ab", "HOST_IP=10.0.0.6", "REPORT_PROOF_SCRIPT=" + rendered["REPORT_PROOF_SCRIPT"],
+		"REPORT_TOKEN_FILE=" + token, "CURL_CA_BUNDLE=" + writeServerCA(t, server), "MESH_PROBE_URL=" + meshTarget(t),
+		"MESH_PROBE_ANSWER=" + rendered["MESH_PROBE_ANSWER"], "MESH_PROBE_IDENTITY=" + rendered["MESH_PROBE_IDENTITY"],
+		"MESH_PROBE_CONFIGMAP=" + rendered["MESH_PROBE_CONFIGMAP"]}, env...)...))
 	posted.mu.Lock()
 	defer posted.mu.Unlock()
 	return tools, posted, out, err
@@ -192,7 +220,11 @@ func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipA
 	for _, kind := range subscriptionKinds {
 		wantCalls = append(wantCalls, "kubectl "+subscriptionRead(kind))
 	}
-	assert.Equal(t, append(wantCalls, "kubectl "+proofRequest(posted)), tools.Calls(t), "the proof is minted once the body is final")
+	calls := tools.Calls(t)
+	require.NotEmpty(t, calls)
+	assert.Contains(t, calls[:len(calls)-1], "kubectl "+meshProbeRead, "the mesh read, beside the others, ends before the proof")
+	calls = slices.DeleteFunc(calls, func(c string) bool { return c == "kubectl "+meshProbeRead })
+	assert.Equal(t, append(wantCalls, "kubectl "+proofRequest(posted)), calls, "the proof is minted once the body is final")
 	assert.Equal(t, reportProof, posted.proof, "the post carries the proof the block's script printed for its exact body")
 }
 
@@ -416,7 +448,8 @@ func TestManifests_LetsTheReportListEachKindItReadsAndCloudNativePGsObjectsAndMi
 
 	docs := testutil.Documents(t, rendered)
 
-	roles, tokenRoles, bindings := testutil.Kind(docs, "ClusterRole"), testutil.Kind(docs, "Role"), testutil.Kind(docs, "RoleBinding")
+	roles := testutil.Kind(docs, "ClusterRole")
+	tokenRoles, bindings := inNamespace(t, testutil.Kind(docs, "Role"), "mitstack-node"), inNamespace(t, testutil.Kind(docs, "RoleBinding"), "mitstack-node")
 
 	require.Len(t, tokenRoles, 1)
 	require.Len(t, bindings, 1)

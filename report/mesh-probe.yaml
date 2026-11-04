@@ -1,0 +1,156 @@
+# The node report's outside probe: a CronJob in kube-system, which the mesh leaves out, that calls the mesh probe's
+# target without a workload identity and writes what came back into one ConfigMap. It may patch that ConfigMap alone,
+# by name, and the report may only read it.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .ConfigMap }}
+  namespace: {{ .Namespace }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mitstack-mesh-probe
+  namespace: {{ .Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mitstack-mesh-probe
+  namespace: {{ .Namespace }}
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [{{ .ConfigMap }}]
+    verbs: [patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mitstack-mesh-probe
+  namespace: {{ .Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mitstack-mesh-probe
+subjects:
+  - kind: ServiceAccount
+    name: mitstack-mesh-probe
+    namespace: {{ .Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mitstack-node-report-mesh-probe
+  namespace: {{ .Namespace }}
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [{{ .ConfigMap }}]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mitstack-node-report-mesh-probe
+  namespace: {{ .Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mitstack-node-report-mesh-probe
+subjects:
+  - kind: ServiceAccount
+    name: mitstack-node-report
+    namespace: {{ .ReportNamespace }}
+---
+# kube-system takes no default-deny, so this names the outside probe's only flows: the lookup of the target's name, the
+# API server for its one patch, and the target's port and 15008. The probe names the target with a final dot, so the
+# resolver sends that one name and no search-domain variant the DNS proxy would refuse.
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: mitstack-mesh-probe-outside
+spec:
+  endpointSelector:
+    matchLabels:
+      k8s:io.kubernetes.pod.namespace: {{ .Namespace }}
+      k8s:app.kubernetes.io/name: mitstack-mesh-probe
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:k8s-app: kube-dns
+      toPorts:
+        - ports: [{port: "53", protocol: UDP}, {port: "53", protocol: TCP}]
+          rules:
+            dns:
+              - matchName: {{ .Host }}
+    - toEntities: [kube-apiserver]
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .TargetNamespace }}
+            k8s:app.kubernetes.io/name: mitstack-mesh-probe
+      toPorts:
+        - ports: [{port: "{{ .Port }}", protocol: TCP}, {port: "15008", protocol: TCP}]
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: mitstack-mesh-probe
+  namespace: {{ .Namespace }}
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 120
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: mitstack-mesh-probe
+        spec:
+          serviceAccountName: mitstack-mesh-probe
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            fsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: probe
+              image: {{ .Image }}
+              command: [bash, {{ .Script }}]
+              env:
+                - name: MESH_PROBE_HOST
+                  value: {{ printf "%q" (printf "%s." .Host) }}
+                - name: MESH_PROBE_PORT
+                  value: "{{ .Port }}"
+                - name: MESH_PROBE_CONFIGMAP
+                  value: {{ .ConfigMap }}
+                - name: POD_NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
+                - name: HOME
+                  value: /tmp
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  memory: 128Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: tmp
+              emptyDir: {}

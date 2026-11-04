@@ -100,6 +100,7 @@ jobs:
           set -euo pipefail
           docker run --rm talos-tools:ci cat /usr/local/lib/mitstack/report.sh | cmp - report/scripts/report.sh
           docker run --rm talos-tools:ci cat /usr/local/lib/mitstack/label-nodes.sh | cmp - topology/scripts/label-nodes.sh
+          docker run --rm talos-tools:ci cat /usr/local/lib/mitstack/mesh-probe.sh | cmp - report/scripts/mesh-probe.sh
 
       - name: Run each of its commands
         run: |

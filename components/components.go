@@ -58,6 +58,7 @@ func Default() Set {
 			defaultManifest("istiod", "istio/istiod.yaml"),
 			defaultManifest("istio-cni", "istio/istio-cni.yaml"),
 			defaultManifest("ztunnel", "istio/ztunnel.yaml"),
+			defaultManifest("mitstack-mesh-probe", "mesh/probe.yaml"),
 		},
 		Inline: []Manifest{
 			defaultManifest("mitstack-metadata-block", "metadata/metadata-block.yaml"),

@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
 # Posts the node report: nodes with their zone and region labels, etcd members, each node's STATE and EPHEMERAL encryption,
 # Argo CD's health with each Application's applied objects, CloudNativePG's objects, each claim and the default storage
-# classes, every Service's type, the objects labelled mitstack.dev/subscription, the API server's key set and a checks member,
-# signed with a token the API server mints for the body through block-kit's token-request.sh in REPORT_PROOF_SCRIPT.
+# classes, every Service's type, the objects labelled mitstack.dev/subscription, the API server's key set, the mesh
+# probe's results and a checks member, signed with a token the API server mints for the body through block-kit's
+# token-request.sh in REPORT_PROOF_SCRIPT.
 # When a read, the body or the token request fails or times out, it posts an unsigned report whose error names it
 # instead, then exits non-zero.
-# Usage: REPORT_URL=<https url> SUBSCRIPTION_ID=<id> HOST_IP=<this pod's node> REPORT_PROOF_SCRIPT=<script> [POD_NAMESPACE=mitstack-node] [REPORT_TOKEN_FILE=/var/run/mitstack/token] [REPORT_READ_SECONDS=21] report.sh
+# Usage: REPORT_URL=<https url> SUBSCRIPTION_ID=<id> HOST_IP=<this pod's node> REPORT_PROOF_SCRIPT=<script> MESH_PROBE_URL=<target's url> MESH_PROBE_ANSWER=<its answer> MESH_PROBE_IDENTITY=<its SPIFFE id> MESH_PROBE_CONFIGMAP=<namespace/name> [POD_NAMESPACE=mitstack-node] [REPORT_TOKEN_FILE=/var/run/mitstack/token] [REPORT_READ_SECONDS=21] report.sh
 # It exists so the platform sees a cluster it never dials into, as ADR 0072 requires, with os:reader and no Secret right.
 set -euo pipefail
 
 # Nine limits of 21 seconds, the token request's 5, each with a 5-second kill grace, and the post's 20 make 264, which
-# leaves 16 seconds of the Job's activeDeadlineSeconds of 280 for the tools to start.
+# leaves 16 seconds of the Job's activeDeadlineSeconds of 280 for the tools to start. The two mesh reads run beside them.
 limit=${REPORT_READ_SECONDS:-21}
+# The outside probe writes every five minutes, so a result three runs old means it stopped.
+mesh_probe_max_age=900
 # Kinds as kubectl --show-kind names them, as blocks name their objects; never secret, as the report holds no Secret right.
 subscription_kinds=(namespace serviceaccount service resourcequota limitrange deployment.apps
   ingress.networking.k8s.io networkpolicy.networking.k8s.io role.rbac.authorization.k8s.io
@@ -38,6 +41,8 @@ read_into() {
 }
 
 collect() {
+  local mesh_reads
+  read_mesh & mesh_reads=$!
   read_into "kubectl get nodes" "$work/nodes.json" "$limit" kubectl get nodes -o json --show-managed-fields
   read_into "kubectl get applications" "$work/applications.json" "$limit" kubectl get applications.argoproj.io -n argocd -o json
   read_into "kubectl get --raw /openid/v1/jwks" "$work/jwks.json" "$limit" kubectl get --raw /openid/v1/jwks
@@ -46,6 +51,14 @@ collect() {
   read_beside cloudnative-pg kubectl get clusters.postgresql.cnpg.io,databases.postgresql.cnpg.io,databaseroles.postgresql.cnpg.io -A -o json
   read_beside storage-and-services kubectl get persistentvolumeclaims,storageclasses.storage.k8s.io,services -A -o json
   read_subscription_resources
+  wait "$mesh_reads"
+}
+
+# read_mesh calls the mesh probe's target from inside the mesh, where the report runs, and reads what the outside
+# probe last wrote of its own calls.
+read_mesh() {
+  read_beside mesh-inside curl -sS --proto '=http' --max-time 5 "$MESH_PROBE_URL"
+  read_beside mesh-outside kubectl get configmap "${MESH_PROBE_CONFIGMAP#*/}" -n "${MESH_PROBE_CONFIGMAP%%/*}" -o json
 }
 
 # read_beside NAME COMMAND... keeps the read's output, stderr and exit status, so a failed read is reported beside the
@@ -132,6 +145,16 @@ body() {
     --argjson volumes_status "$(cat "$work/system-volumes.status")" \
     --arg made_at "$made_at" \
     --slurpfile kinds "$work/subscription-resources.json" \
+    --rawfile mesh_inside "$work/mesh-inside.out" \
+    --rawfile mesh_inside_err "$work/mesh-inside.err" \
+    --argjson mesh_inside_status "$(cat "$work/mesh-inside.status")" \
+    --rawfile mesh_outside "$work/mesh-outside.out" \
+    --rawfile mesh_outside_err "$work/mesh-outside.err" \
+    --argjson mesh_outside_status "$(cat "$work/mesh-outside.status")" \
+    --arg mesh_answer "$MESH_PROBE_ANSWER" \
+    --arg mesh_identity "$MESH_PROBE_IDENTITY" \
+    --arg mesh_configmap "$MESH_PROBE_CONFIGMAP" \
+    --argjson mesh_max_age "$mesh_probe_max_age" \
     --from-file /dev/stdin <<'JQ'
     def talos_version: (.status.nodeInfo.osImage // "") | (try capture("^Talos \\((?<v>[^)]+)\\)").v catch null);
     def ready: [.status.conditions[]? | select(.type == "Ready") | .status == "True"] | any;
@@ -175,6 +198,63 @@ body() {
         if (.objects | length) + ($read.objects | length) <= 1000 then
           .objects += $read.objects | .kinds += [$read.kind]
         else . end);
+    def failed($reason): {passed: false, reason: $reason};
+    def call_from_inside:
+      if $mesh_inside_status != 0 then
+        failed("the call from inside the mesh ended with curl exit status \($mesh_inside_status): \($mesh_inside_err[-512:])")
+      elif $mesh_inside != $mesh_answer then
+        failed("the target answered \($mesh_inside[0:256] | tojson) where it serves \($mesh_answer | tojson)")
+      else {passed: true} end;
+    # outside_probe is what the outside probe last wrote, or an error naming why the report has nothing it can judge.
+    def outside_probe:
+      if $mesh_outside_status != 0 then
+        {error: "reading the ConfigMap \($mesh_configmap) ended with exit status \($mesh_outside_status): \($mesh_outside_err[-512:])"}
+      else (try ($mesh_outside | fromjson | .data.result | fromjson) catch null) as $probe
+        | (try (($at | fromdateiso8601) - ($probe.probedAt | fromdateiso8601)) catch null) as $age
+        | if ($probe | type) != "object" then {error: "the ConfigMap \($mesh_configmap) holds no result the outside probe wrote"}
+          elif $age == null then {error: "the outside probe's result in \($mesh_configmap) names no time it was made"}
+          elif $age > $mesh_max_age then
+            {error: "the outside probe last wrote at \($probe.probedAt), over \($mesh_max_age / 60) minutes before this report"}
+          elif $age < -60 then {error: "the outside probe's result in \($mesh_configmap) names \($probe.probedAt), after this report"}
+          else $probe end
+      end;
+    # judged turns a stored result whose shape breaks a judgement into a failed result, so the member never goes missing.
+    def judged(f): try f catch failed("the outside probe's result in \($mesh_configmap) cannot be judged: \(tostring)");
+    def workload_identity($probe):
+      ($probe.handshake.certificate // null) as $cert
+      | ($probe.probedAt // null) as $probed
+      | ($cert.identities // []) as $names
+      | if $probe.error then failed($probe.error)
+        elif $cert == null then
+          failed("no workload certificate came back from port 15008: openssl s_client ended with exit status \($probe.handshake.exitStatus): \($probe.handshake.stderr)")
+        elif ($names | index($mesh_identity)) == null then
+          failed("the certificate on port 15008 names \($names | if . == [] then "no identity" else join(", ") end), not \($mesh_identity)")
+        elif (try (($probed | fromdateiso8601) as $t | $t < ($cert.notBefore | fromdateiso8601) or $t > ($cert.notAfter | fromdateiso8601))
+            catch true) then
+          failed("the certificate on port 15008 holds from \($cert.notBefore) to \($cert.notAfter), which leaves out \($probed)")
+        else {passed: true, identity: $mesh_identity, serial: $cert.serial, notBefore: $cert.notBefore, notAfter: $cert.notAfter} end
+      | . + {probedAt: $probed};
+    # A plain call passes only when the target took the connection and closed it unanswered, curl's 52 or 56, while
+    # ztunnel held the target's certificate on 15008 and the target answered the report, so a target that is down or
+    # unreachable never reads as refused.
+    def plain_call_from_outside($probe; $identity; $inside):
+      ($probe.plainCall // {}) as $call
+      | if $probe.error then failed($probe.error)
+        elif $call.exitStatus == 0 then failed("the target answered a call that carried no workload identity: \($call.answer | tojson)")
+        elif [52, 56] | index($call.exitStatus) | not then
+          failed("the plain call never reached the target: curl ended with exit status \($call.exitStatus): \($call.stderr)")
+        elif $identity.passed | not then
+          failed("the target closed the plain call, and no workload certificate shows the mesh holds it: \($identity.reason)")
+        elif $inside.passed | not then
+          failed("the target closed the plain call, but it did not answer the report either, so it may be down: \($inside.reason)")
+        else {passed: true, curlExitStatus: $call.exitStatus, stderr: $call.stderr} end
+      | . + {probedAt: ($probe.probedAt // null)};
+    def mesh:
+      outside_probe as $probe | call_from_inside as $inside | judged(workload_identity($probe)) as $identity | {
+        callFromInside: $inside,
+        plainCallFromOutside: judged(plain_call_from_outside($probe; $identity; $inside)),
+        workloadIdentity: $identity
+      };
     subscription_resources as $listed | {
       subscriptionId: $subscription,
       reportedAt: $at,
@@ -215,6 +295,7 @@ body() {
       subscriptionResources: $listed.objects,
       subscriptionResourceKinds: $listed.kinds,
       jwks: $jwks[0],
+      mesh: mesh,
       checks: {contract: "node-report/v1", names: []}
     } | if tojson | utf8bytelength < 256 * 1024 then . else del(.argocd.applications[].resources) end
 JQ
@@ -242,6 +323,8 @@ post() {
 
 main() {
   : "${REPORT_URL:?names the report endpoint of the platform}" "${SUBSCRIPTION_ID:?names the subscription}" "${HOST_IP:?names the node this pod runs on}"
+  : "${MESH_PROBE_URL:?names the target of the mesh probe}" "${MESH_PROBE_ANSWER:?names what the target answers}"
+  : "${MESH_PROBE_IDENTITY:?names the SPIFFE identity of the target}" "${MESH_PROBE_CONFIGMAP:?names the ConfigMap of the outside probe}"
   local token_file=${REPORT_TOKEN_FILE:-/var/run/mitstack/token} status=0
   [ -s "$token_file" ] || fail "no report token at $token_file"
   token=$(cat "$token_file")

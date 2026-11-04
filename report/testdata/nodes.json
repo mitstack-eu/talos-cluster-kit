@@ -3,7 +3,18 @@
   "kind": "List",
   "items": [
     {
-      "metadata": {"name": "poc-talos4-cp1", "labels": {"mitstack.dev/subscription": "sub_0123456789ab"}},
+      "metadata": {
+        "name": "poc-talos4-cp1",
+        "labels": {"mitstack.dev/subscription": "sub_0123456789ab", "topology.kubernetes.io/zone": "fsn1", "topology.kubernetes.io/region": "eu-central"},
+        "managedFields": [
+          {"manager": "Go-http-client", "operation": "Update", "apiVersion": "v1", "time": "2026-11-04T08:00:00Z",
+            "fieldsType": "FieldsV1", "fieldsV1": {"f:metadata": {"f:labels": {"f:mitstack.dev/subscription": {}}}}},
+          {"manager": "mitstack-node-topology", "operation": "Update", "apiVersion": "v1", "time": "2026-11-04T08:05:00Z",
+            "fieldsType": "FieldsV1", "fieldsV1": {"f:metadata": {"f:labels": {"f:topology.kubernetes.io/region": {}, "f:topology.kubernetes.io/zone": {}}}}},
+          {"manager": "kubelet", "operation": "Update", "apiVersion": "v1", "time": "2026-11-04T08:06:00Z", "subresource": "status",
+            "fieldsType": "FieldsV1", "fieldsV1": {"f:status": {"f:conditions": {}}}}
+        ]
+      },
       "status": {
         "addresses": [{"type": "InternalIP", "address": "10.0.0.5"}, {"type": "Hostname", "address": "poc-talos4-cp1"}],
         "conditions": [{"type": "MemoryPressure", "status": "False"}, {"type": "Ready", "status": "True"}],
@@ -12,7 +23,14 @@
       }
     },
     {
-      "metadata": {"name": "poc-talos4-cp2"},
+      "metadata": {
+        "name": "poc-talos4-cp2",
+        "labels": {"topology.kubernetes.io/zone": "nbg1"},
+        "managedFields": [
+          {"manager": "kubectl-label", "operation": "Update", "apiVersion": "v1", "time": "2026-11-04T08:07:00Z",
+            "fieldsType": "FieldsV1", "fieldsV1": {"f:metadata": {"f:labels": {"f:topology.kubernetes.io/zone": {}}}}}
+        ]
+      },
       "status": {
         "addresses": [{"type": "InternalIP", "address": "10.0.0.6"}],
         "conditions": [{"type": "Ready", "status": "True"}],

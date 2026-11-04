@@ -22,14 +22,16 @@ import (
 
 	"github.com/mitstack-eu/talos-cluster-kit/report"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
+	"github.com/mitstack-eu/talos-cluster-kit/tools"
 )
 
 const (
 	reportToken       = "report-token-fixture"
-	nodesRead         = "get nodes -o json"
+	nodesRead         = "get nodes -o json --show-managed-fields"
 	applicationsRead  = "get applications.argoproj.io -n argocd -o json"
 	keySetRead        = "get --raw /openid/v1/jwks"
 	cloudNativePGRead = "get clusters.postgresql.cnpg.io,databases.postgresql.cnpg.io,databaseroles.postgresql.cnpg.io -A -o json"
+	storageRead       = "get persistentvolumeclaims,storageclasses.storage.k8s.io,services -A -o json"
 	membersRead       = "-n 10.0.0.6 etcd members"
 	volumesRead       = "-n 10.0.0.5,10.0.0.6,10.0.0.7 get volumestatus -o json"
 	tokenRequest      = "create token mitstack-node-report -n mitstack-node "
@@ -61,7 +63,8 @@ func talosctlAnswering(volumes string) string {
 
 func kubectlAnswering(overrides map[string]string) string {
 	answers := map[string]string{nodesRead: "cat testdata/nodes.json", applicationsRead: "cat testdata/applications.json",
-		keySetRead: "cat testdata/jwks.json", cloudNativePGRead: "cat testdata/cloudnative-pg.json", tokenRequest: "echo " + reportProof}
+		keySetRead: "cat testdata/jwks.json", cloudNativePGRead: "cat testdata/cloudnative-pg.json", storageRead: "cat testdata/storage-and-services.json",
+		tokenRequest: "echo " + reportProof}
 	for _, kind := range subscriptionKinds {
 		answers[subscriptionRead(kind)] = "cat testdata/subscription-resources/" + kind + ".json"
 	}
@@ -127,7 +130,11 @@ func renderedScript(t *testing.T, url string) (script, renderedProofScript strin
 	cronJobs := testutil.Kind(testutil.Documents(t, rendered), "CronJob")
 	require.Len(t, cronJobs, 1)
 	container := testutil.Field(t, cronJobs[0], "spec", "jobTemplate", "spec", "template", "spec", "containers", "0")
-	return testutil.Field(t, container, "command", "2").(string), testutil.ContainerEnv(t, container)["REPORT_PROOF_SCRIPT"]
+	assert.Equal(t, []any{"bash", tools.ScriptDir + "/report.sh"}, testutil.Field(t, container, "command"),
+		"the CronJob runs the report the tools image carries, so the machine configuration carries no script")
+	data, err := os.ReadFile(filepath.Join("scripts", "report.sh"))
+	require.NoError(t, err)
+	return string(data), testutil.ContainerEnv(t, container)["REPORT_PROOF_SCRIPT"]
 }
 
 func runReport(t *testing.T, fakes map[string]string, env ...string) (*testutil.Tools, *postedReport, string, error) {
@@ -158,12 +165,15 @@ func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipA
 	assert.Equal(t, "sub_0123456789ab", posted.body["subscriptionId"])
 	assert.Equal(t, []any{
 		map[string]any{"name": "poc-talos4-cp1", "ready": true, "talosVersion": "v1.14.4", "kubeletVersion": "v1.37.1", "internalIP": "10.0.0.5",
-			"allocatable": map[string]any{"cpu": "3950m", "memory": "7712Mi", "pods": "110"}},
+			"allocatable": map[string]any{"cpu": "3950m", "memory": "7712Mi", "pods": "110"}, "zone": "fsn1", "region": "eu-central",
+			"zoneLabelManagers": []any{map[string]any{"manager": "mitstack-node-topology", "operation": "Update", "time": "2026-11-04T08:05:00Z"}}},
 		map[string]any{"name": "poc-talos4-cp2", "ready": true, "talosVersion": "v1.14.4", "kubeletVersion": "v1.37.1", "internalIP": "10.0.0.6",
-			"allocatable": map[string]any{"cpu": "4", "memory": "15622080Ki", "pods": "110"}},
+			"allocatable": map[string]any{"cpu": "4", "memory": "15622080Ki", "pods": "110"}, "zone": "nbg1", "region": nil,
+			"zoneLabelManagers": []any{map[string]any{"manager": "kubectl-label", "operation": "Update", "time": "2026-11-04T08:07:00Z"}}},
 		map[string]any{"name": "poc-talos4-cp3", "ready": false, "talosVersion": "v1.14.3", "kubeletVersion": "v1.37.1", "internalIP": "10.0.0.7",
-			"allocatable": map[string]any{"cpu": "1950m", "memory": "3615Mi", "pods": "110"}},
-	}, posted.body["nodes"])
+			"allocatable": map[string]any{"cpu": "1950m", "memory": "3615Mi", "pods": "110"}, "zone": nil, "region": nil,
+			"zoneLabelManagers": []any{}},
+	}, posted.body["nodes"], "each node's zone and region labels, and every manager of its zone label")
 	assert.Equal(t, map[string]any{"members": []any{
 		map[string]any{"id": "25afe91c7e8956f1", "hostname": "poc-talos4-cp2", "peerURLs": []any{"https://10.0.0.6:2380"}, "learner": false},
 		map[string]any{"id": "a48f107742a8605c", "hostname": "poc-talos4-cp1", "peerURLs": []any{"https://10.0.0.5:2380"}, "learner": false},
@@ -171,12 +181,13 @@ func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipA
 	}}, posted.body["etcd"])
 	assert.Equal(t, readJSON(t, "testdata", "golden", "argocd.json"), posted.body["argocd"], "a Secret is among the applied objects, each with five fields")
 	wantCalls := []string{
-		"kubectl get nodes -o json",
+		"kubectl " + nodesRead,
 		"kubectl get applications.argoproj.io -n argocd -o json",
 		"kubectl " + keySetRead,
 		"talosctl " + membersRead,
 		"talosctl " + volumesRead,
 		"kubectl " + cloudNativePGRead,
+		"kubectl " + storageRead,
 	}
 	for _, kind := range subscriptionKinds {
 		wantCalls = append(wantCalls, "kubectl "+subscriptionRead(kind))
@@ -280,6 +291,30 @@ func TestReport_ListsCloudNativePGsClustersDatabasesAndRoles(t *testing.T) {
 	}, posted.body["cloudNativePG"])
 }
 
+func TestReport_ListsEachClaimWithItsStorageClassAndPhaseAndNamesTheDefaultStorageClasses(t *testing.T) {
+	_, posted, out, err := runReport(t, nil)
+
+	require.NoError(t, err, out)
+	assert.Equal(t, map[string]any{
+		"claims": []any{
+			map[string]any{"namespace": "app-shop", "name": "data-shop-db-1", "storageClass": "local-path", "phase": "Bound"},
+			map[string]any{"namespace": "app-shop", "name": "scratch", "storageClass": nil, "phase": "Pending"},
+		},
+		"defaultStorageClasses": []any{"local-path"},
+	}, posted.body["storage"])
+}
+
+func TestReport_ListsEveryServiceWithItsTypeWhetherOrNotABlockLabelledIt(t *testing.T) {
+	_, posted, out, err := runReport(t, nil)
+
+	require.NoError(t, err, out)
+	assert.Equal(t, []any{
+		map[string]any{"namespace": "default", "name": "kubernetes", "type": "ClusterIP"},
+		map[string]any{"namespace": "app-shop", "name": "shop-db-rw", "type": "ClusterIP"},
+		map[string]any{"namespace": "app-shop", "name": "edge", "type": "NodePort"},
+	}, posted.body["services"])
+}
+
 func TestReport_DeclaresItsNodeReportContractAndCarriesNoneOfTheVerdictsChecks(t *testing.T) {
 	_, posted, out, err := runReport(t, nil)
 
@@ -287,8 +322,12 @@ func TestReport_DeclaresItsNodeReportContractAndCarriesNoneOfTheVerdictsChecks(t
 	assert.Equal(t, map[string]any{"contract": "node-report/v1", "names": []any{}}, posted.body["checks"])
 }
 
-func TestReport_NamesAFailedVolumeOrCloudNativePGReadInlineWithItsExitStatusAsANumberInAFullReport(t *testing.T) {
+func TestReport_NamesAFailedVolumeCloudNativePGStorageOrServiceReadInlineWithItsExitStatusAsANumberInAFullReport(t *testing.T) {
 	notVolumes := map[string]any{"exitStatus": float64(0), "stderr": "talosctl exited 0, and its output is not the volume statuses this report reads"}
+	storageFailing := map[string]string{"kubectl": kubectlAnswering(map[string]string{
+		storageRead: `echo 'error: persistentvolumeclaims is forbidden' >&2; exit 1`})}
+	storageFailed := map[string]any{"exitStatus": float64(1), "stderr": "error: persistentvolumeclaims is forbidden\n"}
+	notStorage := map[string]string{"kubectl": kubectlAnswering(map[string]string{storageRead: "echo 'not json'"})}
 	cases := map[string]struct {
 		fakes map[string]string
 		key   string
@@ -304,6 +343,14 @@ func TestReport_NamesAFailedVolumeOrCloudNativePGReadInlineWithItsExitStatusAsAN
 			map[string]any{"exitStatus": float64(124), "stderr": ""}},
 		"the volume read prints no JSON":   {map[string]string{"talosctl": talosctlAnswering("echo 'not json'")}, "systemVolumes", notVolumes},
 		"the volume read prints no volume": {map[string]string{"talosctl": talosctlAnswering("true")}, "systemVolumes", notVolumes},
+		"the storage read exits 1":         {storageFailing, "storage", storageFailed},
+		"the Service read exits 1":         {storageFailing, "services", storageFailed},
+		"the storage read times out": {map[string]string{"kubectl": kubectlAnswering(map[string]string{storageRead: "sleep 10"})},
+			"storage", map[string]any{"exitStatus": float64(124), "stderr": ""}},
+		"the storage read prints no JSON": {notStorage, "storage", map[string]any{"exitStatus": float64(0),
+			"stderr": "kubectl exited 0, and its output is not the claims, storage classes and Services this report reads"}},
+		"the Service read prints no JSON": {notStorage, "services", map[string]any{"exitStatus": float64(0),
+			"stderr": "kubectl exited 0, and its output is not the claims, storage classes and Services this report reads"}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -393,6 +440,8 @@ func TestManifests_LetsTheReportListEachKindItReadsAndCloudNativePGsObjectsAndMi
 		map[string]any{"apiGroups": []any{"external-secrets.io"}, "resources": []any{"externalsecrets"}, "verbs": []any{"list"}},
 		map[string]any{"apiGroups": []any{"postgresql.cnpg.io"}, "resources": []any{"clusters", "databases", "databaseroles"},
 			"verbs": []any{"get", "list"}},
+		map[string]any{"apiGroups": []any{""}, "resources": []any{"persistentvolumeclaims"}, "verbs": []any{"list"}},
+		map[string]any{"apiGroups": []any{"storage.k8s.io"}, "resources": []any{"storageclasses"}, "verbs": []any{"list"}},
 	}, rules)
 	for _, rule := range rules {
 		resources := testutil.Field(t, rule, "resources").([]any)

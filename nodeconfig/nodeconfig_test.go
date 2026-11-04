@@ -705,3 +705,45 @@ func TestRender_RefusesAVSwitchItsProfileOrNetworkCannotCarry(t *testing.T) {
 		})
 	}
 }
+
+func TestRenderWorker_LabelsTheNodeWithItsOwnLabelsBesideTheSubscription(t *testing.T) {
+	cluster, node := robotWorker(t)
+	node.Labels = map[string]string{"topology.kubernetes.io/zone": "hel1", "topology.kubernetes.io/region": "eu-central"}
+
+	got, err := nodeconfig.RenderWorker(cluster, node)
+
+	require.NoError(t, err)
+	nodeConfigs := testutil.Kind(testutil.Documents(t, got), "KubeNodeConfig")
+	require.Len(t, nodeConfigs, 1)
+	assert.Equal(t, map[string]any{
+		nodeconfig.SubscriptionLabel:    cluster.SubscriptionID,
+		"topology.kubernetes.io/zone":   "hel1",
+		"topology.kubernetes.io/region": "eu-central",
+	}, testutil.Field(t, nodeConfigs[0], "labels"))
+}
+
+func TestRender_RefusesNodeLabelsEveryCloudNodeWouldShareOrThatReplaceTheSubscriptions(t *testing.T) {
+	cases := []struct {
+		name    string
+		profile nodeconfig.Profile
+		node    nodeconfig.Node
+		want    string
+	}{
+		{name: "a Cloud node, whose configuration every Cloud node boots", profile: nodeconfig.HCloud,
+			node: nodeconfig.Node{Labels: map[string]string{"topology.kubernetes.io/zone": "fsn1"}}, want: "every Cloud node"},
+		{name: "a label that replaces the subscription's", profile: nodeconfig.Metal,
+			node: nodeconfig.Node{Hostname: "wk-hel1", Labels: map[string]string{nodeconfig.SubscriptionLabel: "sub_other"}}, want: nodeconfig.SubscriptionLabel},
+		{name: "a value Kubernetes refuses", profile: nodeconfig.Metal,
+			node: nodeconfig.Node{Hostname: "wk-hel1", Labels: map[string]string{"topology.kubernetes.io/zone": "hel1 dc1"}}, want: "hel1 dc1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cluster := testutil.NewCluster(t, testutil.WithProfile(tc.profile))
+
+			_, err := nodeconfig.RenderWorker(cluster, tc.node)
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}

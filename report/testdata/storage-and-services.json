@@ -1,0 +1,50 @@
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "apiVersion": "v1",
+      "kind": "PersistentVolumeClaim",
+      "metadata": {"name": "data-shop-db-1", "namespace": "app-shop", "annotations": {"volume.kubernetes.io/selected-node": "poc-talos4-cp1"}},
+      "spec": {"storageClassName": "local-path", "accessModes": ["ReadWriteOnce"], "resources": {"requests": {"storage": "10Gi"}}},
+      "status": {"phase": "Bound", "capacity": {"storage": "10Gi"}}
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "PersistentVolumeClaim",
+      "metadata": {"name": "scratch", "namespace": "app-shop"},
+      "spec": {"accessModes": ["ReadWriteOnce"], "resources": {"requests": {"storage": "1Gi"}}},
+      "status": {"phase": "Pending"}
+    },
+    {
+      "apiVersion": "storage.k8s.io/v1",
+      "kind": "StorageClass",
+      "metadata": {"name": "local-path", "annotations": {"storageclass.kubernetes.io/is-default-class": "true"}},
+      "provisioner": "rancher.io/local-path"
+    },
+    {
+      "apiVersion": "storage.k8s.io/v1",
+      "kind": "StorageClass",
+      "metadata": {"name": "openbao-local", "annotations": {"storageclass.kubernetes.io/is-default-class": "false"}},
+      "provisioner": "rancher.io/local-path"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {"name": "kubernetes", "namespace": "default"},
+      "spec": {"type": "ClusterIP", "clusterIP": "10.96.0.1", "ports": [{"port": 443}]}
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {"name": "shop-db-rw", "namespace": "app-shop", "labels": {"cnpg.io/cluster": "shop-db"}},
+      "spec": {"type": "ClusterIP", "clusterIP": "10.96.4.20", "ports": [{"port": 5432}]}
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {"name": "edge", "namespace": "app-shop", "labels": {"mitstack.dev/subscription": "sub_shop01234567"}},
+      "spec": {"type": "NodePort", "clusterIP": "10.96.4.21", "ports": [{"port": 80, "nodePort": 30080}]}
+    }
+  ]
+}

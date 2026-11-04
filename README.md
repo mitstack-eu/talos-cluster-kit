@@ -738,6 +738,8 @@ change `report/scripts/report.sh`.
 | `subscriptionResources` and `subscriptionResourceKinds` | The objects a block labels `mitstack.dev/subscription`, and the object types the report read whole | One read per object type in `subscription_kinds` in `report.sh` |
 | `jwks` | The key set the API server signs service-account tokens with | `/openid/v1/jwks` |
 | `mesh` | The mesh probe's results, which [the section on the mesh](#how-the-node-report-shows-the-mesh-refusing-a-call) explains | The probe's target and its ConfigMap |
+| `gateways` | Each gateway's `address`, `passed` when its mirror answered HTTP 200 on `/v2/` over a certificate the gateway CA signs, and otherwise a `reason` naming curl's exit status or the answer | Each mirror in `GATEWAYS`, verified against `GATEWAY_CA`, the CA's certificate alone |
+| `egress` | `passed` when a TLS connection to Let's Encrypt's ACME directory opened and answered, and otherwise a `reason` naming curl's exit status. The connection leaves through the network's default route, so it reads the egress of the gateway that route names | `EGRESS_URL`, `https://acme-v02.api.letsencrypt.org/directory` |
 | `repositorySecrets`, `admission` and `securityScans` | An `unreadable` reason in place of the list each would hold, since the report cannot read them yet | Fixed text in `report.sh` |
 | `checks` | Contract `node-report/v1` and the nine checks the report declares | Fixed text in `report.sh` |
 
@@ -755,7 +757,8 @@ size, and for userinfo whether it says a caller is signed in.
 Each read runs under `REPORT_READ_SECONDS`, 21 seconds by default. Most reads
 that fail stay inline in a full report, as `{exitStatus, stderr}` in the member
 that read fills, so one store that does not answer hides nothing else. A route
-or OpenBao read that fails is kept in its own entry the same way. An object
+or OpenBao read that fails is kept in its own entry the same way, and a gateway
+or egress read that fails reads `passed: false` with its reason. An object
 type whose read fails is left out of `subscriptionResourceKinds`.
 
 Every report needs four reads: the nodes, the Applications, the key set and

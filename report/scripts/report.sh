@@ -4,18 +4,19 @@
 # route answers a caller without a session, Argo CD's Services, Ingresses and pod images, CloudNativePG's objects with
 # each cluster's primary, every pod's node and phase, each OpenBao member's seal state and the active one, each claim
 # and the default storage classes, every Service's type, each default-deny NetworkPolicy, the objects labelled
-# mitstack.dev/subscription, the API server's key set, the mesh probe's results and a checks member naming each check
-# of the platform's verdict, signed with a token the API server mints for the body through block-kit's
+# mitstack.dev/subscription, the API server's key set, the mesh probe's results, whether each gateway's mirror answers
+# under the gateway CA, whether a TLS connection to Let's Encrypt's ACME API opens through the network's default route,
+# and a checks member naming each check of the platform's verdict, signed with a token the API server mints for the body through block-kit's
 # token-request.sh in REPORT_PROOF_SCRIPT.
 # When a read, the body or the token request fails or times out, it posts an unsigned report whose error names it
 # instead, then exits non-zero.
-# Usage: REPORT_URL=<https url> SUBSCRIPTION_ID=<id> HOST_IP=<this pod's node> REPORT_PROOF_SCRIPT=<script> MESH_PROBE_URL=<target's url> MESH_PROBE_ANSWER=<its answer> MESH_PROBE_IDENTITY=<its SPIFFE id> MESH_PROBE_CONFIGMAP=<namespace/name> OPENBAO_MEMBERS="<name>=<https url> ..." OPENBAO_CA_FILE=<pem> ARGOCD_URL=<https url> [POD_NAMESPACE=mitstack-node] [REPORT_TOKEN_FILE=/var/run/mitstack/token] [REPORT_READ_SECONDS=21] report.sh
+# Usage: REPORT_URL=<https url> SUBSCRIPTION_ID=<id> HOST_IP=<this pod's node> REPORT_PROOF_SCRIPT=<script> MESH_PROBE_URL=<target's url> MESH_PROBE_ANSWER=<its answer> MESH_PROBE_IDENTITY=<its SPIFFE id> MESH_PROBE_CONFIGMAP=<namespace/name> OPENBAO_MEMBERS="<name>=<https url> ..." OPENBAO_CA_FILE=<pem> ARGOCD_URL=<https url> GATEWAYS="<address>=<https url> ..." GATEWAY_CA=<pem> EGRESS_URL=<https url> [POD_NAMESPACE=mitstack-node] [REPORT_TOKEN_FILE=/var/run/mitstack/token] [REPORT_READ_SECONDS=21] report.sh
 # It exists so the platform sees a cluster it never dials into, as ADR 0072 requires, with os:reader and no Secret right.
 set -euo pipefail
 
 # Nine limits of 21 seconds, the token request's 5, each with a 5-second kill grace, and the post's 20 make 264, which
 # leaves 16 seconds of the Job's activeDeadlineSeconds of 280 for the tools to start. The mesh, pod, Argo CD,
-# default-deny, OpenBao and etcd status reads run beside them, each within one limit.
+# default-deny, OpenBao, etcd status, gateway and egress reads run beside them, each within one limit.
 limit=${REPORT_READ_SECONDS:-21}
 # The outside probe writes every five minutes, so a result three runs old means it stopped.
 mesh_probe_max_age=900
@@ -50,8 +51,9 @@ read_into() {
 }
 
 collect() {
-  local mesh_reads cluster_reads argocd_reads etcd_reads
+  local mesh_reads cluster_reads argocd_reads etcd_reads egress_reads
   read_mesh & mesh_reads=$!
+  read_egress & egress_reads=$!
   read_cluster & cluster_reads=$!
   read_argocd & argocd_reads=$!
   read_into "kubectl get nodes" "$work/nodes.json" "$limit" kubectl get nodes -o json --show-managed-fields
@@ -63,8 +65,36 @@ collect() {
   read_beside cloudnative-pg kubectl get clusters.postgresql.cnpg.io,databases.postgresql.cnpg.io,databaseroles.postgresql.cnpg.io -A -o json
   read_beside storage-and-services kubectl get persistentvolumeclaims,storageclasses.storage.k8s.io,services -A -o json
   read_subscription_resources
-  wait "$mesh_reads" "$cluster_reads" "$argocd_reads" "$etcd_reads"
+  wait "$mesh_reads" "$cluster_reads" "$argocd_reads" "$etcd_reads" "$egress_reads"
   openbao_members > "$work/openbao.json"
+  gateway_readings > "$work/gateways.json"
+}
+
+# read_egress asks each gateway's mirror for its API root under the gateway CA, and opens a TLS connection to
+# EGRESS_URL, all at the same time. -q reads no ~/.curlrc, and without --fail any answer over a verified connection counts.
+read_egress() {
+  local gateway
+  mkdir "$work/gateways"
+  printf '%s\n' "$GATEWAY_CA" > "$work/gateway-ca.pem"
+  for gateway in $GATEWAYS; do
+    read_beside "gateways/${gateway%%=*}" curl -q -sS --proto '=https' --cacert "$work/gateway-ca.pem" --max-time 5 \
+      -o /dev/null -w '%{http_code}' "${gateway#*=}/v2/" &
+  done
+  read_beside egress curl -q -sS --proto '=https' --max-time 5 -o /dev/null "$EGRESS_URL" &
+  wait
+}
+
+# gateway_readings prints one reading per gateway: passed when its mirror answered 200, or why not.
+gateway_readings() {
+  local gateway address dir=$work/gateways
+  for gateway in $GATEWAYS; do
+    address=${gateway%%=*}
+    jq -c -n --arg address "$address" --rawfile answer "$dir/$address.out" --rawfile stderr "$dir/$address.err" \
+      --argjson status "$(cat "$dir/$address.status")" '
+      if $status != 0 then {address: $address, passed: false, reason: "curl ended with exit status \($status): \($stderr[-512:])"}
+      elif $answer != "200" then {address: $address, passed: false, reason: "the mirror answered HTTP \($answer[0:16])"}
+      else {address: $address, passed: true} end'
+  done
 }
 
 # read_cluster reads every pod and each default-deny NetworkPolicy, and asks each OpenBao member for its seal state and
@@ -265,6 +295,10 @@ body() {
     --arg mesh_identity "$MESH_PROBE_IDENTITY" \
     --arg mesh_configmap "$MESH_PROBE_CONFIGMAP" \
     --argjson mesh_max_age "$mesh_probe_max_age" \
+    --slurpfile gateways "$work/gateways.json" \
+    --arg egress_url "$EGRESS_URL" \
+    --rawfile egress_err "$work/egress.err" \
+    --argjson egress_status "$(cat "$work/egress.status")" \
     --from-file /dev/stdin <<'JQ'
     def talos_version: (.status.nodeInfo.osImage // "") | (try capture("^Talos \\((?<v>[^)]+)\\)").v catch null);
     def ready: [.status.conditions[]? | select(.type == "Ready") | .status == "True"] | any;
@@ -444,6 +478,9 @@ body() {
       securityScans: {unreadable: "no kube-bench or kubescape scan runs on this cluster yet, so the report has no summary to carry"},
       jwks: $jwks[0],
       mesh: mesh,
+      gateways: $gateways,
+      egress: (if $egress_status == 0 then {passed: true}
+        else failed("the TLS connection to \($egress_url) ended with curl exit status \($egress_status): \($egress_err[-512:])") end),
       checks: {contract: "node-report/v1", names: ["routes", "exposure", "credentials", "version", "advisories", "admission",
         "default-deny", "cis-benchmark", "nsa-scan"]}
     } | if tojson | utf8bytelength < 256 * 1024 then . else del(.argocd.applications[].resources) end
@@ -475,7 +512,8 @@ main() {
   : "${MESH_PROBE_URL:?names the target of the mesh probe}" "${MESH_PROBE_ANSWER:?names what the target answers}"
   : "${MESH_PROBE_IDENTITY:?names the SPIFFE identity of the target}" "${MESH_PROBE_CONFIGMAP:?names the ConfigMap of the outside probe}"
   : "${OPENBAO_MEMBERS:?names each OpenBao member and its URL}" "${OPENBAO_CA_FILE:?names the authority that signs the OpenBao certificate}"
-  : "${ARGOCD_URL:?names the URL of the Argo CD server}"
+  : "${ARGOCD_URL:?names the URL of the Argo CD server}" "${EGRESS_URL:?names where the egress reading opens a TLS connection}"
+  : "${GATEWAYS?names each gateway and the URL of its mirror}" "${GATEWAY_CA?holds the certificate of the CA that signs every gateway}"
   local token_file=${REPORT_TOKEN_FILE:-/var/run/mitstack/token} status=0
   [ -s "$token_file" ] || fail "no report token at $token_file"
   token=$(cat "$token_file")

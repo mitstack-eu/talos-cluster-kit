@@ -160,6 +160,8 @@ func (p Plane) render(ctx context.Context, apiAddr, ingressAddr netip.Addr, now 
 			return installation{}, err
 		}
 	}
+	// The node report trusts the CA this install mints for the gateways' mirrors.
+	p.GatewayCA = &gatewayCA
 	set, err := p.clusterComponents(base, token)
 	if err != nil {
 		return installation{}, err

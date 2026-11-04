@@ -207,13 +207,14 @@ func (p Plane) render(ctx context.Context, apiAddr, ingressAddr netip.Addr, now 
 	if inst.workerBuilderUserData, err = builderUserData("worker builder", workerConfig, gatewayCA.Cert, nil); err != nil {
 		return installation{}, err
 	}
-	gatewaySet, extra, err := p.gatewayComponents()
+	list, err := p.gatewayList()
 	if err != nil {
 		return installation{}, err
 	}
-	if inst.listDigest, err = sameList(set, gatewaySet, extra); err != nil {
+	if err := sameList(set, list); err != nil {
 		return installation{}, err
 	}
+	inst.listDigest = list.Digest()
 	// The address only fills the talosconfig's defaults, since the bootstrap names the node it finds on every call.
 	talosconfig, err := secrets.AdminTalosconfig(apiAddr, adminTalosconfigTTL, now)
 	if err != nil {
@@ -224,7 +225,7 @@ func (p Plane) render(ctx context.Context, apiAddr, ingressAddr netip.Addr, now 
 		if loc != GatewayLocation {
 			bootstrap = nil
 		}
-		userData, tls, err := p.renderGateway(loc, ingressAddr, now, gatewayCA, gatewaySet, extra, bootstrap)
+		userData, tls, err := p.renderGateway(loc, ingressAddr, now, gatewayCA, list, bootstrap)
 		if err != nil {
 			return installation{}, err
 		}
@@ -238,25 +239,21 @@ func (p Plane) render(ctx context.Context, apiAddr, ingressAddr netip.Addr, now 
 }
 
 // sameList refuses an install whose gateways would mirror or serve other than the cluster's whole set needs, since a
-// replacement renders the gateways' set alone, and returns the list's digest.
-func sameList(cluster, gatewaySet components.Set, extra []components.Image) (string, error) {
+// replacement renders the gateways' list alone.
+func sameList(cluster components.Set, gateways gateway.List) error {
 	want, err := gateway.ListDigest(cluster)
 	if err != nil {
-		return "", err
+		return err
 	}
-	have, err := gateway.ListDigest(gatewaySet, extra...)
-	if err != nil {
-		return "", err
+	if gateways.Digest() != want {
+		return errors.New("the gateways' set mirrors or serves other than the cluster's whole set, so a replacement gateway would not serve what the nodes pull")
 	}
-	if have != want {
-		return "", errors.New("the gateways' set mirrors or serves other than the cluster's whole set, so a replacement gateway would not serve what the nodes pull")
-	}
-	return have, nil
+	return nil
 }
 
 // renderGateway issues the location's certificate from ca and renders its user data, with the first-node bootstrap
 // only when bootstrap is set.
-func (p Plane) renderGateway(loc string, ingressAddr netip.Addr, now time.Time, ca gateway.CA, set components.Set, extra []components.Image, bootstrap *firstNodeBootstrap) (string, gateway.TLS, error) {
+func (p Plane) renderGateway(loc string, ingressAddr netip.Addr, now time.Time, ca gateway.CA, list gateway.List, bootstrap *firstNodeBootstrap) (string, gateway.TLS, error) {
 	address := netip.MustParseAddr(GatewayAddresses[loc])
 	tls, err := ca.Issue(address, now, gatewayCertValidity)
 	if err != nil {
@@ -271,8 +268,7 @@ func (p Plane) renderGateway(loc string, ingressAddr netip.Addr, now time.Time, 
 		Network:         netip.MustParsePrefix(NetworkIPRange),
 		Ingress:         ingressAddr,
 		TLS:             tls,
-		Components:      set,
-		ExtraImages:     extra,
+		List:            list,
 		ManifestBaseURL: gateway.ReleaseURL(release),
 	})
 	if err != nil {

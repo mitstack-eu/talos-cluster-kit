@@ -58,25 +58,25 @@ func (p Plane) gatewayComponents() (components.Set, []components.Image, error) {
 	return set, []components.Image{tools}, nil
 }
 
-// listDigests keeps each list's digest by its set and tools image, since reading the images out of every manifest takes
-// the better part of a second and one call reads the digest at several steps.
-var listDigests sync.Map
+// gatewayLists keeps each gateway list by its set and tools image, since reading the images out of every manifest takes
+// the better part of a second and one call reads the list at several steps.
+var gatewayLists sync.Map
 
-func (p Plane) listDigest() (string, error) {
+func (p Plane) gatewayList() (gateway.List, error) {
 	set, extra, err := p.gatewayComponents()
 	if err != nil {
-		return "", err
+		return gateway.List{}, err
 	}
 	key := fmt.Sprint(p.Hosting != nil, extra)
-	if digest, ok := listDigests.Load(key); ok {
-		return digest.(string), nil
+	if list, ok := gatewayLists.Load(key); ok {
+		return list.(gateway.List), nil
 	}
-	digest, err := gateway.ListDigest(set, extra...)
+	list, err := gateway.NewList(set, extra...)
 	if err != nil {
-		return "", err
+		return gateway.List{}, err
 	}
-	listDigests.Store(key, digest)
-	return digest, nil
+	gatewayLists.Store(key, list)
+	return list, nil
 }
 
 // zoneStep creates the gateway of a location that has none and attaches each gateway at its address.
@@ -321,10 +321,11 @@ type replacement struct {
 }
 
 func (p Plane) replacement(st State, network Network) (replacement, error) {
-	digest, err := p.listDigest()
+	list, err := p.gatewayList()
 	if err != nil {
 		return replacement{}, err
 	}
+	digest := list.Digest()
 	r := replacement{digest: digest}
 	for _, loc := range Locations {
 		if gw, ok := st.GatewayIn(loc); ok && gw.Labels[KeyGatewayList] == digest {
@@ -428,11 +429,11 @@ func (p Plane) createGateway(ctx context.Context, st State, s site, loc string, 
 	if err != nil {
 		return fmt.Errorf("the ingress load balancer has no public address: %w", err)
 	}
-	set, extra, err := p.gatewayComponents()
+	list, err := p.gatewayList()
 	if err != nil {
 		return err
 	}
-	userData, tls, err := p.renderGateway(loc, ingressAddr, p.now(), *p.GatewayCA, set, extra, nil)
+	userData, tls, err := p.renderGateway(loc, ingressAddr, p.now(), *p.GatewayCA, list, nil)
 	if err != nil {
 		return err
 	}
@@ -440,11 +441,7 @@ func (p Plane) createGateway(ctx context.Context, st State, s site, loc string, 
 	if err != nil {
 		return err
 	}
-	digest, err := p.listDigest()
-	if err != nil {
-		return err
-	}
-	spec, err := p.gatewaySpec(ctx, loc, userData, s, sibling.Labels[KeyEnrolmentSHA256], sibling.Labels[KeyIssuerBucket], digest)
+	spec, err := p.gatewaySpec(ctx, loc, userData, s, sibling.Labels[KeyEnrolmentSHA256], sibling.Labels[KeyIssuerBucket], list.Digest())
 	if err != nil {
 		return err
 	}

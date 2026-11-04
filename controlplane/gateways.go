@@ -10,6 +10,7 @@ import (
 	"maps"
 	"net/netip"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
@@ -57,12 +58,25 @@ func (p Plane) gatewayComponents() (components.Set, []components.Image, error) {
 	return set, []components.Image{tools}, nil
 }
 
+// listDigests keeps each list's digest by its set and tools image, since reading the images out of every manifest takes
+// the better part of a second and one call reads the digest at several steps.
+var listDigests sync.Map
+
 func (p Plane) listDigest() (string, error) {
 	set, extra, err := p.gatewayComponents()
 	if err != nil {
 		return "", err
 	}
-	return gateway.ListDigest(set, extra...)
+	key := fmt.Sprint(p.Hosting != nil, extra)
+	if digest, ok := listDigests.Load(key); ok {
+		return digest.(string), nil
+	}
+	digest, err := gateway.ListDigest(set, extra...)
+	if err != nil {
+		return "", err
+	}
+	listDigests.Store(key, digest)
+	return digest, nil
 }
 
 // zoneStep creates the gateway of a location that has none and attaches each gateway at its address.
@@ -424,7 +438,7 @@ func (p Plane) createGateway(ctx context.Context, st State, s site, loc string, 
 	if err != nil {
 		return err
 	}
-	digest, err := gateway.ListDigest(set, extra...)
+	digest, err := p.listDigest()
 	if err != nil {
 		return err
 	}

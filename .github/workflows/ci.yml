@@ -82,7 +82,7 @@ jobs:
         run: kyverno test components/admission/tests
 
       - name: shellcheck
-        run: shellcheck -x scripts/*.sh scripts/lib/*.sh etcd/scripts/*.sh gateway/scripts/*.sh report/scripts/*.sh openbaoinit/scripts/*.sh controlplane/scripts/*.sh
+        run: shellcheck -x scripts/*.sh scripts/lib/*.sh etcd/scripts/*.sh gateway/scripts/*.sh report/scripts/*.sh topology/scripts/*.sh openbaoinit/scripts/*.sh controlplane/scripts/*.sh
 
   tools-image:
     name: tools image
@@ -93,7 +93,13 @@ jobs:
           persist-credentials: false
 
       - name: Build the tools image
-        run: docker build -t talos-tools:ci tools
+        run: docker build -t talos-tools:ci -f tools/Dockerfile .
+
+      - name: Check it carries each CronJob's script as the repository holds it
+        run: |
+          set -euo pipefail
+          docker run --rm talos-tools:ci cat /usr/local/lib/mitstack/report.sh | cmp - report/scripts/report.sh
+          docker run --rm talos-tools:ci cat /usr/local/lib/mitstack/label-nodes.sh | cmp - topology/scripts/label-nodes.sh
 
       - name: Run each of its commands
         run: |
@@ -189,7 +195,7 @@ jobs:
           set -euo pipefail
           echo "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           docker buildx build --push --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
-            -t "$TOOLS_PACKAGE:$TAG" --metadata-file "$RUNNER_TEMP/build.json" tools
+            -t "$TOOLS_PACKAGE:$TAG" --metadata-file "$RUNNER_TEMP/build.json" -f tools/Dockerfile .
           ref="$TOOLS_PACKAGE:$TAG@$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/build.json")"
           cosign sign --yes "$ref"
           docker logout ghcr.io

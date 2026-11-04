@@ -17,6 +17,10 @@ var Env string
 //go:embed jq.env
 var jqEnv string
 
+// ScriptDir is where the tools image carries the scripts the kit's CronJobs run, so a node's machine configuration, which
+// the builder's user data caps, carries none of them.
+const ScriptDir = "/usr/local/lib/mitstack"
+
 // Image is the tools image this release published and signed, which the release job writes into the commit it tags.
 const Image = "ghcr.io/mitstack-eu/talos-cluster-kit-tools:unreleased@sha256:0000000000000000000000000000000000000000000000000000000000000000"
 

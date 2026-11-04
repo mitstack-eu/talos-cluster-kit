@@ -4,10 +4,10 @@ package nodeconfig
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/netip"
 	"net/url"
-	"regexp"
 	"slices"
 
 	machineryconfig "github.com/siderolabs/talos/pkg/machinery/config"
@@ -60,6 +60,8 @@ type Node struct {
 	Hostname string
 	// VSwitch puts a Metal node on a Hetzner vSwitch; without one, Talos runs its default DHCP on every link.
 	VSwitch *VSwitch
+	// Labels are a Metal node's own Kubernetes labels, set beside the subscription's.
+	Labels map[string]string
 }
 
 // VSwitch is a dedicated node's one address, on a VLAN of the card found by its permanent MAC, routed through the subnet's first address.
@@ -109,7 +111,7 @@ func (c Cluster) render(role machine.Type, n Node) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	cfg, err := container.New(append(c.adapt(base.Documents()), extra...)...)
+	cfg, err := container.New(append(c.adapt(base.Documents(), n), extra...)...)
 	if err != nil {
 		return nil, fmt.Errorf("assemble the configuration of cluster %s: %w", c.Name, err)
 	}
@@ -145,15 +147,13 @@ func (c Cluster) endpoint() string {
 	return "https://" + netip.AddrPortFrom(c.APIAddresses[0], apiServerPort).String()
 }
 
-var labelValueRe = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9_.-]{0,61}[A-Za-z0-9])?$`)
-
 func (c Cluster) validate(n Node) error {
 	var errs []error
 	if c.Secrets == nil {
 		errs = append(errs, errors.New("the cluster has no secrets"))
 	}
-	if !labelValueRe.MatchString(c.SubscriptionID) {
-		errs = append(errs, fmt.Errorf("subscription id %q is not a Kubernetes label value", c.SubscriptionID))
+	if err := check.LabelValue(c.SubscriptionID); err != nil {
+		errs = append(errs, fmt.Errorf("subscription id %w", err))
 	}
 	if !c.Network.IsValid() {
 		errs = append(errs, errors.New("the cluster has no private network"))
@@ -196,15 +196,33 @@ func (c Cluster) validateNode(n Node) error {
 		if n.VSwitch != nil {
 			return errors.New("a Cloud node has no vSwitch, since it joins the network through its own private interface")
 		}
+		if len(n.Labels) > 0 {
+			return errors.New("a Cloud node boots the one configuration every Cloud node shares, so its own labels would land on every Cloud node")
+		}
 	case Metal:
 		if err := check.DNS1123Label(n.Hostname); err != nil {
 			return fmt.Errorf("a dedicated node needs its own hostname: %w", err)
+		}
+		if err := validateLabels(n.Labels); err != nil {
+			return err
 		}
 		if n.VSwitch != nil {
 			return c.validateVSwitch(*n.VSwitch)
 		}
 	default:
 		return fmt.Errorf("profile %q is neither %q nor %q", c.Profile, HCloud, Metal)
+	}
+	return nil
+}
+
+func validateLabels(labels map[string]string) error {
+	for _, key := range slices.Sorted(maps.Keys(labels)) {
+		if key == SubscriptionLabel {
+			return fmt.Errorf("label %s is the subscription's, which no node replaces", key)
+		}
+		if err := check.LabelValue(labels[key]); err != nil {
+			return fmt.Errorf("label %s: %w", key, err)
+		}
 	}
 	return nil
 }

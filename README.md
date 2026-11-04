@@ -47,11 +47,12 @@ the order a block uses them.
 | `mirror` | Lists every image the nodes pull, each by digest | `List`, `Render` |
 | `gateway` | Renders the cloud-config of the gateway in each location, and mints the cluster's gateway CA and each gateway's certificate | `Render`, `Inputs`, `NewCA`, `CA.Issue`, `ReleaseURL` |
 | `etcd` | Renders the Job that removes a lost node's etcd member and then its Node object, and holds the gateway's script that bootstraps etcd empty or from a snapshot | `RemoveMemberJob`, `BootstrapScript`, `Bootstrap.Args` |
-| `report` | Renders the node report, a CronJob that posts each node with its Talos version and allocatable resources, the etcd membership, how each node's `STATE` and `EPHEMERAL` are encrypted, Argo CD's health with the objects each Application applied, CloudNativePG's clusters, databases and roles, the objects a block labels with its subscription, and the API server's key set to the platform, with a `checks` member declaring which of the platform verdict's checks it carries. When any read but the volume, CloudNativePG and labelled-object reads fails or times out, it posts a report holding only an `error` that names the read, in place of the full report. Each report is signed with a token the API server mints for its exact body. The report holds no right on Secrets | `Manifests` |
+| `report` | Renders the node report, a CronJob that posts each node with its Talos version, allocatable resources, zone and region labels and the managers of its zone label, the etcd membership, how each node's `STATE` and `EPHEMERAL` are encrypted, Argo CD's health with the objects each Application applied, CloudNativePG's clusters, databases and roles, each PersistentVolumeClaim with its storage class and phase, the default storage classes, every Service with its type, the objects a block labels with its subscription, and the API server's key set to the platform, with a `checks` member declaring which of the platform verdict's checks it carries. When any read but the volume, CloudNativePG, storage and Service, and labelled-object reads fails or times out, it posts a report holding only an `error` that names the read, in place of the full report. Each report is signed with a token the API server mints for its exact body. The report holds no right on Secrets | `Manifests` |
+| `topology` | Renders the topology labeller, a CronJob that labels each Cloud node with its zone and region, and holds the two label names | `Manifests`, `Labels`, `ZoneLabel`, `RegionLabel`, `FieldManager` |
 | `openbaoinit` | Renders OpenBao's init Job, which the hosting set carries: it initialises a hosting cluster's OpenBao once, commits the root token and recovery key to the cluster repository as PGP messages, then writes the policy each slice's External Secrets reads with | `Manifests`, `Inputs`, `InitFile` |
 | `rollout` | Gives a running cluster that hosts the platform a release's hosting policies: the files a block commits to the cluster repository, where Argo CD applies, changes and prunes them, and the read-back of each one from the node report | `Current`, `Release.Files`, `Release.ReadBack` |
-| `controlplane` | Builds and deletes a Talos control plane on Hetzner Cloud: a network, a firewall, a gateway, a builder that makes the cluster's own snapshot, a node in each of `fsn1`, `nbg1` and `hel1`, and an API and an ingress load balancer. Each call reads the resources by their labels and takes the one change still missing. A refusal is a `*Refusal` with a `Class` and a `Message`, which the block answers as its own framework's refusal | `Plane`, `Plane.Read`, `Plane.EnsureNetwork`, `Plane.NextStep`, `Plane.Problems`, `Plane.Outputs`, `Plane.Delete`, `NewAPI`, `Refusal` |
-| `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image and the gateway both install, and `tools/jq.env`, which pins the tools image's jq, and names the tools image a release published | `Env`, `Pin`, `Image` |
+| `controlplane` | Builds and deletes a Talos control plane on Hetzner Cloud: a network, a firewall, a gateway, a builder that makes the cluster's own snapshot, a node in each of `fsn1`, `nbg1` and `hel1`, and an API and an ingress load balancer. Each call reads the resources by their labels and takes the one change still missing. A refusal is a `*Refusal` with a `Class` and a `Message`, which the block answers as its own framework's refusal | `Plane`, `Plane.Read`, `Plane.EnsureNetwork`, `Plane.NextStep`, `Plane.Problems`, `Plane.Outputs`, `Plane.Delete`, `NewAPI`, `Refusal`, `TopologyLabels` |
+| `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image and the gateway both install, and `tools/jq.env`, which pins the tools image's jq. It names the tools image a release published and the directory in that image that holds the node report's and the labeller's scripts | `Env`, `Pin`, `Image`, `ScriptDir` |
 | `testutil` | Holds the fixtures, fakes and decoders this module's tests and a block's tests share | `NewCluster`, `NewTools`, `Golden` |
 
 For example, this renders the configuration a Cloud cluster's image embeds,
@@ -339,7 +340,7 @@ every object after the one it refuses.
 `applyOrder` in `components/order.go` sets that order, and `TalosName` puts
 each manifest's place in it before its name. A node's configuration therefore
 names Cilium `00-cilium`, and the gateway serves it at `/manifests/00-cilium.yaml`.
-The order runs in four groups.
+The order runs in five groups.
 
 | Group | Manifests | Why it comes there |
 |---|---|---|
@@ -347,6 +348,7 @@ The order runs in four groups.
 | Cluster reporting | The node report, the cluster tokens and the Collector | A component that never starts still leaves the platform its report |
 | Components and policies | Every other component, policy, key and volume | No object here waits on a webhook but Istio's, whose pod runs outside the mesh |
 | What a webhook validates | external-secrets and trust-manager, whose charts hold cert-manager objects, then `mitstack-hosting-tls` | cert-manager's and trust-manager's webhooks answer only once their pods run |
+| Node labelling | The topology labeller | Last, a new manifest changes no other manifest's `TalosName` |
 
 A new manifest takes a place in `applyOrder`, since `TalosName` panics on one
 it leaves out. `TestBuilder_TalosAppliesEveryObjectAWebhookInterceptsAfterTheWebhookTheMeshAndTheNodeReport`
@@ -354,6 +356,61 @@ in `controlplane/render_test.go` sorts the Default and hosting sets as Talos
 v1.14.4 does. It fails when an object a webhook's rules intercept applies
 before the webhook's own manifests, ztunnel or istio-cni, or before the node
 report and the cluster tokens.
+
+## How each node is labelled with its zone
+
+Every node carries two Kubernetes labels that say where it runs. The label
+`topology.kubernetes.io/zone` holds its Hetzner location, `fsn1`, `nbg1` or
+`hel1`. The label `topology.kubernetes.io/region` holds `eu-central`, the
+Hetzner network zone every location of a cluster sits in, which
+`controlplane.NetworkZone` names. A dedicated worker in Hetzner's `HEL1-DC1`
+data centre takes `hel1`.
+
+The labels reach the two kinds of node by two routes, since Talos sets a
+node's labels only from its machine configuration.
+
+| Node | Where its labels come from | Why |
+|---|---|---|
+| A Cloud node | The topology labeller, a CronJob in `mitstack-node` that the `topology` package renders | Every Cloud node boots the one configuration the builder embeds in the cluster's snapshot, so that configuration cannot name each node's own location |
+| A dedicated worker | Its own configuration, from `nodeconfig.Node.Labels`, which a block fills with `controlplane.TopologyLabels` and the worker's location | Each dedicated worker gets a configuration rendered for it alone |
+
+`nodeconfig.Render` refuses `Node.Labels` on a Cloud node, which would land on
+every Cloud node, and refuses a label that replaces `mitstack.dev/subscription`.
+
+The labeller runs every five minutes on a control-plane node. It names each
+Cloud node by the name Hetzner gives its server, which is the node's Kubernetes
+name. For each one it reads the Node, labels it with `kubectl label
+--overwrite`, and leaves a node that has not joined yet to a later run. A read
+that fails stops the run without a label, so the CronJob's failed Job shows
+it. Each label it sets names the field manager `mitstack-node-topology` in the
+Node's `managedFields`. A label that `kubectl` set by hand names `kubectl-label`
+there instead, until the next run takes it over. The node report carries each
+zone label's managers as `zoneLabelManagers`, so the platform can tell which
+mechanism set it.
+
+The labeller's ClusterRole grants `get` and `patch` on the Cloud nodes it
+names, and nothing on any other object. It cannot list nodes, and it cannot
+touch a node's status, which the API server serves apart from the rest of a
+Node. A `patch` on one of those nodes still reaches more than the two labels.
+It can change the node's other labels and its annotations, add or remove a
+taint, mark the node unschedulable, and set its pod address ranges or provider
+ID while they are still empty. Labels and taints steer where pods land, and the
+hosting flows admit calls from a node by its `node-role.kubernetes.io/control-plane`
+label. Every node the labeller names is a control-plane node already, so a
+patch can take that label away but cannot give it to a node that lacks it.
+
+The grant is acceptable because only a pod running as the labeller's service
+account holds it. Running such a pod takes the right to create pods in
+`mitstack-node`, which already reaches further: a pod there can mount any
+Secret in the namespace, the Talos API identities and the report token among
+them. The labeller's own pod runs the kit's tools image, as a user other than
+root, on a read-only root file system.
+
+A cluster gains the labeller and the report's zone fields only when it is
+built from a release that carries them. A running cluster's nodes keep the
+configuration their snapshot embedded, which the kit never changes after the
+install. The gateway fills its image mirror once, at its first boot, so the
+nodes could pull no newer tools image either.
 
 ## How AWS comes to trust a cluster's tokens
 
@@ -806,8 +863,10 @@ build before imager starts.
 The plane deletes the serving server once the builder is gone, once the
 snapshot exists, or once the build is overdue. A build that fails therefore
 takes the serving server with it. The tests in `controlplane/hosting_test.go`
-log the builder's user data size, about 30,200 bytes with a 4096-bit Sealed
-Secrets key, against Hetzner's limit of 32,768.
+log the builder's user data size, about 26,500 bytes with a 4096-bit Sealed
+Secrets key, against Hetzner's limit of 32,768. The node report's and the
+labeller's scripts take none of it, since the tools image carries them at
+`tools.ScriptDir` and each CronJob's command names the script's path there.
 
 The `serve` package holds the server's key, its files and its command, and a
 block reuses it to serve any one file to one client.
@@ -1243,8 +1302,11 @@ by the version, unless the tag exists already. The `record delivery` job then
 records the push's board keys, the `MIT-` issue keys its commits name, on
 Plain, mitstack's board.
 
-A release also publishes the tools image, which the member removal Job and the
-node report run in. The `release` job pushes it to the public package
+A release also publishes the tools image, which the kit's Jobs and CronJobs
+run in. The image carries the report's
+and the labeller's scripts as the release's commit holds them, so a cluster
+runs the scripts of the release it was built from. The `release` job pushes it
+to the public package
 `ghcr.io/mitstack-eu/talos-cluster-kit-tools`, signs its digest keyless as
 this repository's CI on `main`, and refuses to tag unless a client with no
 login can pull it. An image's digest is known only once it is built, so it

@@ -22,8 +22,9 @@ func PEMCertificate(data []byte) error {
 }
 
 var (
-	digestRefRe = regexp.MustCompile(`^[a-z0-9-]+(\.[a-z0-9-]+)+(/[a-z0-9._-]+)+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$`)
-	dns1123Re   = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+	digestRefRe  = regexp.MustCompile(`^[a-z0-9-]+(\.[a-z0-9-]+)+(/[a-z0-9._-]+)+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$`)
+	dns1123Re    = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+	labelValueRe = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9_.-]{0,61}[A-Za-z0-9])?$`)
 )
 
 // DigestRef fails unless ref names an image as registry/repository:tag@sha256:digest.
@@ -38,6 +39,14 @@ func DigestRef(ref string) error {
 func DNS1123Label(name string) error {
 	if !dns1123Re.MatchString(name) {
 		return fmt.Errorf("%q is not a DNS-1123 label", name)
+	}
+	return nil
+}
+
+// LabelValue fails unless value is a non-empty Kubernetes label value.
+func LabelValue(value string) error {
+	if !labelValueRe.MatchString(value) {
+		return fmt.Errorf("%q is not a Kubernetes label value", value)
 	}
 	return nil
 }

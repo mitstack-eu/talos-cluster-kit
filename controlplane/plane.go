@@ -86,9 +86,10 @@ const (
 	// builderImage is Hetzner's Ubuntu image with Docker installed, so the builder runs imager without a package install.
 	builderImage     = "docker-ce"
 	loadBalancerType = "lb11"
-	networkZone      = "eu-central"
-	NetworkIPRange   = "10.0.0.0/16"
-	subnetIPRange    = "10.0.0.0/24"
+	// NetworkZone is the Hetzner network zone every location of the cluster sits in, which names each node's region.
+	NetworkZone    = "eu-central"
+	NetworkIPRange = "10.0.0.0/16"
+	subnetIPRange  = "10.0.0.0/24"
 	// routerAddress is the first address of the network, which Hetzner's own router answers on.
 	routerAddress = "10.0.0.1"
 	// GatewayAddress is fixed, since the network's default route and every node's mirror name it.

@@ -24,6 +24,7 @@ var (
 	ClusterTokensScript      = clusterTokensScript
 	ServingFile              = servingFile
 	KitRelease               = kitRelease
+	GatewayAddrs             = gatewayAddrs
 )
 
 func SwapToolsImage(t testing.TB, image string) {

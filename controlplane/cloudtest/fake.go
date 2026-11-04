@@ -54,12 +54,21 @@ type Fake struct {
 	FailLBStep map[string]error
 	// FailAttach, when set, fails the next attach of a server of that role with it once the attach has landed.
 	FailAttach map[controlplane.Role]error
+	// FailRoute, when set, fails the next route call of that name, "add" or "delete", with it.
+	FailRoute map[string]error
 	// SoldOut holds the server types no location can order.
 	SoldOut []string
+	// powerActions holds each server's power actions Hetzner finished, the newest last.
+	powerActions map[int64][]powerAction
 	// Metrics answers each server's metrics read; FailMetrics, when set, fails every read, and MetricsReads records each one.
 	Metrics      map[int64]controlplane.Metrics
 	FailMetrics  error
 	MetricsReads []MetricsRead
+}
+
+type powerAction struct {
+	command string
+	at      time.Time
 }
 
 type MetricsRead struct {
@@ -74,7 +83,7 @@ func New(now func() time.Time) *Fake {
 		Firewalls: map[int64]*controlplane.Firewall{}, LoadBalancers: map[int64]*controlplane.LoadBalancer{},
 		Snapshots: map[int64]*controlplane.Snapshot{}, started: map[int64]time.Time{}, imaging: map[int64]time.Time{},
 		FailCreate: map[controlplane.Role]error{}, FailLBStep: map[string]error{}, FailAttach: map[controlplane.Role]error{},
-		Metrics: map[int64]controlplane.Metrics{},
+		Metrics: map[int64]controlplane.Metrics{}, FailRoute: map[string]error{}, powerActions: map[int64][]powerAction{},
 	}
 }
 
@@ -205,6 +214,7 @@ func (f *Fake) CreateServers(_ context.Context, specs ...controlplane.ServerSpec
 			s.Status = controlplane.ServerOff
 		} else {
 			f.started[s.ID] = f.now()
+			f.powerActions[s.ID] = append(f.powerActions[s.ID], powerAction{"start_server", f.now()})
 		}
 		if spec.PublicIPv4 {
 			s.PublicIPv4 = fmt.Sprintf("203.0.113.%d", s.ID%250)
@@ -261,9 +271,84 @@ func (f *Fake) PowerOnServer(_ context.Context, id int64) error {
 	f.write(true)
 	s := f.Servers[id]
 	s.Status, f.started[id] = controlplane.ServerRunning, f.now()
+	f.powerActions[id] = append(f.powerActions[id], powerAction{"start_server", f.now()})
 	if f.InstantBuild && builds(s.Labels) {
 		s.Status = controlplane.ServerOff
 	}
+	return nil
+}
+
+func (f *Fake) SetServerLabels(_ context.Context, id int64, labels map[string]string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s, ok := f.Servers[id]
+	if !ok {
+		return fmt.Errorf("labelling server %d: not_found", id)
+	}
+	f.write(false)
+	s.Labels = maps.Clone(labels)
+	return nil
+}
+
+func (f *Fake) LastPowerAction(_ context.Context, id int64) (string, time.Time, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	actions := f.powerActions[id]
+	if len(actions) == 0 {
+		return "", time.Time{}, nil
+	}
+	last := actions[len(actions)-1]
+	return last.command, last.at, nil
+}
+
+// StopServer stands in for a power-off from Hetzner's side, which Hetzner records as a stop_server action.
+func (f *Fake) StopServer(id int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Servers[id].Status = controlplane.ServerOff
+	f.powerActions[id] = append(f.powerActions[id], powerAction{controlplane.StopServerCommand, f.now()})
+}
+
+// AddRoute refuses a destination another route holds, and a gateway outside the network's range or at its first
+// address, as Hetzner's add_route reference says it does.
+func (f *Fake) AddRoute(_ context.Context, networkID int64, r controlplane.Route) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n, ok := f.Networks[networkID]
+	switch {
+	case !ok:
+		return fmt.Errorf("adding a route to network %d: not_found", networkID)
+	case f.FailRoute["add"] != nil:
+		err := f.FailRoute["add"]
+		delete(f.FailRoute, "add")
+		return err
+	case slices.ContainsFunc(n.Routes, func(have controlplane.Route) bool { return have.Destination == r.Destination }):
+		return fmt.Errorf("adding the route %s to network %d: route destination overlaps (invalid_input)", r.Destination, networkID)
+	case !strings.HasPrefix(r.Gateway, "10.0.") || r.Gateway == "10.0.0.1":
+		return fmt.Errorf("adding the route via %s to network %d: invalid gateway (invalid_input)", r.Gateway, networkID)
+	}
+	f.write(true)
+	n.Routes = append(n.Routes, r)
+	return nil
+}
+
+func (f *Fake) DeleteRoute(_ context.Context, networkID int64, r controlplane.Route) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n, ok := f.Networks[networkID]
+	if !ok {
+		return fmt.Errorf("deleting a route from network %d: not_found", networkID)
+	}
+	if err := f.FailRoute["delete"]; err != nil {
+		delete(f.FailRoute, "delete")
+		return err
+	}
+	i := slices.Index(n.Routes, r)
+	if i < 0 {
+		return fmt.Errorf("deleting the route %s via %s from network %d: route_not_found", r.Destination, r.Gateway, networkID)
+	}
+	f.write(true)
+	n.Routes = slices.Delete(slices.Clone(n.Routes), i, i+1)
 	return nil
 }
 
@@ -573,8 +658,8 @@ func (f *Fake) Advance(build, image time.Duration) {
 	}
 }
 
-// MirrorCompleteAt is when the gateway's mirror completes, MirrorTakes after the gateway's power-on; with no gateway
-// powered on, the mirror is complete only when MirrorTakes is zero.
+// MirrorCompleteAt is when the first location's gateway's mirror, which the builders fill from, completes, MirrorTakes
+// after its power-on; with that gateway never powered on, the mirror is complete only when MirrorTakes is zero.
 func (f *Fake) MirrorCompleteAt() (time.Time, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -583,7 +668,7 @@ func (f *Fake) MirrorCompleteAt() (time.Time, bool) {
 
 func (f *Fake) mirrorCompleteAt() (time.Time, bool) {
 	for id, s := range f.Servers {
-		if started, ok := f.started[id]; ok && role(s.Labels) == controlplane.RoleGateway {
+		if started, ok := f.started[id]; ok && role(s.Labels) == controlplane.RoleGateway && s.Location == controlplane.GatewayLocation {
 			return started.Add(f.MirrorTakes), true
 		}
 	}

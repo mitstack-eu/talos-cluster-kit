@@ -317,7 +317,7 @@ func TestBuildImage_AMirrorThatNeverAnswersLeavesTheDiskUnwrittenAndTheBuilderRu
 
 func TestBuildImage_TrustsTheMirrorOnlyUnderTheGatewaysCA(t *testing.T) {
 	mirror := newGatewayMirror(t, 0)
-	other, err := gateway.NewCA(time.Now(), time.Hour)
+	other, err := gateway.NewCA(time.Now(), time.Hour, controlplane.GatewayAddrs())
 	require.NoError(t, err)
 	mirror.ca = string(other.Cert)
 

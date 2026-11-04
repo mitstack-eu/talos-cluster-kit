@@ -16,6 +16,7 @@ import (
 
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane/cloudtest"
+	"github.com/mitstack-eu/talos-cluster-kit/gateway"
 	"github.com/mitstack-eu/talos-cluster-kit/nodeconfig"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 	"github.com/stretchr/testify/assert"
@@ -43,9 +44,15 @@ type harness struct {
 	now   time.Time
 	// buildTakes and imageTakes are how long the builder and the snapshot run once started; a zero build never ends.
 	buildTakes, imageTakes time.Duration
-	// installed holds each cluster the Installed hook received, and installErr is what the hook answers.
+	// installed holds each cluster the Installed hook received, and installErr is what the hook answers. The hook keeps
+	// the gateway CA as the plane's, as a block keeps it as its own secret.
 	installed  []nodeconfig.Cluster
 	installErr error
+	ca         *gateway.CA
+	lostCA     bool
+	// events holds each detail the plane's Notify received, and failing the gateway addresses a report reads failing.
+	events  []string
+	failing []string
 	// hostingKeys holds the keys each call to a hosting plane's DeployKeys hook received, and deployKeysErr is what it answers.
 	hostingKeys   []controlplane.HostingKeys
 	deployKeysErr error
@@ -62,10 +69,14 @@ func newHarness(t *testing.T, opts ...func(*harness)) *harness {
 		API: h.cloud, Block: testBlock, Subscription: testSub, AppName: testApp, ServerType: controlplane.DefaultServerType,
 		Boundary: "mitstack-test-boundary", PlatformURL: platformURL, RepoURL: testRepoURL, ReportProofScript: proofScript,
 		Now: func() time.Time { return h.now },
-		Installed: func(_ context.Context, _ controlplane.Network, c nodeconfig.Cluster) error {
+		Installed: func(_ context.Context, _ controlplane.Network, c nodeconfig.Cluster, ca gateway.CA) error {
 			h.installed = append(h.installed, c)
+			if h.installErr == nil {
+				h.ca = &ca
+			}
 			return h.installErr
 		},
+		Notify: func(_ context.Context, detail string) { h.events = append(h.events, detail) },
 	}
 	for _, opt := range opts {
 		opt(h)
@@ -94,6 +105,9 @@ func (h *harness) ensure() error {
 	st, err := h.plane.Read(ctx)
 	if err != nil {
 		return err
+	}
+	if !h.lostCA {
+		h.plane.GatewayCA = h.ca
 	}
 	if err := h.plane.Refusal(st); err != nil {
 		return err
@@ -197,9 +211,11 @@ func TestPlane_BuildsANodeInEachOfFsn1Nbg1AndHel1OnOneNetwork(t *testing.T) {
 		assert.True(t, strings.HasSuffix(node.Name, "-node-"+node.Location), "node %s in %s is not named after its location", node.Name, node.Location)
 	}
 	assert.ElementsMatch(t, controlplane.Locations, locations, "the nodes' locations")
-	gateways := h.byRole(controlplane.RoleGateway)
-	require.Len(t, gateways, 1, "gateways")
-	assert.Equal(t, "fsn1", gateways[0].Location, "the gateway's location")
+	var gatewayLocations []string
+	for _, gw := range h.byRole(controlplane.RoleGateway) {
+		gatewayLocations = append(gatewayLocations, gw.Location)
+	}
+	assert.Equal(t, controlplane.Locations, gatewayLocations, "the gateways' locations")
 	assert.Equal(t, "fsn1", h.cloud.SpecFor(t, controlplane.RoleBuilder).Location, "the builder's location")
 	assert.Empty(t, h.byRole(controlplane.RoleBuilder), "a builder outlived its snapshot")
 }
@@ -514,7 +530,7 @@ func TestPlane_ALoadBalancerStepThatFailedIsTakenUpByTheNextCallWithoutADuplicat
 				assert.Len(t, lb.Services, map[controlplane.Role]int{controlplane.RoleAPI: 1, controlplane.RoleIngress: 2}[r], "the %s load balancer's services", r)
 				assert.Len(t, lb.TargetSelectors, 1, "the %s load balancer's targets", r)
 			}
-			assert.Len(t, h.byRole(controlplane.RoleGateway), 1, "gateways after the retry")
+			assert.Len(t, h.byRole(controlplane.RoleGateway), len(controlplane.Locations), "gateways after the retry")
 			assert.Len(t, h.byRole(controlplane.RoleBuilder), 1, "builders after the retry")
 		})
 	}
@@ -525,14 +541,19 @@ func TestPlane_TheGatewayJoinsTheNetworkAtItsFixedAddressBeforeItBoots(t *testin
 
 	require.NoError(t, h.converge())
 
-	gw := h.cloud.SpecFor(t, controlplane.RoleGateway)
-	assert.True(t, gw.Stopped, "the gateway is created stopped")
-	assert.Empty(t, gw.NetworkIDs, "the gateway is attached after creation, at its address")
+	for _, spec := range h.cloud.ServerSpecs {
+		if spec.Labels[controlplane.KeyRole] == string(controlplane.RoleGateway) {
+			assert.True(t, spec.Stopped, "the gateway in %s is created stopped", spec.Location)
+			assert.Empty(t, spec.NetworkIDs, "the gateway in %s is attached after creation, at its address", spec.Location)
+		}
+	}
 	gateways := h.byRole(controlplane.RoleGateway)
-	require.Len(t, gateways, 1)
+	require.Len(t, gateways, len(controlplane.Locations))
 	network := h.network()
-	assert.Equal(t, controlplane.GatewayAddress, gateways[0].PrivateIPs[network.ID], "the gateway's private address")
-	assert.Equal(t, controlplane.ServerRunning, gateways[0].Status, "the gateway's status")
+	for _, gw := range gateways {
+		assert.Equal(t, controlplane.GatewayAddresses[gw.Location], gw.PrivateIPs[network.ID], "the gateway in %s's private address", gw.Location)
+		assert.Equal(t, controlplane.ServerRunning, gw.Status, "the gateway in %s's status", gw.Location)
+	}
 	assert.Equal(t, []controlplane.Route{{Destination: "0.0.0.0/0", Gateway: controlplane.GatewayAddress}}, network.Routes, "the network's routes")
 }
 
@@ -641,7 +662,9 @@ func TestPlane_RefusesServersWhoseNetworkIsGone(t *testing.T) {
 func TestPlane_RefusesNodesWhoseGatewayIsGone(t *testing.T) {
 	h := newHarness(t)
 	h.built()
-	require.NoError(t, h.cloud.DeleteServer(context.Background(), h.byRole(controlplane.RoleGateway)[0].ID))
+	for _, gw := range h.byRole(controlplane.RoleGateway) {
+		require.NoError(t, h.cloud.DeleteServer(context.Background(), gw.ID))
+	}
 
 	err := h.ensure()
 
@@ -669,7 +692,7 @@ func TestPlane_AnInstallThatFailsAfterTheGatewayExistsLeavesNothingTheNextCallRe
 
 	require.NoError(t, h.converge())
 
-	assert.Len(t, h.byRole(controlplane.RoleGateway), 1, "gateways after the retry")
+	assert.Len(t, h.byRole(controlplane.RoleGateway), len(controlplane.Locations), "gateways after the retry")
 	assert.Len(t, h.byRole(controlplane.RoleBuilder), 1, "builders after the retry")
 }
 
@@ -689,8 +712,10 @@ func TestPlane_TheGatewayTakesTheFirstTypeTheLocationCanOrder(t *testing.T) {
 			h.built()
 
 			gateways := h.byRole(controlplane.RoleGateway)
-			require.Len(t, gateways, 1, "gateways")
-			assert.Equal(t, tc.want, gateways[0].ServerType, "the gateway's server type")
+			require.Len(t, gateways, len(controlplane.Locations), "gateways")
+			for _, gw := range gateways {
+				assert.Equal(t, tc.want, gw.ServerType, "the gateway in %s's server type", gw.Location)
+			}
 		})
 	}
 }

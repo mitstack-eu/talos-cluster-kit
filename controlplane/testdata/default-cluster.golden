@@ -94,6 +94,8 @@ document RegistryMirrorConfig public.ecr.aws
 document RegistryMirrorConfig quay.io
 document RegistryMirrorConfig registry.k8s.io
 document RegistryTLSConfig 10.0.0.2
+document RegistryTLSConfig 10.0.0.248
+document RegistryTLSConfig 10.0.0.249
 document VolumeConfig STATE
 document VolumeConfig EPHEMERAL
 document UserVolumeConfig local-path-provisioner

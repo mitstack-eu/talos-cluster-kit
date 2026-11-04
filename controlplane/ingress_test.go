@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
+	"github.com/mitstack-eu/talos-cluster-kit/gateway"
 	"github.com/mitstack-eu/talos-cluster-kit/nodeconfig"
 )
 
@@ -25,11 +26,11 @@ const (
 func appsOnWorkers(h *harness) {
 	h.plane.AppsOnWorkers, h.plane.WorkerAddresses = true, []string{workerAddress}
 	installed := h.plane.Installed
-	h.plane.Installed = func(ctx context.Context, n controlplane.Network, c nodeconfig.Cluster) error {
+	h.plane.Installed = func(ctx context.Context, n controlplane.Network, c nodeconfig.Cluster, ca gateway.CA) error {
 		if err := h.cloud.AddVSwitchSubnet(ctx, n.ID, vswitchID, workerSubnet); err != nil {
 			return err
 		}
-		return installed(ctx, n, c)
+		return installed(ctx, n, c, ca)
 	}
 }
 

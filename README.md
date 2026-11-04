@@ -381,7 +381,10 @@ namespaces unless NodeRestriction lets a kubelet set it, as it does the two
 topology labels. A worker's Talos applies the node's labels with the kubelet's
 credentials, so the API server would refuse such a label and every other label
 of the node with it. A `node-role.kubernetes.io/` label is refused this way.
-Talos's own validation refuses a key or value that is no Kubernetes label.
+The rule also holds for a dedicated control-plane node, though Talos labels one
+with an administrator's client, so a dedicated node's labels follow one rule
+whatever its role. Talos's own validation refuses a key or value that is no
+Kubernetes label.
 
 The labeller runs every five minutes on a control-plane node. It names each
 Cloud node by the name Hetzner gives its server, which is the node's Kubernetes
@@ -401,9 +404,9 @@ Node. A `patch` on one of those nodes still reaches more than the two labels.
 It can change the node's other labels and its annotations, add or remove a
 taint, mark the node unschedulable, and set its pod address ranges or provider
 ID while they are still empty. It can also add a finalizer, which would hold up
-a deletion of the node, such as the one `etcd/scripts/remove-member.sh` makes. Labels and taints steer where pods land, and the
-hosting flows admit calls from a node by its `node-role.kubernetes.io/control-plane`
-label. Every node the labeller names is a control-plane node already, so a
+a deletion of the node, such as the one `etcd/scripts/remove-member.sh` makes.
+Labels and taints steer where pods land, and the hosting flows admit calls from
+a node by its `node-role.kubernetes.io/control-plane` label. Every node the labeller names is a control-plane node already, so a
 patch can take that label away but cannot give it to a node that lacks it.
 
 The grant is acceptable because only a pod running as the labeller's service

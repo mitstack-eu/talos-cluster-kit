@@ -14,7 +14,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
-	"github.com/mitstack-eu/talos-cluster-kit/report"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 )
 
@@ -25,33 +24,21 @@ func inNamespace(t *testing.T, docs []map[string]any, namespace string) []map[st
 	return slices.DeleteFunc(docs, func(d map[string]any) bool { return testutil.Field(t, d, "metadata", "namespace") != namespace })
 }
 
-// probeResult answers the outside probe's ConfigMap read with the fixture's result changed by the jq filter edit.
-func probeResult(edit string) map[string]string {
-	return map[string]string{"date": reportAt, "kubectl": kubectlAnswering(map[string]string{
-		meshProbeRead: "jq '.data.result |= (fromjson | " + edit + " | tojson)' testdata/mesh-probe.json"})}
+func configMap(answer string) map[string]string {
+	return map[string]string{"date": reportAt, "kubectl": kubectlAnswering(map[string]string{meshProbeRead: answer})}
 }
 
-func TestReport_CarriesACallFromInsideTheMeshAnsweredAndAPlainCallFromOutsideRefusedWhileZtunnelPresentsTheTargetsCertificate(t *testing.T) {
-	_, posted, out, err := runReport(t, map[string]string{"date": reportAt})
-
-	require.NoError(t, err, out)
-	assert.Equal(t, map[string]any{
-		"callFromInside": map[string]any{"passed": true},
-		"plainCallFromOutside": map[string]any{"passed": true, "probedAt": "2026-10-23T15:42:31Z", "curlExitStatus": float64(56),
-			"stderr": "curl: (56) Recv failure: Connection reset by peer\n"},
-		"workloadIdentity": map[string]any{"passed": true, "probedAt": "2026-10-23T15:42:31Z", "identity": components.MeshProbeIdentity,
-			"serial": "5E1C0A9F3B2D47E8", "notBefore": "2026-10-23T09:12:00Z", "notAfter": "2026-10-24T09:12:00Z"},
-	}, posted.body["mesh"])
+// probeResult answers the outside probe's ConfigMap read with the fixture's result changed by the jq filter edit.
+func probeResult(edit string) map[string]string {
+	return configMap("jq '.data.result |= (fromjson | " + edit + " | tojson)' testdata/mesh-probe.json")
 }
 
 func TestReport_NamesEachMeshResultItCannotPassAsFailedWithItsReason(t *testing.T) {
-	configMap := func(answer string) map[string]string {
-		return map[string]string{"date": reportAt, "kubectl": kubectlAnswering(map[string]string{meshProbeRead: answer})}
+	both := func(reason string) map[string]string {
+		return map[string]string{"plainCallFromOutside": reason, "workloadIdentity": reason}
 	}
 	noConfigMap := configMap(`echo 'Error from server (NotFound): configmaps "mitstack-mesh-probe" not found' >&2; exit 1`)
-	noResult := map[string]string{
-		"plainCallFromOutside": "the ConfigMap kube-system/mitstack-mesh-probe holds no result the outside probe wrote",
-		"workloadIdentity":     "the ConfigMap kube-system/mitstack-mesh-probe holds no result the outside probe wrote"}
+	noResult := both("the ConfigMap kube-system/mitstack-mesh-probe holds no result the outside probe wrote")
 	cases := map[string]struct {
 		fakes  map[string]string
 		env    []string
@@ -60,9 +47,8 @@ func TestReport_NamesEachMeshResultItCannotPassAsFailedWithItsReason(t *testing.
 		"the target is down": {map[string]string{"date": reportAt}, []string{"MESH_PROBE_URL=http://127.0.0.1:1/"}, map[string]string{
 			"callFromInside":       "the call from inside the mesh ended with curl exit status 7: ",
 			"plainCallFromOutside": "it did not answer the report either, so it may be down: the call from inside the mesh ended with curl exit status 7"}},
-		"the outside probe names a time after the report": {probeResult(`.probedAt = "2026-10-23T16:00:00Z"`), nil, map[string]string{
-			"plainCallFromOutside": "names 2026-10-23T16:00:00Z, after this report",
-			"workloadIdentity":     "names 2026-10-23T16:00:00Z, after this report"}},
+		"the outside probe names a time after the report": {probeResult(`.probedAt = "2026-10-23T16:00:00Z"`), nil,
+			both("names 2026-10-23T16:00:00Z, after this report")},
 		"the certificate names no identity": {probeResult(`.handshake.certificate.identities = null`), nil, map[string]string{
 			"workloadIdentity":     "the certificate on port 15008 names no identity, not " + components.MeshProbeIdentity,
 			"plainCallFromOutside": "no workload certificate shows the mesh holds it: the certificate on port 15008 names no identity"}},
@@ -71,12 +57,10 @@ func TestReport_NamesEachMeshResultItCannotPassAsFailedWithItsReason(t *testing.
 		"the result is not JSON":            {configMap(`jq '.data.result = "oops"' testdata/mesh-probe.json`), nil, noResult},
 		"the ConfigMap holds no data":       {configMap(`jq 'del(.data)' testdata/mesh-probe.json`), nil, noResult},
 		"the ConfigMap read prints no JSON": {configMap(`echo 'not json'`), nil, noResult},
-		"the ConfigMap is missing": {noConfigMap, nil, map[string]string{
-			"plainCallFromOutside": "reading the ConfigMap kube-system/mitstack-mesh-probe ended with exit status 1: Error from server (NotFound)",
-			"workloadIdentity":     "reading the ConfigMap kube-system/mitstack-mesh-probe ended with exit status 1: Error from server (NotFound)"}},
-		"the outside probe stopped writing": {probeResult(`.probedAt = "2026-10-23T15:29:00Z"`), nil, map[string]string{
-			"plainCallFromOutside": "the outside probe last wrote at 2026-10-23T15:29:00Z, over 15 minutes before this report",
-			"workloadIdentity":     "the outside probe last wrote at 2026-10-23T15:29:00Z, over 15 minutes before this report"}},
+		"the ConfigMap is missing": {noConfigMap, nil,
+			both("reading the ConfigMap kube-system/mitstack-mesh-probe ended with exit status 1: Error from server (NotFound)")},
+		"the outside probe stopped writing": {probeResult(`.probedAt = "2026-10-23T15:29:00Z"`), nil,
+			both("the outside probe last wrote at 2026-10-23T15:29:00Z, over 15 minutes before this report")},
 		"the target answered a plain call": {probeResult(`.plainCall = {exitStatus: 0, answer: "mitstack-mesh-probe answered\n", stderr: ""}`), nil,
 			map[string]string{"plainCallFromOutside": `the target answered a call that carried no workload identity: "mitstack-mesh-probe answered\n"`}},
 		"the plain call reached nothing": {probeResult(`.plainCall = {exitStatus: 28, answer: "", stderr: "curl: (28) timed out\n"}`), nil,
@@ -122,7 +106,7 @@ func runMeshProbe(t *testing.T, fakes map[string]string) (*testutil.Tools, map[s
 	maps.Copy(all, fakes)
 	tools := testutil.NewTools(t, all)
 	tools.AddImageJq(t)
-	script, env := renderedScript(t, "https://api.mitstack.dev/v1/cluster-reports", "mitstack-mesh-probe")
+	script, env := renderedScript(t, reportURL, "mitstack-mesh-probe")
 
 	out, err := testutil.RunBash(t, script, tools.Env("MESH_PROBE_HOST="+env["MESH_PROBE_HOST"], "MESH_PROBE_PORT="+env["MESH_PROBE_PORT"],
 		"MESH_PROBE_CONFIGMAP="+env["MESH_PROBE_CONFIGMAP"], "POD_NAMESPACE=kube-system"))
@@ -161,8 +145,7 @@ func TestMeshProbe_WritesAnAnsweredPlainCallAndAHandshakeThatGaveNoCertificateAs
 }
 
 func TestManifests_LetsTheOutsideProbePatchAndTheReportReadOnlyTheProbesConfigMapByNameInKubeSystem(t *testing.T) {
-	rendered, err := report.Manifests(inputs("https://api.mitstack.dev/v1/cluster-reports"))
-	require.NoError(t, err)
+	rendered := manifests(t, reportURL)
 	docs := testutil.Documents(t, rendered)
 
 	granted := map[string]any{}
@@ -187,24 +170,16 @@ func TestManifests_LetsTheOutsideProbePatchAndTheReportReadOnlyTheProbesConfigMa
 
 // The target in the component set takes calls from the report and the outside probe alone, as their pods are labelled.
 func TestMeshProbe_TheTargetAdmitsOnlyTheReportAndTheOutsideProbeWhichLooksUpOnlyItsNameAndReachesOnlyItAndTheAPIServer(t *testing.T) {
-	rendered, err := report.Manifests(inputs("https://api.mitstack.dev/v1/cluster-reports"))
-	require.NoError(t, err)
+	rendered := manifests(t, reportURL)
 	set := components.Default()
 	target := testutil.Documents(t, testutil.Manifest(t, "mitstack-mesh-probe", set.Served).Bytes)
 	_, reportLabels, _ := cronJob(t, rendered, "mitstack-node-report")
 	_, probeLabels, _ := cronJob(t, rendered, "mitstack-mesh-probe")
-	labels := func(m map[string]any) map[string]string {
-		out := map[string]string{}
-		for k, v := range m {
-			out[k] = v.(string)
-		}
-		return out
-	}
 	pod := testutil.Field(t, testutil.Kind(target, "Deployment")[0], "spec", "template")
 	endpoints := map[string]testutil.CiliumEndpoint{
-		"target":        testutil.Endpoint(components.MeshProbeNamespace, nil, labels(testutil.Field(t, pod, "metadata", "labels").(map[string]any))),
-		"report":        testutil.Endpoint("mitstack-node", nil, labels(reportLabels)),
-		"outside probe": testutil.Endpoint("kube-system", nil, labels(probeLabels)),
+		"target":        testutil.Endpoint(components.MeshProbeNamespace, nil, stringMap(testutil.Field(t, pod, "metadata", "labels"))),
+		"report":        testutil.Endpoint("mitstack-node", nil, reportLabels),
+		"outside probe": testutil.Endpoint("kube-system", nil, probeLabels),
 		"app pod":       testutil.Endpoint("app-shop", nil, map[string]string{"mitstack.dev/app": "shop"}),
 		"cilium":        testutil.Endpoint("kube-system", nil, map[string]string{"k8s-app": "cilium"}),
 		"kube-dns":      testutil.Endpoint("kube-system", nil, map[string]string{"k8s-app": "kube-dns"}),

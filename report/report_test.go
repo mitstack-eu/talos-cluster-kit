@@ -58,8 +58,11 @@ func subscriptionRead(kind string) string {
 	return "get " + kind + " -A -l mitstack.dev/subscription -o json"
 }
 
-var fakeKubectl, failingCloudNativePGKubectl = kubectlAnswering(nil), kubectlAnswering(map[string]string{
-	cloudNativePGRead: `echo 'error: the server does not have a resource type "clusters"' >&2; exit 1`})
+var fakeKubectl = kubectlAnswering(nil)
+
+func kubectlWith(read, answer string) map[string]string {
+	return map[string]string{"kubectl": kubectlAnswering(map[string]string{read: answer})}
+}
 
 var fakeTalosctl = talosctlAnswering("cat testdata/volumes.json")
 
@@ -135,17 +138,40 @@ func inputs(url string) report.Inputs {
 	return report.Inputs{URL: url, SubscriptionID: "sub_0123456789ab", ToolsImage: testutil.ToolsImage, ProofScript: proofScript}
 }
 
-// cronJob returns the rendered CronJob of that name, its pod's labels and its container.
-func cronJob(t *testing.T, rendered []byte, name string) (job map[string]any, labels map[string]any, container any) {
+func named(t *testing.T, docs []map[string]any, kind, name string) map[string]any {
 	t.Helper()
-	for _, job := range testutil.Kind(testutil.Documents(t, rendered), "CronJob") {
-		if testutil.Field(t, job, "metadata", "name") == name {
-			pod := testutil.Field(t, job, "spec", "jobTemplate", "spec", "template")
-			return job, testutil.Field(t, pod, "metadata", "labels").(map[string]any), testutil.Field(t, pod, "spec", "containers", "0")
+	for _, doc := range testutil.Kind(docs, kind) {
+		if testutil.Field(t, doc, "metadata", "name") == name {
+			return doc
 		}
 	}
-	require.FailNow(t, "no CronJob "+name)
-	return nil, nil, nil
+	require.FailNow(t, "no "+kind+" "+name)
+	return nil
+}
+
+const reportURL = "https://api.mitstack.dev/v1/cluster-reports"
+
+func manifests(t *testing.T, url string) []byte {
+	t.Helper()
+	rendered, err := report.Manifests(inputs(url))
+	require.NoError(t, err)
+	return rendered
+}
+
+func stringMap(m any) map[string]string {
+	out := map[string]string{}
+	for k, v := range m.(map[string]any) {
+		out[k] = v.(string)
+	}
+	return out
+}
+
+// cronJob returns the rendered CronJob of that name, its pod's labels and its container.
+func cronJob(t *testing.T, rendered []byte, name string) (job map[string]any, labels map[string]string, container any) {
+	t.Helper()
+	job = named(t, testutil.Documents(t, rendered), "CronJob", name)
+	pod := testutil.Field(t, job, "spec", "jobTemplate", "spec", "template")
+	return job, stringMap(testutil.Field(t, pod, "metadata", "labels")), testutil.Field(t, pod, "spec", "containers", "0")
 }
 
 // imageScripts are the scripts the tools image carries under the name of the CronJob that runs each one.
@@ -153,9 +179,7 @@ var imageScripts = map[string]string{"mitstack-node-report": "report.sh", "mitst
 
 func renderedScript(t *testing.T, url, name string) (script string, env map[string]string) {
 	t.Helper()
-	rendered, err := report.Manifests(inputs(url))
-	require.NoError(t, err)
-	_, _, container := cronJob(t, rendered, name)
+	_, _, container := cronJob(t, manifests(t, url), name)
 	assert.Equal(t, []any{"bash", tools.ScriptDir + "/" + imageScripts[name]}, testutil.Field(t, container, "command"),
 		"the CronJob runs the script the tools image carries, so the machine configuration carries no script")
 	data, err := os.ReadFile(filepath.Join("scripts", imageScripts[name]))
@@ -266,9 +290,10 @@ func openBao(t *testing.T, members ...openBaoMember) string {
 }
 
 func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipAndEachApplicationsHealthAndAppliedObjectsSignedForItsExactBody(t *testing.T) {
-	tools, posted, out, err := runReport(t, nil)
+	tools, posted, out, err := runReport(t, map[string]string{"date": reportAt})
 
 	require.NoError(t, err, out)
+	testutil.Golden(t, filepath.Join("testdata", "golden", "healthy-body.json"), posted.raw)
 	assert.Equal(t, "Bearer report-token-fixture", posted.authorization)
 	assert.Equal(t, "sub_0123456789ab", posted.body["subscriptionId"])
 	assert.Equal(t, []any{
@@ -282,17 +307,9 @@ func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipA
 			"allocatable": map[string]any{"cpu": "1950m", "memory": "3615Mi", "pods": "110"}, "zone": nil, "region": nil,
 			"zoneLabelManagers": []any{}},
 	}, posted.body["nodes"], "each node's zone and region labels, and every manager of its zone label")
-	assert.Equal(t, etcdMember(true, true, true), posted.body["etcd"])
 	assert.Equal(t, readJSON(t, "testdata", "golden", "argocd.json"), posted.body["argocd"], "a Secret is among the applied objects, each with five fields")
-	wantCalls := []string{
-		"kubectl " + nodesRead,
-		"kubectl get applications.argoproj.io -n argocd -o json",
-		"kubectl " + keySetRead,
-		"talosctl " + membersRead,
-		"talosctl " + volumesRead,
-		"kubectl " + cloudNativePGRead,
-		"kubectl " + storageRead,
-	}
+	wantCalls := []string{"kubectl " + nodesRead, "kubectl " + applicationsRead, "kubectl " + keySetRead, "talosctl " + membersRead,
+		"talosctl " + volumesRead, "kubectl " + cloudNativePGRead, "kubectl " + storageRead}
 	for _, kind := range subscriptionKinds {
 		wantCalls = append(wantCalls, "kubectl "+subscriptionRead(kind))
 	}
@@ -303,7 +320,7 @@ func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipA
 	for _, read := range beside {
 		assert.Contains(t, calls[:len(calls)-1], read, "a read beside the others ends before the proof")
 	}
-	calls = slices.DeleteFunc(calls, func(c string) bool { return slices.Contains(beside, c) })
+	calls = slices.DeleteFunc(calls, func(c string) bool { return slices.Contains(beside, c) || strings.HasPrefix(c, "date ") })
 	assert.Equal(t, append(wantCalls, "kubectl "+proofRequest(posted)), calls, "the proof is minted once the body is final")
 	assert.Equal(t, reportProof, posted.proof, "the post carries the proof the block's script printed for its exact body")
 }
@@ -325,10 +342,9 @@ func TestReport_NamesEachEtcdMembersHealthTheLeaderAndTheStatusReadThatFailed(t 
 	twoAnswer := "head -n 3 testdata/etcd-status.txt; echo 'error from node 10.0.0.7: rpc error: code = Unavailable' >&2; exit 1"
 	alarmed := `sed '/^10.0.0.7/s/ *$/     memberID 1948ccd42e0e52cd alarm:NOSPACE/' testdata/etcd-status.txt`
 	cases := map[string]struct {
-		status      string
-		healthy     []bool
-		leader      any
-		statusError any
+		status              string
+		healthy             []bool
+		leader, statusError any
 	}{
 		"every node answers": {"cat testdata/etcd-status.txt", []bool{true, true, true}, "a48f107742a8605c", nil},
 		"the learner's node is stopped": {twoAnswer, []bool{true, true, false}, "a48f107742a8605c",
@@ -338,9 +354,7 @@ func TestReport_NamesEachEtcdMembersHealthTheLeaderAndTheStatusReadThatFailed(t 
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			fakes := map[string]string{"talosctl": talosctlWith("cat testdata/volumes.json", tc.status)}
-
-			_, posted, out, err := runReport(t, fakes, "REPORT_READ_SECONDS=1")
+			_, posted, out, err := runReport(t, map[string]string{"talosctl": talosctlWith("cat testdata/volumes.json", tc.status)}, "REPORT_READ_SECONDS=1")
 
 			require.NoError(t, err, out)
 			want := etcdMember(tc.healthy...)
@@ -348,18 +362,6 @@ func TestReport_NamesEachEtcdMembersHealthTheLeaderAndTheStatusReadThatFailed(t 
 			assert.Equal(t, want, posted.body["etcd"], "a member whose node does not answer reads unhealthy, never healthy")
 		})
 	}
-}
-
-func TestReport_ListsEveryPodWithItsNamespaceNodeAndPhase(t *testing.T) {
-	_, posted, out, err := runReport(t, nil)
-
-	require.NoError(t, err, out)
-	assert.Equal(t, []any{
-		map[string]any{"namespace": "argocd", "name": "argocd-server-5d9c7b8f4-x2x7q", "node": "poc-talos4-cp1", "phase": "Running"},
-		map[string]any{"namespace": "app-pg", "name": "shared-1", "node": "poc-talos4-cp2", "phase": "Running"},
-		map[string]any{"namespace": "app-pg", "name": "shared-2", "node": nil, "phase": "Pending"},
-		map[string]any{"namespace": "openbao", "name": "openbao-0", "node": "poc-talos4-cp1", "phase": "Running"},
-	}, posted.body["pods"])
 }
 
 func TestReport_NamesEachOpenBaoMembersSealStateTheActiveOneAndEachReadThatFailed(t *testing.T) {
@@ -402,44 +404,20 @@ func TestReport_NamesEachOpenBaoMembersSealStateTheActiveOneAndEachReadThatFaile
 	}
 }
 
-func TestReport_OpenBaoInTheHostingSetTakesTheReportsCallsOnItsAPIPort(t *testing.T) {
-	rendered, err := report.Manifests(inputs("https://api.mitstack.dev/v1/cluster-reports"))
-	require.NoError(t, err)
+func TestManifests_PointsTheReportAtEachOpenBaoPodByANameItsCertificateHoldsTrustsItsAuthorityAndOpenBaoTakesItsCallsOnItsAPIPort(t *testing.T) {
 	set, err := components.Hosting(testutil.HostingInputs(t))
 	require.NoError(t, err)
-	_, reportLabels, _ := cronJob(t, rendered, "mitstack-node-report")
-	labels := map[string]string{}
-	for k, v := range reportLabels {
-		labels[k] = v.(string)
-	}
+	tls := testutil.Documents(t, testutil.Manifest(t, "mitstack-hosting-tls", set.Served).Bytes)
+	statefulSet := testutil.Kind(testutil.Documents(t, testutil.Manifest(t, "openbao", set.Served).Bytes), "StatefulSet")[0]
+	job, labels, container := cronJob(t, manifests(t, reportURL), "mitstack-node-report")
+	env := testutil.ContainerEnv(t, container)
 	endpoints := map[string]testutil.CiliumEndpoint{
 		"OpenBao":    testutil.Endpoint("openbao", nil, map[string]string{"app.kubernetes.io/name": "openbao", "component": "server"}),
 		"the report": testutil.Endpoint("mitstack-node", nil, labels),
 	}
 	policies := testutil.Kind(testutil.Documents(t, testutil.Manifest(t, "mitstack-hosting-flows", set.Served).Bytes), "CiliumClusterwideNetworkPolicy")
 	require.Len(t, policies, 1)
-
 	assert.Contains(t, testutil.Grants(t, policies[0], endpoints, "OpenBao"), "ingress with the report on 8200/TCP 15008/TCP")
-}
-
-func TestManifests_PointsTheReportAtEachOpenBaoPodByANameItsCertificateHoldsAndTrustsTheBundleOfItsAuthority(t *testing.T) {
-	rendered, err := report.Manifests(inputs("https://api.mitstack.dev/v1/cluster-reports"))
-	require.NoError(t, err)
-	set, err := components.Hosting(testutil.HostingInputs(t))
-	require.NoError(t, err)
-	named := func(docs []map[string]any, kind, name string) map[string]any {
-		for _, doc := range testutil.Kind(docs, kind) {
-			if testutil.Field(t, doc, "metadata", "name") == name {
-				return doc
-			}
-		}
-		require.FailNow(t, "no "+kind+" "+name)
-		return nil
-	}
-	tls := testutil.Documents(t, testutil.Manifest(t, "mitstack-hosting-tls", set.Served).Bytes)
-	statefulSet := testutil.Kind(testutil.Documents(t, testutil.Manifest(t, "openbao", set.Served).Bytes), "StatefulSet")[0]
-	job, _, container := cronJob(t, rendered, "mitstack-node-report")
-	env := testutil.ContainerEnv(t, container)
 
 	domain := fmt.Sprintf("%s.%s.svc", testutil.Field(t, statefulSet, "spec", "serviceName"), testutil.Field(t, statefulSet, "metadata", "namespace"))
 	var want []string
@@ -448,9 +426,9 @@ func TestManifests_PointsTheReportAtEachOpenBaoPodByANameItsCertificateHoldsAndT
 		want = append(want, fmt.Sprintf("%s=https://%s.%s:8200", pod, pod, domain))
 	}
 	assert.Equal(t, strings.Join(want, " "), env["OPENBAO_MEMBERS"])
-	assert.Contains(t, testutil.Field(t, named(tls, "Certificate", "openbao-tls"), "spec", "dnsNames"), "*."+domain)
+	assert.Contains(t, testutil.Field(t, named(t, tls, "Certificate", "openbao-tls"), "spec", "dnsNames"), "*."+domain)
 
-	bundle := named(tls, "Bundle", "openbao-ca")
+	bundle := named(t, tls, "Bundle", "openbao-ca")
 	assert.Contains(t, testutil.Field(t, job, "spec", "jobTemplate", "spec", "template", "spec", "volumes"),
 		map[string]any{"name": "openbao-ca", "configMap": map[string]any{"name": testutil.Field(t, bundle, "metadata", "name"), "optional": true}})
 	assert.Contains(t, testutil.Field(t, container, "volumeMounts"),
@@ -460,14 +438,8 @@ func TestManifests_PointsTheReportAtEachOpenBaoPodByANameItsCertificateHoldsAndT
 }
 
 func TestManifests_PointsTheReportAtArgoCDsServerServiceOnItsHTTPSPort(t *testing.T) {
-	_, env := renderedScript(t, "https://api.mitstack.dev/v1/cluster-reports", "mitstack-node-report")
-	var service map[string]any
-	for _, doc := range testutil.Kind(testutil.Documents(t, testutil.Manifest(t, "argocd", components.Default().Served).Bytes), "Service") {
-		if testutil.Field(t, doc, "metadata", "name") == "argocd-server" {
-			service = doc
-		}
-	}
-	require.NotNil(t, service, "the component set serves no argocd-server Service")
+	_, env := renderedScript(t, reportURL, "mitstack-node-report")
+	service := named(t, testutil.Documents(t, testutil.Manifest(t, "argocd", components.Default().Served).Bytes), "Service", "argocd-server")
 
 	assert.Equal(t, fmt.Sprintf("https://argocd-server.%s.svc", testutil.Field(t, service, "metadata", "namespace")), env["ARGOCD_URL"],
 		"curl asks port 443 of an https URL that names no port")
@@ -482,7 +454,7 @@ func proofRequest(posted *postedReport) string {
 func TestReport_LeavesOutEveryApplicationsAppliedObjectsWhenCarryingThemWouldPassThePlatformsLimit(t *testing.T) {
 	crowded := `jq '.items[0].status.resources = [range(4000) | {version: "v1", kind: "ConfigMap", namespace: "app-shop", name: "settings-\(.)", status: "Synced"}]' testdata/applications.json`
 
-	_, posted, out, err := runReport(t, map[string]string{"kubectl": kubectlAnswering(map[string]string{applicationsRead: crowded})})
+	_, posted, out, err := runReport(t, kubectlWith(applicationsRead, crowded))
 
 	require.NoError(t, err, out)
 	assert.LessOrEqual(t, len(posted.raw), 256<<10, "the body fits the platform's limit")
@@ -498,13 +470,6 @@ func readJSON(t *testing.T, path ...string) any {
 	require.NoError(t, err)
 	require.NoError(t, json.Unmarshal(data, &v))
 	return v
-}
-
-func TestReport_NamesEachNodesStateAndEphemeralVolumeWithItsEncryption(t *testing.T) {
-	_, posted, out, err := runReport(t, nil)
-
-	require.NoError(t, err, out)
-	assert.Equal(t, readJSON(t, "testdata", "golden", "system-volumes.json"), posted.body["systemVolumes"])
 }
 
 func TestReport_ListsTheObjectsOfEachKindItReadWholeAndLeavesOutAKindWhoseReadFailsOrIsCutShort(t *testing.T) {
@@ -526,9 +491,7 @@ func TestReport_ListsTheObjectsOfEachKindItReadWholeAndLeavesOutAKindWhoseReadFa
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			kubectl := kubectlAnswering(map[string]string{tc.read: tc.answer})
-
-			_, posted, out, err := runReport(t, map[string]string{"kubectl": kubectl}, "REPORT_READ_SECONDS=1")
+			_, posted, out, err := runReport(t, kubectlWith(tc.read, tc.answer), "REPORT_READ_SECONDS=1")
 
 			require.NoError(t, err, out)
 			assert.Len(t, posted.body["nodes"], 3, "a kind left out still leaves a full report")
@@ -549,62 +512,75 @@ func TestReport_ListsTheObjectsOfEachKindItReadWholeAndLeavesOutAKindWhoseReadFa
 	}
 }
 
-func TestReport_CarriesTheKeySetTheAPIServerSignsServiceAccountTokensWithUnderJwks(t *testing.T) {
-	_, posted, out, err := runReport(t, nil)
-
-	require.NoError(t, err, out)
-	assert.Equal(t, readJSON(t, "testdata", "jwks.json"), posted.body["jwks"], "the report's jwks member is the API server's key set as read")
-}
-
-func TestReport_ListsCloudNativePGsClustersWithTheirCurrentPrimaryDatabasesAndRoles(t *testing.T) {
-	_, posted, out, err := runReport(t, nil)
-
-	require.NoError(t, err, out)
-	assert.Equal(t, []any{
-		map[string]any{"namespace": "app-pg", "kind": "Cluster", "name": "shared", "subscription": "sub_pg0123456789",
-			"phase": "Cluster in healthy state", "instances": float64(2), "readyInstances": float64(2), "currentPrimary": "shared-1"},
-		map[string]any{"namespace": "app-pg", "kind": "Database", "name": "shop", "subscription": "sub_shop01234567",
-			"applied": true, "message": nil},
-		map[string]any{"namespace": "app-pg", "kind": "DatabaseRole", "name": "shop", "subscription": nil,
-			"applied": false, "message": `role "shop" cannot be created: the cluster is not ready`},
-	}, posted.body["cloudNativePG"])
-}
-
-func TestReport_ListsEachClaimWithItsStorageClassAndPhaseAndNamesTheDefaultStorageClasses(t *testing.T) {
-	_, posted, out, err := runReport(t, nil)
-
-	require.NoError(t, err, out)
-	assert.Equal(t, map[string]any{
-		"claims": []any{
-			map[string]any{"namespace": "app-shop", "name": "data-shop-db-1", "storageClass": "local-path", "phase": "Bound"},
-			map[string]any{"namespace": "app-shop", "name": "scratch", "storageClass": nil, "phase": "Pending"},
-		},
-		"defaultStorageClasses": []any{"local-path"},
-	}, posted.body["storage"])
-}
-
-func TestReport_ListsEveryServiceWithItsTypeWhetherOrNotABlockLabelledIt(t *testing.T) {
-	_, posted, out, err := runReport(t, nil)
-
-	require.NoError(t, err, out)
-	assert.Equal(t, []any{
-		map[string]any{"namespace": "default", "name": "kubernetes", "type": "ClusterIP"},
-		map[string]any{"namespace": "app-shop", "name": "shop-db-rw", "type": "ClusterIP"},
-		map[string]any{"namespace": "app-shop", "name": "edge", "type": "NodePort"},
-		map[string]any{"namespace": "argocd", "name": "argocd-server", "type": "ClusterIP"},
-		map[string]any{"namespace": "argocd", "name": "argocd-repo-server", "type": "ClusterIP"},
-	}, posted.body["services"])
-}
-
 // everyCheck is the checks member naming each of the platform verdict's nine checks, in the order it judges them.
 var everyCheck = map[string]any{"contract": "node-report/v1", "names": []any{"routes", "exposure", "credentials", "version",
 	"advisories", "admission", "default-deny", "cis-benchmark", "nsa-scan"}}
 
-func TestReport_DeclaresItsNodeReportContractAndNamesEachOfTheVerdictsNineChecks(t *testing.T) {
-	_, posted, out, err := runReport(t, nil)
-
+func TestReport_PostsEachMemberItReadsFromAHealthyCluster(t *testing.T) {
+	fakes := kubectlWith(ingressesRead, `echo '{"apiVersion": "v1", "kind": "List", "items": [{"metadata": {"name": "argocd-server", "namespace": "argocd"}}]}'`)
+	fakes["date"] = reportAt
+	_, posted, out, err := runReport(t, fakes)
 	require.NoError(t, err, out)
-	assert.Equal(t, everyCheck, posted.body["checks"])
+	unreadable := func(reason string) map[string]any { return map[string]any{"unreadable": reason} }
+	cases := map[string]struct {
+		member, msg string
+		want        any
+	}{
+		"every pod with its namespace, node and phase": {"pods", "", []any{
+			map[string]any{"namespace": "argocd", "name": "argocd-server-5d9c7b8f4-x2x7q", "node": "poc-talos4-cp1", "phase": "Running"},
+			map[string]any{"namespace": "app-pg", "name": "shared-1", "node": "poc-talos4-cp2", "phase": "Running"},
+			map[string]any{"namespace": "app-pg", "name": "shared-2", "node": nil, "phase": "Pending"},
+			map[string]any{"namespace": "openbao", "name": "openbao-0", "node": "poc-talos4-cp1", "phase": "Running"}}},
+		"each node's state and ephemeral volume with its encryption": {"systemVolumes", "",
+			readJSON(t, "testdata", "golden", "system-volumes.json")},
+		"the key set the API server signs service account tokens with, under jwks": {"jwks",
+			"the report's jwks member is the API server's key set as read", readJSON(t, "testdata", "jwks.json")},
+		"CloudNativePG's clusters with their current primary, databases and roles": {"cloudNativePG", "", []any{
+			map[string]any{"namespace": "app-pg", "kind": "Cluster", "name": "shared", "subscription": "sub_pg0123456789",
+				"phase": "Cluster in healthy state", "instances": float64(2), "readyInstances": float64(2), "currentPrimary": "shared-1"},
+			map[string]any{"namespace": "app-pg", "kind": "Database", "name": "shop", "subscription": "sub_shop01234567", "applied": true, "message": nil},
+			map[string]any{"namespace": "app-pg", "kind": "DatabaseRole", "name": "shop", "subscription": nil,
+				"applied": false, "message": `role "shop" cannot be created: the cluster is not ready`}}},
+		"each claim with its storage class and phase, and the default storage classes": {"storage", "", map[string]any{"claims": []any{
+			map[string]any{"namespace": "app-shop", "name": "data-shop-db-1", "storageClass": "local-path", "phase": "Bound"},
+			map[string]any{"namespace": "app-shop", "name": "scratch", "storageClass": nil, "phase": "Pending"}},
+			"defaultStorageClasses": []any{"local-path"}}},
+		"every Service with its type, whether or not a block labelled it": {"services", "", []any{
+			map[string]any{"namespace": "default", "name": "kubernetes", "type": "ClusterIP"},
+			map[string]any{"namespace": "app-shop", "name": "shop-db-rw", "type": "ClusterIP"},
+			map[string]any{"namespace": "app-shop", "name": "edge", "type": "NodePort"},
+			map[string]any{"namespace": "argocd", "name": "argocd-server", "type": "ClusterIP"},
+			map[string]any{"namespace": "argocd", "name": "argocd-repo-server", "type": "ClusterIP"}}},
+		"the node-report contract and each of the verdict's nine checks": {"checks", "", everyCheck},
+		"Argo CD's Services": {"argocd.services", "", []any{map[string]any{"name": "argocd-server", "type": "ClusterIP"},
+			map[string]any{"name": "argocd-repo-server", "type": "ClusterIP"}}},
+		"Argo CD's Ingresses": {"argocd.ingresses", "", []any{map[string]any{"name": "argocd-server"}}},
+		"Argo CD's pods with their images": {"kubernetes", "", map[string]any{"argocdPods": []any{map[string]any{
+			"name": "argocd-server-5d9c7b8f4-x2x7q", "containers": []any{map[string]any{
+				"image": "quay.io/argoproj/argocd:v3.5.5@sha256:13db7b10db23283b1b36f855046602e18539a8a8204c9f6f0aa4a9a6ff5e4f3c"}}}}}},
+		"each default-deny policy with its selector, types and rule counts": {"defaultDenyPolicies", "", []any{
+			map[string]any{"namespace": "app-shop", "name": "mitstack-default-deny", "podSelector": map[string]any{},
+				"policyTypes": []any{"Ingress", "Egress"}, "ingressRules": float64(0), "egressRules": float64(0), "managedBy": "kyverno"},
+			map[string]any{"namespace": "app-pg", "name": "mitstack-default-deny", "podSelector": map[string]any{"matchLabels": map[string]any{"app": "pg"}},
+				"policyTypes": []any{"Ingress"}, "ingressRules": float64(1), "egressRules": float64(0), "managedBy": nil}}},
+		"the credentials member, unreadable with its reason": {"repositorySecrets", "",
+			unreadable("the report holds no Secret right, and no list of the declared repository credentials reaches it yet")},
+		"the admission member, unreadable with its reason": {"admission", "",
+			unreadable("the cluster has no admission probe namespace for the report to dry-run fixtures into yet")},
+		"the scan member, unreadable with its reason": {"securityScans", "",
+			unreadable("no kube-bench or kubescape scan runs on this cluster yet, so the report has no summary to carry")},
+		"a call from inside the mesh answered, and a plain call from outside refused while ztunnel presents the target's certificate": {
+			"mesh", "", map[string]any{"callFromInside": map[string]any{"passed": true},
+				"plainCallFromOutside": map[string]any{"passed": true, "probedAt": "2026-10-23T15:42:31Z", "curlExitStatus": float64(56),
+					"stderr": "curl: (56) Recv failure: Connection reset by peer\n"},
+				"workloadIdentity": map[string]any{"passed": true, "probedAt": "2026-10-23T15:42:31Z", "identity": components.MeshProbeIdentity,
+					"serial": "5E1C0A9F3B2D47E8", "notBefore": "2026-10-23T09:12:00Z", "notAfter": "2026-10-24T09:12:00Z"}}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tc.want, testutil.Field(t, posted.body, strings.Split(tc.member, ".")...), tc.msg)
+		})
+	}
 }
 
 func TestReport_AsksEachArgoCDRouteWithoutASessionAndKeepsItsStatusItsSizeAndWhetherUserinfoSaysSignedIn(t *testing.T) {
@@ -628,18 +604,21 @@ func TestReport_AsksEachArgoCDRouteWithoutASessionAndKeepsItsStatusItsSizeAndWhe
 	}
 	signedIn, noJSON := `{"loggedIn":true,"username":"admin","iss":"argocd"}`, "signed out"
 	cases := map[string]struct {
-		url  func(t *testing.T) string
-		want []any
+		userinfo string
+		want     []any
 	}{
-		"Argo CD refuses each route that needs a session": {func(t *testing.T) string { return argoCD(t, signedOut) },
-			answered(userinfo(signedOut, false))},
-		"userinfo says a caller is signed in": {func(t *testing.T) string { return argoCD(t, signedIn) }, answered(userinfo(signedIn, true))},
-		"userinfo answers no JSON":            {func(t *testing.T) string { return argoCD(t, noJSON) }, answered(userinfo(noJSON, nil))},
-		"Argo CD does not answer":             {func(*testing.T) string { return "https://127.0.0.1:1" }, unanswered},
+		"Argo CD refuses each route that needs a session": {signedOut, answered(userinfo(signedOut, false))},
+		"userinfo says a caller is signed in":             {signedIn, answered(userinfo(signedIn, true))},
+		"userinfo answers no JSON":                        {noJSON, answered(userinfo(noJSON, nil))},
+		"Argo CD does not answer":                         {"", unanswered},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, posted, out, err := runReport(t, nil, "ARGOCD_URL="+tc.url(t))
+			url := "https://127.0.0.1:1"
+			if tc.userinfo != "" {
+				url = argoCD(t, tc.userinfo)
+			}
+			_, posted, out, err := runReport(t, nil, "ARGOCD_URL="+url)
 
 			require.NoError(t, err, out)
 			assert.Equal(t, tc.want, testutil.Field(t, posted.body, "argocd", "routes"))
@@ -647,82 +626,37 @@ func TestReport_AsksEachArgoCDRouteWithoutASessionAndKeepsItsStatusItsSizeAndWhe
 	}
 }
 
-func TestReport_ListsArgoCDsServicesIngressesAndPodsAndEachDefaultDenyPolicyWithItsSelectorTypesAndRuleCounts(t *testing.T) {
-	ingress := `echo '{"apiVersion": "v1", "kind": "List", "items": [{"metadata": {"name": "argocd-server", "namespace": "argocd"}}]}'`
-
-	_, posted, out, err := runReport(t, map[string]string{"kubectl": kubectlAnswering(map[string]string{ingressesRead: ingress})})
-
-	require.NoError(t, err, out)
-	assert.Equal(t, []any{
-		map[string]any{"name": "argocd-server", "type": "ClusterIP"},
-		map[string]any{"name": "argocd-repo-server", "type": "ClusterIP"},
-	}, testutil.Field(t, posted.body, "argocd", "services"))
-	assert.Equal(t, []any{map[string]any{"name": "argocd-server"}}, testutil.Field(t, posted.body, "argocd", "ingresses"))
-	assert.Equal(t, map[string]any{"argocdPods": []any{map[string]any{"name": "argocd-server-5d9c7b8f4-x2x7q", "containers": []any{
-		map[string]any{"image": "quay.io/argoproj/argocd:v3.5.5@sha256:13db7b10db23283b1b36f855046602e18539a8a8204c9f6f0aa4a9a6ff5e4f3c"}}}}},
-		posted.body["kubernetes"])
-	assert.Equal(t, []any{
-		map[string]any{"namespace": "app-shop", "name": "mitstack-default-deny", "podSelector": map[string]any{},
-			"policyTypes": []any{"Ingress", "Egress"}, "ingressRules": float64(0), "egressRules": float64(0), "managedBy": "kyverno"},
-		map[string]any{"namespace": "app-pg", "name": "mitstack-default-deny", "podSelector": map[string]any{"matchLabels": map[string]any{"app": "pg"}},
-			"policyTypes": []any{"Ingress"}, "ingressRules": float64(1), "egressRules": float64(0), "managedBy": nil},
-	}, posted.body["defaultDenyPolicies"])
-}
-
-func TestReport_SendsTheCredentialsAdmissionAndScanMembersAsUnreadableEachWithItsReason(t *testing.T) {
-	_, posted, out, err := runReport(t, nil)
-
-	require.NoError(t, err, out)
-	assert.Equal(t, map[string]any{"unreadable": "the report holds no Secret right, and no list of the declared repository credentials reaches it yet"},
-		posted.body["repositorySecrets"])
-	assert.Equal(t, map[string]any{"unreadable": "the cluster has no admission probe namespace for the report to dry-run fixtures into yet"},
-		posted.body["admission"])
-	assert.Equal(t, map[string]any{"unreadable": "no kube-bench or kubescape scan runs on this cluster yet, so the report has no summary to carry"},
-		posted.body["securityScans"])
-}
-
 func TestReport_NamesAFailedVolumeCloudNativePGStorageOrServiceReadInlineWithItsExitStatusAsANumberInAFullReport(t *testing.T) {
-	notVolumes := map[string]any{"exitStatus": float64(0), "stderr": "talosctl exited 0, and its output is not the volume statuses this report reads"}
-	storageFailing := map[string]string{"kubectl": kubectlAnswering(map[string]string{
-		storageRead: `echo 'error: persistentvolumeclaims is forbidden' >&2; exit 1`})}
-	storageFailed := map[string]any{"exitStatus": float64(1), "stderr": "error: persistentvolumeclaims is forbidden\n"}
-	notStorage := map[string]string{"kubectl": kubectlAnswering(map[string]string{storageRead: "echo 'not json'"})}
+	failed := func(status float64, stderr string) map[string]any {
+		return map[string]any{"exitStatus": status, "stderr": stderr}
+	}
+	timedOut, storageFailed, podsFailed := failed(124, ""), failed(1, "error: persistentvolumeclaims is forbidden\n"), failed(1, "error: pods is forbidden\n")
+	notVolumes := failed(0, "talosctl exited 0, and its output is not the volume statuses this report reads")
+	notStorage := failed(0, "kubectl exited 0, and its output is not the claims, storage classes and Services this report reads")
 	cases := map[string]struct {
 		fakes map[string]string
-		key   string
-		want  any
+		want  map[string]any
 	}{
-		"the CloudNativePG read exits 1": {map[string]string{"kubectl": failingCloudNativePGKubectl}, "cloudNativePG",
-			map[string]any{"exitStatus": float64(1), "stderr": "error: the server does not have a resource type \"clusters\"\n"}},
-		"the CloudNativePG read times out": {map[string]string{"kubectl": kubectlAnswering(map[string]string{cloudNativePGRead: "sleep 10"})},
-			"cloudNativePG", map[string]any{"exitStatus": float64(124), "stderr": ""}},
+		"the CloudNativePG read exits 1": {kubectlWith(cloudNativePGRead, `echo 'error: the server does not have a resource type "clusters"' >&2; exit 1`),
+			map[string]any{"cloudNativePG": failed(1, "error: the server does not have a resource type \"clusters\"\n")}},
+		"the CloudNativePG read times out": {kubectlWith(cloudNativePGRead, "sleep 10"), map[string]any{"cloudNativePG": timedOut}},
 		"the volume read exits 1": {map[string]string{"talosctl": talosctlAnswering(`echo 'rpc error: 10.0.0.7 is unreachable' >&2; exit 1`)},
-			"systemVolumes", map[string]any{"exitStatus": float64(1), "stderr": "rpc error: 10.0.0.7 is unreachable\n"}},
-		"the volume read times out": {map[string]string{"talosctl": talosctlAnswering("sleep 10")}, "systemVolumes",
-			map[string]any{"exitStatus": float64(124), "stderr": ""}},
-		"the volume read prints no JSON":   {map[string]string{"talosctl": talosctlAnswering("echo 'not json'")}, "systemVolumes", notVolumes},
-		"the volume read prints no volume": {map[string]string{"talosctl": talosctlAnswering("true")}, "systemVolumes", notVolumes},
-		"the storage read exits 1":         {storageFailing, "storage", storageFailed},
-		"the Service read exits 1":         {storageFailing, "services", storageFailed},
-		"the storage read times out": {map[string]string{"kubectl": kubectlAnswering(map[string]string{storageRead: "sleep 10"})},
-			"storage", map[string]any{"exitStatus": float64(124), "stderr": ""}},
-		"the storage read prints no JSON": {notStorage, "storage", map[string]any{"exitStatus": float64(0),
-			"stderr": "kubectl exited 0, and its output is not the claims, storage classes and Services this report reads"}},
-		"the Service read prints no JSON": {notStorage, "services", map[string]any{"exitStatus": float64(0),
-			"stderr": "kubectl exited 0, and its output is not the claims, storage classes and Services this report reads"}},
-		"the pod read exits 1": {map[string]string{"kubectl": kubectlAnswering(map[string]string{podsRead: `echo 'error: pods is forbidden' >&2; exit 1`})},
-			"pods", map[string]any{"exitStatus": float64(1), "stderr": "error: pods is forbidden\n"}},
-		"the pod read times out": {map[string]string{"kubectl": kubectlAnswering(map[string]string{podsRead: "sleep 10"})},
-			"pods", map[string]any{"exitStatus": float64(124), "stderr": ""}},
-		"the pod read exits 1, for Argo CD's pods": {map[string]string{"kubectl": kubectlAnswering(map[string]string{
-			podsRead: `echo 'error: pods is forbidden' >&2; exit 1`})}, "kubernetes.argocdPods",
-			map[string]any{"exitStatus": float64(1), "stderr": "error: pods is forbidden\n"}},
-		"the Service read exits 1, for Argo CD's Services": {storageFailing, "argocd.services", storageFailed},
-		"the Ingress read exits 1": {map[string]string{"kubectl": kubectlAnswering(map[string]string{
-			ingressesRead: `echo 'error: ingresses is forbidden' >&2; exit 1`})}, "argocd.ingresses",
-			map[string]any{"exitStatus": float64(1), "stderr": "error: ingresses is forbidden\n"}},
-		"the default-deny read times out": {map[string]string{"kubectl": kubectlAnswering(map[string]string{defaultDenyRead: "sleep 10"})},
-			"defaultDenyPolicies", map[string]any{"exitStatus": float64(124), "stderr": ""}},
+			map[string]any{"systemVolumes": failed(1, "rpc error: 10.0.0.7 is unreachable\n")}},
+		"the volume read times out":        {map[string]string{"talosctl": talosctlAnswering("sleep 10")}, map[string]any{"systemVolumes": timedOut}},
+		"the volume read prints no JSON":   {map[string]string{"talosctl": talosctlAnswering("echo 'not json'")}, map[string]any{"systemVolumes": notVolumes}},
+		"the volume read prints no volume": {map[string]string{"talosctl": talosctlAnswering("true")}, map[string]any{"systemVolumes": notVolumes}},
+		"the storage and Service read exits 1, for every Service and Argo CD's": {
+			kubectlWith(storageRead, `echo 'error: persistentvolumeclaims is forbidden' >&2; exit 1`),
+			map[string]any{"storage": storageFailed, "services": storageFailed, "argocd.services": storageFailed}},
+		"the storage read times out": {kubectlWith(storageRead, "sleep 10"), map[string]any{"storage": timedOut}},
+		"the storage and Service read prints no JSON": {kubectlWith(storageRead, "echo 'not json'"),
+			map[string]any{"storage": notStorage, "services": notStorage}},
+		"the pod read exits 1, for every pod and Argo CD's": {kubectlWith(podsRead, `echo 'error: pods is forbidden' >&2; exit 1`),
+			map[string]any{"pods": podsFailed, "kubernetes.argocdPods": podsFailed}},
+		"the pod read times out": {kubectlWith(podsRead, "sleep 10"), map[string]any{"pods": timedOut}},
+		"the Ingress read exits 1": {kubectlWith(ingressesRead, `echo 'error: ingresses is forbidden' >&2; exit 1`),
+			map[string]any{"argocd.ingresses": failed(1, "error: ingresses is forbidden\n")}},
+		"the default-deny read times out": {kubectlWith(defaultDenyRead, "sleep 10"), map[string]any{"defaultDenyPolicies": timedOut}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -732,27 +666,26 @@ func TestReport_NamesAFailedVolumeCloudNativePGStorageOrServiceReadInlineWithIts
 			assert.Len(t, posted.body["nodes"], 3)
 			assert.Len(t, testutil.Field(t, posted.body, "argocd", "applications"), 3)
 			assert.Equal(t, everyCheck, posted.body["checks"])
-			assert.Equal(t, tc.want, testutil.Field(t, posted.body, strings.Split(tc.key, ".")...))
+			for member, want := range tc.want {
+				assert.Equal(t, want, testutil.Field(t, posted.body, strings.Split(member, ".")...), member)
+			}
 		})
 	}
 }
 
 func TestReport_ThatCannotReadPostsOneReportNamingTheReadAndExitsNonZero(t *testing.T) {
-	kubectlFailing := func(read, answer string) map[string]string {
-		return map[string]string{"kubectl": kubectlAnswering(map[string]string{read: answer})}
-	}
 	cases := map[string]struct {
 		fakes map[string]string
 		want  map[string]any
 	}{
-		"the nodes read fails":         {kubectlFailing(nodesRead, failedRead), map[string]any{"read": "kubectl get nodes", "exitStatus": float64(3)}},
-		"the applications read fails":  {kubectlFailing(applicationsRead, failedRead), map[string]any{"read": "kubectl get applications", "exitStatus": float64(3)}},
-		"the key set read fails":       {kubectlFailing(keySetRead, failedRead), map[string]any{"read": "kubectl get --raw /openid/v1/jwks", "exitStatus": float64(3)}},
+		"the nodes read fails":         {kubectlWith(nodesRead, failedRead), map[string]any{"read": "kubectl get nodes", "exitStatus": float64(3)}},
+		"the applications read fails":  {kubectlWith(applicationsRead, failedRead), map[string]any{"read": "kubectl get applications", "exitStatus": float64(3)}},
+		"the key set read fails":       {kubectlWith(keySetRead, failedRead), map[string]any{"read": "kubectl get --raw /openid/v1/jwks", "exitStatus": float64(3)}},
 		"the etcd members read fails":  {map[string]string{"talosctl": failedRead}, map[string]any{"read": "talosctl etcd members", "exitStatus": float64(3)}},
-		"the key set read times out":   {kubectlFailing(keySetRead, "sleep 10"), map[string]any{"read": "kubectl get --raw /openid/v1/jwks", "timedOut": true}},
-		"jq cannot build the body":     {kubectlFailing(nodesRead, "echo 'not json'"), map[string]any{"read": "body", "exitStatus": float64(2)}},
-		"the token request fails":      {kubectlFailing(tokenRequest, failedRead), map[string]any{"read": "kubectl create token", "exitStatus": float64(3)}},
-		"the proof script prints none": {kubectlFailing(tokenRequest, "true"), map[string]any{"read": "kubectl create token", "exitStatus": float64(0)}},
+		"the key set read times out":   {kubectlWith(keySetRead, "sleep 10"), map[string]any{"read": "kubectl get --raw /openid/v1/jwks", "timedOut": true}},
+		"jq cannot build the body":     {kubectlWith(nodesRead, "echo 'not json'"), map[string]any{"read": "body", "exitStatus": float64(2)}},
+		"the token request fails":      {kubectlWith(tokenRequest, failedRead), map[string]any{"read": "kubectl create token", "exitStatus": float64(3)}},
+		"the proof script prints none": {kubectlWith(tokenRequest, "true"), map[string]any{"read": "kubectl create token", "exitStatus": float64(0)}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -775,18 +708,8 @@ func TestReport_ThatCannotReadPostsOneReportNamingTheReadAndExitsNonZero(t *test
 	}
 }
 
-func TestReport_ThatReadsEverythingPostsAHealthyBodyByteForByte(t *testing.T) {
-	_, posted, out, err := runReport(t, map[string]string{"date": "echo 2026-10-23T15:45:00Z"})
-
-	require.NoError(t, err, out)
-	testutil.Golden(t, filepath.Join("testdata", "golden", "healthy-body.json"), posted.raw)
-}
-
 func TestManifests_LetsTheReportListPodsEachKindItReadsAndCloudNativePGsObjectsAndMintATokenForItsOwnServiceAccountAloneAndGrantsNoVerbOnSecrets(t *testing.T) {
-	rendered, err := report.Manifests(inputs("https://api.mitstack.dev/v1/cluster-reports"))
-	require.NoError(t, err)
-
-	docs := testutil.Documents(t, rendered)
+	docs := testutil.Documents(t, manifests(t, reportURL))
 
 	roles := testutil.Kind(docs, "ClusterRole")
 	tokenRoles, bindings := inNamespace(t, testutil.Kind(docs, "Role"), "mitstack-node"), inNamespace(t, testutil.Kind(docs, "RoleBinding"), "mitstack-node")

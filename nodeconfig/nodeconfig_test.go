@@ -722,7 +722,7 @@ func TestRenderWorker_LabelsTheNodeWithItsOwnLabelsBesideTheSubscription(t *test
 	}, testutil.Field(t, nodeConfigs[0], "labels"))
 }
 
-func TestRender_RefusesNodeLabelsEveryCloudNodeWouldShareOrThatReplaceTheSubscriptions(t *testing.T) {
+func TestRender_RefusesNodeLabelsEveryCloudNodeWouldShareThatReplaceTheSubscriptionsOrThatKubernetesRefuses(t *testing.T) {
 	cases := []struct {
 		name    string
 		profile nodeconfig.Profile
@@ -735,6 +735,10 @@ func TestRender_RefusesNodeLabelsEveryCloudNodeWouldShareOrThatReplaceTheSubscri
 			node: nodeconfig.Node{Hostname: "wk-hel1", Labels: map[string]string{nodeconfig.SubscriptionLabel: "sub_other"}}, want: nodeconfig.SubscriptionLabel},
 		{name: "a value Kubernetes refuses", profile: nodeconfig.Metal,
 			node: nodeconfig.Node{Hostname: "wk-hel1", Labels: map[string]string{"topology.kubernetes.io/zone": "hel1 dc1"}}, want: "hel1 dc1"},
+		{name: "a key Kubernetes refuses", profile: nodeconfig.Metal,
+			node: nodeconfig.Node{Hostname: "wk-hel1", Labels: map[string]string{"mitstack.dev/zone dc": "hel1"}}, want: `"zone dc" is invalid`},
+		{name: "a label in Kubernetes's own namespace that NodeRestriction refuses a worker's kubelet", profile: nodeconfig.Metal,
+			node: nodeconfig.Node{Hostname: "wk-hel1", Labels: map[string]string{"node-role.kubernetes.io/control-plane": "true"}}, want: "NodeRestriction"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

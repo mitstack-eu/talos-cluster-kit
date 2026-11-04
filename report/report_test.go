@@ -33,7 +33,9 @@ const (
 	keySetRead        = "get --raw /openid/v1/jwks"
 	cloudNativePGRead = "get clusters.postgresql.cnpg.io,databases.postgresql.cnpg.io,databaseroles.postgresql.cnpg.io -A -o json"
 	storageRead       = "get persistentvolumeclaims,storageclasses.storage.k8s.io,services -A -o json"
+	podsRead          = "get pods -A -o json"
 	membersRead       = "-n 10.0.0.6 etcd members"
+	etcdStatusRead    = "-n 10.0.0.6,10.0.0.5,10.0.0.7 etcd status"
 	volumesRead       = "-n 10.0.0.5,10.0.0.6,10.0.0.7 get volumestatus -o json"
 	meshProbeRead     = "get configmap mitstack-mesh-probe -n kube-system -o json"
 	tokenRequest      = "create token mitstack-node-report -n mitstack-node "
@@ -60,13 +62,18 @@ var fakeKubectl, failingCloudNativePGKubectl = kubectlAnswering(nil), kubectlAns
 var fakeTalosctl = talosctlAnswering("cat testdata/volumes.json")
 
 func talosctlAnswering(volumes string) string {
-	return "case \"$*\" in\n\"" + membersRead + "\")\ncat testdata/members.txt\n;;\n\"" + volumesRead + "\")\n" + volumes + "\n;;\n*) exit 1 ;;\nesac\n"
+	return talosctlWith(volumes, "cat testdata/etcd-status.txt")
+}
+
+func talosctlWith(volumes, status string) string {
+	return "case \"$*\" in\n\"" + membersRead + "\")\ncat testdata/members.txt\n;;\n\"" + volumesRead + "\")\n" + volumes +
+		"\n;;\n\"" + etcdStatusRead + "\")\n" + status + "\n;;\n*) exit 1 ;;\nesac\n"
 }
 
 func kubectlAnswering(overrides map[string]string) string {
 	answers := map[string]string{nodesRead: "cat testdata/nodes.json", applicationsRead: "cat testdata/applications.json",
 		keySetRead: "cat testdata/jwks.json", cloudNativePGRead: "cat testdata/cloudnative-pg.json", storageRead: "cat testdata/storage-and-services.json",
-		tokenRequest: "echo " + reportProof, meshProbeRead: "cat testdata/mesh-probe.json"}
+		tokenRequest: "echo " + reportProof, meshProbeRead: "cat testdata/mesh-probe.json", podsRead: "cat testdata/pods.json"}
 	for _, kind := range subscriptionKinds {
 		answers[subscriptionRead(kind)] = "cat testdata/subscription-resources/" + kind + ".json"
 	}
@@ -175,14 +182,50 @@ func runReport(t *testing.T, fakes map[string]string, env ...string) (*testutil.
 
 	script, rendered := renderedScript(t, server.URL, "mitstack-node-report")
 
+	ca := writeServerCA(t, server)
 	out, err := testutil.RunBash(t, script, tools.Env(append([]string{
 		"REPORT_URL=" + server.URL, "SUBSCRIPTION_ID=sub_0123456789ab", "HOST_IP=10.0.0.6", "REPORT_PROOF_SCRIPT=" + rendered["REPORT_PROOF_SCRIPT"],
-		"REPORT_TOKEN_FILE=" + token, "CURL_CA_BUNDLE=" + writeServerCA(t, server), "MESH_PROBE_URL=" + meshTarget(t),
+		"REPORT_TOKEN_FILE=" + token, "CURL_CA_BUNDLE=" + ca, "MESH_PROBE_URL=" + meshTarget(t),
 		"MESH_PROBE_ANSWER=" + rendered["MESH_PROBE_ANSWER"], "MESH_PROBE_IDENTITY=" + rendered["MESH_PROBE_IDENTITY"],
-		"MESH_PROBE_CONFIGMAP=" + rendered["MESH_PROBE_CONFIGMAP"]}, env...)...))
+		"MESH_PROBE_CONFIGMAP=" + rendered["MESH_PROBE_CONFIGMAP"], "OPENBAO_MEMBERS=" + openBao(t, healthyOpenBao...),
+		"OPENBAO_CA_FILE=" + ca}, env...)...))
 	posted.mu.Lock()
 	defer posted.mu.Unlock()
 	return tools, posted, out, err
+}
+
+// openBaoMember is how one fake OpenBao member answers; httptest's servers share one certificate, so one CA covers all.
+type openBaoMember struct {
+	sealed, active, down bool
+	delay                time.Duration
+}
+
+var healthyOpenBao = []openBaoMember{{active: true}, {}, {}}
+
+// openBao serves each member's sys/seal-status and sys/leader and returns OPENBAO_MEMBERS naming them in order.
+func openBao(t *testing.T, members ...openBaoMember) string {
+	t.Helper()
+	named := make([]string, 0, len(members))
+	for i, m := range members {
+		if m.down {
+			named = append(named, fmt.Sprintf("openbao-%d=https://127.0.0.1:1", i))
+			continue
+		}
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			time.Sleep(m.delay)
+			switch r.URL.Path {
+			case "/v1/sys/seal-status":
+				_, _ = fmt.Fprintf(w, `{"type":"shamir","initialized":true,"sealed":%t,"t":1,"n":1,"storage_type":"raft"}`, m.sealed)
+			case "/v1/sys/leader":
+				_, _ = fmt.Fprintf(w, `{"ha_enabled":true,"is_self":%t,"leader_address":"https://openbao-0.openbao-internal:8200"}`, m.active)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		t.Cleanup(server.Close)
+		named = append(named, fmt.Sprintf("openbao-%d=%s", i, server.URL))
+	}
+	return strings.Join(named, " ")
 }
 
 func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipAndEachApplicationsHealthAndAppliedObjectsSignedForItsExactBody(t *testing.T) {
@@ -202,11 +245,7 @@ func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipA
 			"allocatable": map[string]any{"cpu": "1950m", "memory": "3615Mi", "pods": "110"}, "zone": nil, "region": nil,
 			"zoneLabelManagers": []any{}},
 	}, posted.body["nodes"], "each node's zone and region labels, and every manager of its zone label")
-	assert.Equal(t, map[string]any{"members": []any{
-		map[string]any{"id": "25afe91c7e8956f1", "hostname": "poc-talos4-cp2", "peerURLs": []any{"https://10.0.0.6:2380"}, "learner": false},
-		map[string]any{"id": "a48f107742a8605c", "hostname": "poc-talos4-cp1", "peerURLs": []any{"https://10.0.0.5:2380"}, "learner": false},
-		map[string]any{"id": "1948ccd42e0e52cd", "hostname": "poc-talos4-cp4", "peerURLs": []any{"https://10.0.0.7:2380"}, "learner": true},
-	}}, posted.body["etcd"])
+	assert.Equal(t, etcdMember(true, true, true), posted.body["etcd"])
 	assert.Equal(t, readJSON(t, "testdata", "golden", "argocd.json"), posted.body["argocd"], "a Secret is among the applied objects, each with five fields")
 	wantCalls := []string{
 		"kubectl " + nodesRead,
@@ -222,10 +261,164 @@ func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipA
 	}
 	calls := tools.Calls(t)
 	require.NotEmpty(t, calls)
-	assert.Contains(t, calls[:len(calls)-1], "kubectl "+meshProbeRead, "the mesh read, beside the others, ends before the proof")
-	calls = slices.DeleteFunc(calls, func(c string) bool { return c == "kubectl "+meshProbeRead })
+	beside := []string{"kubectl " + meshProbeRead, "kubectl " + podsRead, "talosctl " + etcdStatusRead}
+	for _, read := range beside {
+		assert.Contains(t, calls[:len(calls)-1], read, "a read beside the others ends before the proof")
+	}
+	calls = slices.DeleteFunc(calls, func(c string) bool { return slices.Contains(beside, c) })
 	assert.Equal(t, append(wantCalls, "kubectl "+proofRequest(posted)), calls, "the proof is minted once the body is final")
 	assert.Equal(t, reportProof, posted.proof, "the post carries the proof the block's script printed for its exact body")
+}
+
+// etcdMember is the etcd member with each member's health in members.txt order, the leader cp1, and no failed read.
+func etcdMember(healthy ...bool) map[string]any {
+	members := []any{
+		map[string]any{"id": "25afe91c7e8956f1", "hostname": "poc-talos4-cp2", "peerURLs": []any{"https://10.0.0.6:2380"}, "learner": false},
+		map[string]any{"id": "a48f107742a8605c", "hostname": "poc-talos4-cp1", "peerURLs": []any{"https://10.0.0.5:2380"}, "learner": false},
+		map[string]any{"id": "1948ccd42e0e52cd", "hostname": "poc-talos4-cp4", "peerURLs": []any{"https://10.0.0.7:2380"}, "learner": true},
+	}
+	for i, member := range members {
+		member.(map[string]any)["healthy"] = healthy[i]
+	}
+	return map[string]any{"members": members, "leader": "a48f107742a8605c", "statusError": nil}
+}
+
+func TestReport_NamesEachEtcdMembersHealthTheLeaderAndTheStatusReadThatFailed(t *testing.T) {
+	twoAnswer := "head -n 3 testdata/etcd-status.txt; echo 'error from node 10.0.0.7: rpc error: code = Unavailable' >&2; exit 1"
+	alarmed := `sed '/^10.0.0.7/s/ *$/     memberID 1948ccd42e0e52cd alarm:NOSPACE/' testdata/etcd-status.txt`
+	cases := map[string]struct {
+		status      string
+		healthy     []bool
+		leader      any
+		statusError any
+	}{
+		"every node answers": {"cat testdata/etcd-status.txt", []bool{true, true, true}, "a48f107742a8605c", nil},
+		"the learner's node is stopped": {twoAnswer, []bool{true, true, false}, "a48f107742a8605c",
+			map[string]any{"exitStatus": float64(1), "stderr": "error from node 10.0.0.7: rpc error: code = Unavailable\n"}},
+		"the learner names an alarm": {alarmed, []bool{true, true, false}, "a48f107742a8605c", nil},
+		"the status read times out":  {"sleep 10", []bool{false, false, false}, nil, map[string]any{"exitStatus": float64(124), "stderr": ""}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			fakes := map[string]string{"talosctl": talosctlWith("cat testdata/volumes.json", tc.status)}
+
+			_, posted, out, err := runReport(t, fakes, "REPORT_READ_SECONDS=1")
+
+			require.NoError(t, err, out)
+			want := etcdMember(tc.healthy...)
+			want["leader"], want["statusError"] = tc.leader, tc.statusError
+			assert.Equal(t, want, posted.body["etcd"], "a member whose node does not answer reads unhealthy, never healthy")
+		})
+	}
+}
+
+func TestReport_ListsEveryPodWithItsNamespaceNodeAndPhase(t *testing.T) {
+	_, posted, out, err := runReport(t, nil)
+
+	require.NoError(t, err, out)
+	assert.Equal(t, []any{
+		map[string]any{"namespace": "argocd", "name": "argocd-server-5d9c7b8f4-x2x7q", "node": "poc-talos4-cp1", "phase": "Running"},
+		map[string]any{"namespace": "app-pg", "name": "shared-1", "node": "poc-talos4-cp2", "phase": "Running"},
+		map[string]any{"namespace": "app-pg", "name": "shared-2", "node": nil, "phase": "Pending"},
+		map[string]any{"namespace": "openbao", "name": "openbao-0", "node": "poc-talos4-cp1", "phase": "Running"},
+	}, posted.body["pods"])
+}
+
+func TestReport_NamesEachOpenBaoMembersSealStateTheActiveOneAndEachReadThatFailed(t *testing.T) {
+	member := func(name string, sealed, active bool) map[string]any {
+		return map[string]any{"name": name, "initialized": true, "sealed": sealed, "active": active}
+	}
+	unread := func(name string, status float64) map[string]any {
+		return map[string]any{"name": name, "initialized": nil, "sealed": nil, "active": nil,
+			"error": map[string]any{"read": "sys/seal-status", "exitStatus": status}}
+	}
+	cases := map[string]struct {
+		members []openBaoMember
+		want    []any
+		leader  any
+	}{
+		"every member is unsealed": {healthyOpenBao,
+			[]any{member("openbao-0", false, true), member("openbao-1", false, false), member("openbao-2", false, false)}, "openbao-0"},
+		"one member is sealed": {[]openBaoMember{{active: true}, {sealed: true}, {}},
+			[]any{member("openbao-0", false, true), member("openbao-1", true, false), member("openbao-2", false, false)}, "openbao-0"},
+		"the active member does not answer": {[]openBaoMember{{down: true}, {}},
+			[]any{unread("openbao-0", 7), member("openbao-1", false, false)}, nil},
+		"one member answers too late": {[]openBaoMember{{active: true}, {delay: 3 * time.Second}},
+			[]any{member("openbao-0", false, true), unread("openbao-1", 124)}, "openbao-0"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, posted, out, err := runReport(t, nil, "REPORT_READ_SECONDS=1", "OPENBAO_MEMBERS="+openBao(t, tc.members...))
+
+			require.NoError(t, err, out)
+			openbao, ok := posted.body["openbao"].(map[string]any)
+			require.True(t, ok, "the report carries no openbao member")
+			for _, got := range openbao["members"].([]any) {
+				if failed, ok := got.(map[string]any)["error"].(map[string]any); ok {
+					assert.IsType(t, "", failed["stderr"], "the failed read carries curl's stderr")
+					delete(failed, "stderr")
+				}
+			}
+			assert.Equal(t, map[string]any{"members": tc.want, "leader": tc.leader}, openbao)
+		})
+	}
+}
+
+func TestReport_OpenBaoInTheHostingSetTakesTheReportsCallsOnItsAPIPort(t *testing.T) {
+	rendered, err := report.Manifests(inputs("https://api.mitstack.dev/v1/cluster-reports"))
+	require.NoError(t, err)
+	set, err := components.Hosting(testutil.HostingInputs(t))
+	require.NoError(t, err)
+	_, reportLabels, _ := cronJob(t, rendered, "mitstack-node-report")
+	labels := map[string]string{}
+	for k, v := range reportLabels {
+		labels[k] = v.(string)
+	}
+	endpoints := map[string]testutil.CiliumEndpoint{
+		"OpenBao":    testutil.Endpoint("openbao", nil, map[string]string{"app.kubernetes.io/name": "openbao", "component": "server"}),
+		"the report": testutil.Endpoint("mitstack-node", nil, labels),
+	}
+	policies := testutil.Kind(testutil.Documents(t, testutil.Manifest(t, "mitstack-hosting-flows", set.Served).Bytes), "CiliumClusterwideNetworkPolicy")
+	require.Len(t, policies, 1)
+
+	assert.Contains(t, testutil.Grants(t, policies[0], endpoints, "OpenBao"), "ingress with the report on 8200/TCP 15008/TCP")
+}
+
+func TestManifests_PointsTheReportAtEachOpenBaoPodByANameItsCertificateHoldsAndTrustsTheBundleOfItsAuthority(t *testing.T) {
+	rendered, err := report.Manifests(inputs("https://api.mitstack.dev/v1/cluster-reports"))
+	require.NoError(t, err)
+	set, err := components.Hosting(testutil.HostingInputs(t))
+	require.NoError(t, err)
+	named := func(docs []map[string]any, kind, name string) map[string]any {
+		for _, doc := range testutil.Kind(docs, kind) {
+			if testutil.Field(t, doc, "metadata", "name") == name {
+				return doc
+			}
+		}
+		require.FailNow(t, "no "+kind+" "+name)
+		return nil
+	}
+	tls := testutil.Documents(t, testutil.Manifest(t, "mitstack-hosting-tls", set.Served).Bytes)
+	statefulSet := testutil.Kind(testutil.Documents(t, testutil.Manifest(t, "openbao", set.Served).Bytes), "StatefulSet")[0]
+	job, _, container := cronJob(t, rendered, "mitstack-node-report")
+	env := testutil.ContainerEnv(t, container)
+
+	domain := fmt.Sprintf("%s.%s.svc", testutil.Field(t, statefulSet, "spec", "serviceName"), testutil.Field(t, statefulSet, "metadata", "namespace"))
+	var want []string
+	for i := range components.OpenBaoMembers {
+		pod := fmt.Sprintf("%s-%d", testutil.Field(t, statefulSet, "metadata", "name"), i)
+		want = append(want, fmt.Sprintf("%s=https://%s.%s:8200", pod, pod, domain))
+	}
+	assert.Equal(t, strings.Join(want, " "), env["OPENBAO_MEMBERS"])
+	assert.Contains(t, testutil.Field(t, named(tls, "Certificate", "openbao-tls"), "spec", "dnsNames"), "*."+domain)
+
+	bundle := named(tls, "Bundle", "openbao-ca")
+	assert.Contains(t, testutil.Field(t, job, "spec", "jobTemplate", "spec", "template", "spec", "volumes"),
+		map[string]any{"name": "openbao-ca", "configMap": map[string]any{"name": testutil.Field(t, bundle, "metadata", "name"), "optional": true}})
+	assert.Contains(t, testutil.Field(t, container, "volumeMounts"),
+		map[string]any{"name": "openbao-ca", "mountPath": "/var/run/openbao-ca", "readOnly": true})
+	assert.Equal(t, "/var/run/openbao-ca/"+testutil.Field(t, bundle, "spec", "target", "configMap", "key").(string), env["OPENBAO_CA_FILE"],
+		"trust-manager names the ConfigMap after its Bundle and writes the authority under the Bundle's key")
 }
 
 func proofRequest(posted *postedReport) string {
@@ -309,13 +502,13 @@ func TestReport_CarriesTheKeySetTheAPIServerSignsServiceAccountTokensWithUnderJw
 	assert.Equal(t, readJSON(t, "testdata", "jwks.json"), posted.body["jwks"], "the report's jwks member is the API server's key set as read")
 }
 
-func TestReport_ListsCloudNativePGsClustersDatabasesAndRoles(t *testing.T) {
+func TestReport_ListsCloudNativePGsClustersWithTheirCurrentPrimaryDatabasesAndRoles(t *testing.T) {
 	_, posted, out, err := runReport(t, nil)
 
 	require.NoError(t, err, out)
 	assert.Equal(t, []any{
 		map[string]any{"namespace": "app-pg", "kind": "Cluster", "name": "shared", "subscription": "sub_pg0123456789",
-			"phase": "Cluster in healthy state", "instances": float64(2), "readyInstances": float64(2)},
+			"phase": "Cluster in healthy state", "instances": float64(2), "readyInstances": float64(2), "currentPrimary": "shared-1"},
 		map[string]any{"namespace": "app-pg", "kind": "Database", "name": "shop", "subscription": "sub_shop01234567",
 			"applied": true, "message": nil},
 		map[string]any{"namespace": "app-pg", "kind": "DatabaseRole", "name": "shop", "subscription": nil,
@@ -383,6 +576,10 @@ func TestReport_NamesAFailedVolumeCloudNativePGStorageOrServiceReadInlineWithIts
 			"stderr": "kubectl exited 0, and its output is not the claims, storage classes and Services this report reads"}},
 		"the Service read prints no JSON": {notStorage, "services", map[string]any{"exitStatus": float64(0),
 			"stderr": "kubectl exited 0, and its output is not the claims, storage classes and Services this report reads"}},
+		"the pod read exits 1": {map[string]string{"kubectl": kubectlAnswering(map[string]string{podsRead: `echo 'error: pods is forbidden' >&2; exit 1`})},
+			"pods", map[string]any{"exitStatus": float64(1), "stderr": "error: pods is forbidden\n"}},
+		"the pod read times out": {map[string]string{"kubectl": kubectlAnswering(map[string]string{podsRead: "sleep 10"})},
+			"pods", map[string]any{"exitStatus": float64(124), "stderr": ""}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -442,7 +639,7 @@ func TestReport_ThatReadsEverythingPostsAHealthyBodyByteForByte(t *testing.T) {
 	testutil.Golden(t, filepath.Join("testdata", "golden", "healthy-body.json"), posted.raw)
 }
 
-func TestManifests_LetsTheReportListEachKindItReadsAndCloudNativePGsObjectsAndMintATokenForItsOwnServiceAccountAloneAndGrantsNoVerbOnSecrets(t *testing.T) {
+func TestManifests_LetsTheReportListPodsEachKindItReadsAndCloudNativePGsObjectsAndMintATokenForItsOwnServiceAccountAloneAndGrantsNoVerbOnSecrets(t *testing.T) {
 	rendered, err := report.Manifests(inputs("https://api.mitstack.dev/v1/cluster-reports"))
 	require.NoError(t, err)
 
@@ -463,6 +660,7 @@ func TestManifests_LetsTheReportListEachKindItReadsAndCloudNativePGsObjectsAndMi
 	rules := testutil.Field(t, roles[0], "rules").([]any)
 	assert.ElementsMatch(t, []any{
 		map[string]any{"apiGroups": []any{""}, "resources": []any{"nodes"}, "verbs": []any{"get", "list"}},
+		map[string]any{"apiGroups": []any{""}, "resources": []any{"pods"}, "verbs": []any{"list"}},
 		map[string]any{"apiGroups": []any{""}, "resources": []any{"namespaces", "serviceaccounts", "services", "resourcequotas", "limitranges"},
 			"verbs": []any{"list"}},
 		map[string]any{"apiGroups": []any{"apps"}, "resources": []any{"deployments"}, "verbs": []any{"list"}},

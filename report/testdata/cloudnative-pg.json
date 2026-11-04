@@ -7,7 +7,7 @@
       "kind": "Cluster",
       "metadata": {"name": "shared", "namespace": "app-pg", "labels": {"mitstack.dev/subscription": "sub_pg0123456789"}},
       "spec": {"instances": 2},
-      "status": {"phase": "Cluster in healthy state", "instances": 2, "readyInstances": 2}
+      "status": {"phase": "Cluster in healthy state", "instances": 2, "readyInstances": 2, "currentPrimary": "shared-1", "targetPrimary": "shared-1"}
     },
     {
       "apiVersion": "postgresql.cnpg.io/v1",

@@ -106,7 +106,7 @@ read_argocd() {
   done > "$work/routes.json"
 }
 
-# argocd_route INDEX asks one route as a caller without a session, with a GET that sends no header, cookie or body and
+# argocd_route INDEX asks one route as a caller without a session, with a GET that sends no credential, cookie or body and
 # follows no redirect, and keeps its status, its size and, for userinfo, the answer's loggedIn. -q reads no ~/.curlrc
 # that could add a credential. -k accepts the certificate Argo CD signs for itself, since the request carries nothing
 # to steal and no text of the answer leaves the pod.
@@ -137,8 +137,8 @@ openbao_members() {
       --argjson leader_status "$(cat "$dir/$name.leader.status")" '
       def failed($read; $status; $stderr): {read: $read, exitStatus: $status, stderr: $stderr[-512:]};
       def unread: {name: $name, initialized: null, sealed: null, active: null};
-      ((try ($seal | fromjson) catch null) // {}) as $s
-      | ((try ($leader | fromjson) catch null) // {}) as $l
+      ((try ($seal | fromjson) catch null) | if type == "object" then . else {} end) as $s
+      | ((try ($leader | fromjson) catch null) | if type == "object" then . else {} end) as $l
       | if $seal_status != 0 then unread + {error: failed("sys/seal-status"; $seal_status; $seal_err)}
         elif ($s.sealed | type) != "boolean" then unread + {error: failed("sys/seal-status"; 0; "the answer names no seal state")}
         else {name: $name, initialized: $s.initialized, sealed: $s.sealed}

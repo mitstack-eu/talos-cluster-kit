@@ -3,7 +3,8 @@
 # CloudNativePG's objects, claims, storage classes and the kinds of object a
 # block labels with its subscription, never a Secret, and posts the result to
 # the platform. It verifies OpenBao against the openbao-ca bundle that
-# trust-manager copies into every namespace. It also creates the one namespace
+# trust-manager copies into every namespace, and asks Argo CD's server its
+# routes with no session. It also creates the one namespace
 # whose pods may hold a Talos identity. Its read of the API server's key set
 # needs no rule here, since Kubernetes binds system:service-account-issuer-discovery
 # to every service account by default. A Role lets the report mint a token for
@@ -173,6 +174,8 @@ spec:
                   value: {{ printf "%q" .OpenBaoMembers }}
                 - name: OPENBAO_CA_FILE
                   value: /var/run/openbao-ca/ca.crt
+                - name: ARGOCD_URL
+                  value: https://argocd-server.argocd.svc
                 - name: HOME
                   value: /tmp
               securityContext:

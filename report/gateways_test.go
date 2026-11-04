@@ -108,6 +108,29 @@ func TestReport_NamesNoGatewayWhenTheClusterHasNone(t *testing.T) {
 	assert.Equal(t, []any{}, posted.body["gateways"])
 }
 
+func TestManifests_RefusesGatewaysWithoutTheirCAsCertificate(t *testing.T) {
+	ca, err := gateway.NewCA(time.Now(), time.Hour, []netip.Addr{netip.MustParseAddr("10.0.0.2")})
+	require.NoError(t, err)
+	in := inputs(reportURL)
+	in.Gateways = []netip.Addr{netip.MustParseAddr("10.0.0.2")}
+	for name, pem := range map[string][]byte{
+		"no certificate":           nil,
+		"a key":                    ca.Key,
+		"a certificate and a key":  append(append([]byte{}, ca.Cert...), ca.Key...),
+		"two certificates":         append(append([]byte{}, ca.Cert...), ca.Cert...),
+		"text that is no PEM file": []byte("mitstack gateway CA"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			in.GatewayCA = pem
+			_, err := report.Manifests(in)
+			assert.ErrorContains(t, err, "the gateway CA is not one PEM certificate")
+		})
+	}
+	in.GatewayCA = ca.Cert
+	_, err = report.Manifests(in)
+	assert.NoError(t, err, "the CA's certificate alone")
+}
+
 // readings drops each failed reading's reason from its first ": ", where curl's own words begin.
 func readings(t *testing.T, member any) []map[string]any {
 	t.Helper()

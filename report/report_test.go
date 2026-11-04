@@ -1,6 +1,7 @@
 package report_test
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/json"
 	"encoding/pem"
@@ -254,6 +255,7 @@ func argoCD(t *testing.T, userinfo string) string {
 type openBaoMember struct {
 	sealed, active, down bool
 	delay                time.Duration
+	seal                 string
 }
 
 var healthyOpenBao = []openBaoMember{{active: true}, {}, {}}
@@ -270,7 +272,7 @@ func openBao(t *testing.T, members ...openBaoMember) string {
 			time.Sleep(m.delay)
 			switch r.URL.Path {
 			case "/v1/sys/seal-status":
-				_, _ = fmt.Fprintf(w, `{"type":"shamir","initialized":true,"sealed":%t,"t":1,"n":1,"storage_type":"raft"}`, m.sealed)
+				_, _ = io.WriteString(w, cmp.Or(m.seal, fmt.Sprintf(`{"type":"shamir","initialized":true,"sealed":%t,"t":1,"n":1,"storage_type":"raft"}`, m.sealed)))
 			case "/v1/sys/leader":
 				_, _ = fmt.Fprintf(w, `{"ha_enabled":true,"is_self":%t,"leader_address":"https://openbao-0.openbao-internal:8200"}`, m.active)
 			default:
@@ -387,6 +389,8 @@ func TestReport_NamesEachOpenBaoMembersSealStateTheActiveOneAndEachReadThatFaile
 			[]any{unread("openbao-0", 7), member("openbao-1", false, false)}, nil},
 		"one member answers too late": {[]openBaoMember{{active: true}, {delay: 3 * time.Second}},
 			[]any{member("openbao-0", false, true), unread("openbao-1", 124)}, "openbao-0"},
+		"one member answers JSON that is not an object": {[]openBaoMember{{active: true}, {seal: "[1]"}},
+			[]any{member("openbao-0", false, true), unread("openbao-1", 0)}, "openbao-0"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

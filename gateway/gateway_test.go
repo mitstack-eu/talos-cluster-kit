@@ -148,7 +148,6 @@ func TestRender_SendsMirrorPullsToTheRegistryAndRefusesEveryOtherMethod(t *testi
 		"the /v2/ route does not try the registry for a pull before refusing")
 }
 
-// writtenFile is the content the rendered cloud-config writes to path.
 func writtenFile(t *testing.T, path string) string {
 	t.Helper()
 	rendered, err := gateway.Render(inputs(t))
@@ -315,7 +314,6 @@ func prepare(t *testing.T, fakes map[string]string, manifestSHA256 string, image
 	return run
 }
 
-// skopeoImage is the skopeo image the gateway's tools.env pins, which prepare runs every copy with.
 func skopeoImage(t *testing.T) string {
 	t.Helper()
 	for line := range strings.Lines(writtenFile(t, "/etc/mitstack-gateway/tools.env")) {
@@ -329,7 +327,6 @@ func skopeoImage(t *testing.T) string {
 	return ""
 }
 
-// completionFile is where the run's prepare writes that the mirror and the manifests are in place.
 func (r prepareRun) completionFile() string {
 	return filepath.Join(r.dir, "state", "mirror-complete")
 }

@@ -52,18 +52,18 @@ func stated(t *testing.T, policies []byte, ref testutil.ObjectRef) map[string]an
 	return nil
 }
 
-func upgradedCluster(t *testing.T) (*testutil.Cluster, []byte) {
+func upgradedCluster(t *testing.T) *testutil.Cluster {
 	t.Helper()
 	built, err := os.ReadFile("testdata/v0.32.0-flows.yaml")
 	require.NoError(t, err)
 	c := testutil.BuildCluster(t, built)
 	commit(t, c, rollout.Current())
 	c.Sync()
-	return c, built
+	return c
 }
 
 func TestRelease_UpgradesAClusterBuiltOnV0320AndReadsTheSSMPolicyBackFromItsAPI(t *testing.T) {
-	c, built := upgradedCluster(t)
+	c := upgradedCluster(t)
 	release := components.HostingPolicies()[0].Bytes
 
 	reading := readBack(t, c, rollout.Current())
@@ -71,11 +71,11 @@ func TestRelease_UpgradesAClusterBuiltOnV0320AndReadsTheSSMPolicyBackFromItsAPI(
 	assert.Empty(t, reading.Problem, "the read-back after Argo CD synced the release")
 	assert.Contains(t, reading.Applied, ssm.String(), "the objects read back")
 	assert.Equal(t, stated(t, release, ssm), c.Object(ssm), "the SSM policy the cluster's API serves")
-	assert.Equal(t, stated(t, built, flows), c.Object(flows), "the hosting flows, which the release leaves as v0.32.0 built them")
+	assert.Equal(t, stated(t, release, flows), c.Object(flows), "the hosting flows, which the release changes from those v0.32.0 built")
 }
 
 func TestRelease_ASecondUpgradeChangesOnePolicyDropsAnotherAndReadsBothBack(t *testing.T) {
-	c, _ := upgradedCluster(t)
+	c := upgradedCluster(t)
 	changed := changedFlows(t)
 	next := releaseOf(t, changed)
 	commit(t, c, next)
@@ -92,7 +92,7 @@ func TestRelease_ASecondUpgradeChangesOnePolicyDropsAnotherAndReadsBothBack(t *t
 }
 
 func TestRelease_ReadsNothingBackBeforeArgoCDComparedAReleaseThatOnlyChangesAPolicy(t *testing.T) {
-	c, _ := upgradedCluster(t)
+	c := upgradedCluster(t)
 	next := releaseOf(t, changedFlows(t), stated(t, components.HostingPolicies()[0].Bytes, ssm))
 	commit(t, c, next)
 
@@ -122,7 +122,7 @@ func releaseOf(t *testing.T, docs ...map[string]any) rollout.Release {
 // edited is a synced cluster's report with change applied to the Application's JSON.
 func edited(t *testing.T, change func(app map[string]any)) []byte {
 	t.Helper()
-	c, _ := upgradedCluster(t)
+	c := upgradedCluster(t)
 	var report map[string]any
 	require.NoError(t, json.Unmarshal(c.Report(), &report))
 	for _, app := range testutil.Field(t, report, "argocd", "applications").([]any) {

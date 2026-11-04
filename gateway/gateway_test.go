@@ -36,15 +36,37 @@ func inputs(t *testing.T) gateway.Inputs {
 	t.Helper()
 	tools, err := components.ParseImage(testutil.ToolsImage)
 	require.NoError(t, err)
+	list, err := gateway.NewList(components.Default(), tools)
+	require.NoError(t, err)
 	return gateway.Inputs{
 		Address:         netip.MustParseAddr("10.0.0.2"),
 		Network:         netip.MustParsePrefix("10.0.0.0/16"),
 		Ingress:         netip.MustParseAddr("198.51.100.7"),
 		TLS:             testutil.GatewayTLS(t),
-		Components:      components.Default(),
-		ExtraImages:     []components.Image{tools},
+		List:            list,
 		ManifestBaseURL: gateway.ReleaseURL("v0.1.0"),
 		Logs:            testutil.LogExport(t),
+	}
+}
+
+func TestRender_MirrorsAndServesTheListItIsGiven(t *testing.T) {
+	tools, err := components.ParseImage(testutil.ToolsImage)
+	require.NoError(t, err)
+	set := components.HostingServed()
+	in := inputs(t)
+	in.List, err = gateway.NewList(set, tools)
+	require.NoError(t, err)
+
+	got, err := gateway.Render(in)
+
+	require.NoError(t, err)
+	images, err := mirror.List(set, tools)
+	require.NoError(t, err)
+	for _, image := range images {
+		assert.Contains(t, string(got), image.Ref()+"\n", "the gateway mirrors %s", image.Ref())
+	}
+	for _, m := range set.Served {
+		assert.Contains(t, string(got), m.TalosName()+".yaml "+m.SHA256()+" ", "the gateway serves %s", m.Name)
 	}
 }
 
@@ -101,13 +123,18 @@ func TestRender_ForwardsPort80ToTheIngressLoadBalancerAloneAndNowhereWithoutOne(
 	assert.Equal(t, strings.Replace(string(withIngress), toIngress, "", 1), string(got))
 }
 
-func TestRender_RefusesAnIngressAddressInsideTheNetwork(t *testing.T) {
-	in := inputs(t)
-	in.Ingress = netip.MustParseAddr("10.0.0.4")
-
-	_, err := gateway.Render(in)
-
-	assert.ErrorContains(t, err, "ingress address 10.0.0.4 is inside network 10.0.0.0/16")
+func TestRender_RefusesInputsItCannotServe(t *testing.T) {
+	valid := inputs(t)
+	for want, change := range map[string]func(*gateway.Inputs){
+		"ingress address 10.0.0.4 is inside network 10.0.0.0/16": func(in *gateway.Inputs) { in.Ingress = netip.MustParseAddr("10.0.0.4") },
+		"192.168.0.2 is not inside network 10.0.0.0/16":          func(in *gateway.Inputs) { in.Address = netip.MustParseAddr("192.168.0.2") },
+		"the gateway has no list; build one with NewList":        func(in *gateway.Inputs) { in.List = gateway.List{} },
+	} {
+		in := valid
+		change(&in)
+		_, err := gateway.Render(in)
+		assert.ErrorContains(t, err, want)
+	}
 }
 
 func TestRender_LeavesTheFirewallToNftablesAndRunsEveryContainerOnTheHostNetwork(t *testing.T) {
@@ -170,16 +197,6 @@ func execStart(t *testing.T, unit string) string {
 	}
 	require.Fail(t, "the unit has no ExecStart", unit)
 	return ""
-}
-
-func TestRender_RefusesAnAddressOutsideTheNetwork(t *testing.T) {
-	in := inputs(t)
-	in.Address = netip.MustParseAddr("192.168.0.2")
-
-	_, err := gateway.Render(in)
-
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "192.168.0.2 is not inside network 10.0.0.0/16")
 }
 
 var caGateways = []netip.Addr{netip.MustParseAddr("10.0.0.2"), netip.MustParseAddr("10.0.0.248"), netip.MustParseAddr("10.0.0.249")}

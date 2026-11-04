@@ -309,7 +309,7 @@ func (p Plane) replacement(st State, network Network) (replacement, error) {
 	if err != nil {
 		return replacement{}, err
 	}
-	r := replacement{digest: digest, active: p.Upgrading || network.Labels[KeyGatewayUpgrade] == digest}
+	r := replacement{digest: digest}
 	for _, loc := range Locations {
 		if gw, ok := st.GatewayIn(loc); ok && gw.Labels[KeyGatewayList] == digest {
 			r.current = append(r.current, gw)
@@ -317,6 +317,8 @@ func (p Plane) replacement(st State, network Network) (replacement, error) {
 			r.stale = append(r.stale, gw)
 		}
 	}
+	// An upgrade with no gateway to replace waits on none, so a cluster whose report names no gateway still settles.
+	r.active = network.Labels[KeyGatewayUpgrade] == digest || p.Upgrading && len(r.stale) > 0
 	return r, nil
 }
 

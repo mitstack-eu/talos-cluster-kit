@@ -34,6 +34,8 @@ const (
 	cloudNativePGRead = "get clusters.postgresql.cnpg.io,databases.postgresql.cnpg.io,databaseroles.postgresql.cnpg.io -A -o json"
 	storageRead       = "get persistentvolumeclaims,storageclasses.storage.k8s.io,services -A -o json"
 	podsRead          = "get pods -A -o json"
+	ingressesRead     = "get ingresses.networking.k8s.io -n argocd -o json"
+	defaultDenyRead   = "get networkpolicies.networking.k8s.io -A --field-selector metadata.name=mitstack-default-deny -o json"
 	membersRead       = "-n 10.0.0.6 etcd members"
 	etcdStatusRead    = "-n 10.0.0.6,10.0.0.5,10.0.0.7 etcd status"
 	volumesRead       = "-n 10.0.0.5,10.0.0.6,10.0.0.7 get volumestatus -o json"
@@ -73,7 +75,8 @@ func talosctlWith(volumes, status string) string {
 func kubectlAnswering(overrides map[string]string) string {
 	answers := map[string]string{nodesRead: "cat testdata/nodes.json", applicationsRead: "cat testdata/applications.json",
 		keySetRead: "cat testdata/jwks.json", cloudNativePGRead: "cat testdata/cloudnative-pg.json", storageRead: "cat testdata/storage-and-services.json",
-		tokenRequest: "echo " + reportProof, meshProbeRead: "cat testdata/mesh-probe.json", podsRead: "cat testdata/pods.json"}
+		tokenRequest: "echo " + reportProof, meshProbeRead: "cat testdata/mesh-probe.json", podsRead: "cat testdata/pods.json",
+		ingressesRead: `echo '{"apiVersion": "v1", "kind": "List", "items": []}'`, defaultDenyRead: "cat testdata/default-deny.json"}
 	for _, kind := range subscriptionKinds {
 		answers[subscriptionRead(kind)] = "cat testdata/subscription-resources/" + kind + ".json"
 	}
@@ -188,10 +191,44 @@ func runReport(t *testing.T, fakes map[string]string, env ...string) (*testutil.
 		"REPORT_TOKEN_FILE=" + token, "CURL_CA_BUNDLE=" + ca, "MESH_PROBE_URL=" + meshTarget(t),
 		"MESH_PROBE_ANSWER=" + rendered["MESH_PROBE_ANSWER"], "MESH_PROBE_IDENTITY=" + rendered["MESH_PROBE_IDENTITY"],
 		"MESH_PROBE_CONFIGMAP=" + rendered["MESH_PROBE_CONFIGMAP"], "OPENBAO_MEMBERS=" + openBao(t, healthyOpenBao...),
-		"OPENBAO_CA_FILE=" + ca}, env...)...))
+		"OPENBAO_CA_FILE=" + ca, "ARGOCD_URL=" + argoCD(t, signedOut)}, env...)...))
 	posted.mu.Lock()
 	defer posted.mu.Unlock()
 	return tools, posted, out, err
+}
+
+const (
+	signedOut = `{"loggedIn":false}`
+	settings  = `{"url":"https://argocd.example","oidcConfig":null}`
+	noSession = `{"error":"no session information","code":16,"message":"no session information"}`
+)
+
+// argoCDRoutes are the routes the report asks Argo CD without a session, in its order.
+var argoCDRoutes = []string{"/api/v1/session/userinfo", "/api/v1/account", "/api/v1/applications", "/api/v1/applicationsets",
+	"/api/v1/certificates", "/api/v1/clusters", "/api/v1/gpgkeys", "/api/v1/notifications/services",
+	"/api/v1/notifications/templates", "/api/v1/notifications/triggers", "/api/v1/projects", "/api/v1/repocreds",
+	"/api/v1/repositories", "/api/v1/settings", "/api/v1/settings/plugins", "/api/v1/write-repocreds",
+	"/api/v1/write-repositories"}
+
+// argoCD plays argocd-server to a caller without a session, failing the test on any request that carries a credential.
+func argoCD(t *testing.T, userinfo string) string {
+	t.Helper()
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") != "" || r.ContentLength > 0 {
+			t.Errorf("the report asked %s %s with a credential or a body", r.Method, r.URL.Path)
+		}
+		switch r.URL.Path {
+		case "/api/v1/session/userinfo":
+			_, _ = io.WriteString(w, userinfo)
+		case "/api/v1/settings":
+			_, _ = io.WriteString(w, settings)
+		default:
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(w, noSession)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server.URL
 }
 
 // openBaoMember is how one fake OpenBao member answers; httptest's servers share one certificate, so one CA covers all.
@@ -261,7 +298,8 @@ func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipA
 	}
 	calls := tools.Calls(t)
 	require.NotEmpty(t, calls)
-	beside := []string{"kubectl " + meshProbeRead, "kubectl " + podsRead, "talosctl " + etcdStatusRead}
+	beside := []string{"kubectl " + meshProbeRead, "kubectl " + podsRead, "kubectl " + ingressesRead, "kubectl " + defaultDenyRead,
+		"talosctl " + etcdStatusRead}
 	for _, read := range beside {
 		assert.Contains(t, calls[:len(calls)-1], read, "a read beside the others ends before the proof")
 	}
@@ -421,6 +459,22 @@ func TestManifests_PointsTheReportAtEachOpenBaoPodByANameItsCertificateHoldsAndT
 		"trust-manager names the ConfigMap after its Bundle and writes the authority under the Bundle's key")
 }
 
+func TestManifests_PointsTheReportAtArgoCDsServerServiceOnItsHTTPSPort(t *testing.T) {
+	_, env := renderedScript(t, "https://api.mitstack.dev/v1/cluster-reports", "mitstack-node-report")
+	var service map[string]any
+	for _, doc := range testutil.Kind(testutil.Documents(t, testutil.Manifest(t, "argocd", components.Default().Served).Bytes), "Service") {
+		if testutil.Field(t, doc, "metadata", "name") == "argocd-server" {
+			service = doc
+		}
+	}
+	require.NotNil(t, service, "the component set serves no argocd-server Service")
+
+	assert.Equal(t, fmt.Sprintf("https://argocd-server.%s.svc", testutil.Field(t, service, "metadata", "namespace")), env["ARGOCD_URL"],
+		"curl asks port 443 of an https URL that names no port")
+	assert.Contains(t, testutil.Field(t, service, "spec", "ports"),
+		map[string]any{"name": "https", "protocol": "TCP", "port": 443, "targetPort": 8080})
+}
+
 func proofRequest(posted *postedReport) string {
 	return fmt.Sprintf("%s--for %s --body-sha256 %x", tokenRequest, posted.origin, sha256.Sum256(posted.raw))
 }
@@ -537,14 +591,94 @@ func TestReport_ListsEveryServiceWithItsTypeWhetherOrNotABlockLabelledIt(t *test
 		map[string]any{"namespace": "default", "name": "kubernetes", "type": "ClusterIP"},
 		map[string]any{"namespace": "app-shop", "name": "shop-db-rw", "type": "ClusterIP"},
 		map[string]any{"namespace": "app-shop", "name": "edge", "type": "NodePort"},
+		map[string]any{"namespace": "argocd", "name": "argocd-server", "type": "ClusterIP"},
+		map[string]any{"namespace": "argocd", "name": "argocd-repo-server", "type": "ClusterIP"},
 	}, posted.body["services"])
 }
 
-func TestReport_DeclaresItsNodeReportContractAndCarriesNoneOfTheVerdictsChecks(t *testing.T) {
+// everyCheck is the checks member naming each of the platform verdict's nine checks, in the order it judges them.
+var everyCheck = map[string]any{"contract": "node-report/v1", "names": []any{"routes", "exposure", "credentials", "version",
+	"advisories", "admission", "default-deny", "cis-benchmark", "nsa-scan"}}
+
+func TestReport_DeclaresItsNodeReportContractAndNamesEachOfTheVerdictsNineChecks(t *testing.T) {
 	_, posted, out, err := runReport(t, nil)
 
 	require.NoError(t, err, out)
-	assert.Equal(t, map[string]any{"contract": "node-report/v1", "names": []any{}}, posted.body["checks"])
+	assert.Equal(t, everyCheck, posted.body["checks"])
+}
+
+func TestReport_AsksEachArgoCDRouteWithoutASessionAndKeepsItsStatusItsSizeAndWhetherUserinfoSaysSignedIn(t *testing.T) {
+	answered := func(userinfo map[string]any) []any {
+		routes := []any{userinfo}
+		for _, path := range argoCDRoutes[1:] {
+			status, body := 401, noSession
+			if path == "/api/v1/settings" {
+				status, body = 200, settings
+			}
+			routes = append(routes, map[string]any{"path": path, "status": float64(status), "bytes": float64(len(body))})
+		}
+		return routes
+	}
+	userinfo := func(body string, loggedIn any) map[string]any {
+		return map[string]any{"path": argoCDRoutes[0], "status": float64(200), "bytes": float64(len(body)), "loggedIn": loggedIn}
+	}
+	var unanswered []any
+	for _, path := range argoCDRoutes {
+		unanswered = append(unanswered, map[string]any{"path": path, "status": float64(0), "bytes": float64(0), "error": "curl exit 7"})
+	}
+	signedIn, noJSON := `{"loggedIn":true,"username":"admin","iss":"argocd"}`, "signed out"
+	cases := map[string]struct {
+		url  func(t *testing.T) string
+		want []any
+	}{
+		"Argo CD refuses each route that needs a session": {func(t *testing.T) string { return argoCD(t, signedOut) },
+			answered(userinfo(signedOut, false))},
+		"userinfo says a caller is signed in": {func(t *testing.T) string { return argoCD(t, signedIn) }, answered(userinfo(signedIn, true))},
+		"userinfo answers no JSON":            {func(t *testing.T) string { return argoCD(t, noJSON) }, answered(userinfo(noJSON, nil))},
+		"Argo CD does not answer":             {func(*testing.T) string { return "https://127.0.0.1:1" }, unanswered},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, posted, out, err := runReport(t, nil, "ARGOCD_URL="+tc.url(t))
+
+			require.NoError(t, err, out)
+			assert.Equal(t, tc.want, testutil.Field(t, posted.body, "argocd", "routes"))
+		})
+	}
+}
+
+func TestReport_ListsArgoCDsServicesIngressesAndPodsAndEachDefaultDenyPolicyWithItsSelectorTypesAndRuleCounts(t *testing.T) {
+	ingress := `echo '{"apiVersion": "v1", "kind": "List", "items": [{"metadata": {"name": "argocd-server", "namespace": "argocd"}}]}'`
+
+	_, posted, out, err := runReport(t, map[string]string{"kubectl": kubectlAnswering(map[string]string{ingressesRead: ingress})})
+
+	require.NoError(t, err, out)
+	assert.Equal(t, []any{
+		map[string]any{"name": "argocd-server", "type": "ClusterIP"},
+		map[string]any{"name": "argocd-repo-server", "type": "ClusterIP"},
+	}, testutil.Field(t, posted.body, "argocd", "services"))
+	assert.Equal(t, []any{map[string]any{"name": "argocd-server"}}, testutil.Field(t, posted.body, "argocd", "ingresses"))
+	assert.Equal(t, map[string]any{"argocdPods": []any{map[string]any{"name": "argocd-server-5d9c7b8f4-x2x7q", "containers": []any{
+		map[string]any{"image": "quay.io/argoproj/argocd:v3.5.5@sha256:13db7b10db23283b1b36f855046602e18539a8a8204c9f6f0aa4a9a6ff5e4f3c"}}}}},
+		posted.body["kubernetes"])
+	assert.Equal(t, []any{
+		map[string]any{"namespace": "app-shop", "name": "mitstack-default-deny", "podSelector": map[string]any{},
+			"policyTypes": []any{"Ingress", "Egress"}, "ingressRules": float64(0), "egressRules": float64(0), "managedBy": "kyverno"},
+		map[string]any{"namespace": "app-pg", "name": "mitstack-default-deny", "podSelector": map[string]any{"matchLabels": map[string]any{"app": "pg"}},
+			"policyTypes": []any{"Ingress"}, "ingressRules": float64(1), "egressRules": float64(0), "managedBy": nil},
+	}, posted.body["defaultDenyPolicies"])
+}
+
+func TestReport_SendsTheCredentialsAdmissionAndScanMembersAsUnreadableEachWithItsReason(t *testing.T) {
+	_, posted, out, err := runReport(t, nil)
+
+	require.NoError(t, err, out)
+	assert.Equal(t, map[string]any{"unreadable": "the report holds no Secret right, and no list of the declared repository credentials reaches it yet"},
+		posted.body["repositorySecrets"])
+	assert.Equal(t, map[string]any{"unreadable": "the cluster has no admission probe namespace for the report to dry-run fixtures into yet"},
+		posted.body["admission"])
+	assert.Equal(t, map[string]any{"unreadable": "no kube-bench or kubescape scan runs on this cluster yet, so the report has no summary to carry"},
+		posted.body["securityScans"])
 }
 
 func TestReport_NamesAFailedVolumeCloudNativePGStorageOrServiceReadInlineWithItsExitStatusAsANumberInAFullReport(t *testing.T) {
@@ -580,6 +714,15 @@ func TestReport_NamesAFailedVolumeCloudNativePGStorageOrServiceReadInlineWithIts
 			"pods", map[string]any{"exitStatus": float64(1), "stderr": "error: pods is forbidden\n"}},
 		"the pod read times out": {map[string]string{"kubectl": kubectlAnswering(map[string]string{podsRead: "sleep 10"})},
 			"pods", map[string]any{"exitStatus": float64(124), "stderr": ""}},
+		"the pod read exits 1, for Argo CD's pods": {map[string]string{"kubectl": kubectlAnswering(map[string]string{
+			podsRead: `echo 'error: pods is forbidden' >&2; exit 1`})}, "kubernetes.argocdPods",
+			map[string]any{"exitStatus": float64(1), "stderr": "error: pods is forbidden\n"}},
+		"the Service read exits 1, for Argo CD's Services": {storageFailing, "argocd.services", storageFailed},
+		"the Ingress read exits 1": {map[string]string{"kubectl": kubectlAnswering(map[string]string{
+			ingressesRead: `echo 'error: ingresses is forbidden' >&2; exit 1`})}, "argocd.ingresses",
+			map[string]any{"exitStatus": float64(1), "stderr": "error: ingresses is forbidden\n"}},
+		"the default-deny read times out": {map[string]string{"kubectl": kubectlAnswering(map[string]string{defaultDenyRead: "sleep 10"})},
+			"defaultDenyPolicies", map[string]any{"exitStatus": float64(124), "stderr": ""}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -588,8 +731,8 @@ func TestReport_NamesAFailedVolumeCloudNativePGStorageOrServiceReadInlineWithIts
 			require.NoError(t, err, out)
 			assert.Len(t, posted.body["nodes"], 3)
 			assert.Len(t, testutil.Field(t, posted.body, "argocd", "applications"), 3)
-			assert.Equal(t, map[string]any{"contract": "node-report/v1", "names": []any{}}, posted.body["checks"])
-			assert.Equal(t, tc.want, posted.body[tc.key])
+			assert.Equal(t, everyCheck, posted.body["checks"])
+			assert.Equal(t, tc.want, testutil.Field(t, posted.body, strings.Split(tc.key, ".")...))
 		})
 	}
 }

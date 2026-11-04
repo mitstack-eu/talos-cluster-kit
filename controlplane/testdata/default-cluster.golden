@@ -9,6 +9,7 @@ served istio-base components/istio/istio-base.yaml 21fd1e9fea0b26e16f6d1784db982
 served istiod components/istio/istiod.yaml 228e5605e6c50962b9e307b4dad7f468bc4cb408c8fb09a7bdc46a25ff227b54
 served istio-cni components/istio/istio-cni.yaml 4e468eb1ce1722df46f859dd8318c28507127a0a129e0cb51ab8cc8060372526
 served ztunnel components/istio/ztunnel.yaml fac3f7016c82389be8f1340a961e9b81c47c981bbae4853a77ed2a62117c8663
+served mitstack-mesh-probe components/mesh/probe.yaml c4943f558eee7a699cfebd9d2d79c62159268ce75986d905c53429e0beae8240
 inline mitstack-metadata-block components/metadata/metadata-block.yaml b7920f3958734e0a1b5ec2b83640825533e5ed30cb4e032311178d1026c05e10
 inline mitstack-require-app-label components/admission/policies/mitstack-require-app-label.yaml 29449fcf19586e7bedaaf16fef6f95e5593a2178d6bc05a6e3177324b73ee68e
 inline mitstack-generate-default-deny components/admission/policies/mitstack-generate-default-deny.yaml 12088fc23e8dfe06279ef52d6449e4f59bb68d91dbaca6e30febfc1880a667f7
@@ -106,20 +107,21 @@ document KubeExternalManifestConfig 02-istio-base
 document KubeExternalManifestConfig 03-istiod
 document KubeExternalManifestConfig 04-istio-cni
 document KubeExternalManifestConfig 05-ztunnel
-document KubeInlineManifestConfig 26-mitstack-metadata-block
-document KubeInlineManifestConfig 31-mitstack-require-app-label
+document KubeExternalManifestConfig 26-mitstack-mesh-probe
+document KubeInlineManifestConfig 27-mitstack-metadata-block
+document KubeInlineManifestConfig 32-mitstack-require-app-label
 document KubeInlineManifestConfig 20-mitstack-generate-default-deny
 document KubeInlineManifestConfig 12-cloudnative-pg-namespace
 document KubeInlineManifestConfig 19-mitstack-database-slices
 document KubeInlineManifestConfig 15-local-path-provisioner-namespace
 document KubeInlineManifestConfig 23-mitstack-local-path-flows
-document KubeInlineManifestConfig 35-mitstack-strict-mtls
+document KubeInlineManifestConfig 36-mitstack-strict-mtls
 document KubeInlineManifestConfig 16-mitstack-ambient-probes
 document KubeInlineManifestConfig 25-mitstack-mesh-cloudnative-pg
 document KubeInlineManifestConfig 24-mitstack-mesh-argocd
-document KubeInlineManifestConfig 32-mitstack-require-mesh
-document KubeInlineManifestConfig 33-mitstack-require-strict-mtls
+document KubeInlineManifestConfig 33-mitstack-require-mesh
+document KubeInlineManifestConfig 34-mitstack-require-strict-mtls
 document KubeInlineManifestConfig 06-mitstack-node-report
-document KubeInlineManifestConfig 42-mitstack-node-topology
+document KubeInlineManifestConfig 43-mitstack-node-topology
 document KubeInlineManifestConfig 07-mitstack-cluster-tokens
 document KubeInlineManifestConfig 17-mitstack-cluster-application

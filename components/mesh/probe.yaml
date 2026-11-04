@@ -1,0 +1,123 @@
+# The mesh probe's target: an app namespace like any other, inside the mesh, under Kyverno's policies and
+# mitstack-default-deny, serving one fixed answer on 8080. The node report calls it from inside the mesh, and its
+# outside probe calls it from kube-system, so the report shows a call with a workload identity answered and one
+# without refused.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mitstack-mesh-probe
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mitstack-mesh-probe
+  namespace: mitstack-mesh-probe
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mitstack-mesh-probe-answer
+  namespace: mitstack-mesh-probe
+data:
+  index.html: |
+    mitstack-mesh-probe answered
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mitstack-mesh-probe
+  namespace: mitstack-mesh-probe
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mitstack-mesh-probe
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mitstack-mesh-probe
+        mitstack.dev/app: mitstack-mesh-probe
+    spec:
+      serviceAccountName: mitstack-mesh-probe
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: answer
+          # The local path provisioner's helper image, which the gateway already mirrors.
+          image: docker.io/library/busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+          command: [httpd, -f, -p, "8080", -h, /www]
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+          resources:
+            requests:
+              cpu: 5m
+              memory: 8Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: answer
+              mountPath: /www
+              readOnly: true
+      volumes:
+        - name: answer
+          configMap:
+            name: mitstack-mesh-probe-answer
+---
+# Headless, so its name resolves to the pod's own address, where ztunnel takes a call inside the mesh on 15008.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mitstack-mesh-probe
+  namespace: mitstack-mesh-probe
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: mitstack-mesh-probe
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+---
+# Admits the node report and the outside probe alone, each on 8080 and on ztunnel's 15008, so the outside probe's
+# plain call reaches the pod and only the mesh can refuse it.
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: mitstack-mesh-probe-callers
+spec:
+  endpointSelector:
+    matchLabels:
+      k8s:io.kubernetes.pod.namespace: mitstack-mesh-probe
+      k8s:app.kubernetes.io/name: mitstack-mesh-probe
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: mitstack-node
+            k8s:app.kubernetes.io/name: mitstack-node-report
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:app.kubernetes.io/name: mitstack-mesh-probe
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+            - port: "15008"
+              protocol: TCP

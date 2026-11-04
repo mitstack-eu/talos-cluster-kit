@@ -41,18 +41,18 @@ the order a block uses them.
 
 | Package | What it does | Main entry points |
 |---|---|---|
-| `components` | Holds the pinned component set: Cilium, the custom resource definition (CRD) of Cilium's cluster-wide policy, Argo CD, the policy that keeps pods from Hetzner's metadata service at `169.254.169.254`, Istio's ambient mesh with its mesh-wide mutual TLS policy, Kyverno with its four admission policies, the CloudNativePG operator with the database-slice policy, the local path provisioner behind the default StorageClass, and the node-local OpenTelemetry Collector. It also holds the boot set of a cluster that hosts the platform | `Default`, `Hosting`, `Set.Images`, `LogCollector`, `ParseImage` |
+| `components` | Holds the pinned component set: Cilium, the custom resource definition (CRD) of Cilium's cluster-wide policy, Argo CD, the policy that keeps pods from Hetzner's metadata service at `169.254.169.254`, Istio's ambient mesh with its mesh-wide mutual TLS policy and the mesh probe's target, Kyverno with its four admission policies, the CloudNativePG operator with the database-slice policy, the local path provisioner behind the default StorageClass, and the node-local OpenTelemetry Collector. It also holds the boot set of a cluster that hosts the platform | `Default`, `Hosting`, `Set.Images`, `LogCollector`, `ParseImage` |
 | `nodeconfig` | Renders a control-plane node's or a worker node's machine configuration with Talos's own `machinery` module and validates it against Talos's schema | `Render`, `RenderWorker`, `Cluster`, `Node`, `NewSecrets`, `ParseSecrets`, `Secrets.AdminTalosconfig` |
 | `image` | Runs imager, Sidero Labs' open-source image builder, with the `hcloud` or the `metal` profile, and discards its output | `Run`, `Build` |
 | `mirror` | Lists every image the nodes pull, each by digest | `List`, `Render` |
 | `gateway` | Renders the cloud-config of the gateway in each location, and mints the cluster's gateway CA and each gateway's certificate | `Render`, `Inputs`, `NewCA`, `CA.Issue`, `ReleaseURL` |
 | `etcd` | Renders the Job that removes a lost node's etcd member and then its Node object, and holds the gateway's script that bootstraps etcd empty or from a snapshot | `RemoveMemberJob`, `BootstrapScript`, `Bootstrap.Args` |
-| `report` | Renders the node report, a CronJob that posts each node with its Talos version, allocatable resources, zone and region labels and the managers of its zone label, the etcd membership, how each node's `STATE` and `EPHEMERAL` are encrypted, Argo CD's health with the objects each Application applied, CloudNativePG's clusters, databases and roles, each PersistentVolumeClaim with its storage class and phase, the default storage classes, every Service with its type, the objects a block labels with its subscription, and the API server's key set to the platform, with a `checks` member declaring which of the platform verdict's checks it carries. When any read but the volume, CloudNativePG, storage and Service, and labelled-object reads fails or times out, it posts a report holding only an `error` that names the read, in place of the full report. Each report is signed with a token the API server mints for its exact body. The report holds no right on Secrets | `Manifests` |
+| `report` | Renders the node report, a CronJob that posts each node with its Talos version, allocatable resources, zone and region labels and the managers of its zone label, the etcd membership, how each node's `STATE` and `EPHEMERAL` are encrypted, Argo CD's health with the objects each Application applied, CloudNativePG's clusters, databases and roles, each PersistentVolumeClaim with its storage class and phase, the default storage classes, every Service with its type, the objects a block labels with its subscription, the API server's key set, and the mesh probe's results to the platform, with a `checks` member declaring which of the platform verdict's checks it carries. It also renders the outside probe, a CronJob in `kube-system` that calls the mesh probe's target with no workload identity. When any read but the volume, CloudNativePG, storage and Service, labelled-object and mesh reads fails or times out, it posts a report holding only an `error` that names the read, in place of the full report. Each report is signed with a token the API server mints for its exact body. The report holds no right on Secrets | `Manifests` |
 | `topology` | Renders the topology labeller, a CronJob that labels each Cloud node with its zone and region, and holds the two label names | `Manifests`, `Labels`, `ZoneLabel`, `RegionLabel`, `FieldManager` |
 | `openbaoinit` | Renders OpenBao's init Job, which the hosting set carries: it initialises a hosting cluster's OpenBao once, commits the root token and recovery key to the cluster repository as PGP messages, then writes the policy each slice's External Secrets reads with | `Manifests`, `Inputs`, `InitFile` |
 | `rollout` | Gives a running cluster that hosts the platform a release's hosting policies: the files a block commits to the cluster repository, where Argo CD applies, changes and prunes them, and the read-back of each one from the node report | `Current`, `Release.Files`, `Release.ReadBack` |
 | `controlplane` | Builds and deletes a Talos control plane on Hetzner Cloud: a network, a firewall, a gateway, a builder that makes the cluster's own snapshot, a node in each of `fsn1`, `nbg1` and `hel1`, and an API and an ingress load balancer. Each call reads the resources by their labels and takes the one change still missing. A refusal is a `*Refusal` with a `Class` and a `Message`, which the block answers as its own framework's refusal | `Plane`, `Plane.Read`, `Plane.EnsureNetwork`, `Plane.NextStep`, `Plane.Problems`, `Plane.Outputs`, `Plane.Delete`, `NewAPI`, `Refusal`, `TopologyLabels` |
-| `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image and the gateway both install, and `tools/jq.env`, which pins the tools image's jq. It names the tools image a release published and the directory in that image that holds the node report's and the labeller's scripts | `Env`, `Pin`, `Image`, `ScriptDir` |
+| `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image and the gateway both install, and `tools/jq.env`, which pins the tools image's jq. It names the tools image a release published and the directory in that image that holds the node report's, its outside probe's and the labeller's scripts | `Env`, `Pin`, `Image`, `ScriptDir` |
 | `testutil` | Holds the fixtures, fakes and decoders this module's tests and a block's tests share | `NewCluster`, `NewTools`, `Golden` |
 
 For example, this renders the configuration a Cloud cluster's image embeds,
@@ -557,6 +557,7 @@ which only Kubernetes' most permissive Pod Security level, privileged, allows.
 | `mitstack-ambient-probes` | A Cilium policy that admits the kubelet's health probes into every pod. The CNI agent rewrites their source to `169.254.7.127`, so ztunnel can let them past, and Cilium would otherwise drop that address in a default-deny namespace | `components/mesh/probes.yaml` |
 | `mitstack-database-instance-ports` | Keeps every caller but the CloudNativePG operator off port 8000 of a Postgres instance, where its instance manager, the CloudNativePG process inside each Postgres pod, answers the operator, and everyone off its ports other than 5432 and 8000 | `components/mesh/cloudnative-pg.yaml` |
 | Argo CD's mesh policies | Admit port 15008 between the same Argo CD pods the chart's own network policies admit | `components/mesh/argocd.yaml` |
+| The mesh probe's target | A pod in namespace `mitstack-mesh-probe` that answers on port 8080, which the node report and its outside probe call, as [the next section](#how-the-node-report-shows-the-mesh-refusing-a-call) explains | `components/mesh/probe.yaml` |
 
 istiod injects no sidecar, because `components/render/istiod-values.yaml`
 leaves out the injector's templates. A pod with a sidecar would sit outside
@@ -600,6 +601,77 @@ sleep 2
 curl -s localhost:15000/config_dump | jq '.certificates'
 kill "$forward"
 ```
+
+## How the node report shows the mesh refusing a call
+
+The node report, the CronJob that posts each cluster's state to the platform
+every five minutes, carries a `mesh` member. It shows that the cluster's mesh
+answers a call with a workload identity and refuses one without, with no shell
+on the cluster. The previous section explains the mesh: ztunnel, its node
+proxy, takes every call to a pod in the mesh on that pod's port 15008, in
+mutual TLS, and `kube-system`, `istio-system` and `kyverno` stay outside it.
+
+The report calls a target, a busybox `httpd` in namespace
+`mitstack-mesh-probe`. That is an ordinary app namespace, inside the mesh and
+under Kyverno's policies and `mitstack-default-deny`. The target answers
+`mitstack-mesh-probe answered` on port 8080. It runs the busybox image the
+local path provisioner already runs, by the same digest, so it adds no image to
+the gateway's mirror, the registry every node pulls from. Each node fetches the
+target's manifest from the gateway, as it fetches Istio's charts, because the
+builder's user data, which carries every inline manifest, has no room left for
+it. The Cilium policy `mitstack-mesh-probe-callers` admits two callers to the
+target, on 8080 and on 15008, and no other pod:
+
+- The node report itself, which runs inside the mesh, so ztunnel wraps its call
+  in mutual TLS.
+- The outside probe, a CronJob in `kube-system`. That namespace is outside the
+  mesh, so the probe's calls carry no workload identity. Every five minutes it
+  makes a plain call to port 8080. It also opens a TLS handshake to the
+  target's port 15008. In a TLS handshake the server sends its certificate
+  before it asks for the caller's, so the probe sees the certificate ztunnel
+  presents for the target, and ztunnel then refuses the probe for presenting
+  none. The probe writes both outcomes into the ConfigMap
+  `kube-system/mitstack-mesh-probe`. It may patch that one ConfigMap by name,
+  and the report may only read it.
+
+The probe's own Cilium policy, `mitstack-mesh-probe-outside`, lets it look up
+the target's name and no other, reach the API server, and reach the target's
+two ports, and nothing else. The probe writes the target's name with a final
+dot, which makes it an absolute DNS name. Without the dot, the resolver would
+first try the name under each search domain, Cilium's DNS proxy would refuse
+those names, and the probe's resolver, musl's, stops at the first refusal.
+
+`mesh` holds three results, each with `passed` and, when it fails, a `reason`:
+
+| Result | Passes when |
+|---|---|
+| `callFromInside` | The report's own call gets the target's answer |
+| `workloadIdentity` | The certificate the probe saw on port 15008 names `spiffe://cluster.local/ns/mitstack-mesh-probe/sa/mitstack-mesh-probe`, and the time of the probe's run falls within the certificate's validity. The result also carries the certificate's `serial` and its validity, `notBefore` to `notAfter` |
+| `plainCallFromOutside` | The plain call reached the target and was closed with no answer, which curl reports as exit status 52, an empty reply, or 56, a reset connection. `workloadIdentity` and `callFromInside` must pass too, so a target that is down never reads as refusing |
+
+Suppose the mesh stopped holding the target, for example because ztunnel no
+longer runs on its node. No certificate then comes back from port 15008, so
+`workloadIdentity` fails, and `plainCallFromOutside` fails with it whatever
+the plain call did. A plain call that gets an answer fails on its own.
+
+Each of these also fails the results it touches, with the reason named, and
+the report still posts in full:
+
+- a missing ConfigMap;
+- a result older than 15 minutes, three of the probe's runs;
+- a result dated after the report;
+- a refused handshake;
+- a result the report cannot parse.
+
+[How every call between pods proves who makes it](#how-every-call-between-pods-proves-who-makes-it)
+says a workload certificate lasts 24 hours and ztunnel asks for a new one when
+half of that has passed. Two reports more than 12 hours apart that carry two
+different serials, each within its validity, therefore show the target's
+identity replaced before it expired.
+
+The report reads the identity, serial and validity of the certificate
+presented on port 15008. It does not check that istiod, the mesh's control
+plane, signed that certificate.
 
 ## Where a claim keeps its data
 
@@ -873,10 +945,11 @@ build before imager starts.
 The plane deletes the serving server once the builder is gone, once the
 snapshot exists, or once the build is overdue. A build that fails therefore
 takes the serving server with it. The tests in `controlplane/hosting_test.go`
-log the builder's user data size, about 26,600 bytes with a 4096-bit Sealed
-Secrets key, against Hetzner's limit of 32,768. The node report's and the
-labeller's scripts take none of it, since the tools image carries them at
-`tools.ScriptDir` and each CronJob's command names the script's path there.
+log the builder's user data size, about 27,500 bytes with a 4096-bit Sealed
+Secrets key, against Hetzner's limit of 32,768. The node report's, its outside
+probe's and the labeller's scripts take none of it, since the tools image
+carries them at `tools.ScriptDir` and each CronJob's command names the
+script's path there.
 
 The `serve` package holds the server's key, its files and its command, and a
 block reuses it to serve any one file to one client.
@@ -1313,8 +1386,8 @@ records the push's board keys, the `MIT-` issue keys its commits name, on
 Plain, mitstack's board.
 
 A release also publishes the tools image, which the kit's Jobs and CronJobs
-run in. The image carries the report's
-and the labeller's scripts as the release's commit holds them, so a cluster
+run in. The image carries the report's, its outside probe's and the
+labeller's scripts as the release's commit holds them, so a cluster
 runs the scripts of the release it was built from. The `release` job pushes it
 to the public package
 `ghcr.io/mitstack-eu/talos-cluster-kit-tools`, signs its digest keyless as

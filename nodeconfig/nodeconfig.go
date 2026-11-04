@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"net/url"
 	"slices"
+	"strings"
 
 	machineryconfig "github.com/siderolabs/talos/pkg/machinery/config"
 	"github.com/siderolabs/talos/pkg/machinery/config/config"
@@ -215,10 +216,31 @@ func (c Cluster) validateNode(n Node) error {
 	return nil
 }
 
+// kubeletLabels are the labels in Kubernetes's own namespaces that NodeRestriction lets a node's kubelet set.
+var kubeletLabels = []string{
+	"kubernetes.io/hostname", "kubernetes.io/os", "kubernetes.io/arch", "beta.kubernetes.io/os", "beta.kubernetes.io/arch",
+	"beta.kubernetes.io/instance-type", "topology.kubernetes.io/zone", "topology.kubernetes.io/region",
+	"failure-domain.beta.kubernetes.io/zone", "failure-domain.beta.kubernetes.io/region",
+}
+
+// kubeletMaySet reports whether NodeRestriction lets a node's kubelet set label key, since a worker's Talos applies
+// the node's labels with its kubelet's credentials.
+func kubeletMaySet(key string) bool {
+	namespace, _, found := strings.Cut(key, "/")
+	in := func(domain string) bool { return namespace == domain || strings.HasSuffix(namespace, "."+domain) }
+	if !found || !in("kubernetes.io") && !in("k8s.io") {
+		return true
+	}
+	return slices.Contains(kubeletLabels, key) || in("kubelet.kubernetes.io") || in("node.kubernetes.io")
+}
+
 func validateLabels(labels map[string]string) error {
 	for _, key := range slices.Sorted(maps.Keys(labels)) {
 		if key == SubscriptionLabel {
 			return fmt.Errorf("label %s is the subscription's, which no node replaces", key)
+		}
+		if !kubeletMaySet(key) {
+			return fmt.Errorf("label %s sits in Kubernetes's own namespace, where NodeRestriction lets a worker set only its kubelet's labels", key)
 		}
 		if err := check.LabelValue(labels[key]); err != nil {
 			return fmt.Errorf("label %s: %w", key, err)

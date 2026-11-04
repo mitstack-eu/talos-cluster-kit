@@ -308,8 +308,15 @@ func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipA
 			"zoneLabelManagers": []any{}},
 	}, posted.body["nodes"], "each node's zone and region labels, and every manager of its zone label")
 	assert.Equal(t, readJSON(t, "testdata", "golden", "argocd.json"), posted.body["argocd"], "a Secret is among the applied objects, each with five fields")
-	wantCalls := []string{"kubectl " + nodesRead, "kubectl " + applicationsRead, "kubectl " + keySetRead, "talosctl " + membersRead,
-		"talosctl " + volumesRead, "kubectl " + cloudNativePGRead, "kubectl " + storageRead}
+	wantCalls := []string{
+		"kubectl " + nodesRead,
+		"kubectl get applications.argoproj.io -n argocd -o json",
+		"kubectl " + keySetRead,
+		"talosctl " + membersRead,
+		"talosctl " + volumesRead,
+		"kubectl " + cloudNativePGRead,
+		"kubectl " + storageRead,
+	}
 	for _, kind := range subscriptionKinds {
 		wantCalls = append(wantCalls, "kubectl "+subscriptionRead(kind))
 	}
@@ -342,9 +349,10 @@ func TestReport_NamesEachEtcdMembersHealthTheLeaderAndTheStatusReadThatFailed(t 
 	twoAnswer := "head -n 3 testdata/etcd-status.txt; echo 'error from node 10.0.0.7: rpc error: code = Unavailable' >&2; exit 1"
 	alarmed := `sed '/^10.0.0.7/s/ *$/     memberID 1948ccd42e0e52cd alarm:NOSPACE/' testdata/etcd-status.txt`
 	cases := map[string]struct {
-		status              string
-		healthy             []bool
-		leader, statusError any
+		status      string
+		healthy     []bool
+		leader      any
+		statusError any
 	}{
 		"every node answers": {"cat testdata/etcd-status.txt", []bool{true, true, true}, "a48f107742a8605c", nil},
 		"the learner's node is stopped": {twoAnswer, []bool{true, true, false}, "a48f107742a8605c",
@@ -538,13 +546,17 @@ func TestReport_PostsEachMemberItReadsFromAHealthyCluster(t *testing.T) {
 		"CloudNativePG's clusters with their current primary, databases and roles": {"cloudNativePG", "", []any{
 			map[string]any{"namespace": "app-pg", "kind": "Cluster", "name": "shared", "subscription": "sub_pg0123456789",
 				"phase": "Cluster in healthy state", "instances": float64(2), "readyInstances": float64(2), "currentPrimary": "shared-1"},
-			map[string]any{"namespace": "app-pg", "kind": "Database", "name": "shop", "subscription": "sub_shop01234567", "applied": true, "message": nil},
+			map[string]any{"namespace": "app-pg", "kind": "Database", "name": "shop", "subscription": "sub_shop01234567",
+				"applied": true, "message": nil},
 			map[string]any{"namespace": "app-pg", "kind": "DatabaseRole", "name": "shop", "subscription": nil,
 				"applied": false, "message": `role "shop" cannot be created: the cluster is not ready`}}},
-		"each claim with its storage class and phase, and the default storage classes": {"storage", "", map[string]any{"claims": []any{
-			map[string]any{"namespace": "app-shop", "name": "data-shop-db-1", "storageClass": "local-path", "phase": "Bound"},
-			map[string]any{"namespace": "app-shop", "name": "scratch", "storageClass": nil, "phase": "Pending"}},
-			"defaultStorageClasses": []any{"local-path"}}},
+		"each claim with its storage class and phase, and the default storage classes": {"storage", "", map[string]any{
+			"claims": []any{
+				map[string]any{"namespace": "app-shop", "name": "data-shop-db-1", "storageClass": "local-path", "phase": "Bound"},
+				map[string]any{"namespace": "app-shop", "name": "scratch", "storageClass": nil, "phase": "Pending"},
+			},
+			"defaultStorageClasses": []any{"local-path"},
+		}},
 		"every Service with its type, whether or not a block labelled it": {"services", "", []any{
 			map[string]any{"namespace": "default", "name": "kubernetes", "type": "ClusterIP"},
 			map[string]any{"namespace": "app-shop", "name": "shop-db-rw", "type": "ClusterIP"},
@@ -552,7 +564,8 @@ func TestReport_PostsEachMemberItReadsFromAHealthyCluster(t *testing.T) {
 			map[string]any{"namespace": "argocd", "name": "argocd-server", "type": "ClusterIP"},
 			map[string]any{"namespace": "argocd", "name": "argocd-repo-server", "type": "ClusterIP"}}},
 		"the node-report contract and each of the verdict's nine checks": {"checks", "", everyCheck},
-		"Argo CD's Services": {"argocd.services", "", []any{map[string]any{"name": "argocd-server", "type": "ClusterIP"},
+		"Argo CD's Services": {"argocd.services", "", []any{
+			map[string]any{"name": "argocd-server", "type": "ClusterIP"},
 			map[string]any{"name": "argocd-repo-server", "type": "ClusterIP"}}},
 		"Argo CD's Ingresses": {"argocd.ingresses", "", []any{map[string]any{"name": "argocd-server"}}},
 		"Argo CD's pods with their images": {"kubernetes", "", map[string]any{"argocdPods": []any{map[string]any{
@@ -630,7 +643,9 @@ func TestReport_NamesAFailedVolumeCloudNativePGStorageOrServiceReadInlineWithIts
 	failed := func(status float64, stderr string) map[string]any {
 		return map[string]any{"exitStatus": status, "stderr": stderr}
 	}
-	timedOut, storageFailed, podsFailed := failed(124, ""), failed(1, "error: persistentvolumeclaims is forbidden\n"), failed(1, "error: pods is forbidden\n")
+	timedOut := failed(124, "")
+	storageFailed := failed(1, "error: persistentvolumeclaims is forbidden\n")
+	podsFailed := failed(1, "error: pods is forbidden\n")
 	notVolumes := failed(0, "talosctl exited 0, and its output is not the volume statuses this report reads")
 	notStorage := failed(0, "kubectl exited 0, and its output is not the claims, storage classes and Services this report reads")
 	cases := map[string]struct {

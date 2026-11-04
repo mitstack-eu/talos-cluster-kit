@@ -342,6 +342,21 @@ func TestPlane_APinBumpReplacesNoGatewayWithoutAnUpgrade(t *testing.T) {
 	assert.Empty(t, h.plane.Problems(context.Background(), h.read()), "problems")
 }
 
+func TestPlane_AnUpgradeWithNoGatewayToReplaceChangesNothingThoughNoReportNamesAGateway(t *testing.T) {
+	h := newHarness(t)
+	h.built()
+	h.plane.ReadGateway = func(context.Context, string, time.Time) (controlplane.GatewayReading, error) {
+		return controlplane.GatewayReading{Detail: "the newest node report names no gateway"}, nil
+	}
+	h.plane.Upgrading = true
+	before := h.cloud.Writes()
+
+	require.NoError(t, h.converge())
+
+	assert.Equal(t, before, h.cloud.Writes(), "what the upgrade changed")
+	assert.Empty(t, h.plane.Problems(context.Background(), h.read()), "problems")
+}
+
 func TestPlane_RefusesToRebuildALostGatewayWithoutTheGatewayCA(t *testing.T) {
 	h := newHarness(t)
 	h.built()

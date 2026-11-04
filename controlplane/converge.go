@@ -87,17 +87,19 @@ func (p Plane) nodeStep(ctx context.Context, st State, s site) (Step, bool, erro
 	return p.workerImageStep(ctx, st, s)
 }
 
+// controlPlaneStep builds the image through the first location's gateway, whose mirror the builder fills from, and once
+// a node exists keeps every location's gateway before it creates the next node.
 func (p Plane) controlPlaneStep(ctx context.Context, st State, s site) (Step, bool, error) {
-	gw, hasGateway := st.Server(RoleGateway)
+	gw, hasGateway := st.GatewayIn(GatewayLocation)
 	hasNode := len(st.Servers[RoleNode]) > 0
 	builder, hasBuilder := st.Server(RoleBuilder)
 	serving, hasServing := st.Server(RoleServing)
 	snap, hasSnapshot := st.Snapshot()
 	imaged := hasSnapshot && snap.Status == SnapshotAvailable
 	switch {
-	case hasNode && !hasGateway:
+	case hasNode && len(st.Servers[RoleGateway]) == 0:
 		return Step{}, false, refuse("gateway-lost",
-			"the cluster's nodes are running, but no gateway carries this subscription's labels, so no node can pull an image and nothing was changed; the gateway's certificate authority is gone with it, so unsubscribe and subscribe again to rebuild the cluster")
+			"the cluster's nodes are running, but no gateway carries this subscription's labels, so no node can pull an image and nothing was changed; the enrolment and issuer labels are gone with them, so unsubscribe and subscribe again to rebuild the cluster")
 	case hasServing && (!hasBuilder || hasSnapshot || p.overdue(builder)):
 		return Step{"delete the serving server, whose file holds the hosting set's keys, once the builder is done with it", func(ctx context.Context) error {
 			return p.API.DeleteServer(ctx, serving.ID)
@@ -107,13 +109,17 @@ func (p Plane) controlPlaneStep(ctx context.Context, st State, s site) (Step, bo
 			return p.API.DeleteServer(ctx, builder.ID)
 		}}, true, nil
 	case hasNode:
+		if step, ok, err := p.builtGatewayStep(ctx, st, s); err != nil || ok {
+			return step, ok, err
+		}
 		return p.missingNodeStep(st, s, snap)
 	case !hasGateway:
 		return p.installStep(st, s), true, nil
-	case gw.PrivateIPs[s.network.ID] == "":
-		return Step{"attach the gateway to the network at its fixed address before its first boot", func(ctx context.Context) error {
-			return p.API.AttachServerToNetwork(ctx, gw.ID, s.network.ID, GatewayAddress)
-		}}, true, nil
+	}
+	if step, ok, err := p.zoneStep(ctx, st, s); err != nil || ok {
+		return step, ok, err
+	}
+	switch {
 	case hasBuilder && builder.PrivateIPs[s.network.ID] == "":
 		return Step{"attach the builder to the network at its fixed address", func(ctx context.Context) error {
 			return p.API.AttachServerToNetwork(ctx, builder.ID, s.network.ID, BuilderAddress)
@@ -124,6 +130,11 @@ func (p Plane) controlPlaneStep(ctx context.Context, st State, s site) (Step, bo
 		}}, true, nil
 	case gw.Status == ServerOff && !hasSnapshot:
 		return p.gatewayOffStep(ctx, gw, builder, hasBuilder)
+	}
+	if step, ok, err := p.neverStartedStep(ctx, st); err != nil || ok {
+		return step, ok, err
+	}
+	switch {
 	case gw.Status == ServerOff:
 		return p.powerOnGateway(gw), true, nil
 	case imaged:
@@ -183,7 +194,7 @@ func (p Plane) gatewayOffStep(ctx context.Context, gw, builder Server, hasBuilde
 func (p Plane) workerImageStep(ctx context.Context, st State, s site) (Step, bool, error) {
 	builder, hasBuilder := st.Server(RoleWorkerBuilder)
 	snap, hasSnapshot := st.WorkerSnapshot()
-	gw, hasGateway := st.Server(RoleGateway)
+	gw, hasGateway := st.GatewayIn(GatewayLocation)
 	switch {
 	case !hasBuilder:
 		return Step{}, false, nil
@@ -204,10 +215,11 @@ func (p Plane) workerImageStep(ctx context.Context, st State, s site) (Step, boo
 	}
 }
 
-// installStep first deletes what is left of a cluster whose gateway is gone, since the keys it holds match no gateway.
+// installStep first deletes what is left of a cluster whose first gateway is gone, since the keys it holds match no
+// gateway.
 func (p Plane) installStep(st State, s site) Step {
 	var servers []Server
-	for _, r := range []Role{RoleBuilder, RoleServing, RoleWorkerBuilder} {
+	for _, r := range []Role{RoleGateway, RoleBuilder, RoleServing, RoleWorkerBuilder} {
 		servers = append(servers, st.Servers[r]...)
 	}
 	snapshots := append(slices.Clone(st.Snapshots), st.WorkerSnapshots...)

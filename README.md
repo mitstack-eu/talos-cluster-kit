@@ -51,7 +51,7 @@ the order a block uses them.
 | `topology` | Renders the topology labeller, a CronJob that labels each Cloud node with its zone and region, and holds the two label names | `Manifests`, `Labels`, `ZoneLabel`, `RegionLabel`, `FieldManager` |
 | `openbaoinit` | Renders OpenBao's init Job, which the hosting set carries: it initialises a hosting cluster's OpenBao once, commits the root token and recovery key to the cluster repository as PGP messages, then writes the policy each slice's External Secrets reads with | `Manifests`, `Inputs`, `InitFile` |
 | `rollout` | Gives a running cluster that hosts the platform a release's hosting policies: the files a block commits to the cluster repository, where Argo CD applies, changes and prunes them, and the read-back of each one from the node report | `Current`, `Release.Files`, `Release.ReadBack` |
-| `controlplane` | Builds and deletes a Talos control plane on Hetzner Cloud: a network, a firewall, a gateway, a builder that makes the cluster's own snapshot, a node in each of `fsn1`, `nbg1` and `hel1`, and an API and an ingress load balancer. Each call reads the resources by their labels and takes the one change still missing. A refusal is a `*Refusal` with a `Class` and a `Message`, which the block answers as its own framework's refusal | `Plane`, `Plane.Read`, `Plane.EnsureNetwork`, `Plane.NextStep`, `Plane.Problems`, `Plane.Outputs`, `Plane.Delete`, `NewAPI`, `Refusal`, `TopologyLabels` |
+| `controlplane` | Builds and deletes a Talos control plane on Hetzner Cloud: a network, a firewall, a gateway in each of `fsn1`, `nbg1` and `hel1`, a builder that makes the cluster's own snapshot, a node in each of `fsn1`, `nbg1` and `hel1`, and an API and an ingress load balancer. Each call reads the resources by their labels and takes the one change still missing. A refusal is a `*Refusal` with a `Class` and a `Message`, which the block answers as its own framework's refusal | `Plane`, `Plane.Read`, `Plane.EnsureNetwork`, `Plane.NextStep`, `Plane.Problems`, `Plane.Unhealthy`, `Plane.Outputs`, `Plane.Delete`, `NewAPI`, `Refusal`, `TopologyLabels` |
 | `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image and the gateway both install, and `tools/jq.env`, which pins the tools image's jq. It names the tools image a release published and the directory in that image that holds the node report's, its outside probe's and the labeller's scripts | `Env`, `Pin`, `Image`, `ScriptDir` |
 | `testutil` | Holds the fixtures, fakes and decoders this module's tests and a block's tests share | `NewCluster`, `NewTools`, `Golden` |
 
@@ -126,8 +126,8 @@ node without `VSwitch` runs Talos's default DHCP on every link.
 
 The Cloud control plane is the part of a cluster that runs on Hetzner Cloud
 servers: a Talos node in each of `fsn1`, `nbg1` and `hel1`, which run
-Kubernetes itself, and the gateway, a Cloud server that gives the nodes their
-only route out and serves them their images and manifests. The plane builds
+Kubernetes itself, and a gateway in each location, a Cloud server that gives
+the nodes their only route out and serves them their images and manifests. The plane builds
 the nodes from the cluster's own snapshot, a Hetzner disk image that a
 short-lived builder server writes and that holds every key of the cluster.
 
@@ -153,7 +153,11 @@ plane := controlplane.Plane{
 	PlatformURL:       "https://api.mitstack.dev",             // where every node registers and reports
 	ReportProofScript: reportproof.TokenRequestScript,         // block-kit's script that signs each node report
 	RepoURL:           "https://github.com/acme/shop-cluster", // the Git repository Argo CD applies to the cluster
-	Installed:         installWorker,                          // the block's own func(ctx, controlplane.Network, nodeconfig.Cluster) error
+	Installed:         install,                                // the block's own func(ctx, controlplane.Network, nodeconfig.Cluster, gateway.CA) error
+	GatewayCA:         kept,                                   // the CA the block keeps, nil before the install
+	Upgrading:         operation == "upgrade",                 // starts replacing gateways built from an earlier list
+	ReadGateway:       readReport,                             // reads a gateway from the newest node report since a time
+	Notify:            emitEvent,                              // receives each certificate, route move, power-on and deletion
 	AppsOnWorkers:     true,
 	WorkerAddresses:   []string{"10.0.1.2"}, // the Robot worker's address in the network's vSwitch subnet
 }
@@ -183,8 +187,44 @@ and the builder, since that change renders the cluster's configuration.
 That call is the only moment the cluster's keys exist outside the snapshot,
 so a block that adds workers renders them there with
 `nodeconfig.RenderWorker`. When `Installed` returns an error, the plane
-deletes the gateway and builder it just created, and a later call starts the
+deletes the gateways and builders it just created, and a later call starts the
 install again.
+
+## How the gateways are kept
+
+Each location runs one gateway at a fixed private address: `fsn1` at
+`10.0.0.2`, `nbg1` at `10.0.0.248` and `hel1` at `10.0.0.249`. Every node
+trusts all three, and the network's default route goes to one of them. A
+gateway is immutable. Nothing reaches it after its first boot, and a change of
+the pinned image list replaces it.
+
+The gateway CA carries critical name constraints that permit those three
+addresses and no host name. `Installed` hands the block the CA, key included.
+The block keeps it in its own store and passes it back as `Plane.GatewayCA`.
+Without the CA, the plane refuses to build a gateway, with class
+`gateway-ca-unknown`.
+
+A gateway serves when Hetzner reads it running at its address and no node
+report since its creation reads its mirror failing. `ReadGateway` gives the
+plane that reading. Each call does one of the following, as the cluster needs:
+
+1. It moves the default route off a gateway that does not serve, to one that
+   does, by deleting the route and adding it again.
+2. It powers a stopped gateway back on, once. A gateway that still does not
+   serve is never powered on again, and `Unhealthy` names it.
+3. It replaces one gateway built from an earlier list, once the upgrade's own
+   call, with `Upgrading` set, has marked the network. It moves the route off
+   the old gateway, deletes it, and builds its replacement at the same address
+   with a fresh certificate. The next location waits until a node report reads
+   the replacement serving.
+
+The plane hands each of these events to `Notify`, with each certificate it
+issues.
+
+A cluster built before gateways ran in each location has one gateway with no
+list label. The plane keeps its route and refuses its upgrade with class
+`gateway-predates-zones`, and `Unhealthy` reads it as built by an older
+release that must be rebuilt.
 
 Every install also builds a worker image, so a later upgrade or scaling
 creates Cloud workers from it with no rebuild. The same change that creates

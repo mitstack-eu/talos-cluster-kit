@@ -1,8 +1,10 @@
-// Package gateway renders the cloud-config of a cluster's gateway, the one server with a public address.
+// Package gateway renders the cloud-config of a cluster's gateways, one in each location, the only servers with a public address.
 package gateway
 
 import (
+	"crypto/sha256"
 	_ "embed"
+	"encoding/base32"
 	"errors"
 	"fmt"
 	"net"
@@ -150,6 +152,21 @@ func (in Inputs) egressPorts() (string, error) {
 		ports = append(ports, strconv.FormatUint(logPort, 10))
 	}
 	return strings.Join(ports, ", "), nil
+}
+
+// ListDigest names the images a gateway mirrors and the manifests it serves by their digests, leaving out the release the
+// manifests are fetched from, so a gateway built from it is replaced only when the pinned list changes.
+func ListDigest(set components.Set, extra ...components.Image) (string, error) {
+	images, err := mirror.List(set, extra...)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.New()
+	sum.Write(mirror.Render(images))
+	for _, m := range set.Served {
+		fmt.Fprintf(sum, "%s %s\n", m.TalosName(), m.SHA256())
+	}
+	return strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum.Sum(nil))), nil
 }
 
 // manifestList is one "<file> <sha256> <url>" line per served manifest, the form prepare.sh reads.

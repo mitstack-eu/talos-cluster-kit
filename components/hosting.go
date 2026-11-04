@@ -126,6 +126,13 @@ func Hosting(in HostingInputs) (Set, error) {
 	if err != nil {
 		return Set{}, fmt.Errorf("the hosting set: %w", err)
 	}
+	set := HostingServed()
+	set.Inline = append(slices.Clone(set.Inline), inline...)
+	return set, nil
+}
+
+// HostingServed is the hosting set without the inline manifests that hold its secrets, which is all a gateway needs.
+func HostingServed() Set {
 	set := Default()
 	set.Served = append(slices.Clone(set.Served),
 		Manifest{Name: "openbao", Path: "components/openbao/openbao.yaml", Bytes: openBaoManifest},
@@ -138,9 +145,8 @@ func Hosting(in HostingInputs) (Set, error) {
 	)
 	set.Served = append(set.Served, HostingPolicies()...)
 	set.Served = append(set.Served, Manifest{Name: "mitstack-hosting-mesh", Path: "components/hosting/mesh.yaml", Bytes: hostingMeshManifest})
-	set.Inline = append(slices.Clone(set.Inline), inline...)
 	set.UserVolumes = append(slices.Clone(set.UserVolumes), OpenBaoVolume)
-	return set, nil
+	return set
 }
 
 // HostingPolicies are the hosting set's flow policies, which a running cluster also takes from a release through the

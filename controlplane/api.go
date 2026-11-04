@@ -33,6 +33,13 @@ type API interface {
 	CreateNetwork(ctx context.Context, spec NetworkSpec) (Network, error)
 	// SetNetworkLabels replaces the network's labels with labels.
 	SetNetworkLabels(ctx context.Context, id int64, labels map[string]string) error
+	// AddRoute fails on a destination another route of the network holds, so a move deletes the old route first.
+	AddRoute(ctx context.Context, networkID int64, r Route) error
+	DeleteRoute(ctx context.Context, networkID int64, r Route) error
+	// SetServerLabels replaces the server's labels with labels.
+	SetServerLabels(ctx context.Context, id int64, labels map[string]string) error
+	// LastPowerAction names the newest power action Hetzner finished on the server and when; empty when it finished none.
+	LastPowerAction(ctx context.Context, id int64) (command string, at time.Time, err error)
 	// AddVSwitchSubnet couples the vSwitch to the network through a subnet of ipRange and exposes the network's routes
 	// to it, so a dedicated server on the vSwitch routes through the network's gateway. A vSwitch already coupled at
 	// ipRange counts as coupled, so a retry finishes what an earlier call began.
@@ -189,6 +196,9 @@ const (
 	SnapshotAvailable = string(hcloud.ImageStatusAvailable)
 	// startServerCommand is the command of the action Hetzner runs for a power-on, and for a create that starts the server.
 	startServerCommand = "start_server"
+	// StopServerCommand cuts a server's power and ShutdownServerCommand asks it to shut down, both from Hetzner's side.
+	StopServerCommand     = "stop_server"
+	ShutdownServerCommand = "shutdown_server"
 
 	healthCheckInterval = 15 * time.Second
 	healthCheckTimeout  = 10 * time.Second
@@ -372,11 +382,11 @@ func (a *hcloudAPI) CreateNetwork(ctx context.Context, spec NetworkSpec) (Networ
 		}},
 	}
 	for _, r := range spec.Routes {
-		destination, err := parseCIDR(r.Destination)
+		route, err := hcloudRoute(r)
 		if err != nil {
 			return Network{}, err
 		}
-		opts.Routes = append(opts.Routes, hcloud.NetworkRoute{Destination: destination, Gateway: net.ParseIP(r.Gateway)})
+		opts.Routes = append(opts.Routes, route)
 	}
 	n, _, err := a.client.Network.Create(ctx, opts)
 	if err != nil {
@@ -390,6 +400,62 @@ func (a *hcloudAPI) SetNetworkLabels(ctx context.Context, id int64, labels map[s
 		return fmt.Errorf("labelling network %d: %w", id, err)
 	}
 	return nil
+}
+
+func (a *hcloudAPI) AddRoute(ctx context.Context, networkID int64, r Route) error {
+	route, err := hcloudRoute(r)
+	if err != nil {
+		return err
+	}
+	action, _, err := a.client.Network.AddRoute(ctx, &hcloud.Network{ID: networkID}, hcloud.NetworkAddRouteOpts{Route: route})
+	if err != nil {
+		return fmt.Errorf("adding the route %s via %s to network %d: %w", r.Destination, r.Gateway, networkID, err)
+	}
+	return a.wait(ctx, action, fmt.Sprintf("network %d to route %s via %s", networkID, r.Destination, r.Gateway))
+}
+
+func (a *hcloudAPI) DeleteRoute(ctx context.Context, networkID int64, r Route) error {
+	route, err := hcloudRoute(r)
+	if err != nil {
+		return err
+	}
+	action, _, err := a.client.Network.DeleteRoute(ctx, &hcloud.Network{ID: networkID}, hcloud.NetworkDeleteRouteOpts{Route: route})
+	if err != nil {
+		return fmt.Errorf("deleting the route %s via %s from network %d: %w", r.Destination, r.Gateway, networkID, err)
+	}
+	return a.wait(ctx, action, fmt.Sprintf("network %d to drop the route %s via %s", networkID, r.Destination, r.Gateway))
+}
+
+func hcloudRoute(r Route) (hcloud.NetworkRoute, error) {
+	destination, err := parseCIDR(r.Destination)
+	if err != nil {
+		return hcloud.NetworkRoute{}, err
+	}
+	return hcloud.NetworkRoute{Destination: destination, Gateway: net.ParseIP(r.Gateway)}, nil
+}
+
+func (a *hcloudAPI) SetServerLabels(ctx context.Context, id int64, labels map[string]string) error {
+	if _, _, err := a.client.Server.Update(ctx, &hcloud.Server{ID: id}, hcloud.ServerUpdateOpts{Labels: labels}); err != nil {
+		return fmt.Errorf("labelling server %d: %w", id, err)
+	}
+	return nil
+}
+
+func (a *hcloudAPI) LastPowerAction(ctx context.Context, id int64) (string, time.Time, error) {
+	actions, err := a.client.Server.Action.AllFor(ctx, &hcloud.Server{ID: id},
+		hcloud.ActionListOpts{Status: []hcloud.ActionStatus{hcloud.ActionStatusSuccess}})
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("listing the finished actions of server %d: %w", id, err)
+	}
+	var command string
+	var at time.Time
+	for _, action := range actions {
+		power := slices.Contains([]string{startServerCommand, StopServerCommand, ShutdownServerCommand}, action.Command)
+		if power && action.Finished.After(at) {
+			command, at = action.Command, action.Finished
+		}
+	}
+	return command, at, nil
 }
 
 func (a *hcloudAPI) AddVSwitchSubnet(ctx context.Context, networkID, vswitchID int64, ipRange string) error {

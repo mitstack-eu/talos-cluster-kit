@@ -67,6 +67,29 @@ func (st State) Snapshot() (Snapshot, bool) { return onlyOne(st.Snapshots) }
 
 func (st State) WorkerSnapshot() (Snapshot, bool) { return onlyOne(st.WorkerSnapshots) }
 
+// GatewayIn is the gateway Hetzner records in loc.
+func (st State) GatewayIn(loc string) (Server, bool) {
+	return onlyOne(ServersIn(st.Servers[RoleGateway], loc))
+}
+
+// SharedGateway is the first location's gateway that exists, which carries the labels every gateway shares.
+func (st State) SharedGateway() (Server, bool) {
+	for _, loc := range Locations {
+		if gw, ok := st.GatewayIn(loc); ok {
+			return gw, true
+		}
+	}
+	return Server{}, false
+}
+
+// SingleGateway reports whether the cluster predates a gateway in each location: no gateway carries the list label,
+// so the block holds no CA to sign another gateway with.
+func (st State) SingleGateway() bool {
+	return len(st.Servers[RoleGateway]) > 0 && !slices.ContainsFunc(st.Servers[RoleGateway], func(s Server) bool {
+		return s.Labels[KeyGatewayList] != ""
+	})
+}
+
 func (st State) NodeIn(loc string) (Server, bool) {
 	return onlyOne(ServersIn(st.Servers[RoleNode], loc))
 }
@@ -125,10 +148,11 @@ func (st State) Duplicates() []string {
 	add("firewall", IDs(st.Firewalls, func(f Firewall) int64 { return f.ID }))
 	add("snapshot", IDs(st.Snapshots, func(s Snapshot) int64 { return s.ID }))
 	add("worker image snapshot", IDs(st.WorkerSnapshots, func(s Snapshot) int64 { return s.ID }))
-	for _, r := range []Role{RoleGateway, RoleBuilder, RoleServing, RoleWorkerBuilder} {
+	for _, r := range []Role{RoleBuilder, RoleServing, RoleWorkerBuilder} {
 		add(string(r)+" server", IDs(st.Servers[r], ServerID))
 	}
 	for _, loc := range Locations {
+		add(loc+" gateway server", IDs(ServersIn(st.Servers[RoleGateway], loc), ServerID))
 		add(loc+" node server", IDs(ServersIn(st.Servers[RoleNode], loc), ServerID))
 	}
 	for _, r := range []Role{RoleAPI, RoleIngress} {

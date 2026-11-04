@@ -221,7 +221,7 @@ go test -tags mirror -count=1 -run '^TestPrepareScript_Mirrors' ./gateway/
 | `TestPrepareScript_MirrorsTrustManagersIndexIntoTheGatewaysRegistryWithItsDigest` | trust-manager's OCI image index copies into the gateway's registry, and the registry serves the digest `testutil.HostingImages` pins for it. It runs only under the `mirror` build tag | The real skopeo image, registry image and quay.io, through Docker |
 | `TestPlane_RefusesTheBuildNamingTheGatewaysImageMirrorOnceTheGatewayPowersItselfOff` | When the gateway powers off while the builder runs, the plane deletes the builder, refuses with class `gateway-mirror-failed` at least 30 minutes before `BuildDeadline`, the 60 minutes a builder has, and leaves the gateway off | `controlplane/cloudtest` |
 | `TestPlane_PowersOnAGatewayFoundOffOnceTheBuilderHasFinished` | A gateway found off once the builder ran and powered itself off is powered on, since its mirror completed | `controlplane/cloudtest` |
-| `TestPlane_BuildsANodeInEachOfFsn1Nbg1AndHel1OnOneNetwork` | Calling `NextStep` until it returns none builds a node in each location on one network, a gateway and a builder in `fsn1`, and deletes the builder once its snapshot exists | `controlplane/cloudtest`, a fake of the Hetzner Cloud API |
+| `TestPlane_BuildsANodeInEachOfFsn1Nbg1AndHel1OnOneNetwork` | Calling `NextStep` until it returns none builds a node and a gateway in each location on one network, a builder in `fsn1`, and deletes the builder once its snapshot exists | `controlplane/cloudtest`, a fake of the Hetzner Cloud API |
 | `TestPlane_EachCallWaitsOnOneHetznerActionAtMostAndCreatesOneNodeAtMost` | No call waits on more than one Hetzner action or creates more than one node | The same fake |
 | `TestPlane_RefusesAnAmbiguousClusterBeforeAnyChange` | Two resources of one role refuse with class `ambiguous-cluster` and change nothing | The same fake |
 | `TestPlane_TheInstalledHookReceivesTheClusterWithItsKeysInTheInstallsCall` | The block's `Installed` hook gets the rendered cluster with its secrets in the call that installs it, and a worker rendered from it trusts the control plane's machine CA and joins with its cluster token | The same fake |
@@ -235,6 +235,16 @@ go test -tags mirror -count=1 -run '^TestPrepareScript_Mirrors' ./gateway/
 | `TestPlane_TheWorkerBuilderJoinsTheNetworkAtItsFixedAddressAndBuildsOnlyOnceTheGatewayRuns` | The worker builder runs its build at `10.0.0.252`, with the gateway running | The same fake |
 | `TestPlane_DeleteDeletesTheWorkerImage` | `Delete` removes the worker image | The same fake |
 | `TestPlane_TheWorkerBuilderGoesWithAClusterBuildThatFails` | A cluster whose build failed loses its worker builder on the next call | The same fake |
+| `TestNewCA_RefusesACertificateForAnyOtherAddressOrAHostNameUnderCriticalNameConstraints` | The gateway CA's name constraints are critical, and a certificate it signs for another address or for a host name fails verification | Go's verifier |
+| `TestPlane_BuildsAGatewayInEachLocationAtItsOwnAddressUnderOneCA` | An install builds a gateway in each of `fsn1`, `nbg1` and `hel1` at its fixed address, each with a certificate for its address alone under the one CA the `Installed` hook receives | The same fake |
+| `TestPlane_NoUserDataOrManifestHoldsTheGatewayCAKey` | No server's user data and no manifest of the component set holds the gateway CA's key | The same fake |
+| `TestPlane_MovesTheDefaultRouteOffAGatewayThatStoppedServing` | A routed gateway that is off, or that a node report reads failing, loses the default route to a gateway that serves | The same fake and a stand-in for the node report |
+| `TestPlane_AddsTheDefaultRouteOnTheNextCallWhenItsAddFailsAfterItsDelete` | A move whose add fails after its delete fails that call, naming the missing route, and the next call adds it first | The same fake |
+| `TestPlane_PowersAStoppedGatewayBackOnOnceAnOutageAndReadsItUnhealthyWhenItStaysDown` | A stopped gateway is powered on once with an event naming why it was off, and one that stops again before a report reads it serving stays off and reads unhealthy | The same fake and a stand-in for the node report |
+| `TestPlane_UpgradeReplacesOneLocationsGatewayAtATimeAtItsAddressAndNoNode` | An upgrade replaces each gateway built from an earlier list, one location at a time, at the same address, with the route never on a missing gateway and no node replaced | The same fake and a stand-in for the node report |
+| `TestPlane_UpgradeWaitsOnAReplacementNoReportReadsServingAndNeverReplacesTheNext` | A replacement no report reads serving holds the upgrade, and `Problems` names it with the newest report's reading | The same fake and a stand-in for the node report |
+| `TestPlane_APinBumpReplacesNoGatewayWithoutAnUpgrade` | Gateways built from an earlier list stay without `Upgrading` | The same fake |
+| `TestPlane_KeepsAClusterBuiltWithOneGatewayAndReadsItUnhealthyWithItsRemedy` | A cluster with one unlabelled gateway keeps it, and `Unhealthy` names the rebuild | The same fake |
 | `TestHosting_InstallsEveryNodeWithTheBuilderFetchingTheHostingSetFromTheServingServer` | A hosting install creates a node in each location, with the serving server at `10.0.0.251` serving to the builder alone and the builder pinning its key, and deletes the serving server after the build | The same fake |
 | `TestHosting_TheBuildersUserDataStaysWithinHetznersLimitAndHoldsNoHostingManifest` | With a 4096-bit Sealed Secrets key the builder's user data, whose size the test logs, fits in 32,768 bytes and carries none of the hosting set's inline manifests | The same fake |
 | `TestHosting_TheServingServerGoesWithABuildThatFails` | A build past its deadline takes the serving server with the builder | The same fake |
@@ -285,6 +295,7 @@ the block that calls it:
 |---|---|
 | Delivering the admin talosconfig to the gateway and running the bootstrap there | It needs the block's command channel to the gateway |
 | Taking an etcd snapshot and storing it | Where a snapshot lives is the block's choice |
-| Renewing a gateway's certificate | `CA.Issue` takes the validity, and the block re-renders the gateway before it ends |
+| Keeping the gateway CA's key | The key must live in the block's own store, which the block passes back as `Plane.GatewayCA` |
+| Replacing a gateway before its certificate's year ends | Only an upgrade replaces a gateway, and the block chooses when to upgrade |
 | Writing the report token into `mitstack-report-token` | The token comes from the platform at enrolment |
 | A dedicated node's address and its vSwitch, Hetzner's private network between dedicated servers | Which dedicated servers a cluster adopts, and over which vSwitch, is the block's choice |

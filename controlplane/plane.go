@@ -1,13 +1,16 @@
 // Package controlplane builds and deletes a Talos cluster's control plane on Hetzner Cloud: three nodes booted from
-// the cluster's own snapshot, a gateway, two load balancers, a firewall and a network, all found by their labels.
+// the cluster's own snapshot, a gateway in each location, two load balancers, a firewall and a network, all found by
+// their labels.
 package controlplane
 
 import (
 	"context"
 	"fmt"
 	"log"
+	"net/netip"
 	"time"
 
+	"github.com/mitstack-eu/talos-cluster-kit/gateway"
 	"github.com/mitstack-eu/talos-cluster-kit/nodeconfig"
 )
 
@@ -30,9 +33,17 @@ type Plane struct {
 	RepoURL string
 	// Now is the clock the builder's deadline is judged against; nil reads time.Now.
 	Now func() time.Time
-	// Installed receives the cluster the install rendered, its keys included, in the one call they exist, so the block
-	// can install its workers from it. An error rolls the install back.
-	Installed func(ctx context.Context, network Network, cluster nodeconfig.Cluster) error
+	// Installed receives the cluster the install rendered, its keys included, and the gateway CA, in the one call they
+	// exist, so the block can install its workers and keep the CA as its own secret. An error rolls the install back.
+	Installed func(ctx context.Context, network Network, cluster nodeconfig.Cluster, ca gateway.CA) error
+	// GatewayCA is the CA the block keeps, which signs each replacement gateway's certificate; nil when it keeps none.
+	GatewayCA *gateway.CA
+	// Upgrading starts replacing each gateway built from an earlier release's pinned list, one location at a time.
+	Upgrading bool
+	// ReadGateway reads the newest node report received since since about the gateway at address; nil reads none.
+	ReadGateway func(ctx context.Context, address string, since time.Time) (GatewayReading, error)
+	// Notify receives each event a step records: a certificate issued, a route moved, a gateway deleted or powered on.
+	Notify func(ctx context.Context, detail string)
 	// AppsOnWorkers keeps every pod without a toleration off the control-plane nodes, and the ingress load balancer's
 	// traffic with them, so it targets each of WorkerAddresses and no control-plane node.
 	AppsOnWorkers bool
@@ -55,7 +66,8 @@ func refuse(class, format string, args ...any) error {
 	return &Refusal{Class: class, Message: fmt.Sprintf(format, args...)}
 }
 
-// Step is one change the plane lacks, which waits on Hetzner at most once.
+// Step is one change the plane lacks, which waits on Hetzner at most once, but for a route move, whose add waits on
+// its delete.
 type Step struct {
 	What string
 	Run  func(ctx context.Context) error
@@ -92,7 +104,7 @@ const (
 	subnetIPRange  = "10.0.0.0/24"
 	// routerAddress is the first address of the network, which Hetzner's own router answers on.
 	routerAddress = "10.0.0.1"
-	// GatewayAddress is fixed, since the network's default route and every node's mirror name it.
+	// GatewayAddress is the first location's gateway, which the builder's mirror and the etcd bootstrap name.
 	GatewayAddress = "10.0.0.2"
 	defaultRoute   = "0.0.0.0/0"
 
@@ -110,11 +122,29 @@ const (
 // GatewayServerTypes are the gateway's types by preference, so one sold-out type does not stop a cluster.
 var GatewayServerTypes = []string{"cx23", "cpx22"}
 
-// Locations hold a node each; the first also holds the gateway, the builder and both load balancers.
+// Locations hold a node and a gateway each; the first also holds the builder and both load balancers.
 var Locations = []string{"fsn1", "nbg1", "hel1"}
 
-// GatewayLocation is where the gateway, the builder and both load balancers run.
+// GatewayLocation is where the first gateway, the builder and both load balancers run.
 var GatewayLocation = Locations[0]
+
+// GatewayAddresses fix each location's gateway, since a replacement takes the address every node names. The others sit
+// high in the subnet, above any address Hetzner gives a server joining with none.
+var GatewayAddresses = map[string]string{"fsn1": GatewayAddress, "nbg1": "10.0.0.248", "hel1": "10.0.0.249"}
+
+func gatewayAddrs() []netip.Addr {
+	out := make([]netip.Addr, 0, len(Locations))
+	for _, loc := range Locations {
+		out = append(out, netip.MustParseAddr(GatewayAddresses[loc]))
+	}
+	return out
+}
+
+func (p Plane) notify(ctx context.Context, format string, args ...any) {
+	if p.Notify != nil {
+		p.Notify(ctx, fmt.Sprintf(format, args...))
+	}
+}
 
 // The load balancers join the network at fixed addresses before the gateway, so neither takes the gateway's.
 const (

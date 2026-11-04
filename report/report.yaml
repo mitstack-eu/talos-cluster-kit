@@ -1,8 +1,10 @@
 # The node report: a CronJob that reads the cluster with the Talos os:reader
-# role and a Kubernetes identity that may only read Nodes, Applications,
+# role and a Kubernetes identity that may only read Nodes, pods, Applications,
 # CloudNativePG's objects, claims, storage classes and the kinds of object a
 # block labels with its subscription, never a Secret, and posts the result to
-# the platform. It also creates the one namespace
+# the platform. It verifies OpenBao against the openbao-ca bundle that
+# trust-manager copies into every namespace, and asks Argo CD's server its
+# routes with no session. It also creates the one namespace
 # whose pods may hold a Talos identity. Its read of the API server's key set
 # needs no rule here, since Kubernetes binds system:service-account-issuer-discovery
 # to every service account by default. A Role lets the report mint a token for
@@ -35,6 +37,9 @@ rules:
   - apiGroups: [""]
     resources: [nodes]
     verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [list]
   - apiGroups: [""]
     resources: [namespaces, serviceaccounts, services, resourcequotas, limitranges]
     verbs: [list]
@@ -165,6 +170,12 @@ spec:
                   value: {{ printf "%q" .MeshProbeIdentity }}
                 - name: MESH_PROBE_CONFIGMAP
                   value: {{ printf "%q" .MeshProbeConfigMap }}
+                - name: OPENBAO_MEMBERS
+                  value: {{ printf "%q" .OpenBaoMembers }}
+                - name: OPENBAO_CA_FILE
+                  value: /var/run/openbao-ca/ca.crt
+                - name: ARGOCD_URL
+                  value: https://argocd-server.argocd.svc
                 - name: HOME
                   value: /tmp
               securityContext:
@@ -181,6 +192,9 @@ spec:
                 - name: talos-secrets
                   mountPath: /var/run/secrets/talos.dev
                   readOnly: true
+                - name: openbao-ca
+                  mountPath: /var/run/openbao-ca
+                  readOnly: true
           volumes:
             - name: tmp
               emptyDir: {}
@@ -191,3 +205,8 @@ spec:
             - name: talos-secrets
               secret:
                 secretName: mitstack-node-report
+            # A cluster without the hosting set has no OpenBao and no bundle, and its report names each failed read.
+            - name: openbao-ca
+              configMap:
+                name: openbao-ca
+                optional: true

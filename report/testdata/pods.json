@@ -1,0 +1,26 @@
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "metadata": {"name": "argocd-server-5d9c7b8f4-x2x7q", "namespace": "argocd", "labels": {"app.kubernetes.io/name": "argocd-server"}},
+      "spec": {"nodeName": "poc-talos4-cp1", "containers": [{"name": "server", "image": "quay.io/argoproj/argocd:v3.5.5@sha256:13db7b10db23283b1b36f855046602e18539a8a8204c9f6f0aa4a9a6ff5e4f3c"}]},
+      "status": {"phase": "Running"}
+    },
+    {
+      "metadata": {"name": "shared-1", "namespace": "app-pg"},
+      "spec": {"nodeName": "poc-talos4-cp2", "containers": [{"name": "postgres", "image": "ghcr.io/cloudnative-pg/postgresql:16.15"}]},
+      "status": {"phase": "Running"}
+    },
+    {
+      "metadata": {"name": "shared-2", "namespace": "app-pg"},
+      "spec": {"containers": [{"name": "postgres", "image": "ghcr.io/cloudnative-pg/postgresql:16.15"}]},
+      "status": {"phase": "Pending"}
+    },
+    {
+      "metadata": {"name": "openbao-0", "namespace": "openbao"},
+      "spec": {"nodeName": "poc-talos4-cp1", "containers": [{"name": "openbao", "image": "quay.io/openbao/openbao:2.4.1"}]},
+      "status": {"phase": "Running"}
+    }
+  ]
+}

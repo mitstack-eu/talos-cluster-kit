@@ -1,0 +1,4 @@
+NODE       MEMBER             DB SIZE   IN USE            LEADER             RAFT INDEX   RAFT TERM   RAFT APPLIED INDEX   LEARNER   PROTOCOL   STORAGE   ERRORS
+10.0.0.6   25afe91c7e8956f1   17 MB     4.0 MB (23.89%)   a48f107742a8605c   26460        2           26460                false     3.6.0      3.6.0
+10.0.0.5   a48f107742a8605c   17 MB     4.1 MB (24.12%)   a48f107742a8605c   26460        2           26460                false     3.6.0      3.6.0
+10.0.0.7   1948ccd42e0e52cd   17 MB     3.9 MB (22.94%)   a48f107742a8605c   26460        2           26460                true      3.6.0      3.6.0

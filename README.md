@@ -47,7 +47,7 @@ the order a block uses them.
 | `mirror` | Lists every image the nodes pull, each by digest | `List`, `Render` |
 | `gateway` | Renders the cloud-config of the gateway in each location, and mints the cluster's gateway CA and each gateway's certificate | `Render`, `Inputs`, `NewCA`, `CA.Issue`, `ReleaseURL` |
 | `etcd` | Renders the Job that removes a lost node's etcd member and then its Node object, and holds the gateway's script that bootstraps etcd empty or from a snapshot | `RemoveMemberJob`, `BootstrapScript`, `Bootstrap.Args` |
-| `report` | Renders the node report, a CronJob that posts each node with its Talos version, allocatable resources, zone and region labels and the managers of its zone label, the etcd membership, how each node's `STATE` and `EPHEMERAL` are encrypted, Argo CD's health with the objects each Application applied, CloudNativePG's clusters, databases and roles, each PersistentVolumeClaim with its storage class and phase, the default storage classes, every Service with its type, the objects a block labels with its subscription, the API server's key set, and the mesh probe's results to the platform, with a `checks` member declaring which of the platform verdict's checks it carries. It also renders the outside probe, a CronJob in `kube-system` that calls the mesh probe's target with no workload identity. When any read but the volume, CloudNativePG, storage and Service, labelled-object and mesh reads fails or times out, it posts a report holding only an `error` that names the read, in place of the full report. Each report is signed with a token the API server mints for its exact body. The report holds no right on Secrets | `Manifests` |
+| `report` | Renders the node report, a CronJob that reads the cluster and posts what it read to the platform, signed for its exact body. [What the node report carries](#what-the-node-report-carries) lists its members, the nine checks it names and what happens when a read fails. It also renders the outside probe, a CronJob in `kube-system` that calls the mesh probe's target with no workload identity. The report holds no right on Secrets | `Manifests` |
 | `topology` | Renders the topology labeller, a CronJob that labels each Cloud node with its zone and region, and holds the two label names | `Manifests`, `Labels`, `ZoneLabel`, `RegionLabel`, `FieldManager` |
 | `openbaoinit` | Renders OpenBao's init Job, which the hosting set carries: it initialises a hosting cluster's OpenBao once, commits the root token and recovery key to the cluster repository as PGP messages, then writes the policy each slice's External Secrets reads with | `Manifests`, `Inputs`, `InitFile` |
 | `rollout` | Gives a running cluster that hosts the platform a release's hosting policies: the files a block commits to the cluster repository, where Argo CD applies, changes and prunes them, and the read-back of each one from the node report | `Current`, `Release.Files`, `Release.ReadBack` |
@@ -672,6 +672,70 @@ identity replaced before it expired.
 The report reads the identity, serial and validity of the certificate
 presented on port 15008. It does not check that istiod, the mesh's control
 plane, signed that certificate.
+
+## What the node report carries
+
+The node report is a CronJob in `mitstack-node`. Each run reads the cluster
+through the API server and the Talos API and posts one body to the platform.
+The platform judges that body on nine named checks, and the result is the
+cluster's verdict. This section is for you if you read a report's body or
+change `report/scripts/report.sh`.
+
+### The members of a report
+
+| Member | What it holds | Where it comes from |
+|---|---|---|
+| `nodes` | Each node with its Talos version, allocatable resources, `topology.kubernetes.io/zone` and `topology.kubernetes.io/region` labels, and, as `zoneLabelManagers`, each field manager that wrote its zone label | `kubectl get nodes --show-managed-fields` |
+| `etcd` | Each etcd member, `healthy` only when its node answered `talosctl etcd status` with an empty `ERRORS` cell, the `leader`, and a `statusError` naming a status read that failed | `talosctl etcd members` and `talosctl etcd status` |
+| `systemVolumes` | How each node's `STATE` and `EPHEMERAL` volumes are encrypted | `talosctl get volumestatus` |
+| `argocd` | Each Application's health, sync and applied objects, the answer each of 17 routes gives a caller with no session, and the `argocd` namespace's Services and Ingresses | The Applications, `ARGOCD_URL` and the Ingress read |
+| `kubernetes.argocdPods` | Each pod in `argocd` with its containers' images | The pod read |
+| `pods` | Every pod's namespace, name, node or `null`, and phase | `kubectl get pods -A` |
+| `cloudNativePG` | Each Cluster with its phase, instance counts and `currentPrimary`, and each Database and DatabaseRole with whether it applied | CloudNativePG's objects |
+| `openbao` | Each member's `initialized`, `sealed` and `active`, and the active member's name as `leader` | `sys/seal-status` and `sys/leader` on each member in `OPENBAO_MEMBERS`, verified against `OPENBAO_CA_FILE` |
+| `storage` and `services` | Each claim with its storage class and phase, the default storage classes, and every Service with its type | One read of claims, StorageClasses and Services |
+| `defaultDenyPolicies` | Each NetworkPolicy named `mitstack-default-deny`, with its pod selector, policy types, rule counts and `managedBy` label | The NetworkPolicy read |
+| `subscriptionResources` and `subscriptionResourceKinds` | The objects a block labels `mitstack.dev/subscription`, and the object types the report read whole | One read per object type in `subscription_kinds` in `report.sh` |
+| `jwks` | The key set the API server signs service-account tokens with | `/openid/v1/jwks` |
+| `mesh` | The mesh probe's results, which [the section on the mesh](#how-the-node-report-shows-the-mesh-refusing-a-call) explains | The probe's target and its ConfigMap |
+| `repositorySecrets`, `admission` and `securityScans` | An `unreadable` reason in place of the list each would hold, since the report cannot read them yet | Fixed text in `report.sh` |
+| `checks` | Contract `node-report/v1` and the nine checks the report declares | Fixed text in `report.sh` |
+
+The nine checks are `routes`, `exposure`, `credentials`, `version`,
+`advisories`, `admission`, `default-deny`, `cis-benchmark` and `nsa-scan`. The
+platform fails a check whose member says `unreadable`, and gives that reason
+as the finding.
+
+The 17 routes are listed in `argocd_routes` in `report.sh`. Each request
+sends no credential, cookie or body. The report keeps each answer's status and
+size, and for userinfo whether it says a caller is signed in.
+
+### What happens when a read fails
+
+Each read runs under `REPORT_READ_SECONDS`, 21 seconds by default. Most reads
+that fail stay inline in a full report, as `{exitStatus, stderr}` in the member
+that read fills, so one store that does not answer hides nothing else. A route
+or OpenBao read that fails is kept in its own entry the same way. An object
+type whose read fails is left out of `subscriptionResourceKinds`.
+
+Every report needs four reads: the nodes, the Applications, the key set and
+the etcd members. When one of those, the body build or the proof script fails
+or times out, the script posts a report holding only an `error` that names it,
+and exits non-zero.
+
+No Application carries its applied objects when they would take the body past
+the platform's 256 KiB. Nothing trims `storage`, `services` or `pods`, since a
+partial list would read as a whole one.
+
+### How a report is signed
+
+The proof script is block-kit's `token-request.sh`, which the block passes in
+`REPORT_PROOF_SCRIPT`. Once the body is final, the report runs it with the
+body file, and it asks the API server for a token minted for the body's
+SHA-256. The post carries that token as `Mitstack-Report-Proof`, so the
+platform can tell the body came from this cluster unchanged. A report holding
+only an `error` goes unsigned. The report's service account holds no right on
+Secrets.
 
 ## Where a claim keeps its data
 

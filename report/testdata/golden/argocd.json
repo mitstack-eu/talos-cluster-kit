@@ -48,5 +48,104 @@
       "sync": "OutOfSync",
       "resources": []
     }
-  ]
+  ],
+  "routes": [
+    {
+      "path": "/api/v1/session/userinfo",
+      "status": 200,
+      "bytes": 18,
+      "loggedIn": false
+    },
+    {
+      "path": "/api/v1/account",
+      "status": 401,
+      "bytes": 79
+    },
+    {
+      "path": "/api/v1/applications",
+      "status": 401,
+      "bytes": 79
+    },
+    {
+      "path": "/api/v1/applicationsets",
+      "status": 401,
+      "bytes": 79
+    },
+    {
+      "path": "/api/v1/certificates",
+      "status": 401,
+      "bytes": 79
+    },
+    {
+      "path": "/api/v1/clusters",
+      "status": 401,
+      "bytes": 79
+    },
+    {
+      "path": "/api/v1/gpgkeys",
+      "status": 401,
+      "bytes": 79
+    },
+    {
+      "path": "/api/v1/notifications/services",
+      "status": 401,
+      "bytes": 79
+    },
+    {
+      "path": "/api/v1/notifications/templates",
+      "status": 401,
+      "bytes": 79
+    },
+    {
+      "path": "/api/v1/notifications/triggers",
+      "status": 401,
+      "bytes": 79
+    },
+    {
+      "path": "/api/v1/projects",
+      "status": 401,
+      "bytes": 79
+    },
+    {
+      "path": "/api/v1/repocreds",
+      "status": 401,
+      "bytes": 79
+    },
+    {
+      "path": "/api/v1/repositories",
+      "status": 401,
+      "bytes": 79
+    },
+    {
+      "path": "/api/v1/settings",
+      "status": 200,
+      "bytes": 50
+    },
+    {
+      "path": "/api/v1/settings/plugins",
+      "status": 401,
+      "bytes": 79
+    },
+    {
+      "path": "/api/v1/write-repocreds",
+      "status": 401,
+      "bytes": 79
+    },
+    {
+      "path": "/api/v1/write-repositories",
+      "status": 401,
+      "bytes": 79
+    }
+  ],
+  "services": [
+    {
+      "name": "argocd-server",
+      "type": "ClusterIP"
+    },
+    {
+      "name": "argocd-repo-server",
+      "type": "ClusterIP"
+    }
+  ],
+  "ingresses": []
 }

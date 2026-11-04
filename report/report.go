@@ -51,6 +51,15 @@ type Inputs struct {
 
 var subscriptionIDRe = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,63}$`)
 
+// openBaoMembers names each OpenBao member as name=URL, at the name its certificate holds on the headless Service.
+func openBaoMembers() string {
+	members := make([]string, components.OpenBaoMembers)
+	for i := range members {
+		members[i] = fmt.Sprintf("openbao-%d=https://openbao-%d.openbao-internal.openbao.svc:8200", i, i)
+	}
+	return strings.Join(members, " ")
+}
+
 // Manifests renders the report's namespace, identities and CronJob, and the outside probe whose result it carries.
 func Manifests(in Inputs) ([]byte, error) {
 	if err := in.validate(); err != nil {
@@ -68,6 +77,7 @@ func Manifests(in Inputs) ([]byte, error) {
 		"MeshProbeAnswer":    components.MeshProbeAnswer,
 		"MeshProbeIdentity":  components.MeshProbeIdentity,
 		"MeshProbeConfigMap": outsideProbeNamespace + "/" + outsideProbeConfigMap,
+		"OpenBaoMembers":     openBaoMembers(),
 	})
 	if err != nil {
 		return nil, err

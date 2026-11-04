@@ -73,7 +73,7 @@ specs:
         node-role.kubernetes.io/control-plane: ""
     toPorts:
     - ports: [{port: "10250", protocol: TCP}]
-- description: "OpenBao's members reach each other and the API server, and External Secrets and the init Job reach their API."
+- description: "OpenBao's members reach each other and the API server, and External Secrets, the init Job and the node report reach their API."
   endpointSelector:
     matchLabels:
       k8s:io.kubernetes.pod.namespace: openbao
@@ -109,6 +109,12 @@ specs:
     - matchLabels:
         k8s:io.kubernetes.pod.namespace: mitstack-node
         k8s:app.kubernetes.io/name: mitstack-openbao-init
+    toPorts:
+    - ports: [{port: "8200", protocol: TCP}, {port: "15008", protocol: TCP}]
+  - fromEndpoints:
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: mitstack-node
+        k8s:app.kubernetes.io/name: mitstack-node-report
     toPorts:
     - ports: [{port: "8200", protocol: TCP}, {port: "15008", protocol: TCP}]
 - description: "OpenBao's init Job looks names up through Cilium's DNS proxy, reaches OpenBao, and reaches GitHub's SSH endpoint on 443, which the gateway forwards."

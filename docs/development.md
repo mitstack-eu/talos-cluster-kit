@@ -125,7 +125,7 @@ pins the image's jq the same way, and the report's tests fetch that jq, since
 jq-1.8 parses a number more strictly than the jq a runner may have. Each release
 pushes and signs that image and names it in `tools.Image`, which a block
 passes to `etcd.RemoveMemberJob`, `report.Manifests`, `openbaoinit.Inputs` and
-the gateway's `ExtraImages`, and which the control plane passes to
+`gateway.NewList`, and which the control plane passes to
 `topology.Manifests`.
 [The README](../README.md#how-a-release-is-versioned) says how the release
 pins it.

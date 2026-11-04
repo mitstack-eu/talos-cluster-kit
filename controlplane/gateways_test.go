@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
+	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 )
 
 const reportEvery = 5 * time.Minute
@@ -403,4 +404,25 @@ func TestPlane_RefusesTheUpgradeOfAClusterBuiltWithOneGateway(t *testing.T) {
 
 	assert.Equal(t, "gateway-predates-zones", refusalClass(t, h.ensure()))
 	assert.Equal(t, writes, h.cloud.Writes(), "writes on a refused upgrade")
+}
+
+func TestBuilder_TheReportReadsEachGatewaysMirrorUnderTheGatewayCAAndATLSConnectionToLetsEncrypt(t *testing.T) {
+	h := installedOnce(t)
+
+	manifests := inlineManifests(t, builderConfiguration(t, h))
+
+	var env map[string]string
+	for _, job := range testutil.Kind(manifests["mitstack-node-report"], "CronJob") {
+		if testutil.Field(t, job, "metadata", "name") == "mitstack-node-report" {
+			env = testutil.ContainerEnv(t, testutil.Field(t, job, "spec", "jobTemplate", "spec", "template", "spec", "containers", "0"))
+		}
+	}
+	var gateways []string
+	for _, loc := range controlplane.Locations {
+		gateways = append(gateways, controlplane.GatewayAddresses[loc]+"=https://"+controlplane.GatewayAddresses[loc])
+	}
+	assert.Equal(t, strings.Join(gateways, " "), env["GATEWAYS"], "each gateway's mirror the report reads")
+	assert.Equal(t, string(h.installed[0].GatewayCA), env["GATEWAY_CA"], "the CA the report trusts for the mirrors")
+	assert.NotContains(t, env["GATEWAY_CA"], "PRIVATE KEY", "the report carries the CA's certificate alone")
+	assert.Equal(t, "https://acme-v02.api.letsencrypt.org/directory", env["EGRESS_URL"], "the TLS connection the report opens")
 }

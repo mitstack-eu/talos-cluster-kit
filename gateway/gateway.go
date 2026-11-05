@@ -1,8 +1,10 @@
-// Package gateway renders the cloud-config of a cluster's gateway, the one server with a public address.
+// Package gateway renders the cloud-config of a cluster's gateways, one in each location, the only servers with a public address.
 package gateway
 
 import (
+	"crypto/sha256"
 	_ "embed"
+	"encoding/base32"
 	"errors"
 	"fmt"
 	"net"
@@ -48,10 +50,8 @@ type Inputs struct {
 	// Ingress is the ingress load balancer's public address, the one host the nodes reach on port 80; zero for none.
 	Ingress netip.Addr
 	TLS     TLS
-	// Components is the cluster's component set, whose images the gateway mirrors and whose served manifests it fetches.
-	Components components.Set
-	// ExtraImages are images the nodes pull beyond the component set, such as the tools image.
-	ExtraImages []components.Image
+	// List is what the gateway mirrors and serves, as NewList makes it from the cluster's component set.
+	List List
 	// ManifestBaseURL is the release of this kit the served manifests are fetched from, as ReleaseURL returns.
 	ManifestBaseURL string
 	// Logs is the receiver the node-local Collectors export to, whose port the gateway forwards when there is one.
@@ -92,6 +92,9 @@ func (in Inputs) validate() error {
 	if err := in.TLS.validate(); err != nil {
 		errs = append(errs, err)
 	}
+	if in.List.digest == "" {
+		errs = append(errs, errors.New("the gateway has no list; build one with NewList"))
+	}
 	if !strings.HasPrefix(in.ManifestBaseURL, "https://") {
 		errs = append(errs, fmt.Errorf("manifest base URL %q is not https", in.ManifestBaseURL))
 	}
@@ -102,10 +105,6 @@ func (in Inputs) validate() error {
 }
 
 func (in Inputs) templateData() (map[string]string, error) {
-	images, err := mirror.List(in.Components, in.ExtraImages...)
-	if err != nil {
-		return nil, err
-	}
 	ports, err := in.egressPorts()
 	if err != nil {
 		return nil, err
@@ -123,7 +122,7 @@ func (in Inputs) templateData() (map[string]string, error) {
 		"CA":              string(in.TLS.CA),
 		"Cert":            string(in.TLS.Cert),
 		"Key":             string(in.TLS.Key),
-		"Images":          string(mirror.Render(images)),
+		"Images":          string(mirror.Render(in.List.images)),
 		"Manifests":       in.manifestList(),
 		"ToolsEnv":        tools.Env + "SKOPEO_IMAGE=" + skopeoImage + "\n",
 		"PrepareScript":   prepareScript,
@@ -152,10 +151,46 @@ func (in Inputs) egressPorts() (string, error) {
 	return strings.Join(ports, ", "), nil
 }
 
+// List is the images a gateway mirrors and the manifests it serves, read out of a component set once.
+type List struct {
+	images []components.Image
+	served []components.Manifest
+	digest string
+}
+
+// NewList reads the images out of every manifest of set, which takes the better part of a second, so one list serves
+// every gateway an install renders.
+func NewList(set components.Set, extra ...components.Image) (List, error) {
+	images, err := mirror.List(set, extra...)
+	if err != nil {
+		return List{}, err
+	}
+	sum := sha256.New()
+	sum.Write(mirror.Render(images))
+	for _, m := range set.Served {
+		fmt.Fprintf(sum, "%s %s\n", m.TalosName(), m.SHA256())
+	}
+	digest := strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum.Sum(nil)))
+	return List{images: images, served: slices.Clone(set.Served), digest: digest}, nil
+}
+
+// Digest names the list's images and manifests by their digests, leaving out the release the manifests are fetched
+// from, so a gateway built from it is replaced only when the pinned list changes.
+func (l List) Digest() string { return l.digest }
+
+// ListDigest is the digest of the list NewList makes from set and extra.
+func ListDigest(set components.Set, extra ...components.Image) (string, error) {
+	l, err := NewList(set, extra...)
+	if err != nil {
+		return "", err
+	}
+	return l.Digest(), nil
+}
+
 // manifestList is one "<file> <sha256> <url>" line per served manifest, the form prepare.sh reads.
 func (in Inputs) manifestList() string {
 	var lines []string
-	for _, m := range in.Components.Served {
+	for _, m := range in.List.served {
 		lines = append(lines, fmt.Sprintf("%s.yaml %s %s/%s", m.TalosName(), m.SHA256(), in.ManifestBaseURL, m.Path))
 	}
 	return strings.Join(lines, "\n")

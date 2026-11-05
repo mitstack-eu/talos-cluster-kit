@@ -1,17 +1,24 @@
 package gateway_test
 
 import (
+	"crypto"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"math/big"
 	"net"
 	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -29,15 +36,37 @@ func inputs(t *testing.T) gateway.Inputs {
 	t.Helper()
 	tools, err := components.ParseImage(testutil.ToolsImage)
 	require.NoError(t, err)
+	list, err := gateway.NewList(components.Default(), tools)
+	require.NoError(t, err)
 	return gateway.Inputs{
 		Address:         netip.MustParseAddr("10.0.0.2"),
 		Network:         netip.MustParsePrefix("10.0.0.0/16"),
 		Ingress:         netip.MustParseAddr("198.51.100.7"),
 		TLS:             testutil.GatewayTLS(t),
-		Components:      components.Default(),
-		ExtraImages:     []components.Image{tools},
+		List:            list,
 		ManifestBaseURL: gateway.ReleaseURL("v0.1.0"),
 		Logs:            testutil.LogExport(t),
+	}
+}
+
+func TestRender_MirrorsAndServesTheListItIsGiven(t *testing.T) {
+	tools, err := components.ParseImage(testutil.ToolsImage)
+	require.NoError(t, err)
+	set := components.HostingServed()
+	in := inputs(t)
+	in.List, err = gateway.NewList(set, tools)
+	require.NoError(t, err)
+
+	got, err := gateway.Render(in)
+
+	require.NoError(t, err)
+	images, err := mirror.List(set, tools)
+	require.NoError(t, err)
+	for _, image := range images {
+		assert.Contains(t, string(got), image.Ref()+"\n", "the gateway mirrors %s", image.Ref())
+	}
+	for _, m := range set.Served {
+		assert.Contains(t, string(got), m.TalosName()+".yaml "+m.SHA256()+" ", "the gateway serves %s", m.Name)
 	}
 }
 
@@ -94,13 +123,18 @@ func TestRender_ForwardsPort80ToTheIngressLoadBalancerAloneAndNowhereWithoutOne(
 	assert.Equal(t, strings.Replace(string(withIngress), toIngress, "", 1), string(got))
 }
 
-func TestRender_RefusesAnIngressAddressInsideTheNetwork(t *testing.T) {
-	in := inputs(t)
-	in.Ingress = netip.MustParseAddr("10.0.0.4")
-
-	_, err := gateway.Render(in)
-
-	assert.ErrorContains(t, err, "ingress address 10.0.0.4 is inside network 10.0.0.0/16")
+func TestRender_RefusesInputsItCannotServe(t *testing.T) {
+	valid := inputs(t)
+	for want, change := range map[string]func(*gateway.Inputs){
+		"ingress address 10.0.0.4 is inside network 10.0.0.0/16": func(in *gateway.Inputs) { in.Ingress = netip.MustParseAddr("10.0.0.4") },
+		"192.168.0.2 is not inside network 10.0.0.0/16":          func(in *gateway.Inputs) { in.Address = netip.MustParseAddr("192.168.0.2") },
+		"the gateway has no list; build one with NewList":        func(in *gateway.Inputs) { in.List = gateway.List{} },
+	} {
+		in := valid
+		change(&in)
+		_, err := gateway.Render(in)
+		assert.ErrorContains(t, err, want)
+	}
 }
 
 func TestRender_LeavesTheFirewallToNftablesAndRunsEveryContainerOnTheHostNetwork(t *testing.T) {
@@ -141,7 +175,6 @@ func TestRender_SendsMirrorPullsToTheRegistryAndRefusesEveryOtherMethod(t *testi
 		"the /v2/ route does not try the registry for a pull before refusing")
 }
 
-// writtenFile is the content the rendered cloud-config writes to path.
 func writtenFile(t *testing.T, path string) string {
 	t.Helper()
 	rendered, err := gateway.Render(inputs(t))
@@ -166,37 +199,72 @@ func execStart(t *testing.T, unit string) string {
 	return ""
 }
 
-func TestRender_RefusesAnAddressOutsideTheNetwork(t *testing.T) {
-	in := inputs(t)
-	in.Address = netip.MustParseAddr("192.168.0.2")
-
-	_, err := gateway.Render(in)
-
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "192.168.0.2 is not inside network 10.0.0.0/16")
-}
+var caGateways = []netip.Addr{netip.MustParseAddr("10.0.0.2"), netip.MustParseAddr("10.0.0.248"), netip.MustParseAddr("10.0.0.249")}
 
 func TestCAIssue_ServesEachGatewaysAddressUnderTheClustersOneCA(t *testing.T) {
 	now := time.Date(2026, 10, 21, 0, 0, 0, 0, time.UTC)
-	ca, err := gateway.NewCA(now, 10*365*24*time.Hour)
+	ca, err := gateway.NewCA(now, 10*365*24*time.Hour, caGateways)
 	require.NoError(t, err)
-	roots := x509.NewCertPool()
-	require.True(t, roots.AppendCertsFromPEM(ca.Cert))
 
-	for _, address := range []string{"10.0.0.2", "10.0.1.2", "10.0.2.2"} {
-		tls, err := ca.Issue(netip.MustParseAddr(address), now, 24*time.Hour)
+	for _, address := range caGateways {
+		tls, err := ca.Issue(address, now, 24*time.Hour)
 
 		require.NoError(t, err)
 		assert.Equal(t, ca.Cert, tls.CA)
-		block, _ := pem.Decode(tls.Cert)
-		require.NotNil(t, block)
-		cert, err := x509.ParseCertificate(block.Bytes)
+		cert, err := tls.Leaf()
 		require.NoError(t, err)
-		_, err = cert.Verify(x509.VerifyOptions{Roots: roots, CurrentTime: now.Add(time.Hour), DNSName: address})
-		require.NoError(t, err, "the certificate for %s does not verify under the CA", address)
-		assert.Equal(t, []net.IP{net.ParseIP(address).To4()}, cert.IPAddresses)
+		require.NoError(t, verify(ca, cert, address.String(), now), "the certificate for %s under the CA", address)
+		assert.Equal(t, []net.IP{address.AsSlice()}, cert.IPAddresses)
 		assert.Equal(t, now.Add(24*time.Hour), cert.NotAfter.UTC())
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "ca.pem"), ca.Cert, 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "leaf.pem"), tls.Cert, 0o600))
+		out, err := exec.Command("openssl", "verify", "-attime", strconv.FormatInt(now.Add(time.Minute).Unix(), 10), "-CAfile", filepath.Join(dir, "ca.pem"),
+			"-verify_ip", address.String(), filepath.Join(dir, "leaf.pem")).CombinedOutput()
+		require.NoError(t, err, "openssl refuses the certificate for %s: %s", address, out)
 	}
+}
+
+func TestNewCA_RefusesACertificateForAnyOtherAddressOrAHostNameUnderCriticalNameConstraints(t *testing.T) {
+	now := time.Date(2026, 10, 21, 0, 0, 0, 0, time.UTC)
+	ca, err := gateway.NewCA(now, time.Hour, caGateways)
+	require.NoError(t, err)
+	caCert, caKey := parseCA(t, ca)
+	constraints := slices.IndexFunc(caCert.Extensions, func(e pkix.Extension) bool { return e.Id.Equal(asn1.ObjectIdentifier{2, 5, 29, 30}) })
+	require.GreaterOrEqual(t, constraints, 0, "the CA carries no name constraints")
+	assert.True(t, caCert.Extensions[constraints].Critical, "the CA's name constraints are not critical")
+
+	other, err := ca.Issue(netip.MustParseAddr("10.0.0.7"), now, time.Hour)
+	require.NoError(t, err)
+	leaf, err := other.Leaf()
+	require.NoError(t, err)
+	assert.Error(t, verify(ca, leaf, "10.0.0.7", now), "a certificate for an address that is no gateway's")
+	template := &x509.Certificate{SerialNumber: big.NewInt(7), DNSNames: []string{"registry.example.com"}, NotBefore: now, NotAfter: now.Add(time.Hour)}
+	der, err := x509.CreateCertificate(rand.Reader, template, caCert, caKey.Public(), caKey)
+	require.NoError(t, err)
+	named, err := x509.ParseCertificate(der)
+	require.NoError(t, err)
+	assert.Error(t, verify(ca, named, "registry.example.com", now), "a certificate for a host name")
+}
+
+func verify(ca gateway.CA, cert *x509.Certificate, name string, now time.Time) error {
+	roots := x509.NewCertPool()
+	roots.AppendCertsFromPEM(ca.Cert)
+	_, err := cert.Verify(x509.VerifyOptions{Roots: roots, CurrentTime: now.Add(time.Minute), DNSName: name})
+	return err
+}
+
+func parseCA(t *testing.T, ca gateway.CA) (*x509.Certificate, crypto.Signer) {
+	t.Helper()
+	certBlock, _ := pem.Decode(ca.Cert)
+	keyBlock, _ := pem.Decode(ca.Key)
+	require.NotNil(t, certBlock)
+	require.NotNil(t, keyBlock)
+	cert, err := x509.ParseCertificate(certBlock.Bytes)
+	require.NoError(t, err)
+	key, err := x509.ParseECPrivateKey(keyBlock.Bytes)
+	require.NoError(t, err)
+	return cert, key
 }
 
 // fakeCurl writes "bytes of <url>" to the -o path, so a test knows each download's sha256.
@@ -263,7 +331,6 @@ func prepare(t *testing.T, fakes map[string]string, manifestSHA256 string, image
 	return run
 }
 
-// skopeoImage is the skopeo image the gateway's tools.env pins, which prepare runs every copy with.
 func skopeoImage(t *testing.T) string {
 	t.Helper()
 	for line := range strings.Lines(writtenFile(t, "/etc/mitstack-gateway/tools.env")) {
@@ -277,7 +344,6 @@ func skopeoImage(t *testing.T) string {
 	return ""
 }
 
-// completionFile is where the run's prepare writes that the mirror and the manifests are in place.
 func (r prepareRun) completionFile() string {
 	return filepath.Join(r.dir, "state", "mirror-complete")
 }

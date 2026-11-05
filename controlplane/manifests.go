@@ -3,6 +3,7 @@ package controlplane
 import (
 	"bytes"
 	_ "embed"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -39,10 +40,13 @@ const (
 )
 
 // clusterComponents carries the node report, the topology labeller, the enrolment and the Argo CD application inline, so the
-// gateway mirrors their image.
+// gateway mirrors their image. The report reads each gateway's mirror under p.GatewayCA, so the plane must hold one.
 func (p Plane) clusterComponents(set components.Set, enrolmentToken string) (components.Set, error) {
+	if p.GatewayCA == nil {
+		return components.Set{}, errors.New("the node report reads each gateway's mirror under the gateway CA, and the plane holds none")
+	}
 	reportManifests, err := report.Manifests(report.Inputs{URL: p.PlatformURL + clusterReportsPath, SubscriptionID: p.Subscription,
-		ToolsImage: toolsImage(), ProofScript: p.ReportProofScript})
+		ToolsImage: toolsImage(), ProofScript: p.ReportProofScript, Gateways: gatewayAddrs(), GatewayCA: p.GatewayCA.Cert})
 	if err != nil {
 		return components.Set{}, err
 	}

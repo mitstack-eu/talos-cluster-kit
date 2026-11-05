@@ -24,8 +24,12 @@ type CA struct {
 	Key  []byte
 }
 
-// NewCA mints a gateway CA valid from now for validity.
-func NewCA(now time.Time, validity time.Duration) (CA, error) {
+// NewCA mints a gateway CA valid from now for validity. Every node trusts it as a system-wide root, so its critical name
+// constraints permit only the gateways' addresses and exclude every host name, mail address and URI.
+func NewCA(now time.Time, validity time.Duration, gateways []netip.Addr) (CA, error) {
+	if len(gateways) == 0 {
+		return CA{}, errors.New("the gateway CA names no gateway address to permit")
+	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return CA{}, fmt.Errorf("mint the gateway CA key: %w", err)
@@ -36,6 +40,12 @@ func NewCA(now time.Time, validity time.Duration) (CA, error) {
 	}
 	template.IsCA, template.BasicConstraintsValid = true, true
 	template.KeyUsage = x509.KeyUsageCertSign
+	// An empty constraint matches every name, and PermittedDNSDomainsCritical marks the whole extension critical.
+	template.PermittedDNSDomainsCritical = true
+	template.ExcludedDNSDomains, template.ExcludedEmailAddresses, template.ExcludedURIDomains = []string{""}, []string{""}, []string{""}
+	for _, g := range gateways {
+		template.PermittedIPRanges = append(template.PermittedIPRanges, &net.IPNet{IP: g.AsSlice(), Mask: net.CIDRMask(g.BitLen(), g.BitLen())})
+	}
 	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
 	if err != nil {
 		return CA{}, fmt.Errorf("sign the gateway CA: %w", err)
@@ -57,7 +67,8 @@ func (ca CA) Issue(address netip.Addr, now time.Time, validity time.Duration) (T
 	if err != nil {
 		return TLS{}, fmt.Errorf("mint the gateway key for %s: %w", address, err)
 	}
-	template, err := certificate(pkix.Name{CommonName: address.String()}, now, validity)
+	// OpenSSL checks a common name shaped like a host name against the excluded host names, so this one holds a space.
+	template, err := certificate(pkix.Name{CommonName: "mitstack gateway " + address.String()}, now, validity)
 	if err != nil {
 		return TLS{}, err
 	}
@@ -73,6 +84,15 @@ func (ca CA) Issue(address netip.Addr, now time.Time, validity time.Duration) (T
 		return TLS{}, err
 	}
 	return TLS{CA: ca.Cert, Cert: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), Key: keyPEM}, nil
+}
+
+// Leaf reads the serving certificate, whose serial and validity a block's events name.
+func (t TLS) Leaf() (*x509.Certificate, error) {
+	block, _ := pem.Decode(t.Cert)
+	if block == nil {
+		return nil, errors.New("the gateway certificate is not PEM")
+	}
+	return x509.ParseCertificate(block.Bytes)
 }
 
 func (ca CA) parse() (*x509.Certificate, *ecdsa.PrivateKey, error) {

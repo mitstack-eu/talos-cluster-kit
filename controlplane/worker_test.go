@@ -74,9 +74,14 @@ func TestPlane_TheWorkerBuilderJoinsTheNetworkAtItsFixedAddressAndBuildsOnlyOnce
 
 	require.True(t, building(), "the worker builder never started its build")
 	assert.Equal(t, controlplane.WorkerBuilderAddress, h.byRole(controlplane.RoleWorkerBuilder)[0].PrivateIPs[h.network().ID], "the worker builder's address")
-	gateways := h.byRole(controlplane.RoleGateway)
-	require.Len(t, gateways, 1, "gateways")
-	assert.Equal(t, controlplane.ServerRunning, gateways[0].Status, "the gateway while the worker builder builds")
+	var mirror *controlplane.Server
+	for _, gw := range h.byRole(controlplane.RoleGateway) {
+		if gw.Location == controlplane.GatewayLocation {
+			mirror = &gw
+		}
+	}
+	require.NotNil(t, mirror, "the gateway in %s", controlplane.GatewayLocation)
+	assert.Equal(t, controlplane.ServerRunning, mirror.Status, "the gateway in %s while the worker builder builds", controlplane.GatewayLocation)
 }
 
 func TestPlane_TheWorkerBuilderGoesWithAClusterBuildThatFails(t *testing.T) {

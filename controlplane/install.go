@@ -1,7 +1,7 @@
 package controlplane
 
 // The cluster's keys exist only in this call's memory, the builder's user data, the snapshot it becomes and whatever
-// the block's Installed hook makes from them, so the gateway and the builder are made in the one call that mints them.
+// the block's Installed hook makes from them, so the gateways and the builder are made in the one call that mints them.
 
 import (
 	"context"
@@ -27,11 +27,15 @@ const (
 	adminTalosconfigTTL = 2 * time.Hour
 )
 
-// installation is what one install renders, with no serving server for a cluster that hosts no platform.
+// installation is what one install renders, with no serving server for a cluster that hosts no platform. Each
+// location's gateway has its own user data and certificate.
 type installation struct {
-	gatewayUserData, builderUserData, servingUserData, workerBuilderUserData string
-	cluster                                                                  nodeconfig.Cluster
-	enrolmentDigest, issuerBucket                                            string
+	builderUserData, servingUserData, workerBuilderUserData string
+	gatewayUserData                                         map[string]string
+	certificateEvents                                       []string
+	gatewayCA                                               gateway.CA
+	cluster                                                 nodeconfig.Cluster
+	enrolmentDigest, issuerBucket, listDigest               string
 }
 
 // install creates every server stopped and off the network, since Hetzner gives a server joining with no address the
@@ -49,28 +53,19 @@ func (p Plane) install(ctx context.Context, s site) error {
 	if err != nil {
 		return err
 	}
-	gatewayType, err := p.orderableGatewayType(ctx)
-	if err != nil {
-		return err
+	var specs []ServerSpec
+	for _, loc := range Locations {
+		spec, err := p.gatewaySpec(ctx, loc, inst.gatewayUserData[loc], s, inst.enrolmentDigest, inst.issuerBucket, inst.listDigest)
+		if err != nil {
+			return err
+		}
+		specs = append(specs, spec)
 	}
-	gatewayLabels := p.Labels(RoleGateway)
-	gatewayLabels[KeyEnrolmentSHA256] = inst.enrolmentDigest
-	gatewayLabels[KeyIssuerBucket] = inst.issuerBucket
-	specs := []ServerSpec{{
-		Name:        p.Name(RoleGateway),
-		ServerType:  gatewayType,
-		Location:    GatewayLocation,
-		Image:       gatewayImage,
-		UserData:    inst.gatewayUserData,
-		Labels:      gatewayLabels,
-		FirewallIDs: []int64{s.firewall.ID},
-		PublicIPv4:  true,
-		Stopped:     true,
-	}, p.builderSpec(RoleBuilder, inst.builderUserData, s), p.builderSpec(RoleWorkerBuilder, inst.workerBuilderUserData, s)}
+	specs = append(specs, p.builderSpec(RoleBuilder, inst.builderUserData, s), p.builderSpec(RoleWorkerBuilder, inst.workerBuilderUserData, s))
 	if inst.servingUserData != "" {
 		specs = append(specs, ServerSpec{
 			Name:        p.Name(RoleServing),
-			ServerType:  gatewayType,
+			ServerType:  specs[0].ServerType,
 			Location:    GatewayLocation,
 			Image:       gatewayImage,
 			UserData:    inst.servingUserData,
@@ -80,12 +75,15 @@ func (p Plane) install(ctx context.Context, s site) error {
 		})
 	}
 	if _, err := p.API.CreateServers(ctx, specs...); err != nil {
-		return p.rollBackInstall(ctx, fmt.Errorf("creating the gateway and the builders: %w", err))
+		return p.rollBackInstall(ctx, fmt.Errorf("creating the gateways and the builders: %w", err))
 	}
 	if p.Installed != nil {
-		if err := p.Installed(ctx, s.network, inst.cluster); err != nil {
+		if err := p.Installed(ctx, s.network, inst.cluster, inst.gatewayCA); err != nil {
 			return p.rollBackInstall(ctx, err)
 		}
+	}
+	for _, event := range inst.certificateEvents {
+		p.notify(ctx, "%s", event)
 	}
 	return nil
 }
@@ -103,9 +101,9 @@ func (p Plane) builderSpec(r Role, userData string, s site) ServerSpec {
 	}
 }
 
-// orderableGatewayType is the first of GatewayServerTypes Hetzner reads as orderable in the gateway's location.
-func (p Plane) orderableGatewayType(ctx context.Context) (string, error) {
-	available, err := p.API.AvailableServerTypes(ctx, GatewayLocation)
+// orderableGatewayType is the first of GatewayServerTypes Hetzner reads as orderable in loc.
+func (p Plane) orderableGatewayType(ctx context.Context, loc string) (string, error) {
+	available, err := p.API.AvailableServerTypes(ctx, loc)
 	if err != nil {
 		return "", err
 	}
@@ -116,7 +114,7 @@ func (p Plane) orderableGatewayType(ctx context.Context) (string, error) {
 	}
 	return "", refuse("server-unavailable",
 		"Hetzner can order none of the gateway's server types %s in %s now; subscribe again later",
-		strings.Join(GatewayServerTypes, ", "), GatewayLocation)
+		strings.Join(GatewayServerTypes, ", "), loc)
 }
 
 // rollBackInstall deletes whatever servers a failed install made, since the keys they were made with are gone with
@@ -144,7 +142,7 @@ func (p Plane) render(ctx context.Context, apiAddr, ingressAddr netip.Addr, now 
 	if err != nil {
 		return installation{}, err
 	}
-	gatewayCA, err := gateway.NewCA(now, gatewayCAValidity)
+	gatewayCA, err := gateway.NewCA(now, gatewayCAValidity, gatewayAddrs())
 	if err != nil {
 		return installation{}, err
 	}
@@ -162,11 +160,12 @@ func (p Plane) render(ctx context.Context, apiAddr, ingressAddr netip.Addr, now 
 			return installation{}, err
 		}
 	}
+	// The node report trusts the CA this install mints for the gateways' mirrors.
+	p.GatewayCA = &gatewayCA
 	set, err := p.clusterComponents(base, token)
 	if err != nil {
 		return installation{}, err
 	}
-	gatewayAddr := netip.MustParseAddr(GatewayAddress)
 	cluster := nodeconfig.Cluster{
 		Name:                 p.clusterName(),
 		SubscriptionID:       p.Subscription,
@@ -175,12 +174,15 @@ func (p Plane) render(ctx context.Context, apiAddr, ingressAddr netip.Addr, now 
 		Secrets:              secrets,
 		Network:              netip.MustParsePrefix(NetworkIPRange),
 		APIAddresses:         []netip.Addr{apiAddr},
-		Gateways:             []netip.Addr{gatewayAddr},
+		Gateways:             gatewayAddrs(),
 		GatewayCA:            gatewayCA.Cert,
 		ServiceAccountIssuer: issuerURL(bucket, p.Subscription),
 		AppsOnWorkers:        p.AppsOnWorkers,
 	}
-	inst := installation{cluster: cluster, enrolmentDigest: enrolmentTokenDigest(token), issuerBucket: bucket}
+	inst := installation{
+		cluster: cluster, enrolmentDigest: enrolmentTokenDigest(token), issuerBucket: bucket, gatewayCA: gatewayCA,
+		gatewayUserData: map[string]string{},
+	}
 	carried, fetched := cluster, []components.Manifest(nil)
 	if p.Hosting != nil {
 		carried.Components.Inline, fetched = splitHosting(set, base)
@@ -205,39 +207,75 @@ func (p Plane) render(ctx context.Context, apiAddr, ingressAddr netip.Addr, now 
 	if inst.workerBuilderUserData, err = builderUserData("worker builder", workerConfig, gatewayCA.Cert, nil); err != nil {
 		return installation{}, err
 	}
-	if inst.gatewayUserData, err = p.renderGateway(apiAddr, ingressAddr, now, gatewayCA, set, secrets); err != nil {
+	list, err := p.gatewayList()
+	if err != nil {
 		return installation{}, err
+	}
+	if err := sameList(set, list); err != nil {
+		return installation{}, err
+	}
+	inst.listDigest = list.Digest()
+	// The address only fills the talosconfig's defaults, since the bootstrap names the node it finds on every call.
+	talosconfig, err := secrets.AdminTalosconfig(apiAddr, adminTalosconfigTTL, now)
+	if err != nil {
+		return installation{}, err
+	}
+	bootstrap := &firstNodeBootstrap{talosconfig: talosconfig, deadline: now.Add(adminTalosconfigTTL)}
+	for _, loc := range Locations {
+		if loc != GatewayLocation {
+			bootstrap = nil
+		}
+		userData, tls, err := p.renderGateway(loc, ingressAddr, now, gatewayCA, list, bootstrap)
+		if err != nil {
+			return installation{}, err
+		}
+		event, err := certificateEvent(loc, tls)
+		if err != nil {
+			return installation{}, err
+		}
+		inst.gatewayUserData[loc], inst.certificateEvents = userData, append(inst.certificateEvents, event)
 	}
 	return inst, nil
 }
 
-func (p Plane) renderGateway(apiAddr, ingressAddr netip.Addr, now time.Time, ca gateway.CA, set components.Set, secrets *nodeconfig.Secrets) (string, error) {
-	gatewayAddr := netip.MustParseAddr(GatewayAddress)
-	tls, err := ca.Issue(gatewayAddr, now, gatewayCertValidity)
+// sameList refuses an install whose gateways would mirror or serve other than the cluster's whole set needs, since a
+// replacement renders the gateways' list alone.
+func sameList(cluster components.Set, gateways gateway.List) error {
+	want, err := gateway.ListDigest(cluster)
 	if err != nil {
-		return "", err
+		return err
+	}
+	if gateways.Digest() != want {
+		return errors.New("the gateways' set mirrors or serves other than the cluster's whole set, so a replacement gateway would not serve what the nodes pull")
+	}
+	return nil
+}
+
+// renderGateway issues the location's certificate from ca and renders its user data, with the first-node bootstrap
+// only when bootstrap is set.
+func (p Plane) renderGateway(loc string, ingressAddr netip.Addr, now time.Time, ca gateway.CA, list gateway.List, bootstrap *firstNodeBootstrap) (string, gateway.TLS, error) {
+	address := netip.MustParseAddr(GatewayAddresses[loc])
+	tls, err := ca.Issue(address, now, gatewayCertValidity)
+	if err != nil {
+		return "", gateway.TLS{}, err
 	}
 	release, err := kitRelease()
 	if err != nil {
-		return "", err
+		return "", gateway.TLS{}, err
 	}
 	kitPart, err := gateway.Render(gateway.Inputs{
-		Address:         gatewayAddr,
+		Address:         address,
 		Network:         netip.MustParsePrefix(NetworkIPRange),
 		Ingress:         ingressAddr,
 		TLS:             tls,
-		Components:      set,
+		List:            list,
 		ManifestBaseURL: gateway.ReleaseURL(release),
 	})
 	if err != nil {
-		return "", err
+		return "", gateway.TLS{}, err
 	}
-	// The address only fills the talosconfig's defaults, since the bootstrap names the node it finds on every call.
-	talosconfig, err := secrets.AdminTalosconfig(apiAddr, adminTalosconfigTTL, now)
-	if err != nil {
-		return "", err
-	}
-	return p.gatewayUserData(kitPart, firstNodeBootstrap{talosconfig: talosconfig, deadline: now.Add(adminTalosconfigTTL)})
+	userData, err := p.gatewayUserData(kitPart, bootstrap)
+	return userData, tls, err
 }
 
 // kitRelease is the talos-cluster-kit tag the binary is built against, whose files the gateway fetches, or the

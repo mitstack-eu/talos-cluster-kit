@@ -4,7 +4,10 @@
 # block labels with its subscription, never a Secret, and posts the result to
 # the platform. It verifies OpenBao against the openbao-ca bundle that
 # trust-manager copies into every namespace, and asks Argo CD's server its
-# routes with no session. It also creates the one namespace
+# routes with no session. It asks each gateway's mirror under the gateway CA,
+# whose certificate alone it carries, and opens a TLS connection to Let's
+# Encrypt's ACME API through the network's default route, neither of which
+# needs a rule here. It also creates the one namespace
 # whose pods may hold a Talos identity. Its read of the API server's key set
 # needs no rule here, since Kubernetes binds system:service-account-issuer-discovery
 # to every service account by default. A Role lets the report mint a token for
@@ -176,6 +179,12 @@ spec:
                   value: /var/run/openbao-ca/ca.crt
                 - name: ARGOCD_URL
                   value: https://argocd-server.argocd.svc
+                - name: GATEWAYS
+                  value: {{ printf "%q" .Gateways }}
+                - name: GATEWAY_CA
+                  value: {{ printf "%q" .GatewayCA }}
+                - name: EGRESS_URL
+                  value: {{ printf "%q" .EgressURL }}
                 - name: HOME
                   value: /tmp
               securityContext:

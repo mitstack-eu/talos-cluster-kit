@@ -122,19 +122,23 @@ func (b firstNodeBootstrap) cloudConfig() (string, error) {
 	}.render()
 }
 
-// gatewayUserData joins the kit's cloud-config and the bootstrap's as two MIME parts, which cloud-init merges in order,
-// and refuses a result past Hetzner's user data limit.
-func (p Plane) gatewayUserData(kitPart []byte, bootstrap firstNodeBootstrap) (string, error) {
-	bootstrapPart, err := bootstrap.cloudConfig()
-	if err != nil {
-		return "", err
+// gatewayUserData joins the kit's cloud-config and, when bootstrap is set, the bootstrap's as MIME parts, which
+// cloud-init merges in order, and refuses a result past Hetzner's user data limit.
+func (p Plane) gatewayUserData(kitPart []byte, bootstrap *firstNodeBootstrap) (string, error) {
+	parts := []struct{ name, content string }{{"gateway.yaml", string(kitPart)}}
+	if bootstrap != nil {
+		bootstrapPart, err := bootstrap.cloudConfig()
+		if err != nil {
+			return "", err
+		}
+		parts = append(parts, struct{ name, content string }{"bootstrap.yaml", bootstrapPart})
 	}
 	var body bytes.Buffer
 	w := multipart.NewWriter(&body)
 	if err := w.SetBoundary(p.Boundary); err != nil {
 		return "", fmt.Errorf("setting the user data boundary: %w", err)
 	}
-	for _, part := range []struct{ name, content string }{{"gateway.yaml", string(kitPart)}, {"bootstrap.yaml", bootstrapPart}} {
+	for _, part := range parts {
 		pw, err := w.CreatePart(textproto.MIMEHeader{
 			"Content-Type":        {`text/cloud-config; charset="us-ascii"`},
 			"Content-Disposition": {`attachment; filename="` + part.name + `"`},

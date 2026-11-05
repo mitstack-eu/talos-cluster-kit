@@ -2,9 +2,12 @@
 package report
 
 import (
+	"bytes"
 	_ "embed"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"strings"
@@ -47,6 +50,23 @@ type Inputs struct {
 	ToolsImage string
 	// ProofScript signs each report; a block passes block-kit's reportproof.TokenRequestScript, so this kit needs no framework.
 	ProofScript string
+	// Gateways are the gateways' private addresses, whose mirrors each report reads under GatewayCA.
+	Gateways []netip.Addr
+	// GatewayCA is the PEM certificate of the CA that signs every gateway's certificate, without its key.
+	GatewayCA []byte
+}
+
+// egressURL is Let's Encrypt's ACME directory, which cert-manager reaches for every app's certificate, so a TLS
+// connection to it reads the egress the network's default route gives the nodes.
+const egressURL = "https://acme-v02.api.letsencrypt.org/directory"
+
+// gateways names each gateway as address=URL, the URL its mirror's certificate holds.
+func (in Inputs) gateways() string {
+	named := make([]string, 0, len(in.Gateways))
+	for _, addr := range in.Gateways {
+		named = append(named, addr.String()+"=https://"+addr.String())
+	}
+	return strings.Join(named, " ")
 }
 
 var subscriptionIDRe = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,63}$`)
@@ -78,6 +98,9 @@ func Manifests(in Inputs) ([]byte, error) {
 		"MeshProbeIdentity":  components.MeshProbeIdentity,
 		"MeshProbeConfigMap": outsideProbeNamespace + "/" + outsideProbeConfigMap,
 		"OpenBaoMembers":     openBaoMembers(),
+		"Gateways":           in.gateways(),
+		"GatewayCA":          string(in.GatewayCA),
+		"EgressURL":          egressURL,
 	})
 	if err != nil {
 		return nil, err
@@ -111,6 +134,12 @@ func (in Inputs) validate() error {
 	}
 	if strings.TrimSpace(in.ProofScript) == "" {
 		return errors.New("the report has no proof script to sign it with")
+	}
+	if len(in.Gateways) == 0 {
+		return nil
+	}
+	if block, rest := pem.Decode(in.GatewayCA); block == nil || block.Type != "CERTIFICATE" || len(bytes.TrimSpace(rest)) > 0 {
+		return errors.New("the gateway CA is not one PEM certificate, so the report could not read the gateways' mirrors")
 	}
 	return nil
 }

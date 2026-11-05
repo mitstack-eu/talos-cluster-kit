@@ -47,7 +47,11 @@ func (p Plane) Problems(ctx context.Context, st State) []string {
 	if !networkOK || !firewallOK {
 		return missing
 	}
-	missing = append(missing, st.gatewayProblems(network, firewall)...)
+	gateways, err := p.gatewayProblems(ctx, st, network, firewall)
+	if err != nil {
+		return append(missing, "the gateways cannot be judged: "+err.Error())
+	}
+	missing = append(missing, gateways...)
 	missing = append(missing, st.nodeProblems(network, firewall)...)
 	missing = append(missing, p.loadBalancerProblems(st, network)...)
 	return missing
@@ -66,28 +70,88 @@ func (p Plane) buildDetail(ctx context.Context, b Server, img imageBuild) string
 	return fmt.Sprintf("%s %d, created at %s, %s; %s", img.builder, b.ID, created, state, p.readBuilderMetrics(ctx, b).summary())
 }
 
-func (st State) gatewayProblems(network Network, firewall Firewall) []string {
-	gw, ok := st.Server(RoleGateway)
-	if !ok {
-		return []string{"no gateway carries this subscription's labels"}
+// gatewayProblems names each location without a gateway as the plane builds it, a default route through none that
+// serves, and an upgrade's replacement still to run or waiting on a gateway. A gateway down after its power-back is no
+// problem here, since no step is left for it, and Unhealthy names it.
+func (p Plane) gatewayProblems(ctx context.Context, st State, network Network, firewall Firewall) ([]string, error) {
+	locations := Locations
+	if st.SingleGateway() {
+		locations = []string{GatewayLocation}
 	}
 	var missing []string
-	if gw.Status != ServerRunning {
-		missing = append(missing, fmt.Sprintf("gateway %d is %s", gw.ID, gw.Status))
+	for _, loc := range locations {
+		gw, ok := st.GatewayIn(loc)
+		if !ok {
+			missing = append(missing, "no gateway in "+loc+" carries this subscription's labels")
+			continue
+		}
+		down, _, err := p.downAfterPowerOn(ctx, gw)
+		if err != nil {
+			return nil, err
+		}
+		if gw.Status != ServerRunning && !down {
+			missing = append(missing, fmt.Sprintf("gateway %d in %s is %s", gw.ID, loc, gw.Status))
+		}
+		if gw.PrivateIPs[network.ID] != GatewayAddresses[loc] {
+			missing = append(missing, fmt.Sprintf("gateway %d is not on network %d at %s", gw.ID, network.ID, GatewayAddresses[loc]))
+		}
+		if gw.PublicIPv4 == "" {
+			missing = append(missing, fmt.Sprintf("gateway %d has no public address", gw.ID))
+		}
+		if !slices.Contains(gw.FirewallIDs, firewall.ID) {
+			missing = append(missing, fmt.Sprintf("firewall %d is not applied to gateway %d", firewall.ID, gw.ID))
+		}
+		if gw.Labels[KeyIssuerBucket] == "" {
+			missing = append(missing, fmt.Sprintf("gateway %d has no %s label, so the block cannot read the issuer its nodes sign for", gw.ID, KeyIssuerBucket))
+		}
 	}
-	if gw.PrivateIPs[network.ID] != GatewayAddress {
-		missing = append(missing, fmt.Sprintf("gateway %d is not on network %d at %s", gw.ID, network.ID, GatewayAddress))
+	route, err := p.routeProblem(ctx, st, network)
+	if err != nil || route != "" {
+		return append(missing, route), err
 	}
-	if gw.PublicIPv4 == "" {
-		missing = append(missing, fmt.Sprintf("gateway %d has no public address", gw.ID))
+	replacing, err := p.replacementProblem(ctx, st, network)
+	if replacing != "" {
+		missing = append(missing, replacing)
 	}
-	if !slices.Contains(gw.FirewallIDs, firewall.ID) {
-		missing = append(missing, fmt.Sprintf("firewall %d is not applied to gateway %d", firewall.ID, gw.ID))
+	return missing, err
+}
+
+func (p Plane) routeProblem(ctx context.Context, st State, network Network) (string, error) {
+	route, ok := defaultRouteOf(network)
+	if !ok {
+		return fmt.Sprintf("network %d has no default route", network.ID), nil
 	}
-	if gw.Labels[KeyIssuerBucket] == "" {
-		missing = append(missing, fmt.Sprintf("gateway %d has no %s label, so the block cannot read the issuer its nodes sign for", gw.ID, KeyIssuerBucket))
+	gw, ok := st.gatewayAt(route.Gateway)
+	if !ok {
+		return fmt.Sprintf("network %d's default route goes to %s, where no gateway of this subscription is", network.ID, route.Gateway), nil
 	}
-	return missing
+	if up, err := p.serving(ctx, gw, network); err != nil || up {
+		return "", err
+	}
+	return fmt.Sprintf("network %d's default route goes to gateway %d in %s, which does not serve", network.ID, gw.ID, gw.Location), nil
+}
+
+// replacementProblem names the gateway an upgrade replaces next, or the gateway built from this release's list that no
+// report has read serving yet, naming the newest report's receivedAt.
+func (p Plane) replacementProblem(ctx context.Context, st State, network Network) (string, error) {
+	if st.SingleGateway() {
+		return "", nil
+	}
+	r, err := p.replacement(st, network)
+	if err != nil || !r.active {
+		return "", err
+	}
+	waiting, reading, ok, err := p.waitingOn(ctx, r, network)
+	switch {
+	case err != nil:
+		return "", err
+	case ok:
+		return fmt.Sprintf("gateway %d in %s, built from this release's list, has not been read serving since its creation at %s, so the upgrade waits on it: %s",
+			waiting.ID, waiting.Location, waiting.Created.UTC().Format(time.RFC3339), reading.Detail), nil
+	case len(r.stale) > 0:
+		return fmt.Sprintf("gateway %d in %s was built from an earlier list, and the upgrade replaces it next", r.stale[0].ID, r.stale[0].Location), nil
+	}
+	return fmt.Sprintf("every gateway serves from this release's list, and network %d still carries the upgrade's mark", network.ID), nil
 }
 
 func (st State) nodeProblems(network Network, firewall Firewall) []string {
@@ -159,10 +223,10 @@ func onOff(on bool) string {
 	return "off"
 }
 
-// EnrolmentDigest is the digest a node's enrolment is judged against, which the gateway carries as a label from the
+// EnrolmentDigest is the digest a node's enrolment is judged against, which every gateway carries as a label from the
 // install on, or a reason it cannot be read; both are empty before the install.
 func (st State) EnrolmentDigest() (digest, gap string) {
-	gw, ok := st.Server(RoleGateway)
+	gw, ok := st.SharedGateway()
 	switch {
 	case !ok:
 		return "", ""
@@ -175,7 +239,7 @@ func (st State) EnrolmentDigest() (digest, gap string) {
 // Outputs are what a present plane gives its block's provided type, with the detail that says what stands.
 func (p Plane) Outputs(st State) (map[string]string, string) {
 	network, _ := st.Network()
-	gw, _ := st.Server(RoleGateway)
+	gw, _ := st.SharedGateway()
 	endpoint, _ := st.LoadBalancerIn(RoleAPI, GatewayLocation)
 	ingress, _ := st.LoadBalancerIn(RoleIngress, GatewayLocation)
 	var nodes []string
@@ -197,7 +261,13 @@ func (p Plane) Outputs(st State) (map[string]string, string) {
 		reach = "an API load balancer in " + GatewayLocation + " reaches them, and its ingress load balancer the workers at " +
 			strings.Join(p.WorkerAddresses, ", ")
 	}
-	detail := fmt.Sprintf("nodes %s are on network %d behind gateway %d, and %s", strings.Join(nodes, ", "), network.ID, gw.ID, reach)
+	var gateways []string
+	for _, g := range st.Servers[RoleGateway] {
+		gateways = append(gateways, fmt.Sprintf("%d in %s", g.ID, g.Location))
+	}
+	route, _ := defaultRouteOf(network)
+	detail := fmt.Sprintf("nodes %s are on network %d behind gateways %s, its default route via %s, and %s",
+		strings.Join(nodes, ", "), network.ID, strings.Join(gateways, ", "), route.Gateway, reach)
 	return outputs, detail
 }
 

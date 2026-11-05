@@ -49,7 +49,7 @@ func newSite(t *testing.T) *site {
 }
 
 func cloudPool(size int, locations ...string) pools.CloudPool {
-	return pools.CloudPool{ServerTypes: []string{"cpx32", "cx43"}, Locations: locations, Min: size, Max: size}
+	return pools.CloudPool{ServerTypes: []string{"cx33", "cx43"}, Locations: locations, Min: size, Max: size}
 }
 
 func (s *site) plan(pool pools.CloudPool) (pools.CloudPlan, error) {
@@ -107,7 +107,7 @@ func TestPlanCloud_APoolOfTwoOverTwoLocationsPlansOneServerInEachFromTheWorkerIm
 	for i, location := range []string{"fsn1", "nbg1"} {
 		spec := plan.Create[i]
 		assert.Equal(t, location, spec.Location, "server %d's location", i)
-		assert.Equal(t, "cpx32", spec.ServerType, "server %d's type", i)
+		assert.Equal(t, "cx33", spec.ServerType, "server %d's type", i)
 		assert.Equal(t, s.image.ID, spec.ImageID, "server %d's image", i)
 		assert.Empty(t, spec.UserData, "the image embeds the node's configuration")
 		assert.Equal(t, []int64{s.network.ID}, spec.NetworkIDs, "server %d's network", i)
@@ -221,7 +221,7 @@ func TestPlanCloud_AMemberOfATypeTheListDropsIsReplacedByAServerOfAListedType(t 
 
 func TestPlanCloud_ATypeSoldOutFallsBackToTheNextTypeListed(t *testing.T) {
 	s := newSite(t)
-	s.cloud.SoldOut = []string{"cpx32"}
+	s.cloud.SoldOut = []string{"cx33"}
 
 	plan, err := s.plan(cloudPool(1, "fsn1"))
 
@@ -232,7 +232,7 @@ func TestPlanCloud_ATypeSoldOutFallsBackToTheNextTypeListed(t *testing.T) {
 
 func TestPlanCloud_RefusesALocationWhereNoListedTypeIsAvailable(t *testing.T) {
 	s := newSite(t)
-	s.cloud.SoldOut = []string{"cpx32", "cx43"}
+	s.cloud.SoldOut = []string{"cx33", "cx43"}
 
 	_, err := s.plan(cloudPool(1, "fsn1"))
 

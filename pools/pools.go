@@ -86,12 +86,12 @@ func parseDedicated(value string) ([]Dedicated, error) {
 
 func dedicatedEntry(entry map[string]string) (Dedicated, error) {
 	var errs []error
-	number, ok := entry["serverNumber"]
-	if !ok || number == "" {
-		errs = append(errs, errors.New("serverNumber is required"))
-	}
+	number := entry["serverNumber"]
 	n, err := strconv.ParseInt(number, 10, 64)
-	if (ok && number != "") && (err != nil || n < 1) {
+	switch {
+	case number == "":
+		errs = append(errs, errors.New("serverNumber is required"))
+	case err != nil || n < 1:
 		errs = append(errs, fmt.Errorf("serverNumber %q is no Robot server number", number))
 	}
 	if entry["robotAccount"] == "" {

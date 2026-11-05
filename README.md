@@ -1482,6 +1482,64 @@ Node object that `--keep` does not name. The fourth proof's restore stalled
 until the old Node objects went, because Argo CD's controller stayed bound to
 a dead server's Node.
 
+## How a block takes node pools
+
+A Talos cluster block takes its workers from two pools that the `pools` package
+reads, and it writes no pool logic of its own. A dedicated pool lists Robot
+servers the org already rents, each with the Robot account it is rented
+under, and it changes only when the block is upgraded. A Cloud pool names
+server types in order of preference, locations, and a minimum and a maximum.
+Until the scaling of MIT-5702 ships, the two bounds must be equal, so a
+Cloud pool has a set size, and `Parse` refuses unequal bounds naming that
+issue. [ADR 0118](https://github.com/mitstack-eu/mitstack/blob/main/docs/adr/0118-a-talos-cluster-block-grows-by-node-pools-from-talos-cluster-kit-and-a-manifest-declares-a-pools-servers-as-one-resource-entry-marked-many.md)
+sets these rules.
+
+`pools.Parse` takes the values the platform passes the block as strings, the
+way a catalogue type's `manyInputs` declare them, and answers every input that
+breaks its rule in one error. It refuses a location other than `fsn1`, `nbg1`
+and `hel1`, a server type outside `controlplane.ServerTypes`, a negative or
+missing size, and a dedicated entry with no server number, no Robot account,
+or a server number listed twice.
+
+```go
+p, err := pools.Parse(map[string]string{
+	"dedicatedPool":        `[{"serverNumber": "3041839", "robotAccount": "inst_robot_main"}]`,
+	"cloudPoolServerTypes": "cpx32, cx43",
+	"cloudPoolLocations":   "fsn1, nbg1",
+	"cloudPoolMin":         "2",
+	"cloudPoolMax":         "2",
+})
+if err != nil {
+	fmt.Println(err)
+	return
+}
+fmt.Println(len(p.Dedicated), "dedicated server and", p.Cloud.Max, "Cloud servers over", p.Cloud.Locations)
+// Output: 1 dedicated server and 2 Cloud servers over [fsn1 nbg1]
+```
+
+`pools.PlanCloud` reads the servers carrying the subscription's labels and
+the role `cloud-worker`, and answers a `CloudPlan`. It never lets the pool
+pass its size, so it creates a server only while the pool, a leaving member
+included, holds fewer than the maximum. It spreads members over the listed
+locations in turn, creating each in the location holding the fewest. It boots
+each from the worker image the install keeps, with no user data, on the
+cluster's network and firewall, from the first listed server type the location
+offers. A pool that shrinks removes the newest member of the location holding
+the most, and a member whose type or location the list drops leaves and is
+replaced. A leaving member is in the plan's `Drain` until the `drained`
+function reports its node gone from the cluster, and in `Delete` after that,
+so a server is deleted only once its node has drained. `CloudPlan.Apply`
+creates and deletes through the `controlplane` API, and the block drains each
+node itself. No other server of the cluster is touched.
+
+`Dedicated.RenderWorker` renders a dedicated worker's machine configuration
+from the cluster's secrets with the Metal profile, named `robot-` and its
+server number, on the vSwitch card the block read from Robot. The secrets
+give a worker no etcd authority key. Adopting, installing, the firewall and
+releasing a server are Robot calls, which
+[ADR 0103](https://github.com/mitstack-eu/mitstack/blob/main/docs/adr/0103-mitstack-offers-five-hetzner-capacity-blocks-and-keeps-the-k3s-block.md)
+keeps out of this module.
+
 ## How a release is versioned
 
 A block takes a change only by requiring a newer tag of this module in its

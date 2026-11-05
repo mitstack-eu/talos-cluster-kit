@@ -22,7 +22,7 @@ var jqEnv string
 const ScriptDir = "/usr/local/lib/mitstack"
 
 // Image is the tools image this release published and signed, which the release job writes into the commit it tags.
-const Image = "ghcr.io/mitstack-eu/talos-cluster-kit-tools:v0.35.0@sha256:9f3f51745e05bf0815682eed41fa4eb2bca2698dcc9577520044cef13118126a"
+const Image = "ghcr.io/mitstack-eu/talos-cluster-kit-tools:v0.36.0@sha256:950159d39005abcd2aba8981be7db45a807c08b91dd1831484523f3255f84f56"
 
 // Pin returns the value tools.env or jq.env gives name, or "" when neither names it.
 func Pin(name string) string {

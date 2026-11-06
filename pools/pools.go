@@ -167,7 +167,7 @@ func checkBounds(pool CloudPool) error {
 	case pool.Max < pool.Min:
 		return fmt.Errorf("%s %d is below %s %d", inputMax, pool.Max, inputMin, pool.Min)
 	case pool.Max > pool.Min:
-		return fmt.Errorf("%s %d differs from %s %d, and a pool of unequal bounds waits for the scaling MIT-5702 ships", inputMax, pool.Max, inputMin, pool.Min)
+		return fmt.Errorf("%s %d differs from %s %d, and a Cloud pool's minimum and maximum must be equal until the pool scales itself", inputMax, pool.Max, inputMin, pool.Min)
 	}
 	return nil
 }

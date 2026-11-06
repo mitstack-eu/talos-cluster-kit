@@ -1482,6 +1482,80 @@ Node object that `--keep` does not name. The fourth proof's restore stalled
 until the old Node objects went, because Argo CD's controller stayed bound to
 a dead server's Node.
 
+## How a block takes node pools
+
+A block is the unit of infrastructure an app subscribes to, and a Talos cluster
+block builds on this module. The `pools` package, at `pools/` in this
+repository, lets such a block offer node pools without writing its own pool
+logic. A node pool is a set of a cluster's worker nodes that one group of
+settings describes. A dedicated pool lists Hetzner Robot servers the org
+already rents, each with the Robot account it is rented under, and it changes
+only when the block is upgraded. A Cloud pool names Hetzner Cloud server types
+in order of preference, locations, and a minimum and a maximum number of
+servers. Until the pool scales itself, the two bounds must be equal, so a
+Cloud pool has a fixed size, and `Parse` refuses unequal bounds.
+[ADR 0118](https://github.com/mitstack-eu/mitstack/blob/main/docs/adr/0118-a-talos-cluster-block-grows-by-node-pools-from-talos-cluster-kit-and-a-manifest-declares-a-pools-servers-as-one-resource-entry-marked-many.md)
+sets these rules.
+
+`pools.Parse` is what a block calls first. It takes the settings the platform
+passes the block as strings: `dedicatedPool` is a JSON list of objects with a
+`serverNumber` and a `robotAccount`, the name of the Robot account's instance
+on the platform, and the four `cloudPool` settings are two comma-separated
+lists and two numbers. `Parse` answers every setting that breaks its rule in
+one error. It refuses a location other than `fsn1`, `nbg1` and `hel1`, a server
+type outside `controlplane.ServerTypes`, a negative or missing size, and a
+dedicated entry with no server number, no Robot account, or a server number
+listed twice.
+
+```go
+p, err := pools.Parse(map[string]string{
+	"dedicatedPool":        `[{"serverNumber": "3041839", "robotAccount": "inst_robot_main"}]`,
+	"cloudPoolServerTypes": "cpx32, cx43",
+	"cloudPoolLocations":   "fsn1, nbg1",
+	"cloudPoolMin":         "2",
+	"cloudPoolMax":         "2",
+})
+if err != nil {
+	fmt.Println(err)
+	return
+}
+fmt.Println(len(p.Dedicated), "dedicated server and", p.Cloud.Max, "Cloud servers over", p.Cloud.Locations)
+// Output: 1 dedicated server and 2 Cloud servers over [fsn1 nbg1]
+```
+
+A block calls `pools.PlanCloud` on each subscribe or upgrade, and again on
+each later run until the plan is empty. The function reads the servers Hetzner
+lists with the subscription's labels and the role `cloud-worker`, and answers a
+`CloudPlan` of what the pool lacks:
+
+- `Create` lists servers to create. They boot from the worker image the install
+  keeps, with no user data, on the cluster's network and firewall, each of the
+  first listed server type its location offers. A server is created only while
+  the pool, a member that is leaving included, holds fewer than its size, and
+  in the listed location holding the fewest members.
+- `Drain` lists members whose node still runs pods. A member leaves when the
+  pool shrinks, which takes the newest member of the location holding the most,
+  or when the list drops its server type or location, which a new server then
+  replaces. The block drains each such node itself.
+- `Delete` lists the members whose node has left the cluster, which the block
+  reports through the `drained` function it passes `PlanCloud`. A server is
+  deleted only once its node has drained.
+
+`CloudPlan.Apply` creates and deletes through the `controlplane` API, and no
+other server of the cluster is touched.
+
+`Dedicated.RenderWorker` renders a dedicated worker's Talos machine
+configuration from the cluster's secrets. The server boots Talos's image for
+bare-metal machines, so the render uses the Metal profile, names the node
+`robot-` and its server number, and joins it to the cluster's private network
+through the server's network card on the vSwitch, Hetzner's private network for
+dedicated servers, which the block read from Robot. A worker's configuration
+holds no etcd authority key, the key that lets a node issue etcd certificates
+and that only a control-plane node holds. The block makes the Robot calls that
+adopt, install, firewall and release a server, since
+[ADR 0103](https://github.com/mitstack-eu/mitstack/blob/main/docs/adr/0103-mitstack-offers-five-hetzner-capacity-blocks-and-keeps-the-k3s-block.md)
+keeps Robot API code out of this module.
+
 ## How a release is versioned
 
 A block takes a change only by requiring a newer tag of this module in its

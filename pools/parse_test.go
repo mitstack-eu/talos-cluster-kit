@@ -66,7 +66,7 @@ func TestParse_RefusesEachInvalidPoolNamingTheInput(t *testing.T) {
 		{"a size that is no number", map[string]string{"cloudPoolMax": "two"}, `cloudPoolMax: "two"`},
 		{"no maximum", map[string]string{"cloudPoolMax": ""}, "cloudPoolMax: a Cloud pool needs a maximum"},
 		{"a maximum below the minimum", map[string]string{"cloudPoolMin": "3", "cloudPoolMax": "2"}, "cloudPoolMax 2 is below cloudPoolMin 3"},
-		{"unequal bounds before the scaling ships", map[string]string{"cloudPoolMin": "0", "cloudPoolMax": "3"}, "MIT-5702"},
+		{"unequal bounds before the scaling ships", map[string]string{"cloudPoolMin": "0", "cloudPoolMax": "3"}, "a Cloud pool's minimum and maximum must be equal until the pool scales itself"},
 		{"a dedicated pool that is no list", map[string]string{"dedicatedPool": `{"serverNumber":"3041839"}`}, "dedicatedPool: "},
 		{"a dedicated entry with no server number", map[string]string{"dedicatedPool": `[{"robotAccount":"inst_robot_main"}]`}, "dedicatedPool entry 1: serverNumber is required"},
 		{"a dedicated entry with a server number of zero", map[string]string{"dedicatedPool": `[{"serverNumber":"0","robotAccount":"inst_robot_main"}]`}, `dedicatedPool entry 1: serverNumber "0"`},

@@ -1492,9 +1492,8 @@ settings describes. A dedicated pool lists Hetzner Robot servers the org
 already rents, each with the Robot account it is rented under, and it changes
 only when the block is upgraded. A Cloud pool names Hetzner Cloud server types
 in order of preference, locations, and a minimum and a maximum number of
-servers. Until the scaling that issue MIT-5702 builds ships, the two bounds
-must be equal, so a Cloud pool has a fixed size, and `Parse` refuses unequal
-bounds naming that issue.
+servers. Until the pool scales itself, the two bounds must be equal, so a
+Cloud pool has a fixed size, and `Parse` refuses unequal bounds.
 [ADR 0118](https://github.com/mitstack-eu/mitstack/blob/main/docs/adr/0118-a-talos-cluster-block-grows-by-node-pools-from-talos-cluster-kit-and-a-manifest-declares-a-pools-servers-as-one-resource-entry-marked-many.md)
 sets these rules.
 

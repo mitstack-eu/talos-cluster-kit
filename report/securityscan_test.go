@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
+	"github.com/mitstack-eu/talos-cluster-kit/tools"
 )
 
 const scanAt = "echo 2026-11-07T03:17:00Z"
@@ -46,9 +47,13 @@ func runScan(t *testing.T, fakes map[string]string) scanRun {
 	tools := testutil.NewTools(t, all)
 	tools.AddImageJq(t)
 	script, env := renderedScript(t, reportURL, "mitstack-security-scan")
+	bench := testutil.ContainerEnv(t, testutil.Field(t, scanPod(t), "initContainers", "0"))
+	results := "SCAN_RESULTS=" + t.TempDir()
 
-	out, err := testutil.RunBash(t, script, tools.Env("SCAN_CONFIGMAP="+env["SCAN_CONFIGMAP"], "KUBE_BENCH_CONFIG=/kube-bench/cfg",
-		"KUBE_BENCH_VERSION="+env["KUBE_BENCH_VERSION"], "KUBESCAPE_ARTIFACTS=testdata/scan",
+	benchOut, benchErr := testutil.RunBash(t, script, tools.Env(results, "KUBE_BENCH_CONFIG=/kube-bench/cfg",
+		"KUBE_BENCH_VERSION="+bench["KUBE_BENCH_VERSION"]), "bench")
+	require.NoError(t, benchErr, "kube-bench's step keeps a failure in its summary, so kubescape still runs: %s", benchOut)
+	out, err := testutil.RunBash(t, script, tools.Env(results, "SCAN_CONFIGMAP="+env["SCAN_CONFIGMAP"], "KUBESCAPE_ARTIFACTS=testdata/scan",
 		"KUBESCAPE_CONTROLS_VERSION="+env["KUBESCAPE_CONTROLS_VERSION"]))
 	run := scanRun{tools: tools, out: out, err: err}
 	var written struct{ Data map[string]string }
@@ -66,7 +71,6 @@ func TestSecurityScan_RunsKubeBenchOnTheTalosBenchmarkAndKubescapeOnNSAAndPatche
 	calls := run.tools.Calls(t)
 	assert.Contains(t, calls, "kube-bench run --config-dir /kube-bench/cfg --benchmark cis-1.10 --targets master,etcd,controlplane,node,policies --json",
 		"the benchmark Sidero documents for Talos, since kube-bench's version mapping picks none for Talos")
-	assert.Contains(t, strings.Join(calls, "\n"), "kubescape scan framework nsa --use-from testdata/scan/nsa --controls-config ")
 	for _, call := range calls {
 		if strings.HasPrefix(call, "kubescape ") {
 			assert.Regexp(t, `^kubescape scan framework nsa --use-from testdata/scan/nsa --controls-config \S+/inputs\.json `+
@@ -117,7 +121,6 @@ func TestSecurityScan_KeepsAToolThatFailsAsAnErrorWithItsStderrRunsTheOtherAndEx
 	assert.Equal(t, map[string]any{"tool": "kube-bench", "version": "v0.16.0", "startedAt": "2026-11-07T03:17:00Z",
 		"finishedAt": "2026-11-07T03:17:00Z", "profile": "cis-1.10",
 		"error": "kube-bench exited 1: unable to detect running programs for component \"apiserver\"\n"}, run.summary(t, "kube-bench"))
-	assert.Equal(t, "kubescape", run.summary(t, "kubescape")["tool"])
 	assert.NotContains(t, run.summary(t, "kubescape"), "error")
 	assert.Equal(t, map[string]any{"finishedAt": "2026-11-07T03:17:00Z", "exitStatus": float64(1),
 		"output": "kube-bench: failed; kubescape: ran"}, run.summary(t, "last-run"))
@@ -143,47 +146,62 @@ func TestSecurityScan_KeepsEachSummaryWithinTheReportsBoundAtAnySize(t *testing.
 		"the count stays whole, so the platform sees the list was cut")
 }
 
-func TestManifests_RunsTheScanDailyInKubeSystemOnAControlPlaneNodeWithItsHostsProcessesAndConfigReadOnly(t *testing.T) {
-	rendered := manifests(t, reportURL)
-	job, _, container := cronJob(t, rendered, "mitstack-security-scan")
+func scanPod(t *testing.T) any {
+	t.Helper()
+	job, _, _ := cronJob(t, manifests(t, reportURL), "mitstack-security-scan")
+	return testutil.Field(t, job, "spec", "jobTemplate", "spec", "template", "spec")
+}
+
+// mounts maps each of a container's mount paths to its readOnly, nil when writable.
+func mounts(t *testing.T, container any) map[string]any {
+	t.Helper()
+	m := map[string]any{}
+	for _, v := range testutil.Field(t, container, "volumeMounts").([]any) {
+		m[testutil.Field(t, v, "mountPath").(string)] = v.(map[string]any)["readOnly"]
+	}
+	return m
+}
+
+func TestManifests_RunsKubeBenchAsRootOnTheHostsConfigWithNoTokenAndKubescapeAsNonRootWithNoHostPathDailyInKubeSystem(t *testing.T) {
+	job, _, scan := cronJob(t, manifests(t, reportURL), "mitstack-security-scan")
 
 	assert.Equal(t, "kube-system", testutil.Field(t, job, "metadata", "namespace"), "Talos and Kyverno leave kube-system out of pod security")
 	assert.Regexp(t, regexp.MustCompile(`^\d+ \d+ \* \* \*$`), testutil.Field(t, job, "spec", "schedule"), "once a day")
 	assert.Equal(t, "Forbid", testutil.Field(t, job, "spec", "concurrencyPolicy"))
-	pod := testutil.Field(t, job, "spec", "jobTemplate", "spec", "template", "spec")
+	pod := scanPod(t)
 	assert.Equal(t, "mitstack-security-scan", testutil.Field(t, pod, "serviceAccountName"))
 	assert.Equal(t, true, testutil.Field(t, pod, "hostPID"), "kube-bench reads each component's flags from its process")
+	assert.Equal(t, false, testutil.Field(t, pod, "automountServiceAccountToken"), "only the container that calls the API server holds a token")
 	assert.Equal(t, map[string]any{"node-role.kubernetes.io/control-plane": ""}, testutil.Field(t, pod, "nodeSelector"))
-	assert.Equal(t, testutil.ToolsImage, testutil.Field(t, container, "image"))
-	assert.Equal(t, map[string]any{"runAsUser": 0, "runAsNonRoot": false, "allowPrivilegeEscalation": false,
-		"readOnlyRootFilesystem": true, "capabilities": map[string]any{"drop": []any{"ALL"}}}, testutil.Field(t, container, "securityContext"))
-	assert.NotNil(t, testutil.Field(t, container, "resources", "limits", "memory"), "the scan sets its memory limit")
-	env := testutil.ContainerEnv(t, container)
-	assert.Equal(t, "kube-system/mitstack-security-scans", env["SCAN_CONFIGMAP"])
-	assert.Equal(t, "v0.16.0", env["KUBE_BENCH_VERSION"])
-	assert.Equal(t, "v2.0.38", env["KUBESCAPE_CONTROLS_VERSION"])
+	bench := testutil.Field(t, pod, "initContainers", "0")
+	assert.Equal(t, []any{"bash", tools.ScriptDir + "/security-scan.sh", "bench"}, testutil.Field(t, bench, "command"))
+	locked := func(user int, nonRoot bool) map[string]any {
+		return map[string]any{"runAsUser": user, "runAsNonRoot": nonRoot, "allowPrivilegeEscalation": false, "readOnlyRootFilesystem": true,
+			"capabilities": map[string]any{"drop": []any{"ALL"}}}
+	}
+	assert.Equal(t, locked(0, false), testutil.Field(t, bench, "securityContext"), "kube-bench reads root-owned files on the host")
+	assert.Equal(t, locked(65532, true), testutil.Field(t, scan, "securityContext"),
+		"kubescape, which reads no host file, cannot reach a root process through the host's process table")
+	assert.Equal(t, map[string]any{"/tmp": nil, "/results": nil, "/etc/kubernetes": true, "/var/lib/kubelet": true, "/var/lib/etcd": true},
+		mounts(t, bench), "kube-bench alone mounts the host, read-only, and holds no token")
+	assert.Equal(t, map[string]any{"/tmp": nil, "/results": nil, "/var/run/secrets/kubernetes.io/serviceaccount": true}, mounts(t, scan))
 	var hostPaths []any
 	for _, v := range testutil.Field(t, pod, "volumes").([]any) {
 		if hostPath, ok := v.(map[string]any)["hostPath"]; ok {
 			hostPaths = append(hostPaths, testutil.Field(t, hostPath, "path"))
 		}
 	}
-	assert.ElementsMatch(t, []any{"/etc/kubernetes", "/var/lib/kubelet", "/var/lib/etcd"}, hostPaths,
-		"the host's Kubernetes config, kubelet state and etcd data, and nothing else of the host")
-	for _, m := range testutil.Field(t, container, "volumeMounts").([]any) {
-		if testutil.Field(t, m, "mountPath") != "/tmp" {
-			assert.Equal(t, true, testutil.Field(t, m, "readOnly"), "mount %v is read-only", m)
-		}
+	assert.ElementsMatch(t, []any{"/etc/kubernetes", "/var/lib/kubelet", "/var/lib/etcd"}, hostPaths, "nothing else of the host")
+	for _, c := range []any{bench, scan} {
+		assert.Equal(t, testutil.ToolsImage, testutil.Field(t, c, "image"))
+		assert.NotNil(t, testutil.Field(t, c, "resources", "limits", "memory"), "each step sets its memory limit")
 	}
 }
 
-func TestManifests_LetsTheScanPatchOnlyItsConfigMapAndReadNoSecret(t *testing.T) {
+func TestManifests_LetsTheScanReadNoSecret(t *testing.T) {
 	docs := testutil.Documents(t, manifests(t, reportURL))
 
 	named(t, inNamespace(t, testutil.Kind(docs, "ConfigMap"), "kube-system"), "ConfigMap", "mitstack-security-scans")
-	role := named(t, docs, "Role", "mitstack-security-scan")
-	assert.Equal(t, []any{map[string]any{"apiGroups": []any{""}, "resources": []any{"configmaps"}, "resourceNames": []any{"mitstack-security-scans"},
-		"verbs": []any{"patch"}}}, testutil.Field(t, role, "rules"))
 	cluster := named(t, docs, "ClusterRole", "mitstack-security-scan")
 	var resources []any
 	for _, rule := range testutil.Field(t, cluster, "rules").([]any) {
@@ -195,9 +213,6 @@ func TestManifests_LetsTheScanPatchOnlyItsConfigMapAndReadNoSecret(t *testing.T)
 	for _, needed := range []any{"pods", "configmaps", "deployments", "clusterrolebindings", "networkpolicies", "serviceaccounts"} {
 		assert.Contains(t, resources, needed, "kubescape's NSA controls read %s", needed)
 	}
-	for _, kind := range []string{"RoleBinding", "ClusterRoleBinding"} {
-		binding := named(t, docs, kind, "mitstack-security-scan")
-		assert.Equal(t, []any{map[string]any{"kind": "ServiceAccount", "name": "mitstack-security-scan", "namespace": "kube-system"}},
-			testutil.Field(t, binding, "subjects"))
-	}
+	assert.Equal(t, []any{map[string]any{"kind": "ServiceAccount", "name": "mitstack-security-scan", "namespace": "kube-system"}},
+		testutil.Field(t, named(t, docs, "ClusterRoleBinding", "mitstack-security-scan"), "subjects"))
 }

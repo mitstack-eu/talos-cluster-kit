@@ -1,0 +1,52 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: report-admission-fixtures
+policies:
+- ../../policies/mitstack-require-app-label.yaml
+- ../../policies/mitstack-require-mesh.yaml
+resources:
+- ../../../../report/admission/mitstack-disallow-host-path.yaml
+- ../../../../report/admission/mitstack-require-app-label.yaml
+- ../../../../report/admission/mitstack-require-image-digest.yaml
+- ../../../../report/admission/mitstack-require-resource-limits.yaml
+- ../../../../report/admission/mitstack-restrict-image-registries.yaml
+- ../../../../report/admission/pod-security-restricted.yaml
+results:
+- isValidatingPolicy: true
+  policy: mitstack-require-app-label
+  kind: Deployment
+  resources:
+  - refused-require-app-label
+  result: fail
+- isValidatingPolicy: true
+  policy: mitstack-require-app-label
+  kind: Deployment
+  resources:
+  - refused-disallow-host-path
+  - refused-require-image-digest
+  - refused-require-resource-limits
+  - refused-restrict-image-registries
+  result: pass
+- isValidatingPolicy: true
+  policy: mitstack-require-app-label
+  kind: Pod
+  resources:
+  - pod-security-restricted
+  result: pass
+- isValidatingPolicy: true
+  policy: mitstack-require-mesh
+  kind: Deployment
+  resources:
+  - refused-disallow-host-path
+  - refused-require-app-label
+  - refused-require-image-digest
+  - refused-require-resource-limits
+  - refused-restrict-image-registries
+  result: pass
+- isValidatingPolicy: true
+  policy: mitstack-require-mesh
+  kind: Pod
+  resources:
+  - pod-security-restricted
+  result: pass

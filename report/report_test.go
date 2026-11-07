@@ -553,6 +553,7 @@ func TestReport_PostsEachMemberItReadsFromAHealthyCluster(t *testing.T) {
 	fakes["date"] = reportAt
 	_, posted, out, err := runReport(t, fakes)
 	require.NoError(t, err, out)
+	assert.NotContains(t, string(posted.raw), "CIPHERTEXT", "no sealed credential's encrypted data leaves the cluster")
 	cases := map[string]struct {
 		member, msg string
 		want        any

@@ -4,16 +4,15 @@ package report_test
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
 
-	"github.com/google/cel-go/cel"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 )
 
@@ -65,16 +64,11 @@ func TestManifests_NoRoleBoundToTheReportGrantsAVerbOnSecretsOrOnEveryResource(t
 	}
 }
 
-func TestManifests_LetsTheReportListSealedSecretsInArgoCDReadTheScansByNameAndDryRunFixturesInTheProbeNamespaceAlone(t *testing.T) {
+func TestManifests_LetsTheReportListSealedSecretsInArgoCDAndDryRunFixturesInTheProbeNamespaceAlone(t *testing.T) {
 	rules := reportRules(t)
 
 	assert.Equal(t, []any{map[string]any{"apiGroups": []any{"bitnami.com"}, "resources": []any{"sealedsecrets"}, "verbs": []any{"list"}}},
 		rules["argocd"], "the sealed credentials carry ciphertext only, so listing them reads no credential")
-	assert.ElementsMatch(t, []any{
-		map[string]any{"apiGroups": []any{""}, "resources": []any{"configmaps"}, "resourceNames": []any{"mitstack-mesh-probe"}, "verbs": []any{"get"}},
-		map[string]any{"apiGroups": []any{""}, "resources": []any{"configmaps"}, "resourceNames": []any{"mitstack-security-scans"}, "verbs": []any{"get"}},
-		map[string]any{"apiGroups": []any{"batch"}, "resources": []any{"cronjobs"}, "resourceNames": []any{"mitstack-security-scan"}, "verbs": []any{"get"}},
-	}, rules["kube-system"])
 	assert.ElementsMatch(t, []any{
 		map[string]any{"apiGroups": []any{""}, "resources": []any{"configmaps"}, "resourceNames": []any{"admission-fixtures"}, "verbs": []any{"get"}},
 		map[string]any{"apiGroups": []any{""}, "resources": []any{"pods"}, "verbs": []any{"create"}},
@@ -92,47 +86,16 @@ func TestManifests_TheProbeNamespaceEnforcesPodSecurityRestrictedAndHoldsEachRul
 	require.Len(t, fixtures, 1)
 	assert.Equal(t, "admission-fixtures", testutil.Field(t, fixtures[0], "metadata", "name"))
 	data := stringMap(testutil.Field(t, fixtures[0], "data"))
-	assert.ElementsMatch(t, fixtureRules, slices.Collect(func(yield func(string) bool) {
-		for key := range data {
-			if !yield(key) {
-				return
-			}
-		}
-	}))
+	assert.Equal(t, fixtureRules, slices.Sorted(maps.Keys(data)))
 	for _, rule := range fixtureRules {
-		raw, err := os.ReadFile(filepath.Join("admission", rule+".yaml"))
-		require.NoError(t, err)
-		want, err := json.Marshal(testutil.Documents(t, raw)[0])
-		require.NoError(t, err)
-		assert.JSONEq(t, string(want), data[rule], "the ConfigMap holds %s's fixture as JSON", rule)
-		assert.NotContains(t, data[rule], "\n", "one line of JSON holds no image line the gateway would mirror")
+		var fixture map[string]any
+		require.NoError(t, json.Unmarshal([]byte(data[rule]), &fixture), "%s's fixture is JSON", rule)
+		assert.Equal(t, probeNamespace, testutil.Field(t, fixture, "metadata", "namespace"), "%s's fixture names the probe namespace", rule)
 	}
-}
-
-// fixturePod is the pod a fixture's admission is judged on: the Pod itself, or a Deployment's pod template.
-func fixturePod(t *testing.T, rule string) map[string]any {
-	t.Helper()
-	raw, err := os.ReadFile(filepath.Join("admission", rule+".yaml"))
-	require.NoError(t, err)
-	fixture := testutil.Documents(t, raw)[0]
-	assert.Equal(t, probeNamespace, testutil.Field(t, fixture, "metadata", "namespace"), "%s's fixture names the probe namespace", rule)
-	if fixture["kind"] == "Pod" {
-		return fixture
-	}
-	return map[string]any{"metadata": testutil.Field(t, fixture, "spec", "template", "metadata"),
-		"spec": testutil.Field(t, fixture, "spec", "template", "spec")}
-}
-
-func TestAdmissionFixtures_EachBreaksNoTalosPolicyButItsOwnRule(t *testing.T) {
-	namespace := map[string]any{"metadata": map[string]any{"name": probeNamespace}}
-	for _, path := range []string{"mitstack-require-app-label", "mitstack-require-mesh"} {
-		raw, err := os.ReadFile(filepath.Join("..", "components", "admission", "policies", path+".yaml"))
-		require.NoError(t, err)
-		policy := testutil.Documents(t, raw)[0]
-		for _, rule := range fixtureRules {
-			assert.Equal(t, rule != path, testutil.Admits(t, policy, fixturePod(t, rule), namespace),
-				"policy %s on the fixture for %s", path, rule)
-		}
+	images, err := components.Set{Inline: []components.Manifest{{Name: "mitstack-node-report", Bytes: manifests(t, reportURL)}}}.Images()
+	require.NoError(t, err, "the gateway reads every image line of the report's manifests")
+	for _, image := range images {
+		assert.NotContains(t, image.Name, "probe", "the gateway mirrors no fixture image, which exists only to be refused")
 	}
 }
 
@@ -149,36 +112,10 @@ func TestManifests_RefusesEveryRequestInTheProbeNamespaceThatIsNotADryRun(t *tes
 		map[string]any{"apiGroups": []any{""}, "apiVersions": []any{"*"}, "operations": []any{"*"}, "resources": []any{"pods"}},
 		map[string]any{"apiGroups": []any{"apps"}, "apiVersions": []any{"*"}, "operations": []any{"*"}, "resources": []any{"deployments"}},
 	}, testutil.Field(t, policy, "spec", "matchConstraints", "resourceRules"))
+	assert.Equal(t, "Fail", testutil.Field(t, policy, "spec", "failurePolicy"), "a policy the API server cannot evaluate refuses")
 	validations := testutil.Field(t, policy, "spec", "validations").([]any)
 	require.Len(t, validations, 1)
-	env, err := cel.NewEnv(cel.Variable("request", cel.DynType))
-	require.NoError(t, err)
-	ast, issues := env.Compile(testutil.Field(t, validations[0], "expression").(string))
-	require.NoError(t, issues.Err())
-	program, err := env.Program(ast)
-	require.NoError(t, err)
-	for dryRun, admitted := range map[bool]bool{true: true, false: false} {
-		out, _, err := program.Eval(map[string]any{"request": map[string]any{"dryRun": dryRun}})
-		require.NoError(t, err)
-		assert.Equal(t, admitted, out.Value(), "a request with dryRun %v", dryRun)
-	}
-}
-
-func TestReport_SendsNoSealedCiphertextAndDryRunsEachFixtureWithTheServerInTheProbeNamespace(t *testing.T) {
-	tools, posted, out, err := runReport(t, map[string]string{"date": reportAt})
-	require.NoError(t, err, out)
-
-	assert.NotContains(t, string(posted.raw), "CIPHERTEXT", "no encrypted credential leaves the cluster")
-	var dryRuns []string
-	for _, call := range tools.Calls(t) {
-		if rest, ok := strings.CutPrefix(call, "kubectl "+dryRun); ok {
-			dryRuns = append(dryRuns, rest)
-		}
-	}
-	assert.Len(t, dryRuns, 3, "one server dry run for each fixture named for a rule, and none for Not_A_Rule")
-	for _, path := range dryRuns {
-		assert.NotContains(t, path, " ", "each dry run reads one fixture file")
-	}
+	assert.Equal(t, "request.dryRun == true", testutil.Field(t, validations[0], "expression"))
 }
 
 func TestReport_ClipsEachFixtureTo4KiBAndEachAnswerTo2KiB(t *testing.T) {

@@ -163,5 +163,5 @@ const (
 )
 
 // ServerTypes are x86, since the image is amd64, hold a control plane with Cilium and Argo CD, and are each one the
-// platform's hetzner.server type allows. cpx22 holds cx23's two vCPUs and 4 GB, with twice its disk.
+// platform's hetzner.server type allows.
 var ServerTypes = []string{"cx23", "cpx22", "cx33", "cx43", "cx53", "cpx32", "cpx52", "cpx62"}

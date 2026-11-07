@@ -7,15 +7,13 @@ import (
 	"strings"
 )
 
-// OrderableTypes picks the first of a list of server types Hetzner can order in a location. It reads each location
-// once, so every server one call creates there takes its type from the same read.
+// OrderableTypes picks the first of a list of server types Hetzner can order in a location, reading each location once.
 type OrderableTypes struct {
 	API     API
 	offered map[string][]string
 }
 
-// First is the first of types Hetzner reads as orderable in loc. It refuses with server-unavailable, naming what the
-// server is, the list and loc, when Hetzner can order none of them there.
+// First is the first of types Hetzner reads as orderable in loc, refusing with server-unavailable when it reads none.
 func (o *OrderableTypes) First(ctx context.Context, what string, types []string, loc string) (string, error) {
 	if len(types) == 0 {
 		return "", fmt.Errorf("the %s names no server type", what)

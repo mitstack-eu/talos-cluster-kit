@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Runs kube-bench on the cis-1.10 benchmark and kubescape on the NSA framework, and patches a summary of each, with the
-# run's outcome, into the ConfigMap the node report reads. A tool that fails is kept as its summary's error, and the scan
-# then exits non-zero, so the Job runs it again.
-# Usage: SCAN_CONFIGMAP=<namespace/name> KUBE_BENCH_CONFIG=<cfg dir> KUBE_BENCH_VERSION=<v> KUBESCAPE_ARTIFACTS=<dir holding nsa
-#   and default_config_inputs> KUBESCAPE_CONTROLS_VERSION=<v> security-scan.sh
-# It exists because a Talos node runs no host service, so the scan runs as a Job and leaves its summaries where the report,
-# which holds no right to start it, can read them.
+# Runs kube-bench on the cis-1.10 benchmark, and then kubescape on the NSA framework, and patches a summary of each, with
+# the run's outcome, into the ConfigMap the node report reads. A tool that fails is kept as its summary's error, and the
+# scan then exits non-zero, so the Job runs it again.
+# Usage: SCAN_RESULTS=<dir> KUBE_BENCH_CONFIG=<cfg dir> KUBE_BENCH_VERSION=<v> security-scan.sh bench
+#   SCAN_RESULTS=<dir> SCAN_CONFIGMAP=<namespace/name> KUBESCAPE_ARTIFACTS=<dir holding nsa and default_config_inputs>
+#   KUBESCAPE_CONTROLS_VERSION=<v> security-scan.sh
+# The bench step reads the host as root with no token and leaves its summary in SCAN_RESULTS; the second step runs as
+# another user with the token, so no tool holds both. It exists because a Talos node runs no host service, so the scan
+# runs as a Job and leaves its summaries where the report, which holds no right to start it, can read them.
 set -euo pipefail
 
 # kube-bench's version mapping picks no benchmark for Talos, so the scan names the one Sidero documents for it.
@@ -109,13 +111,26 @@ kubescape_scan() {
   return "$status"
 }
 
-main() {
-  : "${SCAN_CONFIGMAP:?names the ConfigMap the report reads}" "${KUBE_BENCH_CONFIG:?names the config directory of kube-bench}"
-  : "${KUBE_BENCH_VERSION:?names the kube-bench the image carries}" "${KUBESCAPE_ARTIFACTS:?names the directory of the NSA framework}"
+# bench_step always exits 0, keeping a failure in its summary, so the step after it still runs kubescape and patches both.
+bench_step() {
+  : "${KUBE_BENCH_CONFIG:?names the config directory of kube-bench}" "${KUBE_BENCH_VERSION:?names the kube-bench the image carries}"
+  local outcome=ran
+  kube_bench || outcome=failed
+  cp "$work/kube-bench.json" "$SCAN_RESULTS/kube-bench.json"
+  echo "security-scan: kube-bench $outcome"
+}
+
+scan_step() {
+  : "${SCAN_CONFIGMAP:?names the ConfigMap the report reads}" "${KUBESCAPE_ARTIFACTS:?names the directory of the NSA framework}"
   : "${KUBESCAPE_CONTROLS_VERSION:?names the release of the NSA framework}"
-  export HOME=$work
   local bench=ran scan=ran status=0
-  kube_bench || { bench=failed; status=1; }
+  if [ -s "$SCAN_RESULTS/kube-bench.json" ]; then
+    cp "$SCAN_RESULTS/kube-bench.json" "$work/kube-bench.json"
+  else
+    jq -c -n --arg finished "$(now)" '{tool: "kube-bench", error: "the kube-bench step left no summary", finishedAt: $finished}' \
+      > "$work/kube-bench.json"
+  fi
+  jq -e 'has("error") | not' "$work/kube-bench.json" > /dev/null || { bench=failed; status=1; }
   kubescape_scan || { scan=failed; status=1; }
   jq -n --rawfile bench "$work/kube-bench.json" --rawfile scan "$work/kubescape.json" --arg finished "$(now)" \
     --argjson status "$status" --arg output "kube-bench: $bench; kubescape: $scan" '
@@ -124,6 +139,16 @@ main() {
   kubectl patch configmap "${SCAN_CONFIGMAP#*/}" -n "${SCAN_CONFIGMAP%%/*}" --type merge --patch-file "$work/patch.json" > /dev/null
   echo "security-scan: kube-bench $bench, kubescape $scan"
   return "$status"
+}
+
+main() {
+  : "${SCAN_RESULTS:?names the directory the two steps share}"
+  export HOME=$work
+  case "${1:-}" in
+    bench) bench_step ;;
+    "") scan_step ;;
+    *) echo "security-scan: unknown step $1" >&2; return 2 ;;
+  esac
 }
 
 main "$@"

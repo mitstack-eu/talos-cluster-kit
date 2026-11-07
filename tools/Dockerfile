@@ -23,7 +23,9 @@ RUN apk add --no-cache bash ca-certificates coreutils curl git gpg openssh-clien
  && curl -fsSL --proto '=https' -o /tmp/kube-bench.tar.gz "https://github.com/aquasecurity/kube-bench/releases/download/${KUBE_BENCH_VERSION}/kube-bench_${KUBE_BENCH_VERSION#v}_linux_amd64.tar.gz" \
  && echo "${KUBE_BENCH_SHA256}  /tmp/kube-bench.tar.gz" | sha256sum -c - \
  && mkdir -p /usr/local/lib/mitstack/kube-bench /usr/local/lib/mitstack/kubescape \
- && tar -xzf /tmp/kube-bench.tar.gz -C /usr/local/lib/mitstack/kube-bench kube-bench cfg/config.yaml cfg/cis-1.10 \
+ && tar -xzf /tmp/kube-bench.tar.gz -C /usr/local/lib/mitstack/kube-bench kube-bench cfg/config.yaml \
+    cfg/cis-1.10/config.yaml cfg/cis-1.10/controlplane.yaml cfg/cis-1.10/etcd.yaml cfg/cis-1.10/master.yaml \
+    cfg/cis-1.10/node.yaml cfg/cis-1.10/policies.yaml \
  && mv /usr/local/lib/mitstack/kube-bench/kube-bench /usr/local/bin/kube-bench \
  && curl -fsSL --proto '=https' -o /usr/local/bin/kubescape "https://github.com/kubescape/kubescape/releases/download/${KUBESCAPE_VERSION}/kubescape_${KUBESCAPE_VERSION#v}_linux_amd64" \
  && echo "${KUBESCAPE_SHA256}  /usr/local/bin/kubescape" | sha256sum -c - \

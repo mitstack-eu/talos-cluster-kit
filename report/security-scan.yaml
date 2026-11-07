@@ -2,7 +2,8 @@
 # runs kube-bench against its control-plane node and kubescape against the cluster's objects once a day, and patches a
 # summary of each into one ConfigMap. kube-bench reads each component's flags from its process and its config from the
 # host, read-only. The scan may read the cluster's objects but never a Secret, and patch that ConfigMap alone; the
-# report may only read the ConfigMap and the CronJob.
+# report may only read the ConfigMap and the CronJob. kube-bench runs first, as root with the host's files and no token,
+# and kubescape after it as a non-root user with the token and no host file, so neither tool holds both.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -132,23 +133,61 @@ spec:
           serviceAccountName: mitstack-security-scan
           restartPolicy: Never
           hostPID: true
+          automountServiceAccountToken: false
           nodeSelector:
             node-role.kubernetes.io/control-plane: ""
           tolerations:
             - key: node-role.kubernetes.io/control-plane
               operator: Exists
               effect: NoSchedule
+          initContainers:
+            - name: kube-bench
+              image: {{ .Image }}
+              command: [bash, {{ .Script }}, bench]
+              env:
+                - name: SCAN_RESULTS
+                  value: /results
+                - name: KUBE_BENCH_CONFIG
+                  value: {{ .ScriptDir }}/kube-bench/cfg
+                - name: KUBE_BENCH_VERSION
+                  value: {{ .KubeBenchVersion }}
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  cpu: 500m
+                  memory: 256Mi
+              securityContext:
+                runAsUser: 0
+                runAsNonRoot: false
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+                - name: results
+                  mountPath: /results
+                - name: etc-kubernetes
+                  mountPath: /etc/kubernetes
+                  readOnly: true
+                - name: kubelet
+                  mountPath: /var/lib/kubelet
+                  readOnly: true
+                - name: etcd
+                  mountPath: /var/lib/etcd
+                  readOnly: true
           containers:
             - name: scan
               image: {{ .Image }}
               command: [bash, {{ .Script }}]
               env:
+                - name: SCAN_RESULTS
+                  value: /results
                 - name: SCAN_CONFIGMAP
                   value: {{ .Namespace }}/{{ .ConfigMap }}
-                - name: KUBE_BENCH_CONFIG
-                  value: {{ .ScriptDir }}/kube-bench/cfg
-                - name: KUBE_BENCH_VERSION
-                  value: {{ .KubeBenchVersion }}
                 - name: KUBESCAPE_ARTIFACTS
                   value: {{ .ScriptDir }}/kubescape
                 - name: KUBESCAPE_CONTROLS_VERSION
@@ -161,8 +200,8 @@ spec:
                   cpu: "1"
                   memory: 2Gi
               securityContext:
-                runAsUser: 0
-                runAsNonRoot: false
+                runAsUser: 65532
+                runAsNonRoot: true
                 allowPrivilegeEscalation: false
                 readOnlyRootFilesystem: true
                 capabilities:
@@ -170,18 +209,32 @@ spec:
               volumeMounts:
                 - name: tmp
                   mountPath: /tmp
-                - name: etc-kubernetes
-                  mountPath: /etc/kubernetes
-                  readOnly: true
-                - name: kubelet
-                  mountPath: /var/lib/kubelet
-                  readOnly: true
-                - name: etcd
-                  mountPath: /var/lib/etcd
+                - name: results
+                  mountPath: /results
+                - name: token
+                  mountPath: /var/run/secrets/kubernetes.io/serviceaccount
                   readOnly: true
           volumes:
             - name: tmp
               emptyDir: {}
+            - name: results
+              emptyDir: {}
+            - name: token
+              projected:
+                sources:
+                  - serviceAccountToken:
+                      path: token
+                      expirationSeconds: 3600
+                  - configMap:
+                      name: kube-root-ca.crt
+                      items:
+                        - key: ca.crt
+                          path: ca.crt
+                  - downwardAPI:
+                      items:
+                        - path: namespace
+                          fieldRef:
+                            fieldPath: metadata.namespace
             - name: etc-kubernetes
               hostPath:
                 path: /etc/kubernetes

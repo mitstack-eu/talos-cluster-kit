@@ -66,7 +66,7 @@ func newHarness(t *testing.T, opts ...func(*harness)) *harness {
 	h := &harness{t: t, now: testStart, buildTakes: 10 * time.Minute, imageTakes: 3 * time.Minute}
 	h.cloud = cloudtest.New(func() time.Time { return h.now })
 	h.plane = controlplane.Plane{
-		API: h.cloud, Block: testBlock, Subscription: testSub, AppName: testApp, ServerType: controlplane.DefaultServerType,
+		API: h.cloud, Block: testBlock, Subscription: testSub, AppName: testApp, ServerTypes: []string{controlplane.DefaultServerType},
 		Boundary: "mitstack-test-boundary", PlatformURL: platformURL, RepoURL: testRepoURL, ReportProofScript: proofScript,
 		Now: func() time.Time { return h.now },
 		Installed: func(_ context.Context, _ controlplane.Network, c nodeconfig.Cluster, ca gateway.CA) error {
@@ -221,7 +221,7 @@ func TestPlane_BuildsANodeInEachOfFsn1Nbg1AndHel1OnOneNetwork(t *testing.T) {
 }
 
 func TestPlane_BuildsTheBuilderAndEveryNodeOnTheServerTypeItIsGiven(t *testing.T) {
-	h := newHarness(t, func(h *harness) { h.plane.ServerType = "cpx32" })
+	h := newHarness(t, func(h *harness) { h.plane.ServerTypes = []string{"cpx32"} })
 
 	h.built()
 
@@ -231,6 +231,102 @@ func TestPlane_BuildsTheBuilderAndEveryNodeOnTheServerTypeItIsGiven(t *testing.T
 	}
 	assert.Equal(t, map[string]string{"fsn1": "cpx32", "nbg1": "cpx32", "hel1": "cpx32"}, typeByLocation, "each location's node server type")
 	assert.Equal(t, "cpx32", h.cloud.SpecFor(t, controlplane.RoleBuilder).ServerType, "the builder's server type")
+}
+
+func TestPlane_EachNodeAndBuilderTakeTheFirstTypeOfTheListTheirLocationCanOrder(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		soldOut     []string
+		soldOutIn   map[string][]string
+		want        map[string]string
+		wantBuilder string
+	}{
+		{
+			name:      "a new cluster with cx23 sold out in nbg1 runs cpx22 there and cx23 in fsn1 and hel1",
+			soldOutIn: map[string][]string{"nbg1": {"cx23"}}, want: map[string]string{"fsn1": "cx23", "nbg1": "cpx22", "hel1": "cx23"}, wantBuilder: "cx23",
+		},
+		{
+			name:    "a cluster where Hetzner lists only the list's second type runs it everywhere",
+			soldOut: []string{"cx23"}, want: map[string]string{"fsn1": "cpx22", "nbg1": "cpx22", "hel1": "cpx22"}, wantBuilder: "cpx22",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, func(h *harness) { h.plane.ServerTypes = []string{"cx23", "cpx22"} })
+			h.cloud.SoldOut, h.cloud.SoldOutIn = tc.soldOut, tc.soldOutIn
+
+			h.built()
+
+			typeByLocation := map[string]string{}
+			for _, node := range h.byRole(controlplane.RoleNode) {
+				typeByLocation[node.Location] = node.ServerType
+			}
+			assert.Equal(t, tc.want, typeByLocation, "each location's node server type")
+			assert.Equal(t, tc.wantBuilder, h.cloud.SpecFor(t, controlplane.RoleBuilder).ServerType, "the builder's server type")
+			assert.Equal(t, tc.wantBuilder, h.cloud.SpecFor(t, controlplane.RoleWorkerBuilder).ServerType, "the worker builder's server type")
+		})
+	}
+}
+
+func TestPlane_ALostNodeIsReplacedWithTheListsNextTypeWhenTheFirstIsSoldOutInItsLocation(t *testing.T) {
+	h := newHarness(t, func(h *harness) { h.plane.ServerTypes = []string{"cx23", "cpx22"} })
+	h.built()
+	lost, ok := h.read().NodeIn("hel1")
+	require.True(t, ok, "the cluster has no node in hel1")
+	require.NoError(t, h.cloud.DeleteServer(context.Background(), lost.ID))
+	h.cloud.SoldOutIn = map[string][]string{"hel1": {"cx23"}}
+
+	require.NoError(t, h.converge())
+
+	successor, ok := h.read().NodeIn("hel1")
+	require.True(t, ok, "no node replaced the lost one in hel1")
+	assert.NotEqual(t, lost.ID, successor.ID, "the node in hel1")
+	assert.Equal(t, "cpx22", successor.ServerType, "the successor's server type in hel1")
+	for _, loc := range []string{"fsn1", "nbg1"} {
+		node, _ := h.read().NodeIn(loc)
+		assert.Equal(t, "cx23", node.ServerType, "the running node in %s", loc)
+	}
+}
+
+func TestPlane_RefusesAServerNoTypeOfTheListCanBeOrderedForNamingTheListAndTheLocation(t *testing.T) {
+	for _, tc := range []struct {
+		name, loc string
+		nodes     int
+	}{
+		{name: "in fsn1, where the builders run, the install creates no server", loc: "fsn1"},
+		{name: "in hel1 the nodes of fsn1 and nbg1 stand and hel1 gets none", loc: "hel1", nodes: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, func(h *harness) { h.plane.ServerTypes = []string{"cx33", "cx43"} })
+			h.cloud.SoldOutIn = map[string][]string{tc.loc: {"cx33", "cx43"}}
+
+			err := h.settle(nil)
+
+			assert.Equal(t, "server-unavailable", refusalClass(t, err))
+			for _, want := range []string{"cx33", "cx43", tc.loc} {
+				assert.Contains(t, err.Error(), want, "the refusal names the list and the location")
+			}
+			assert.Len(t, h.byRole(controlplane.RoleNode), tc.nodes, "nodes after the refusal")
+			if tc.nodes == 0 {
+				assert.Empty(t, h.cloud.ServerSpecs, "servers an install created with no type to order in %s", tc.loc)
+			}
+		})
+	}
+}
+
+func TestPlane_ANodeCreateHetznerRefusesIsRetriedWithTheTypesReadAgain(t *testing.T) {
+	h := newHarness(t, func(h *harness) { h.plane.ServerTypes = []string{"cx23", "cpx22"} })
+	hetzner := &controlplane.Refusal{Class: "server-unavailable", Message: "Hetzner cannot create the server, of type cx23 in fsn1, now: resource_unavailable"}
+	h.cloud.FailCreate[controlplane.RoleNode] = hetzner
+
+	err := h.settle(nil)
+	h.cloud.SoldOutIn = map[string][]string{"fsn1": {"cx23"}}
+	h.built()
+
+	require.ErrorIs(t, err, hetzner, "the failed create's error")
+	assert.Contains(t, err.Error(), "resource_unavailable", "the failed create names Hetzner's error")
+	node, ok := h.read().NodeIn("fsn1")
+	require.True(t, ok, "no node in fsn1 after the retry")
+	assert.Equal(t, "cpx22", node.ServerType, "the node the retry created once cx23 sold out in fsn1")
 }
 
 func TestPlane_EveryNodeBootsFromTheClustersOwnSnapshot(t *testing.T) {

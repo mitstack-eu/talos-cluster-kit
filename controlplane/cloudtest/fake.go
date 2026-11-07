@@ -56,8 +56,9 @@ type Fake struct {
 	FailAttach map[controlplane.Role]error
 	// FailRoute, when set, fails the next route call of that name, "add" or "delete", with it.
 	FailRoute map[string]error
-	// SoldOut holds the server types no location can order.
-	SoldOut []string
+	// SoldOut holds the server types no location can order, and SoldOutIn the types each location cannot.
+	SoldOut   []string
+	SoldOutIn map[string][]string
 	// powerActions holds each server's power actions Hetzner finished, the newest last.
 	powerActions map[int64][]powerAction
 	// Metrics answers each server's metrics read; FailMetrics, when set, fails every read, and MetricsReads records each one.
@@ -229,11 +230,13 @@ func (f *Fake) CreateServers(_ context.Context, specs ...controlplane.ServerSpec
 	return created, nil
 }
 
-func (f *Fake) AvailableServerTypes(_ context.Context, _ string) ([]string, error) {
+func (f *Fake) AvailableServerTypes(_ context.Context, location string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return slices.DeleteFunc([]string{"cx23", "cx33", "cx43", "cx53", "cpx22", "cpx52", "cpx62"},
-		func(name string) bool { return slices.Contains(f.SoldOut, name) }), nil
+	return slices.DeleteFunc([]string{"cx23", "cx33", "cx43", "cx53", "cpx22", "cpx32", "cpx52", "cpx62"},
+		func(name string) bool {
+			return slices.Contains(f.SoldOut, name) || slices.Contains(f.SoldOutIn[location], name)
+		}), nil
 }
 
 func (f *Fake) ServerStarted(_ context.Context, id int64) (bool, error) {

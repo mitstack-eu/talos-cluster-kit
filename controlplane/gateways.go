@@ -441,7 +441,7 @@ func (p Plane) createGateway(ctx context.Context, st State, s site, loc string, 
 	if err != nil {
 		return err
 	}
-	spec, err := p.gatewaySpec(ctx, loc, userData, s, sibling.Labels[KeyEnrolmentSHA256], sibling.Labels[KeyIssuerBucket], list.Digest())
+	spec, err := p.gatewaySpec(ctx, &OrderableTypes{API: p.API}, loc, userData, s, sibling.Labels[KeyEnrolmentSHA256], sibling.Labels[KeyIssuerBucket], list.Digest())
 	if err != nil {
 		return err
 	}
@@ -468,8 +468,8 @@ func (p Plane) deleteUnattachedGateway(ctx context.Context, loc string, s site) 
 	return nil
 }
 
-func (p Plane) gatewaySpec(ctx context.Context, loc, userData string, s site, enrolment, bucket, digest string) (ServerSpec, error) {
-	serverType, err := p.orderableGatewayType(ctx, loc)
+func (p Plane) gatewaySpec(ctx context.Context, orderable *OrderableTypes, loc, userData string, s site, enrolment, bucket, digest string) (ServerSpec, error) {
+	serverType, err := orderable.First(ctx, string(RoleGateway), GatewayServerTypes, loc)
 	if err != nil {
 		return ServerSpec{}, err
 	}

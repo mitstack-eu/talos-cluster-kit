@@ -1,0 +1,83 @@
+# The node report's admission probe: a namespace that enforces Pod Security restricted and holds one fixture per
+# admission rule, each breaking that rule alone. The report may read the fixtures and create pods and Deployments here,
+# and a ValidatingAdmissionPolicy refuses every request here that is not a dry run, so nothing the report sends is kept.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Namespace }}
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .ConfigMap }}
+  namespace: {{ .Namespace }}
+data:
+{{- range .Fixtures }}
+  {{ .Rule }}: {{ printf "%q" .Manifest }}
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mitstack-node-report-admission
+  namespace: {{ .Namespace }}
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [{{ .ConfigMap }}]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [create]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mitstack-node-report-admission
+  namespace: {{ .Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mitstack-node-report-admission
+subjects:
+  - kind: ServiceAccount
+    name: mitstack-node-report
+    namespace: {{ .ReportNamespace }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: mitstack-admission-probe-dry-run-only
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["*"]
+        operations: ["*"]
+        resources: [pods]
+      - apiGroups: [apps]
+        apiVersions: ["*"]
+        operations: ["*"]
+        resources: [deployments]
+  validations:
+    - expression: request.dryRun == true
+      message: the admission probe namespace takes server dry runs alone, so no fixture runs
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: mitstack-admission-probe-dry-run-only
+spec:
+  policyName: mitstack-admission-probe-dry-run-only
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ .Namespace }}

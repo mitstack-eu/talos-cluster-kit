@@ -101,6 +101,7 @@ jobs:
           docker run --rm talos-tools:ci cat /usr/local/lib/mitstack/report.sh | cmp - report/scripts/report.sh
           docker run --rm talos-tools:ci cat /usr/local/lib/mitstack/label-nodes.sh | cmp - topology/scripts/label-nodes.sh
           docker run --rm talos-tools:ci cat /usr/local/lib/mitstack/mesh-probe.sh | cmp - report/scripts/mesh-probe.sh
+          docker run --rm talos-tools:ci cat /usr/local/lib/mitstack/security-scan.sh | cmp - report/scripts/security-scan.sh
 
       - name: Run each of its commands
         run: |
@@ -112,6 +113,10 @@ jobs:
           docker run --rm talos-tools:ci openssl version
           docker run --rm talos-tools:ci talosctl version --client --short
           docker run --rm talos-tools:ci kubectl version --client
+          docker run --rm talos-tools:ci kube-bench version
+          docker run --rm talos-tools:ci ls /usr/local/lib/mitstack/kube-bench/cfg/cis-1.10/master.yaml /usr/local/lib/mitstack/kube-bench/cfg/config.yaml
+          docker run --rm talos-tools:ci kubescape version
+          docker run --rm talos-tools:ci jq -e .settings.postureControlInputs /usr/local/lib/mitstack/kubescape/default_config_inputs > /dev/null
 
   pr-key-gate:
     name: pr key gate

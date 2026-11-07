@@ -309,11 +309,16 @@ func (p Plane) missingNodeStep(st State, s site, snap Snapshot) (Step, bool, err
 	return Step{}, false, nil
 }
 
-// createNode boots a node from the cluster's own snapshot, with no user data and no public address, named for its location.
+// createNode boots a node from the cluster's own snapshot, with no user data and no public address, named for its
+// location, of the first of ServerTypes Hetzner can order there now.
 func (p Plane) createNode(ctx context.Context, s site, snap Snapshot, loc string) error {
-	_, err := p.API.CreateServers(ctx, ServerSpec{
+	serverType, err := (&OrderableTypes{API: p.API}).First(ctx, "control-plane node", p.ServerTypes, loc)
+	if err != nil {
+		return err
+	}
+	_, err = p.API.CreateServers(ctx, ServerSpec{
 		Name:        p.LocatedName(RoleNode, loc),
-		ServerType:  p.ServerType,
+		ServerType:  serverType,
 		Location:    loc,
 		ImageID:     snap.ID,
 		Labels:      p.Labels(RoleNode),

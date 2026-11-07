@@ -22,7 +22,9 @@ type Plane struct {
 	Block        string
 	Subscription string
 	AppName      string
-	ServerType   string
+	// ServerTypes are the control-plane nodes' and builders' types by preference, so one sold-out type does not stop
+	// a node: each server takes the first its location can order when it is created.
+	ServerTypes []string
 	// Boundary separates the parts of the gateway's user data.
 	Boundary string
 	// PlatformURL is where every node enrols and reports.
@@ -162,4 +164,4 @@ const (
 
 // ServerTypes are x86, since the image is amd64, hold a control plane with Cilium and Argo CD, and are each one the
 // platform's hetzner.server type allows.
-var ServerTypes = []string{"cx23", "cx33", "cx43", "cx53", "cpx32", "cpx52", "cpx62"}
+var ServerTypes = []string{"cx23", "cpx22", "cx33", "cx43", "cx53", "cpx32", "cpx52", "cpx62"}

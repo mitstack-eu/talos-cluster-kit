@@ -148,7 +148,7 @@ plane := controlplane.Plane{
 	Block:             "hcloud-hrobot-talos-cluster",
 	Subscription:      "sub_0123456789ab",
 	AppName:           "shop",
-	ServerType:        "cx33",
+	ServerTypes:       []string{"cx23", "cpx22"}, // each node and builder takes the first its location can order
 	Boundary:          "mitstack-hcloud-hrobot-talos-cluster", // separates the parts of the gateway's user data
 	PlatformURL:       "https://api.mitstack.dev",             // where every node registers and reports
 	ReportProofScript: reportproof.TokenRequestScript,         // block-kit's script that signs each node report
@@ -163,6 +163,14 @@ plane := controlplane.Plane{
 }
 st, err := plane.Read(ctx)
 ```
+
+`ServerTypes` lists the server types of the control-plane nodes and the
+builders by preference, so one sold-out type does not stop a node. Each server
+takes the first type Hetzner can order in its location at the moment it is
+created, through `controlplane.OrderableTypes`, as each gateway does from
+`GatewayServerTypes`. A running server keeps its type. When Hetzner can order
+none of the list in a location, the call refuses with the class
+`server-unavailable`, naming the list and the location.
 
 A call then runs in this order:
 

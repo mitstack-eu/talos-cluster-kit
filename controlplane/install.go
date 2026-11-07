@@ -9,8 +9,6 @@ import (
 	"fmt"
 	"net/netip"
 	"runtime/debug"
-	"slices"
-	"strings"
 	"time"
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
@@ -53,15 +51,25 @@ func (p Plane) install(ctx context.Context, s site) error {
 	if err != nil {
 		return err
 	}
+	orderable := &OrderableTypes{API: p.API}
 	var specs []ServerSpec
 	for _, loc := range Locations {
-		spec, err := p.gatewaySpec(ctx, loc, inst.gatewayUserData[loc], s, inst.enrolmentDigest, inst.issuerBucket, inst.listDigest)
+		spec, err := p.gatewaySpec(ctx, orderable, loc, inst.gatewayUserData[loc], s, inst.enrolmentDigest, inst.issuerBucket, inst.listDigest)
 		if err != nil {
 			return err
 		}
 		specs = append(specs, spec)
 	}
-	specs = append(specs, p.builderSpec(RoleBuilder, inst.builderUserData, s), p.builderSpec(RoleWorkerBuilder, inst.workerBuilderUserData, s))
+	for _, b := range []struct {
+		role     Role
+		userData string
+	}{{RoleBuilder, inst.builderUserData}, {RoleWorkerBuilder, inst.workerBuilderUserData}} {
+		spec, err := p.builderSpec(ctx, orderable, b.role, b.userData, s)
+		if err != nil {
+			return err
+		}
+		specs = append(specs, spec)
+	}
 	if inst.servingUserData != "" {
 		specs = append(specs, ServerSpec{
 			Name:        p.Name(RoleServing),
@@ -88,33 +96,21 @@ func (p Plane) install(ctx context.Context, s site) error {
 	return nil
 }
 
-func (p Plane) builderSpec(r Role, userData string, s site) ServerSpec {
+func (p Plane) builderSpec(ctx context.Context, orderable *OrderableTypes, r Role, userData string, s site) (ServerSpec, error) {
+	serverType, err := orderable.First(ctx, string(r), p.ServerTypes, GatewayLocation)
+	if err != nil {
+		return ServerSpec{}, err
+	}
 	return ServerSpec{
 		Name:        p.Name(r),
-		ServerType:  p.ServerType,
+		ServerType:  serverType,
 		Location:    GatewayLocation,
 		Image:       builderImage,
 		UserData:    userData,
 		Labels:      p.Labels(r),
 		FirewallIDs: []int64{s.firewall.ID},
 		Stopped:     true,
-	}
-}
-
-// orderableGatewayType is the first of GatewayServerTypes Hetzner reads as orderable in loc.
-func (p Plane) orderableGatewayType(ctx context.Context, loc string) (string, error) {
-	available, err := p.API.AvailableServerTypes(ctx, loc)
-	if err != nil {
-		return "", err
-	}
-	for _, t := range GatewayServerTypes {
-		if slices.Contains(available, t) {
-			return t, nil
-		}
-	}
-	return "", refuse("server-unavailable",
-		"Hetzner can order none of the gateway's server types %s in %s now; subscribe again later",
-		strings.Join(GatewayServerTypes, ", "), loc)
+	}, nil
 }
 
 // rollBackInstall deletes whatever servers a failed install made, since the keys they were made with are gone with

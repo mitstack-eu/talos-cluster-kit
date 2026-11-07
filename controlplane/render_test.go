@@ -215,7 +215,8 @@ func TestBuilder_TheApplicationSyncsTheClusterRepositoryTheEnrolmentNamesThePlat
 	for _, job := range testutil.Kind(manifests["mitstack-node-report"], "CronJob") {
 		cronJobs[testutil.Field(t, job, "metadata", "name").(string)] = testutil.Field(t, job, "spec", "jobTemplate", "spec", "template", "spec", "containers", "0")
 	}
-	require.Len(t, cronJobs, 2, "the node report's CronJob and its outside probe's")
+	require.Len(t, cronJobs, 3, "the node report's CronJob, its outside probe's and the security scan's")
+	assert.Contains(t, cronJobs, "mitstack-security-scan", "the security scan's CronJob")
 	for name, container := range cronJobs {
 		assert.Equal(t, tools.Image, testutil.Field(t, container, "image"), "the image %s runs", name)
 	}

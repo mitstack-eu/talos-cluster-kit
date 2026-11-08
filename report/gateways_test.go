@@ -213,12 +213,7 @@ func TestManifests_RunsTheOutsideProbeWhereTheMeshLeavesItOutAndLetsItReachEachG
 }
 
 func TestManifests_ShipNoCommentLine(t *testing.T) {
-	rendered, err := report.Manifests(inputs(reportURL))
-	require.NoError(t, err)
-
-	for line := range strings.Lines(string(rendered)) {
-		assert.False(t, strings.HasPrefix(line, "#"), "a comment line costs a builder's user data and nothing reads it: %q", line)
-	}
+	assert.NotRegexp(t, `(?m)^#`, string(manifests(t, reportURL)), "a comment line costs a builder's user data and nothing reads it")
 }
 
 func TestManifests_RefusesGatewaysWithoutTheirCAsCertificate(t *testing.T) {

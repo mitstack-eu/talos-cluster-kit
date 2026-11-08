@@ -183,8 +183,8 @@ render_hosting_chart() {
 
 readonly block_scalar_end='# Talos trims each document before it decodes it, so this line keeps the value above whole.'
 
-# end_block_scalars <file> adds block_scalar_end after each document that ends inside a block scalar. A block scalar
-# starts at a line ending in | or >, with any indicators, and runs while each line holding text is indented deeper.
+# end_block_scalars <file> adds block_scalar_end after each document that ends inside a block scalar, which starts at a
+# line ending in | or > with any indicators and runs while each line holding text is indented deeper.
 end_block_scalars() {
   awk -v end_line="$block_scalar_end" '
     function indent(line) { match(line, /^ */); return RLENGTH }

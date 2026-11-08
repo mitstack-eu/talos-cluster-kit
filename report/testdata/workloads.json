@@ -1,0 +1,39 @@
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "apiVersion": "apps/v1", "kind": "Deployment",
+      "metadata": {"name": "web", "namespace": "app-shop"},
+      "spec": {"template": {"spec": {"containers": [{"name": "web", "image": "ghcr.io/acme/web:v2"}]}}}
+    },
+    {
+      "apiVersion": "apps/v1", "kind": "StatefulSet",
+      "metadata": {"name": "db", "namespace": "app-pg"},
+      "spec": {"template": {"spec": {"containers": [{"name": "postgres", "image": "ghcr.io/cloudnative-pg/postgresql:16.15@sha256:730f75dafd73e047b86acb2dbd74e75dcb93272fa084a9082848f2341aa1abb6"}]}}}
+    },
+    {
+      "apiVersion": "apps/v1", "kind": "DaemonSet",
+      "metadata": {"name": "agent", "namespace": "kube-system"},
+      "spec": {"template": {"spec": {
+        "initContainers": [{"name": "setup", "image": "quay.io/acme/agent-init:v1@sha256:698856b929e0c0c1c2845fa0b2ffce0b5abdb49e30d05f342ce17cf2e0cd5cb1"}],
+        "containers": [{"name": "agent", "image": "quay.io/acme/agent:v1@sha256:d4f0bc5a29de06b510f9aa428f1eedba926012b591fef7a518e776a7c9bd1824"}]
+      }}}
+    },
+    {
+      "apiVersion": "batch/v1", "kind": "Job",
+      "metadata": {"name": "migrate", "namespace": "app-shop"},
+      "spec": {"template": {"spec": {"containers": [{"name": "migrate", "image": "ghcr.io/acme/migrate:v3@sha256:3bc801a33ea83df414e1aeb962a52412835be99db28668ec25de73fdd4733804"}]}}}
+    },
+    {
+      "apiVersion": "batch/v1", "kind": "CronJob",
+      "metadata": {"name": "nightly-export", "namespace": "app-shop"},
+      "spec": {"jobTemplate": {"spec": {"template": {"spec": {"containers": [{"name": "export", "image": "ghcr.io/acme/nightly-export:v2.1.0@sha256:2a3b62b53ddb9f167b63d22202a360811ba78df015021f704d01ee9abad4169c"}]}}}}}
+    },
+    {
+      "apiVersion": "batch/v1", "kind": "CronJob",
+      "metadata": {"name": "cleanup", "namespace": "app-shop"},
+      "spec": {"jobTemplate": {"spec": {"template": {"spec": {"containers": [{"name": "cleanup", "image": "ghcr.io/acme/cleanup:latest"}]}}}}}
+    }
+  ]
+}

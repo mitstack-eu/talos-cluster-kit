@@ -83,6 +83,11 @@ func (p Plane) gatewayProblems(ctx context.Context, st State, network Network, f
 		gw, ok := st.GatewayIn(loc)
 		if !ok {
 			missing = append(missing, "no gateway in "+loc+" carries this subscription's labels")
+			if _, wait, err := p.rebuildWait(ctx, network, loc); err != nil {
+				return nil, err
+			} else if wait != "" {
+				missing = append(missing, wait)
+			}
 			continue
 		}
 		down, _, err := p.downAfterPowerOn(ctx, gw)

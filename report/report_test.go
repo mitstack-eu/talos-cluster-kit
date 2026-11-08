@@ -35,6 +35,7 @@ const (
 	cloudNativePGRead = "get clusters.postgresql.cnpg.io,databases.postgresql.cnpg.io,databaseroles.postgresql.cnpg.io -A -o json"
 	storageRead       = "get persistentvolumeclaims,storageclasses.storage.k8s.io,services -A -o json"
 	podsRead          = "get pods -A -o json"
+	workloadsRead     = "get deployments.apps,statefulsets.apps,daemonsets.apps,jobs.batch,cronjobs.batch -A -o json"
 	ingressesRead     = "get ingresses.networking.k8s.io -n argocd -o json"
 	defaultDenyRead   = "get networkpolicies.networking.k8s.io -A --field-selector metadata.name=mitstack-default-deny -o json"
 	membersRead       = "-n 10.0.0.6 etcd members"
@@ -95,6 +96,7 @@ func kubectlAnswering(overrides map[string]string) string {
 	answers := map[string]string{nodesRead: "cat testdata/nodes.json", applicationsRead: "cat testdata/applications.json",
 		keySetRead: "cat testdata/jwks.json", cloudNativePGRead: "cat testdata/cloudnative-pg.json", storageRead: "cat testdata/storage-and-services.json",
 		tokenRequest: "echo " + reportProof, meshProbeRead: "cat testdata/mesh-probe.json", podsRead: "cat testdata/pods.json",
+		workloadsRead: "cat testdata/workloads.json",
 		ingressesRead: `echo '{"apiVersion": "v1", "kind": "List", "items": []}'`, defaultDenyRead: "cat testdata/default-deny.json",
 		sealedSecretsRead: "cat testdata/sealed-secrets.json", appProjectsRead: "cat testdata/app-projects.json",
 		fixturesRead: "cat testdata/admission-fixtures.json", dryRun: dryRunAnswer, scansRead: "cat testdata/security-scans.json",
@@ -339,7 +341,7 @@ func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipA
 	}
 	calls := tools.Calls(t)
 	require.NotEmpty(t, calls)
-	beside := []string{"kubectl " + meshProbeRead, "kubectl " + podsRead, "kubectl " + ingressesRead, "kubectl " + defaultDenyRead,
+	beside := []string{"kubectl " + meshProbeRead, "kubectl " + podsRead, "kubectl " + workloadsRead, "kubectl " + ingressesRead, "kubectl " + defaultDenyRead,
 		"talosctl " + etcdStatusRead, "kubectl " + sealedSecretsRead, "kubectl " + appProjectsRead, "kubectl " + fixturesRead,
 		"kubectl " + scansRead, "kubectl " + scanCronJobRead}
 	for _, read := range beside {
@@ -795,7 +797,8 @@ func TestManifests_LetsTheReportListPodsEachKindItReadsAndCloudNativePGsObjectsA
 		map[string]any{"apiGroups": []any{""}, "resources": []any{"pods"}, "verbs": []any{"list"}},
 		map[string]any{"apiGroups": []any{""}, "resources": []any{"namespaces", "serviceaccounts", "services", "resourcequotas", "limitranges"},
 			"verbs": []any{"list"}},
-		map[string]any{"apiGroups": []any{"apps"}, "resources": []any{"deployments"}, "verbs": []any{"list"}},
+		map[string]any{"apiGroups": []any{"apps"}, "resources": []any{"deployments", "statefulsets", "daemonsets"}, "verbs": []any{"list"}},
+		map[string]any{"apiGroups": []any{"batch"}, "resources": []any{"jobs", "cronjobs"}, "verbs": []any{"list"}},
 		map[string]any{"apiGroups": []any{"networking.k8s.io"}, "resources": []any{"ingresses", "networkpolicies"}, "verbs": []any{"list"}},
 		map[string]any{"apiGroups": []any{"rbac.authorization.k8s.io"}, "resources": []any{"roles", "rolebindings"}, "verbs": []any{"list"}},
 		map[string]any{"apiGroups": []any{"argoproj.io"}, "resources": []any{"applications"}, "verbs": []any{"get", "list"}},

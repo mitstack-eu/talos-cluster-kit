@@ -49,6 +49,38 @@ func inputs(t *testing.T) gateway.Inputs {
 	}
 }
 
+func TestList_KeepingMirrorsEachKeptImageOnceAndLeavesTheDigestTheReleaseListsAlone(t *testing.T) {
+	in := inputs(t)
+	release := in.List.Digest()
+	kept, err := components.ParseImage("ghcr.io/acme/nightly-export:v2.1.0@sha256:2a3b62b53ddb9f167b63d22202a360811ba78df015021f704d01ee9abad4169c")
+	require.NoError(t, err)
+	tools, err := components.ParseImage(testutil.ToolsImage)
+	require.NoError(t, err)
+
+	in.List = in.List.Keeping([]components.Image{kept, tools, kept})
+	got, err := gateway.Render(in)
+
+	require.NoError(t, err)
+	assert.Equal(t, release, in.List.Digest(), "a kept image never marks a gateway stale")
+	assert.Equal(t, []components.Image{kept}, in.List.Kept(), "an image the release lists is not kept again")
+	assert.Equal(t, 1, strings.Count(string(got), kept.Ref()+"\n"), "images.txt names the kept image once")
+	assert.Equal(t, 1, strings.Count(string(got), tools.Ref()+"\n"), "images.txt names the release's image once")
+}
+
+func TestRender_RefusesACloudConfigPastHetznersLimitUnlessItTravelsGzipped(t *testing.T) {
+	in, images := inputs(t), []components.Image{}
+	for i := range 300 {
+		images = append(images, components.Image{Name: "ghcr.io/example-org/service-" + strconv.Itoa(i), Tag: "v1", Digest: "sha256:" + strings.Repeat("a", 64)})
+	}
+	in.List = in.List.Keeping(images)
+
+	_, err := gateway.Render(in)
+	assert.ErrorContains(t, err, "over Hetzner's", "a cloud-config its caller sends as text")
+	in.Gzipped = true
+	_, err = gateway.Render(in)
+	assert.NoError(t, err, "a cloud-config its caller gzips and judges once compressed")
+}
+
 func TestRender_MirrorsAndServesTheListItIsGiven(t *testing.T) {
 	tools, err := components.ParseImage(testutil.ToolsImage)
 	require.NoError(t, err)

@@ -7,6 +7,7 @@ import (
 	"mime/multipart"
 	"net/textproto"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mitstack-eu/talos-cluster-kit/gateway"
@@ -122,16 +123,21 @@ func (b firstNodeBootstrap) cloudConfig() (string, error) {
 	}.render()
 }
 
-// gatewayUserData joins the kit's cloud-config and, when bootstrap is set, the bootstrap's as MIME parts, which
-// cloud-init merges in order, and refuses a result past Hetzner's user data limit.
+// gatewayUserData joins the kit's cloud-config, gzipped, since a list that keeps the images the cluster runs passes
+// Hetzner's limit as text, and, when bootstrap is set, the bootstrap's as MIME parts, which cloud-init decompresses and
+// merges in order. It refuses a result past Hetzner's user data limit.
 func (p Plane) gatewayUserData(kitPart []byte, bootstrap *firstNodeBootstrap) (string, error) {
-	parts := []struct{ name, content string }{{"gateway.yaml", string(kitPart)}}
+	zipped, err := serve.Gzipped(kitPart)
+	if err != nil {
+		return "", err
+	}
+	parts := []userDataPart{{name: "gateway.yaml.gz", contentType: "application/gzip", encoding: "base64", content: wrapped(zipped)}}
 	if bootstrap != nil {
 		bootstrapPart, err := bootstrap.cloudConfig()
 		if err != nil {
 			return "", err
 		}
-		parts = append(parts, struct{ name, content string }{"bootstrap.yaml", bootstrapPart})
+		parts = append(parts, userDataPart{name: "bootstrap.yaml", contentType: `text/cloud-config; charset="us-ascii"`, content: bootstrapPart})
 	}
 	var body bytes.Buffer
 	w := multipart.NewWriter(&body)
@@ -139,10 +145,14 @@ func (p Plane) gatewayUserData(kitPart []byte, bootstrap *firstNodeBootstrap) (s
 		return "", fmt.Errorf("setting the user data boundary: %w", err)
 	}
 	for _, part := range parts {
-		pw, err := w.CreatePart(textproto.MIMEHeader{
-			"Content-Type":        {`text/cloud-config; charset="us-ascii"`},
+		header := textproto.MIMEHeader{
+			"Content-Type":        {part.contentType},
 			"Content-Disposition": {`attachment; filename="` + part.name + `"`},
-		})
+		}
+		if part.encoding != "" {
+			header.Set("Content-Transfer-Encoding", part.encoding)
+		}
+		pw, err := w.CreatePart(header)
 		if err != nil {
 			return "", fmt.Errorf("writing the user data part %s: %w", part.name, err)
 		}
@@ -158,4 +168,19 @@ func (p Plane) gatewayUserData(kitPart []byte, bootstrap *firstNodeBootstrap) (s
 		return "", fmt.Errorf("the gateway's user data is %d bytes, over Hetzner's %d", len(out), gateway.UserDataLimit)
 	}
 	return out, nil
+}
+
+type userDataPart struct {
+	name, contentType, encoding, content string
+}
+
+// wrapped breaks base64 into the 76-character lines MIME allows.
+func wrapped(b64 string) string {
+	var out strings.Builder
+	for len(b64) > 76 {
+		out.WriteString(b64[:76] + "\n")
+		b64 = b64[76:]
+	}
+	out.WriteString(b64 + "\n")
+	return out.String()
 }

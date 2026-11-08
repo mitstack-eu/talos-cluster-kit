@@ -266,6 +266,7 @@ func (p Plane) renderGateway(loc string, ingressAddr netip.Addr, now time.Time, 
 		TLS:             tls,
 		List:            list,
 		ManifestBaseURL: gateway.ReleaseURL(release),
+		Gzipped:         true,
 	})
 	if err != nil {
 		return "", gateway.TLS{}, err

@@ -158,7 +158,7 @@ plane := controlplane.Plane{
 	GatewayCA:         kept,                                   // the CA the block keeps, nil before the install
 	Upgrading:         operation == "upgrade",                 // starts replacing gateways built from an earlier list
 	ReadGateway:       readGateway,                            // reads a gateway from the newest node report since a time
-	ReadReport:        readReport,                             // returns the newest node report since a time, for a pool's removals
+	ReadReport:        readReport,                             // returns the newest node report since a time, for removals and kept images
 	Guard:             guard,                                  // block-kit's redundancy guard, judging every removal
 	Notify:            emitEvent,                              // receives each certificate, route move, power-on and deletion
 	AppsOnWorkers:     true,
@@ -242,11 +242,56 @@ as the cluster needs:
    readings. Until then it deletes nothing, and each call records the guard's
    refusal, naming every other gateway with its reading or that it has none.
    It then builds the replacement at the same address with a fresh
-   certificate, and the next location waits until a node report reads the
-   replacement serving.
+   certificate, from a node report read after the deletion, as the
+   paragraphs below explain. The next location waits until a node report
+   reads the replacement serving.
 
 The plane hands each of these events to `Notify`, with each certificate it
 issues.
+
+Each node pulls through the gateways' mirrors with no fallback to a public
+registry, so a gateway built once nodes run keeps every image the cluster
+still runs. Without that, a worker added after an upgrade could not pull an
+image of the release before, nor one an app deployed. The cluster's admission
+policies alone decide which images an app may run, and the gateway adds no
+list of its own.
+
+Such a gateway mirrors the release's pinned list and each image the `images`
+member of the newest node report names, which `ReadReport` gives the plane.
+It mirrors each one under its name and digest. It leaves out a tag that no
+pod's status resolves to a digest, and an image on a registry the nodes reach
+directly, outside `components.MirroredRegistries`. `Notify` receives an event
+naming the report it read, each image it keeps beyond the release's list, and
+each it leaves out with the reason. A running gateway never changes, so an
+image a cluster stopped running leaves at the next gateway built.
+
+When a location loses its gateway while nodes run, whether an upgrade deleted
+it or it was lost, the plane records the loss as the network label
+`mitstack.dev/gateway-gone-<location>`, rounded up to a whole second. It builds
+the replacement only from a report that `ReadReport` returns for that time and
+that was read after it, the rule the redundancy guard holds a removal to. The
+replacement therefore never misses an image deployed while the location had no
+gateway. Until such a report arrives, `NextStep` returns no change, and
+`Problems` names the newest report's time. The plane clears the label once the
+location has its gateway again. A plane given no `ReadReport` builds no
+gateway once nodes run.
+
+An upgrade's replacement reads the same list. When the cluster has sent no
+report, or the newest one lists no images or names a read that failed, the
+plane replaces no gateway. A report from a CronJob that predates the list
+lists no images. The plane refuses the upgrade with class
+`gateway-images-unread`, naming why, before any change.
+
+Hetzner accepts at most 32,768 bytes of user data, and the kept images would
+pass that as text. The gateway's user data therefore carries its cloud-config
+gzipped and base64-encoded in a MIME part of type `application/gzip`, which
+cloud-init decompresses before it reads the part. The install's first gateway
+adds the etcd bootstrap as a second, plain part. The plane refuses user data
+over the limit. `gateway.Render` refuses a cloud-config over the limit too,
+unless `Inputs.Gzipped` says its caller sends it gzipped and judges its size
+once compressed. Its tests log about 17,500 bytes for the install's first
+gateway and about 29,400 for a gateway keeping 300 images, or about 19,000 and
+30,700 on a cluster that hosts the platform.
 
 A gateway bounds its own build. Each download must connect within 15 seconds
 and finish within 5 minutes, each image copy within 15 minutes, the whole
@@ -786,6 +831,7 @@ change `report/scripts/report.sh`.
 | `argocd` | Each Application's health, sync and applied objects, the answer each of 17 routes gives a caller with no session, and the `argocd` namespace's Services and Ingresses | The Applications, `ARGOCD_URL` and the Ingress read |
 | `kubernetes.argocdPods` | Each pod in `argocd` with its containers' images | The pod read |
 | `pods` | Every pod's namespace, name, node or `null`, and phase | `kubectl get pods -A` |
+| `images` | Each image reference a pod or the pod template of a Deployment, StatefulSet, DaemonSet, Job or CronJob names, once, as `image` with the `digest` it names or that a pod's status reports it runs by, and otherwise `null`. A failed read leaves `{exitStatus, stderr}` with `read` naming `pods` or `workloads`, in place of a partial list | The pod read and `kubectl get deployments,statefulsets,daemonsets,jobs,cronjobs -A` |
 | `cloudNativePG` | Each Cluster with its phase, instance counts and `currentPrimary`, and each Database and DatabaseRole with whether it applied | CloudNativePG's objects |
 | `openbao` | Each member's `initialized`, `sealed` and `active`, and the active member's name as `leader` | `sys/seal-status` and `sys/leader` on each member in `OPENBAO_MEMBERS`, verified against `OPENBAO_CA_FILE` |
 | `storage` and `services` | Each claim with its storage class and phase, the default storage classes, and every Service with its type | One read of claims, StorageClasses and Services |
@@ -870,8 +916,9 @@ or times out, the script posts a report holding only an `error` that names it,
 and exits non-zero.
 
 No Application carries its applied objects when they would take the body past
-the platform's 256 KiB. Nothing trims `storage`, `services` or `pods`, since a
-partial list would read as a whole one.
+the platform's 256 KiB. Nothing trims `storage`, `services`, `pods` or
+`images`, since a partial list would read as a whole one. In the report's
+tests, 1,000 pods naming 300 distinct images make a body of 151,968 bytes.
 
 ### How a report is signed
 

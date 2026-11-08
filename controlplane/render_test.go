@@ -90,7 +90,8 @@ func (c renderedCloudConfig) file(t *testing.T, path string) renderedFile {
 	return renderedFile{}
 }
 
-// gatewayParts splits the gateway's MIME user data into its cloud-config parts, in order.
+// gatewayParts splits the gateway's MIME user data into its cloud-config parts, in order, each gzipped one decompressed
+// as cloud-init decompresses it.
 func gatewayParts(t *testing.T, data string) []string {
 	t.Helper()
 	msg, err := mail.ReadMessage(strings.NewReader(data))
@@ -106,9 +107,19 @@ func gatewayParts(t *testing.T, data string) []string {
 			return parts
 		}
 		require.NoError(t, err)
-		assert.Equal(t, `text/cloud-config; charset="us-ascii"`, part.Header.Get("Content-Type"))
 		body, err := io.ReadAll(part)
 		require.NoError(t, err)
+		if part.Header.Get("Content-Type") == "application/gzip" {
+			require.Equal(t, "base64", part.Header.Get("Content-Transfer-Encoding"), "a gzipped part's transfer encoding")
+			zipped, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(string(body), "\n", ""))
+			require.NoError(t, err, "the base64 of a gzipped part")
+			r, err := gzip.NewReader(bytes.NewReader(zipped))
+			require.NoError(t, err, "the gzip of a gzipped part")
+			body, err = io.ReadAll(r)
+			require.NoError(t, err, "the gzip of a gzipped part")
+		} else {
+			assert.Equal(t, `text/cloud-config; charset="us-ascii"`, part.Header.Get("Content-Type"))
+		}
 		parts = append(parts, string(body))
 	}
 }

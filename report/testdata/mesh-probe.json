@@ -1,8 +1,11 @@
 {
   "apiVersion": "v1",
   "kind": "ConfigMap",
-  "metadata": {"name": "mitstack-mesh-probe", "namespace": "kube-system"},
+  "metadata": {
+    "name": "mitstack-mesh-probe",
+    "namespace": "kube-system"
+  },
   "data": {
-    "result": "{\"probedAt\":\"2026-10-23T15:42:31Z\",\"plainCall\":{\"exitStatus\":56,\"answer\":\"\",\"stderr\":\"curl: (56) Recv failure: Connection reset by peer\\n\"},\"handshake\":{\"exitStatus\":1,\"stderr\":\"tls alert certificate required\\n\",\"certificate\":{\"serial\":\"5E1C0A9F3B2D47E8\",\"notBefore\":\"2026-10-23T09:12:00Z\",\"notAfter\":\"2026-10-24T09:12:00Z\",\"identities\":[\"spiffe://cluster.local/ns/mitstack-mesh-probe/sa/mitstack-mesh-probe\"]}}}"
+    "result": "{\"probedAt\":\"2026-10-23T15:42:31Z\",\"plainCall\":{\"exitStatus\":56,\"answer\":\"\",\"stderr\":\"curl: (56) Recv failure: Connection reset by peer\\n\"},\"handshake\":{\"exitStatus\":1,\"stderr\":\"tls alert certificate required\\n\",\"certificate\":{\"serial\":\"5E1C0A9F3B2D47E8\",\"notBefore\":\"2026-10-23T09:12:00Z\",\"notAfter\":\"2026-10-24T09:12:00Z\",\"identities\":[\"spiffe://cluster.local/ns/mitstack-mesh-probe/sa/mitstack-mesh-probe\"]}},\"gateways\":[{\"address\":\"10.0.0.2\",\"connection\":\"served\",\"exitStatus\":0,\"httpCode\":\"200\",\"stderr\":\"\"},{\"address\":\"10.0.0.248\",\"connection\":\"served\",\"exitStatus\":0,\"httpCode\":\"200\",\"stderr\":\"\"},{\"address\":\"10.0.0.249\",\"connection\":\"served\",\"exitStatus\":0,\"httpCode\":\"200\",\"stderr\":\"\"}]}"
   }
 }

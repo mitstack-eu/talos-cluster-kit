@@ -35,13 +35,9 @@ func crowdedPods(t *testing.T) (path string, images []string) {
 		if i < 300 {
 			images = append(images, image+":v1.4.2")
 		}
-		items = append(items, map[string]any{
-			"metadata": map[string]any{"name": fmt.Sprintf("service-%03d-7d9c5b6f8-%04d", i%300, i), "namespace": fmt.Sprintf("app-%02d", i%50)},
-			"spec": map[string]any{"nodeName": fmt.Sprintf("poc-talos4-w%d", i%6),
-				"containers": []any{map[string]any{"name": "app", "image": image + ":v1.4.2"}}},
-			"status": map[string]any{"phase": "Running",
-				"containerStatuses": []any{map[string]any{"name": "app", "imageID": image + "@" + digest}}},
-		})
+		items = append(items, map[string]any{"metadata": map[string]any{"name": fmt.Sprintf("service-%03d-7d9c5b6f8-%04d", i%300, i), "namespace": fmt.Sprintf("app-%02d", i%50)},
+			"spec":   map[string]any{"nodeName": fmt.Sprintf("poc-talos4-w%d", i%6), "containers": []any{map[string]any{"name": "app", "image": image + ":v1.4.2"}}},
+			"status": map[string]any{"phase": "Running", "containerStatuses": []any{map[string]any{"name": "app", "imageID": image + "@" + digest}}}})
 	}
 	data, err := json.Marshal(map[string]any{"apiVersion": "v1", "kind": "List", "items": items})
 	require.NoError(t, err)
@@ -78,9 +74,8 @@ func TestReport_NamesTheFailedReadInPlaceOfAnImageListAPodOrAWorkloadReadLeavesP
 
 			_, err = report.Images(posted.raw)
 
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), "the report's read of the "+name+" ended with exit status 1")
-			assert.Contains(t, err.Error(), "error: forbidden")
+			assert.ErrorContains(t, err, "the report's read of the "+name+" ended with exit status 1")
+			assert.ErrorContains(t, err, "error: forbidden")
 		})
 	}
 }

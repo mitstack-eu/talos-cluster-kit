@@ -296,6 +296,7 @@ data:
       "volumeMounts": [],
       "volumes": []
     }
+# Talos trims each document before it decodes it, so this line keeps the value above whole.
 ---
 # Source: istiod/templates/configmap.yaml
 apiVersion: v1
@@ -341,6 +342,7 @@ data:
           values:
           - "true"
     trustDomain: cluster.local
+# Talos trims each document before it decodes it, so this line keeps the value above whole.
 ---
 # Source: istiod/templates/clusterrole.yaml
 # Created if cluster resources are not omitted

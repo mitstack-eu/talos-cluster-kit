@@ -27,7 +27,7 @@ var scanEnv string
 const ScriptDir = "/usr/local/lib/mitstack"
 
 // Image is the tools image this release published and signed, which the release job writes into the commit it tags.
-const Image = "ghcr.io/mitstack-eu/talos-cluster-kit-tools:v0.35.0@sha256:9f3f51745e05bf0815682eed41fa4eb2bca2698dcc9577520044cef13118126a"
+const Image = "ghcr.io/mitstack-eu/talos-cluster-kit-tools:v0.42.0@sha256:fca366e9f5bde2db8135fe4df0070ef40e1eff381236000742f3374b9cc88413"
 
 // Pin returns the value tools.env, jq.env or scan.env gives name, or "" when none names it.
 func Pin(name string) string {

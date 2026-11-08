@@ -226,21 +226,23 @@ plane that reading. Each call does one of the following, as the cluster needs:
    with a fresh certificate. The next location waits until a node report reads
    the replacement serving.
 
-A gateway bounds its own build. Each download, each image copy, the whole
-preparation and the TLS server's start run within a fixed time. A stage that
-fails or overruns writes the stage and its error to the VGA console, which
-Hetzner's web console shows, and to the login prompt of every later boot, and
-then powers the gateway off. The gateway has no login, so that screen is the
-only place to read why its build failed.
-
-The plane gives each gateway a deadline, `gateway.Deadline` after its
-creation. A replacement that has neither served nor powered itself off by then
-keeps the upgrade waiting, and both the step's wait and `Unhealthy`, with
-cause `CauseGatewayOverdue`, name the gateway and its deadline. No gateway is
-deleted for it.
-
 The plane hands each of these events to `Notify`, with each certificate it
 issues.
+
+A gateway bounds its own build. Each download must connect within 15 seconds
+and finish within 5 minutes, each image copy within 15 minutes, the whole
+preparation within an hour, and the TLS server's first answer within 2
+minutes. A stage that fails or overruns writes the stage and its error to the
+VGA console, which Hetzner's web console shows, and to the login prompt of
+every later boot, and then powers the gateway off. The gateway has no login,
+so that screen is the only place to read why its build failed.
+
+The plane gives each gateway a deadline of 77 minutes after its creation,
+`gateway.Deadline`, which adds 15 minutes for its boot and package install to
+the bounds above. A replacement that has neither served nor powered itself off
+by then keeps the upgrade waiting. The step's wait, which a block reports as
+its status detail, names the gateway and its deadline, and `Unhealthy` returns
+cause `CauseGatewayOverdue` with the same words. No gateway is deleted for it.
 
 A cluster built before gateways ran in each location has one gateway with no
 list label. The plane keeps its route and refuses its upgrade with class
@@ -692,15 +694,15 @@ target, on 8080 and on 15008, and no other pod:
   before it asks for the caller's, so the probe sees the certificate ztunnel
   presents for the target, and ztunnel then refuses the probe for presenting
   none. It then reads each gateway's mirror on 443, where ztunnel cannot turn a
-  closed port into a TLS failure, and names each connection closed, reset, a
-  TLS failure or served. The probe writes these outcomes into the ConfigMap
+  closed port into a TLS failure, and names how each connection ended. The
+  probe writes these outcomes into the ConfigMap
   `kube-system/mitstack-mesh-probe`. It may patch that one ConfigMap by name,
   and the report may only read it.
 
 The probe's own Cilium policy, `mitstack-mesh-probe-outside`, lets it look up
 the target's name and no other, reach the API server, the target's two ports
-and each gateway's address on 443, and nothing else. The probe writes the target's name with a final
-dot, which makes it an absolute DNS name. Without the dot, the resolver would
+and each gateway's address on 443, and nothing else. The probe writes the
+target's name with a final dot, which makes it an absolute DNS name. Without the dot, the resolver would
 first try the name under each search domain, Cilium's DNS proxy would refuse
 those names, and the probe's resolver, musl's, stops at the first refusal.
 
@@ -761,7 +763,7 @@ change `report/scripts/report.sh`.
 | `subscriptionResources` and `subscriptionResourceKinds` | The objects a block labels `mitstack.dev/subscription`, and the object types the report read whole | One read per object type in `subscription_kinds` in `report.sh` |
 | `jwks` | The key set the API server signs service-account tokens with | `/openid/v1/jwks` |
 | `mesh` | The mesh probe's results, which [the section on the mesh](#how-the-node-report-shows-the-mesh-refusing-a-call) explains | The probe's target and its ConfigMap |
-| `gateways` | Each gateway's `address`, its `connection`, and `passed` when its mirror answered HTTP 200 on `/v2/` over a certificate the gateway CA signs, and otherwise a `reason` naming curl's exit status or the answer. The `connection` is `closed`, `reset`, `tls-failure`, `timed-out`, `answered`, `served` or `failed`, and `probedAt` is when the outside probe read it | The outside probe's reading of each mirror in `GATEWAYS`, verified against `GATEWAY_CA`, the CA's certificate alone, from outside the mesh |
+| `gateways` | Each gateway's `address`, its `connection`, and `passed` when its mirror answered HTTP 200 on `/v2/` over a certificate the gateway CA signs, and otherwise a `reason` naming curl's exit status or the answer. The `connection` is `closed` when nothing took the connection, `reset` when the peer reset or dropped it, `tls-failure` when the handshake or the certificate failed, `timed-out` after 5 seconds without an answer, `answered` for an HTTP status other than 200, `served` for 200, and `failed` for any other curl error. `probedAt` is when the outside probe read it | The outside probe's reading of each gateway's mirror. `GATEWAYS` lists the gateways' private addresses, and the probe verifies each mirror against `GATEWAY_CA`, the gateway CA's certificate alone, from outside the mesh |
 | `egress` | `passed` when a TLS connection to Let's Encrypt's ACME directory opened and answered, and otherwise a `reason` naming curl's exit status. The connection leaves through the network's default route, so it reads the egress of the gateway that route names | `EGRESS_URL`, `https://acme-v02.api.letsencrypt.org/directory` |
 | `repositorySecrets` | Each repository credential the cluster declares, with its `name`, `secretType`, `project` and `url`. These come from the template of each SealedSecret in `argocd` that carries an `argocd.argoproj.io/secret-type` label, so the report reads no Secret and carries no ciphertext. A credential written straight into a Secret, as the cluster tokens write `cluster-repository` on a cluster that reads its repository with a platform token, is not listed | `kubectl get sealedsecrets.bitnami.com -n argocd` |
 | `appProjects` | Each AppProject with its `sourceRepos`, which the platform holds each app's credential to | `kubectl get appprojects.argoproj.io -n argocd` |

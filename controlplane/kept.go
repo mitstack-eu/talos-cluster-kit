@@ -110,7 +110,6 @@ func normalized(name string) string {
 	return host + "/" + rest
 }
 
-// event names the report k was read from, each image list keeps beyond the release's own, and each k leaves out.
 // newestReportWait names the newest node report of all, which is too old to keep from.
 func (p Plane) newestReportWait(ctx context.Context) (keeping, string, error) {
 	newest, err := p.ReadReport(ctx, time.Time{})
@@ -124,6 +123,7 @@ func (p Plane) newestReportWait(ctx context.Context) (keeping, string, error) {
 	}
 }
 
+// event names the report k was read from, each image list keeps beyond the release's own, and each k leaves out.
 func (k keeping) event(loc string, list gateway.List) string {
 	kept := make([]string, 0, len(k.kept))
 	for _, image := range list.Kept() {

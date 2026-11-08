@@ -14,14 +14,15 @@ shopt -s nullglob
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-# connection_of <curl exit> <HTTP status> <stderr> names how a mirror's connection ended; curl's words split exit 35.
+# connection_of <curl exit> <HTTP status> <stderr> names how a mirror's connection ended; curl's words split exit 35,
+# where curl on OpenSSL 3.0 names a peer's close before it answered SSL_ERROR_SYSCALL and later releases unexpected eof.
 connection_of() {
   case $1 in
     0) if [ "$2" = 200 ]; then echo served; else echo answered; fi ;;
     7) echo closed ;;
     28) echo timed-out ;;
     5[256]) echo reset ;;
-    35) if grep -qiE 'reset by peer|broken pipe|unexpected eof' "$3"; then echo reset; else echo tls-failure; fi ;;
+    35) if grep -qiE 'reset by peer|broken pipe|unexpected eof|SSL_ERROR_SYSCALL' "$3"; then echo reset; else echo tls-failure; fi ;;
     5[13489] | 6[046] | 77 | 8[023] | 9[018]) echo tls-failure ;;
     *) echo failed ;;
   esac

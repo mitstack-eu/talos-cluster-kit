@@ -85,8 +85,9 @@ main() {
   completion=$5
   # shellcheck source=/dev/null
   . "$1"
-  [ -n "${DOWNLOAD_CONNECT_SECONDS:-}" ] && [ -n "${DOWNLOAD_SECONDS:-}" ] && [ -n "${COPY_SECONDS:-}" ] ||
+  if [ -z "${DOWNLOAD_CONNECT_SECONDS:-}" ] || [ -z "${DOWNLOAD_SECONDS:-}" ] || [ -z "${COPY_SECONDS:-}" ]; then
     fail "tools.env names no bound for a download or a copy"
+  fi
   install_tools
 
   local ref file sha256 url

@@ -1,16 +1,21 @@
 package etcd_test
 
 import (
+	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/mitstack-eu/talos-cluster-kit/etcd"
+	"github.com/mitstack-eu/talos-cluster-kit/internal/redundanttest"
+	"github.com/mitstack-eu/talos-cluster-kit/report"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 )
 
@@ -41,9 +46,25 @@ type removeMemberRun struct {
 	env    map[string]any
 }
 
+// replacementBegan is when the lost node's replacement began, a minute before the node report it is judged by.
+var replacementBegan = time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
+
+// etcdReport is a node report read a minute after the replacement began, naming three nodes' members and the lost
+// one's, each healthy but the lost one and those unhealthy names.
+func etcdReport(lost string, unhealthy ...string) report.Read {
+	var members []string
+	for _, hostname := range slices.Compact(slices.Sorted(slices.Values([]string{"poc-talos4-cp1", "poc-talos4-cp2", "poc-talos4-cp3", lost}))) {
+		healthy := hostname != lost && !slices.Contains(unhealthy, hostname)
+		members = append(members, fmt.Sprintf(`{"hostname":%q,"healthy":%t}`, hostname, healthy))
+	}
+	return report.Read{Body: []byte(`{"etcd":{"members":[` + strings.Join(members, ",") + `]}}`), At: replacementBegan.Add(time.Minute)}
+}
+
+// renderRemoveMember renders the removal of hostname's member while every other member reads healthy.
 func renderRemoveMember(t *testing.T, hostname string) ([]map[string]any, removeMemberRun) {
 	t.Helper()
-	rendered, err := etcd.RemoveMemberJob(etcd.RemoveMember{Hostname: hostname, ToolsImage: testutil.ToolsImage})
+	rendered, err := etcd.RemoveMemberJob(etcd.RemoveMember{Hostname: hostname, ToolsImage: testutil.ToolsImage,
+		Report: etcdReport(hostname), StepStart: replacementBegan, Guard: redundanttest.Guard})
 	require.NoError(t, err)
 	docs := testutil.Documents(t, rendered)
 	jobs := testutil.Kind(docs, "Job")
@@ -58,34 +79,48 @@ func renderRemoveMember(t *testing.T, hostname string) ([]map[string]any, remove
 }
 
 func TestRemoveMemberJob_RemovesTheEtcdMemberBeforeDeletingItsNode(t *testing.T) {
-	_, run := renderRemoveMember(t, "poc-talos4-cp3")
-	tools := newTools(t)
+	removal := []string{"talosctl -n 10.0.0.6 etcd members", "talosctl -n 10.0.0.6 etcd remove-member 9341865dff9e2b03"}
+	for name, tc := range map[string]struct {
+		exit  string
+		calls []string
+	}{
+		"the member is removed":                 {"0", append(slices.Clone(removal), "kubectl delete node poc-talos4-cp3 --ignore-not-found")},
+		"the member removal fails, so it stays": {"1", removal},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, run := renderRemoveMember(t, "poc-talos4-cp3")
+			tools := newTools(t)
 
-	out, err := testutil.RunBash(t, run.script, tools.Env(
-		"MEMBER_HOSTNAME="+run.env["MEMBER_HOSTNAME"].(string), "HOST_IP=10.0.0.6", "NODE_NAME=poc-talos4-cp2",
-		"FAKE_MEMBERS="+filepath.Join("testdata", "members.txt")))
+			out, err := testutil.RunBash(t, run.script, tools.Env(
+				"MEMBER_HOSTNAME="+run.env["MEMBER_HOSTNAME"].(string), "HOST_IP=10.0.0.6", "NODE_NAME=poc-talos4-cp2",
+				"FAKE_MEMBERS="+filepath.Join("testdata", "members.txt"), "FAKE_REMOVE_EXIT="+tc.exit))
 
-	require.NoError(t, err, out)
-	assert.Equal(t, []string{
-		"talosctl -n 10.0.0.6 etcd members",
-		"talosctl -n 10.0.0.6 etcd remove-member 9341865dff9e2b03",
-		"kubectl delete node poc-talos4-cp3 --ignore-not-found",
-	}, tools.Calls(t))
+			assert.Equal(t, tc.exit != "0", err != nil, "the Job failed: %v\n%s", err, out)
+			assert.Equal(t, tc.calls, tools.Calls(t))
+		})
+	}
 }
 
-func TestRemoveMemberJob_KeepsTheNodeWhenTheMemberRemovalFails(t *testing.T) {
-	_, run := renderRemoveMember(t, "poc-talos4-cp3")
-	tools := newTools(t)
+func TestRemoveMemberJob_RendersNoRemovalWhileASecondEtcdMemberReadsUnhealthy(t *testing.T) {
+	read := etcdReport("poc-talos4-cp3", "poc-talos4-cp2")
 
-	out, err := testutil.RunBash(t, run.script, tools.Env(
-		"MEMBER_HOSTNAME=poc-talos4-cp3", "HOST_IP=10.0.0.6", "NODE_NAME=poc-talos4-cp2",
-		"FAKE_MEMBERS="+filepath.Join("testdata", "members.txt"), "FAKE_REMOVE_EXIT=1"))
+	rendered, err := etcd.RemoveMemberJob(etcd.RemoveMember{Hostname: "poc-talos4-cp3", ToolsImage: testutil.ToolsImage, Report: read, StepStart: replacementBegan, Guard: redundanttest.Guard})
 
-	require.Error(t, err, out)
-	assert.Equal(t, []string{
-		"talosctl -n 10.0.0.6 etcd members",
-		"talosctl -n 10.0.0.6 etcd remove-member 9341865dff9e2b03",
-	}, tools.Calls(t))
+	require.Error(t, err)
+	assert.Empty(t, rendered, "the removal Job rendered")
+	assert.Contains(t, err.Error(), "refused:redundancy-below-minimum")
+	assert.Contains(t, err.Error(), `"poc-talos4-cp2" read not serving at 2026-11-08T09:01:00Z`, "the refusal names the second unhealthy member")
+}
+
+func TestRemoveMemberJob_RendersNoRemovalOnAReportReadBeforeTheReplacementBegan(t *testing.T) {
+	read := etcdReport("poc-talos4-cp3")
+	read.At = replacementBegan.Add(-time.Minute)
+
+	rendered, err := etcd.RemoveMemberJob(etcd.RemoveMember{Hostname: "poc-talos4-cp3", ToolsImage: testutil.ToolsImage, Report: read, StepStart: replacementBegan, Guard: redundanttest.Guard})
+
+	require.Error(t, err)
+	assert.Empty(t, rendered, "the removal Job rendered")
+	assert.Contains(t, err.Error(), "before the step began")
 }
 
 func TestRemoveMemberJob_RefusesToRemoveTheNodeItRunsOn(t *testing.T) {

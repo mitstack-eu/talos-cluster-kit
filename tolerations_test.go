@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/etcd"
+	"github.com/mitstack-eu/talos-cluster-kit/internal/redundanttest"
 	"github.com/mitstack-eu/talos-cluster-kit/openbaoinit"
 	"github.com/mitstack-eu/talos-cluster-kit/report"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
@@ -40,7 +42,9 @@ func renderedManifests(t *testing.T) map[string][]byte {
 		ToolsImage: testutil.ToolsImage, ProofScript: "echo report-proof\n"})
 	require.NoError(t, err)
 	out["report"] = reportManifests
-	removeMember, err := etcd.RemoveMemberJob(etcd.RemoveMember{Hostname: "shop-node-nbg1", ToolsImage: testutil.ToolsImage})
+	began := time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
+	healthy := report.Read{At: began, Body: []byte(`{"etcd":{"members":[{"hostname":"shop-node-fsn1","healthy":true},{"hostname":"shop-node-nbg1","healthy":false},{"hostname":"shop-node-hel1","healthy":true}]}}`)}
+	removeMember, err := etcd.RemoveMemberJob(etcd.RemoveMember{Hostname: "shop-node-nbg1", ToolsImage: testutil.ToolsImage, Report: healthy, StepStart: began, Guard: redundanttest.Guard})
 	require.NoError(t, err)
 	out["etcd remove-member"] = removeMember
 	initJob, err := openbaoinit.Manifests(testutil.InitInputs(t))

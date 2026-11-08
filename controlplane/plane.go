@@ -12,6 +12,8 @@ import (
 
 	"github.com/mitstack-eu/talos-cluster-kit/gateway"
 	"github.com/mitstack-eu/talos-cluster-kit/nodeconfig"
+	"github.com/mitstack-eu/talos-cluster-kit/redundant"
+	"github.com/mitstack-eu/talos-cluster-kit/report"
 )
 
 // Plane is one subscription's control plane as a block names it. It keeps no state between calls, so each call
@@ -44,6 +46,10 @@ type Plane struct {
 	Upgrading bool
 	// ReadGateway reads the gateway at address from the newest node report received after since; nil reads none.
 	ReadGateway func(ctx context.Context, address string, since time.Time) (GatewayReading, error)
+	// ReadReport reads the newest node report received after since, nil when none was; a nil ReadReport reads none.
+	ReadReport func(ctx context.Context, since time.Time) (*report.Read, error)
+	// Guard is block-kit's redundancy guard, which judges every removal of a gateway or a Cloud worker; nil removes none.
+	Guard redundant.Guard
 	// Notify receives each event a step records: a certificate issued, a route moved, a gateway deleted or powered on.
 	Notify func(ctx context.Context, detail string)
 	// AppsOnWorkers keeps every pod without a toleration off the control-plane nodes, and the ingress load balancer's

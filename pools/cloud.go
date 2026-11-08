@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"time"
 
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
+	"github.com/mitstack-eu/talos-cluster-kit/redundant"
+	"github.com/mitstack-eu/talos-cluster-kit/report"
 )
 
 const (
@@ -16,21 +19,35 @@ const (
 	KeyMember = "mitstack.dev/member"
 )
 
-// CloudPlan is what a Cloud pool lacks. A member leaves in two passes: it appears in Drain until its node is gone from
-// the cluster, then in Delete.
+// CloudPlan is what a Cloud pool lacks, where members leave one at a time through Mark, Drain until the node is gone
+// from the cluster, and Delete.
 type CloudPlan struct {
-	Create        []controlplane.ServerSpec
+	Create []controlplane.ServerSpec
+	// Mark holds each member whose removal begins, or who is kept again, with the labels that record it.
+	Mark          []controlplane.Server
 	Drain, Delete []controlplane.Server
+	// Held names why a member whose removal began is not drained yet, which the block records as an event.
+	Held []string
 }
 
-// Empty reports whether the pool already stands as wanted.
-func (p CloudPlan) Empty() bool { return len(p.Create)+len(p.Drain)+len(p.Delete) == 0 }
+// removalPlan is the plan a Cloud worker's removal labels name.
+const removalPlan = "cloud-pool"
 
-// Apply creates the planned servers and deletes the ones Delete names. The block drains each node in Drain itself.
+// Empty reports whether the pool already stands as wanted.
+func (p CloudPlan) Empty() bool {
+	return len(p.Create)+len(p.Mark)+len(p.Drain)+len(p.Delete)+len(p.Held) == 0
+}
+
+// Apply creates the planned servers, labels each in Mark and deletes each in Delete, leaving Drain to the block.
 func (p CloudPlan) Apply(ctx context.Context, api controlplane.API) error {
 	if len(p.Create) > 0 {
 		if _, err := api.CreateServers(ctx, p.Create...); err != nil {
 			return fmt.Errorf("creating the Cloud pool's servers: %w", err)
+		}
+	}
+	for _, srv := range p.Mark {
+		if err := api.SetServerLabels(ctx, srv.ID, srv.Labels); err != nil {
+			return fmt.Errorf("labelling the removal of the Cloud pool's server %s: %w", srv.Name, err)
 		}
 	}
 	for _, srv := range p.Delete {
@@ -52,11 +69,34 @@ func PlanCloud(ctx context.Context, plane controlplane.Plane, pool CloudPool, dr
 	members := st.Servers[RoleCloudWorker]
 	keep, leaving := splitMembers(members, pool)
 	var plan CloudPlan
+	for _, srv := range keep {
+		if _, began := controlplane.RemovalBegan(srv, removalPlan); began {
+			srv.Labels = controlplane.EndRemoval(srv)
+			plan.Mark = append(plan.Mark, srv)
+		}
+	}
+	removing := false
+	slices.SortStableFunc(leaving, func(a, b controlplane.Server) int { return removalOrder(a) - removalOrder(b) })
 	for _, srv := range leaving {
-		if drained(srv) {
+		switch began, ok := controlplane.RemovalBegan(srv, removalPlan); {
+		case drained(srv):
 			plan.Delete = append(plan.Delete, srv)
-		} else {
-			plan.Drain = append(plan.Drain, srv)
+		case removing:
+		case !ok:
+			removing = true
+			srv.Labels = controlplane.BeginRemoval(srv, now(plane), removalPlan)
+			plan.Mark = append(plan.Mark, srv)
+		default:
+			removing = true
+			held, err := heldDrain(ctx, plane, members, srv, began)
+			switch {
+			case err != nil:
+				return CloudPlan{}, err
+			case held != "":
+				plan.Held = append(plan.Held, held)
+			default:
+				plan.Drain = append(plan.Drain, srv)
+			}
 		}
 	}
 	room := pool.Max - len(members)
@@ -187,6 +227,84 @@ func (c *creation) spec(ctx context.Context, plane controlplane.Plane, pool Clou
 		Name: plane.LocatedName(RoleCloudWorker, key), ServerType: pool.ServerTypes[i], Location: loc, ImageID: c.image.ID,
 		Labels: labels, NetworkIDs: []int64{c.network.ID}, FirewallIDs: []int64{c.firewall.ID},
 	}, nil
+}
+
+// removalOrder puts a member whose removal began before one whose has not, so a removal under way finishes first.
+func removalOrder(srv controlplane.Server) int {
+	if _, began := controlplane.RemovalBegan(srv, removalPlan); began {
+		return 0
+	}
+	return 1
+}
+
+func now(plane controlplane.Plane) time.Time {
+	if plane.Now == nil {
+		return time.Now()
+	}
+	return plane.Now()
+}
+
+// heldDrain names why leaving may not drain yet, empty when the plane's redundancy guard finds the other workers and
+// OpenBao's quorum serving in a node report since its removal began.
+func heldDrain(ctx context.Context, plane controlplane.Plane, members []controlplane.Server, leaving controlplane.Server, began time.Time) (string, error) {
+	var read *report.Read
+	if plane.ReadReport != nil {
+		var err error
+		if read, err = plane.ReadReport(ctx, began); err != nil {
+			return "", err
+		}
+	}
+	if read == nil {
+		return fmt.Sprintf("no node report was received since the removal of the Cloud pool's server %s began at %s, so neither the other workers nor OpenBao's members are read",
+			leaving.Name, began.Format(time.RFC3339)), nil
+	}
+	sets, err := drainSets(*read, members, leaving)
+	if err != nil {
+		return "", err
+	}
+	for _, s := range sets {
+		if err := plane.Guard.Allow(s.Set, s.removed, began); redundant.Held(err) {
+			return err.Error(), nil
+		} else if err != nil {
+			return "", err
+		}
+	}
+	return "", nil
+}
+
+// removal is a redundant set with the member a drain removes from it.
+type removal struct {
+	redundant.Set
+	removed string
+}
+
+// drainSets are the sets draining leaving removes a member from: the pool's workers, whose minimum keeps every other
+// worker serving unless leaving is the last, and OpenBao's members, a majority of which must stay unsealed, for each
+// member whose pod runs on leaving.
+func drainSets(read report.Read, members []controlplane.Server, leaving controlplane.Server) ([]removal, error) {
+	names := make([]string, 0, len(members))
+	for _, srv := range members {
+		names = append(names, srv.Name)
+	}
+	workers, err := read.Nodes(names)
+	if err != nil {
+		return nil, err
+	}
+	minimum := redundant.AllButOne
+	if len(workers) == 1 {
+		minimum = redundant.NoRedundancy
+	}
+	sets := []removal{{redundant.Set{Name: "Cloud pool's workers", Members: workers, Minimum: minimum}, leaving.Name}}
+	openBao, nodes, err := read.OpenBaoMembers()
+	if err != nil {
+		return nil, err
+	}
+	for _, m := range openBao {
+		if nodes[m.Name] == leaving.Name {
+			sets = append(sets, removal{redundant.Set{Name: "OpenBao members", Members: openBao, Minimum: redundant.Majority}, m.Name})
+		}
+	}
+	return sets, nil
 }
 
 func nextKey(loc string, taken map[string]bool) string {

@@ -53,6 +53,7 @@ the order a block uses them.
 | `rollout` | Gives a running cluster that hosts the platform a release's hosting policies: the files a block commits to the cluster repository, where Argo CD applies, changes and prunes them, and the read-back of each one from the node report | `Current`, `Release.Files`, `Release.ReadBack` |
 | `controlplane` | Builds and deletes a Talos control plane on Hetzner Cloud: a network, a firewall, a gateway in each of `fsn1`, `nbg1` and `hel1`, a builder that makes the cluster's own snapshot, a node in each of `fsn1`, `nbg1` and `hel1`, and an API and an ingress load balancer. Each call reads the resources by their labels and takes the one change still missing. A refusal is a `*Refusal` with a `Class` and a `Message`, which the block answers as its own framework's refusal | `Plane`, `Plane.Read`, `Plane.EnsureNetwork`, `Plane.NextStep`, `Plane.Problems`, `Plane.Unhealthy`, `Plane.Outputs`, `Plane.Delete`, `NewAPI`, `Refusal`, `TopologyLabels` |
 | `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image and the gateway both install, and `tools/jq.env`, which pins the tools image's jq. It names the tools image a release published and the directory in that image that holds the node report's, its outside probe's and the labeller's scripts | `Env`, `Pin`, `Image`, `ScriptDir` |
+| `redundant` | Carries a removal's redundant set, each member with its reading, to the guard the block passes, block-kit's `redundancy.Set.AllowRemoval`, which this module does not import | `Set`, `Guard`, `Held` |
 | `testutil` | Holds the fixtures, fakes and decoders this module's tests and a block's tests share | `NewCluster`, `NewTools`, `Golden` |
 
 For example, this renders the configuration a Cloud cluster's image embeds,
@@ -156,7 +157,9 @@ plane := controlplane.Plane{
 	Installed:         install,                                // the block's own func(ctx, controlplane.Network, nodeconfig.Cluster, gateway.CA) error
 	GatewayCA:         kept,                                   // the CA the block keeps, nil before the install
 	Upgrading:         operation == "upgrade",                 // starts replacing gateways built from an earlier list
-	ReadGateway:       readReport,                             // reads a gateway from the newest node report since a time
+	ReadGateway:       readGateway,                            // reads a gateway from the newest node report since a time
+	ReadReport:        readReport,                             // returns the newest node report since a time, for a pool's removals
+	Guard:             guard,                                  // block-kit's redundancy guard, judging every removal
 	Notify:            emitEvent,                              // receives each certificate, route move, power-on and deletion
 	AppsOnWorkers:     true,
 	WorkerAddresses:   []string{"10.0.1.2"}, // the Robot worker's address in the network's vSwitch subnet
@@ -212,19 +215,35 @@ The block keeps it in its own store and passes it back as `Plane.GatewayCA`.
 Without the CA, the plane refuses to build a gateway, with class
 `gateway-ca-unknown`.
 
-A gateway serves when Hetzner reads it running at its address and no node
-report since its creation reads its mirror failing. `ReadGateway` gives the
-plane that reading. Each call does one of the following, as the cluster needs:
+A gateway serves when Hetzner reads it running at its address and the newest
+node report since its creation reads its mirror answering. A gateway no report
+has read does not serve. `ReadGateway` gives the plane that reading, with `At`,
+the time it was taken, which `report.GatewayReadAt` reads: the outside probe's
+`probedAt`, else the body's `madeAt`, else the time the platform received the
+report. The route is a problem only while its gateway is off its address or a
+report reads its mirror failing, since a new cluster sends its first report
+once it is built. Each call does one of the following,
+as the cluster needs:
 
 1. It moves the default route off a gateway that does not serve, to one that
    does, by deleting the route and adding it again.
 2. It powers a stopped gateway back on, once. A gateway that still does not
    serve is never powered on again, and `Unhealthy` names it.
 3. It replaces one gateway built from an earlier list, once the upgrade's own
-   call, with `Upgrading` set, has marked the network. It moves the route off
-   the old gateway, deletes it, and builds its replacement at the same address
-   with a fresh certificate. The next location waits until a node report reads
-   the replacement serving.
+   call, with `Upgrading` set, has marked the network. It takes first a gateway
+   that does not serve, since replacing it takes nothing from those that do. It
+   moves the route off the old gateway and labels it with the time its
+   replacement began, `mitstack.dev/removal-began`, and the digest of the list
+   it is replaced for, `mitstack.dev/removal-for`. A label for another list
+   counts for nothing, so an upgrade that took over from an abandoned one
+   begins the replacement again. It deletes it only once
+   block-kit's redundancy guard finds every other gateway read serving by a
+   node report from after that time, and its event names each of those
+   readings. Until then it deletes nothing, and each call records the guard's
+   refusal, naming every other gateway with its reading or that it has none.
+   It then builds the replacement at the same address with a fresh
+   certificate, and the next location waits until a node report reads the
+   replacement serving.
 
 The plane hands each of these events to `Notify`, with each certificate it
 issues.
@@ -243,6 +262,17 @@ the bounds above. A replacement that has neither served nor powered itself off
 by then keeps the upgrade waiting. The step's wait, which a block reports as
 its status detail, names the gateway and its deadline, and `Unhealthy` returns
 cause `CauseGatewayOverdue` with the same words. No gateway is deleted for it.
+
+Every step that removes a gateway, an etcd member or a Cloud worker asks one
+guard first, block-kit's `redundancy.Set.AllowRemoval`. This module imports no
+block framework, so the block passes the guard as `Plane.Guard`, or as
+`RemoveMember.Guard` for etcd. The block's adapter copies each
+`redundant.Set` into block-kit's own set and returns its answer unchanged. A
+plane with no guard removes nothing, and its step fails naming the missing
+guard. A refusal of class `redundancy-below-minimum` holds the step, and the
+next call asks again. The kit's own tests pass `internal/redundanttest`, which
+answers as block-kit v0.38.0's guard does, and the block's tests run the real
+guard.
 
 A cluster built before gateways ran in each location has one gateway with no
 list label. The plane keeps its route and refuses its upgrade with class
@@ -1545,7 +1575,12 @@ status. You reproduce a failed build with a throwaway configuration.
 
 A lost control-plane node leaves its etcd member and its Node object behind.
 `etcd.RemoveMemberJob` renders a Job that looks up the member by hostname,
-removes it, and only then deletes the Node. Its Talos identity holds
+removes it, and only then deletes the Node. It renders the Job only when
+block-kit's redundancy guard finds a majority of the members serving without
+the lost one, by the etcd members `RemoveMember.Report` reads healthy. The block
+passes the newest node report as a `report.Read` and the time the replacement
+began as `StepStart`, and a report read before then counts for no member. A
+refusal renders nothing and names each member with its reading. Its Talos identity holds
 `os:admin`, the only role Talos accepts for a member removal, and its
 Kubernetes identity may delete that one Node.
 
@@ -1606,16 +1641,26 @@ lists with the subscription's labels and the role `cloud-worker`, and answers a
   first listed server type its location offers. A server is created only while
   the pool, a member that is leaving included, holds fewer than its size, and
   in the listed location holding the fewest members.
-- `Drain` lists members whose node still runs pods. A member leaves when the
-  pool shrinks, which takes the newest member of the location holding the most,
-  or when the list drops its server type or location, which a new server then
-  replaces. The block drains each such node itself.
+- `Mark` lists the member whose removal begins, labelled with the time it
+  began, and each member the pool keeps again with those labels taken off, so
+  a later removal judges only readings from after it began. A member leaves when the pool shrinks, which takes the newest member
+  of the location holding the most, or when the list drops its server type or
+  location, which a new server then replaces. One member leaves at a time.
+- `Drain` lists that member once block-kit's redundancy guard allows it, on the
+  newest node report `Plane.ReadReport` returns from after its removal began.
+  Every other member of the pool must read Ready, unless it is the last. When
+  an OpenBao member's pod runs on it, a majority of OpenBao's members must read
+  initialized and unsealed without that one. The block drains each such node
+  itself.
+- `Held` names why that member is not drained yet: the guard's refusal, naming
+  each member it read, or that no node report came since the removal began.
+  The block records it as an event, and its next call plans again.
 - `Delete` lists the members whose node has left the cluster, which the block
   reports through the `drained` function it passes `PlanCloud`. A server is
   deleted only once its node has drained.
 
-`CloudPlan.Apply` creates and deletes through the `controlplane` API, and no
-other server of the cluster is touched.
+`CloudPlan.Apply` creates, labels and deletes through the `controlplane` API,
+and no other server of the cluster is touched.
 
 `Dedicated.RenderWorker` renders a dedicated worker's Talos machine
 configuration from the cluster's secrets. The server boots Talos's image for

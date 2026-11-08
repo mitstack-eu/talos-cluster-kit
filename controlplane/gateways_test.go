@@ -26,7 +26,7 @@ import (
 const reportEvery = 5 * time.Minute
 
 // withReports reads each gateway as the node report every five minutes would: serving once it runs at its address,
-// unless h.failing names its address.
+// unless h.failing names its address, or h.unread names it and the report names no gateway there.
 func withReports(h *harness) {
 	h.plane.ReadGateway = func(_ context.Context, address string, since time.Time) (controlplane.GatewayReading, error) {
 		received := h.now.Truncate(reportEvery)
@@ -34,18 +34,21 @@ func withReports(h *harness) {
 			return controlplane.GatewayReading{Detail: "no node report was received since " + since.Format(time.RFC3339)}, nil
 		}
 		detail := "the node report received at " + received.Format(time.RFC3339)
+		if slices.Contains(h.unread, address) {
+			return controlplane.GatewayReading{Detail: detail + " names no gateway at " + address}, nil
+		}
 		if slices.Contains(h.failing, address) {
-			return controlplane.GatewayReading{Read: true, Detail: detail + " reads its mirror not answering"}, nil
+			return controlplane.GatewayReading{Read: true, At: received, Detail: detail + " reads its mirror not answering"}, nil
 		}
 		for _, gw := range h.byRole(controlplane.RoleGateway) {
 			command, stoppedAt, err := h.cloud.LastPowerAction(context.Background(), gw.ID)
 			require.NoError(h.t, err)
 			ranAtReport := gw.Status == controlplane.ServerRunning || command == controlplane.StopServerCommand && stoppedAt.After(received)
 			if ranAtReport && slices.Contains(slices.Collect(maps.Values(gw.PrivateIPs)), address) && !gw.Created.After(received) {
-				return controlplane.GatewayReading{Read: true, Serving: true, Detail: detail}, nil
+				return controlplane.GatewayReading{Read: true, Serving: true, At: received, Detail: detail}, nil
 			}
 		}
-		return controlplane.GatewayReading{Read: true, Detail: detail + " reads no answer from " + address}, nil
+		return controlplane.GatewayReading{Read: true, At: received, Detail: detail + " reads no answer from " + address}, nil
 	}
 }
 
@@ -329,6 +332,179 @@ func TestPlane_UpgradeWaitsOnAReplacementNoReportReadsServingAndNeverReplacesThe
 		replacement.ID, replacement.Created.Format(time.RFC3339), h.now.Truncate(reportEvery).Format(time.RFC3339)))
 }
 
+func TestPlane_UpgradeWaitsOnAReplacementNoReportNamesAndNamesTheReportThatMissedIt(t *testing.T) {
+	h := newHarness(t, withReports)
+	h.built()
+	h.relabelGateways("an-earlier-list")
+	h.unread = []string{controlplane.GatewayAddress}
+
+	h.plane.Upgrading = true
+	require.NoError(t, h.ensure())
+	h.plane.Upgrading = false
+	for range 105 {
+		require.NoError(t, h.converge())
+		h.now = h.now.Add(time.Minute)
+		h.cloud.Advance(h.buildTakes, h.imageTakes)
+	}
+
+	replacement := h.gatewayIn(controlplane.GatewayLocation)
+	assert.Contains(t, strings.Join(h.plane.Problems(context.Background(), h.read()), "; "), fmt.Sprintf(
+		"gateway %d in fsn1, built from this release's list, has not been read serving since its creation at %s, so the upgrade waits on it: the node report received at %s names no gateway at %s",
+		replacement.ID, replacement.Created.Format(time.RFC3339), h.now.Truncate(reportEvery).Format(time.RFC3339), controlplane.GatewayAddress))
+}
+
+// deletedGateways is each event since from that records a gateway's deletion.
+func (h *harness) deletedGateways(from int) []string {
+	return slices.DeleteFunc(slices.Clone(h.events[from:]), func(e string) bool { return !strings.HasPrefix(e, "deleted gateway") })
+}
+
+func TestPlane_UpgradeDeletesNoGatewayWhileASecondEarlierListGatewayDoesNotServeAndNamesIt(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		down    func(h *harness)
+		reading string
+	}{
+		{"read not serving", func(h *harness) { h.failing = append(h.failing, controlplane.GatewayAddresses["hel1"]) }, "read not serving at"},
+		{"with no reading", func(h *harness) { h.unread = []string{controlplane.GatewayAddresses["hel1"]} }, "has no reading"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, withReports)
+			h.built()
+			gateways := controlplane.IDs(h.byRole(controlplane.RoleGateway), controlplane.ServerID)
+			h.relabelGateways("an-earlier-list")
+			h.failing = []string{controlplane.GatewayAddresses["nbg1"]}
+			tc.down(h)
+			installEvents := len(h.events)
+
+			h.plane.Upgrading = true
+			require.NoError(t, h.ensure())
+			h.plane.Upgrading = false
+			for range 30 {
+				require.NoError(t, h.converge())
+				h.now = h.now.Add(time.Minute)
+			}
+
+			assert.Equal(t, gateways, controlplane.IDs(h.byRole(controlplane.RoleGateway), controlplane.ServerID), "the gateways")
+			assert.Empty(t, h.deletedGateways(installEvents), "gateways deleted")
+			assert.Contains(t, strings.Join(h.events[installEvents:], "\n"), fmt.Sprintf("%q %s", fmt.Sprintf("gateway %d in hel1", h.gatewayIn("hel1").ID), tc.reading),
+				"the refusal names the second gateway that does not serve")
+			assert.Contains(t, strings.Join(h.events[installEvents:], "\n"), "refused:redundancy-below-minimum")
+		})
+	}
+}
+
+func TestPlane_UpgradeReplacesTheEarlierListGatewayThatDoesNotServeBeforeAnyThatServes(t *testing.T) {
+	for _, tc := range []struct {
+		down   string
+		unread bool
+	}{{"hel1", false}, {"fsn1", false}, {"fsn1", true}} {
+		down := tc.down
+		t.Run(fmt.Sprintf("the gateway in %s never served, unread %t", down, tc.unread), func(t *testing.T) {
+			h := newHarness(t, withReports)
+			h.built()
+			old := map[string]int64{}
+			for _, loc := range controlplane.Locations {
+				old[loc] = h.gatewayIn(loc).ID
+			}
+			h.relabelGateways("an-earlier-list")
+			h.failing = []string{controlplane.GatewayAddresses[down]}
+			if tc.unread {
+				h.failing, h.unread = nil, h.failing
+			}
+			installEvents := len(h.events)
+
+			h.upgrade(func() {
+				if len(h.deletedGateways(installEvents)) > 0 {
+					h.failing, h.unread = nil, nil
+				}
+			})
+
+			deleted := h.deletedGateways(installEvents)
+			require.Len(t, deleted, len(controlplane.Locations), "gateways deleted")
+			assert.True(t, strings.HasPrefix(deleted[0], fmt.Sprintf("deleted gateway %d in %s, built from an earlier list", old[down], down)),
+				"the first deletion: %s", deleted[0])
+			for _, loc := range controlplane.Locations {
+				if loc != down {
+					assert.Contains(t, deleted[0], fmt.Sprintf("%q read serving at", fmt.Sprintf("gateway %d in %s", old[loc], loc)),
+						"the first deletion names the gateway in %s it read serving", loc)
+				}
+			}
+		})
+	}
+}
+
+func TestPlane_UpgradeDeletesAGatewayOnlyOnReadingsReceivedAfterItsReplacementBegan(t *testing.T) {
+	h := newHarness(t, withReports)
+	h.built()
+	h.relabelGateways("an-earlier-list")
+	installEvents := len(h.events)
+
+	h.upgrade(func() {})
+
+	deleted := h.deletedGateways(installEvents)
+	require.Len(t, deleted, len(controlplane.Locations), "gateways deleted")
+	for _, e := range deleted {
+		since := stampsAfter(t, e, "judged by readings since ")
+		require.Len(t, since, 1, "the deletion %q names when its replacement began", e)
+		read := stampsAfter(t, e, " read serving at ")
+		require.Len(t, read, len(controlplane.Locations)-1, "the deletion %q names each other gateway's reading", e)
+		for _, at := range read {
+			assert.False(t, at.Before(since[0]), "the deletion %q rests on a reading at %s, before its replacement began at %s", e, at, since[0])
+		}
+		received := stampsAfter(t, e, "the node report received at ")
+		require.Len(t, received, len(controlplane.Locations)-1, "the deletion %q names the node report each reading came from", e)
+		for _, at := range received {
+			assert.True(t, at.After(since[0]), "the deletion %q rests on a report received at %s, by its replacement's start at %s", e, at, since[0])
+		}
+	}
+}
+
+func TestPlane_UpgradeBeginsAGatewaysReplacementAgainWhenAnEarlierOneBeganForAnotherList(t *testing.T) {
+	h := newHarness(t, withReports)
+	h.built()
+	h.relabelGateways("an-earlier-list")
+	abandoned := h.now.Add(-6 * time.Hour)
+	for _, gw := range h.byRole(controlplane.RoleGateway) {
+		require.NoError(t, h.cloud.SetServerLabels(context.Background(), gw.ID, controlplane.BeginRemoval(gw, abandoned, "an-abandoned-list")))
+	}
+	started, installEvents := h.now, len(h.events)
+
+	h.upgrade(func() {})
+
+	deleted := h.deletedGateways(installEvents)
+	require.Len(t, deleted, len(controlplane.Locations), "gateways deleted")
+	for _, e := range deleted {
+		since := stampsAfter(t, e, "judged by readings since ")
+		require.Len(t, since, 1, "the deletion %q names when its replacement began", e)
+		assert.False(t, since[0].Before(started), "the deletion %q is judged since %s, which an abandoned replacement for another list began", e, since[0])
+	}
+}
+
+// stampsAfter is each time an event names right after marker.
+func stampsAfter(t *testing.T, event, marker string) []time.Time {
+	t.Helper()
+	var out []time.Time
+	for _, part := range strings.Split(event, marker)[1:] {
+		at, err := time.Parse(time.RFC3339, part[:len("2006-01-02T15:04:05Z")])
+		require.NoError(t, err, "the time after %q in %q", marker, event)
+		out = append(out, at)
+	}
+	return out
+}
+
+func TestPlane_MovesTheDefaultRouteOnlyToAGatewayAReportReadsServing(t *testing.T) {
+	h := newHarness(t, withReports)
+	h.built()
+	h.failing = []string{controlplane.GatewayAddress}
+	h.unread = []string{controlplane.GatewayAddresses["nbg1"]}
+	h.now = h.now.Add(reportEvery)
+
+	require.NoError(t, h.ensure())
+
+	assert.Equal(t, []controlplane.Route{{Destination: "0.0.0.0/0", Gateway: controlplane.GatewayAddresses["hel1"]}}, h.network().Routes,
+		"the network's routes, with the gateway in nbg1 unread")
+}
+
 func TestPlane_APinBumpReplacesNoGatewayWithoutAnUpgrade(t *testing.T) {
 	h := newHarness(t, withReports)
 	h.built()
@@ -472,10 +648,12 @@ func TestPlane_NamesAReplacementRunningPastItsDeadlineUnhealthyAndKeepsWaitingWi
 	assert.Equal(t, replacement.ID, h.gatewayIn(controlplane.GatewayLocation).ID, "the replacement past its deadline")
 
 	h.failing = nil
-	h.now = h.now.Add(reportEvery)
-	require.NoError(t, h.converge())
+	for range 2 {
+		h.now = h.now.Add(reportEvery)
+		require.NoError(t, h.converge())
+	}
 
-	assert.NotEqual(t, others[0], h.gatewayIn("nbg1").ID, "a replacement read serving after its deadline lets the upgrade move on")
+	assert.NotEqual(t, others[0], h.gatewayIn("nbg1").ID, "a replacement read serving after its deadline lets the upgrade move on, once a report from after nbg1's replacement began reads it")
 	cause, _, err = h.plane.Unhealthy(context.Background(), h.read())
 	require.NoError(t, err)
 	assert.Empty(t, cause)

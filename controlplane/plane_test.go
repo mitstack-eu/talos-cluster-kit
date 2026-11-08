@@ -17,6 +17,7 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane/cloudtest"
 	"github.com/mitstack-eu/talos-cluster-kit/gateway"
+	"github.com/mitstack-eu/talos-cluster-kit/internal/redundanttest"
 	"github.com/mitstack-eu/talos-cluster-kit/nodeconfig"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 	"github.com/stretchr/testify/assert"
@@ -50,9 +51,11 @@ type harness struct {
 	installErr error
 	ca         *gateway.CA
 	lostCA     bool
-	// events holds each detail the plane's Notify received, and failing the gateway addresses a report reads failing.
+	// events holds each detail the plane's Notify received, failing the gateway addresses a report reads failing, and
+	// unread those a report names no gateway at.
 	events  []string
 	failing []string
+	unread  []string
 	// hostingKeys holds the keys each call to a hosting plane's DeployKeys hook received, and deployKeysErr is what it answers.
 	hostingKeys   []controlplane.HostingKeys
 	deployKeysErr error
@@ -68,7 +71,7 @@ func newHarness(t *testing.T, opts ...func(*harness)) *harness {
 	h.plane = controlplane.Plane{
 		API: h.cloud, Block: testBlock, Subscription: testSub, AppName: testApp, ServerTypes: []string{controlplane.DefaultServerType},
 		Boundary: "mitstack-test-boundary", PlatformURL: platformURL, RepoURL: testRepoURL, ReportProofScript: proofScript,
-		Now: func() time.Time { return h.now },
+		Now: func() time.Time { return h.now }, Guard: redundanttest.Guard,
 		Installed: func(_ context.Context, _ controlplane.Network, c nodeconfig.Cluster, ca gateway.CA) error {
 			h.installed = append(h.installed, c)
 			if h.installErr == nil {

@@ -419,7 +419,7 @@ func TestBuilder_TheOutsideProbeReadsEachGatewaysMirrorUnderTheGatewayCAAndTheRe
 	}
 	var gateways []string
 	for _, loc := range controlplane.Locations {
-		gateways = append(gateways, controlplane.GatewayAddresses[loc]+"=https://"+controlplane.GatewayAddresses[loc])
+		gateways = append(gateways, controlplane.GatewayAddresses[loc])
 	}
 	probe, report := env["mitstack-mesh-probe"], env["mitstack-node-report"]
 	assert.Equal(t, strings.Join(gateways, " "), probe["GATEWAYS"], "each gateway's mirror the outside probe reads")

@@ -122,9 +122,9 @@ func TestOutsideProbe_ReadsAClosedPortAResetConnectionAFailedTLSHandshakeAndASer
 	require.NoError(t, err)
 	signedByAnother := probeGateways(t, "10.0.0.249="+serving.URL, other.Cert)
 
-	_, posted, out, err := runReport(t, configMap("cat "+probed), "GATEWAYS="+gateways)
+	_, posted, out, err := runReport(t, configMap("cat "+probed), "GATEWAYS=10.0.0.2 10.0.0.3 10.0.0.4 10.0.0.5 10.0.0.6 10.0.0.248")
 	require.NoError(t, err, out)
-	_, otherPosted, out, err := runReport(t, configMap("cat "+signedByAnother), "GATEWAYS=10.0.0.249=https://10.0.0.249")
+	_, otherPosted, out, err := runReport(t, configMap("cat "+signedByAnother), "GATEWAYS=10.0.0.249")
 	require.NoError(t, err, out)
 
 	const at = "2026-10-23T15:45:00Z"
@@ -201,7 +201,7 @@ func TestManifests_RunsTheOutsideProbeWhereTheMeshLeavesItOutAndLetsItReachEachG
 	namespace := testutil.Field(t, job, "metadata", "namespace").(string)
 	assert.Contains(t, strings.Split(cni["EXCLUDE_NAMESPACES"].(string), ","), namespace, "istio-cni captures the outside probe's pod")
 	env := testutil.ContainerEnv(t, container)
-	assert.Equal(t, "10.0.0.2=https://10.0.0.2 10.0.0.248=https://10.0.0.248", env["GATEWAYS"])
+	assert.Equal(t, "10.0.0.2 10.0.0.248", env["GATEWAYS"], "each gateway's address, where its mirror answers on https")
 	assert.Equal(t, string(ca.Cert), env["GATEWAY_CA"], "the outside probe trusts the gateway CA alone for the mirrors")
 	_, _, reportContainer := cronJob(t, rendered, "mitstack-node-report")
 	assert.NotContains(t, testutil.ContainerEnv(t, reportContainer), "GATEWAY_CA", "the report reads no mirror itself")
@@ -210,6 +210,15 @@ func TestManifests_RunsTheOutsideProbeWhereTheMeshLeavesItOutAndLetsItReachEachG
 	cidrs := slices.DeleteFunc(grants, func(g string) bool { return !strings.Contains(g, "CIDR") })
 	assert.Equal(t, []string{"egress to CIDR 10.0.0.2/32 on 443/TCP", "egress to CIDR 10.0.0.248/32 on 443/TCP"}, cidrs,
 		"the outside probe reaches no address but the gateways'")
+}
+
+func TestManifests_ShipNoCommentLine(t *testing.T) {
+	rendered, err := report.Manifests(inputs(reportURL))
+	require.NoError(t, err)
+
+	for line := range strings.Lines(string(rendered)) {
+		assert.False(t, strings.HasPrefix(line, "#"), "a comment line costs a builder's user data and nothing reads it: %q", line)
+	}
 }
 
 func TestManifests_RefusesGatewaysWithoutTheirCAsCertificate(t *testing.T) {

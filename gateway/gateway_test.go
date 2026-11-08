@@ -503,6 +503,11 @@ func TestRender_ATLSServerThatDoesNotStartWritesTheStageAndCurlsErrorToTheVGACon
 	console, issue = stopPost(t, "mitstack-gateway-prepare.service", "timeout", t.TempDir())
 	assertOnOneScreen(t, console, "the preparation ended with timeout")
 	assert.Equal(t, console, issue)
+	written := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(written, "issue"), []byte("the script's own message\n"), 0o600))
+	console, issue = stopPost(t, "mitstack-gateway-prepare.service", "exit-code", written)
+	assert.Empty(t, console, "the script's message already on the screen stays the only one")
+	assert.Equal(t, "the script's own message\n", issue)
 }
 
 func TestRender_NamesTheVGAConsoleAndTheIssueFileAsWhereABuildFailureIsWritten(t *testing.T) {

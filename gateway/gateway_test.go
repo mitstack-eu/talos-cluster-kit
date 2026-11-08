@@ -291,9 +291,12 @@ type prepareRun struct {
 	dir   string
 	out   string
 	err   error
+	took  time.Duration // the script's own run, without the render that sets it up
 }
 
 const cilium = "quay.io/cilium/cilium:v1.19.9@sha256:f3014d42121a04272cb4a5f4f96dbe7836c9a7919990f17e9b6838e8fd4aa33a"
+
+const talosctlURL = "https://github.com/siderolabs/talos/releases/download/v9.9.9/talosctl-linux-amd64"
 
 func runPrepare(t *testing.T, manifestSHA256 string) prepareRun {
 	t.Helper()
@@ -304,30 +307,42 @@ func runPrepare(t *testing.T, manifestSHA256 string) prepareRun {
 // that pins fake talosctl and kubectl downloads beside every other line of the gateway's own.
 func prepare(t *testing.T, fakes map[string]string, manifestSHA256 string, images ...string) prepareRun {
 	t.Helper()
+	return prepareWith(t, nil, fakes, manifestSHA256, images...)
+}
+
+// prepareWith is prepare with settings appended to tools.env, which win over the gateway's own lines, a fake curl only
+// when fakes holds none, and the console and issue file in the run's own directory.
+func prepareWith(t *testing.T, settings []string, fakes map[string]string, manifestSHA256 string, images ...string) prepareRun {
+	t.Helper()
 	script := writtenFile(t, "/usr/local/bin/mitstack-gateway-prepare")
-	fakes["curl"], fakes["systemctl"] = fakeCurl, ""
+	if _, ok := fakes["curl"]; !ok {
+		fakes["curl"] = fakeCurl
+	}
+	fakes["systemctl"] = ""
 	run := prepareRun{tools: testutil.NewTools(t, fakes), dir: t.TempDir()}
+	settings = append([]string{"GATEWAY_CONSOLE=" + run.console(), "GATEWAY_ISSUE=" + run.issue()}, settings...)
 	write := func(name, content string) string {
 		path := filepath.Join(run.dir, name)
 		require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
 		return path
 	}
-	talosctl := "https://github.com/siderolabs/talos/releases/download/v9.9.9/talosctl-linux-amd64"
 	kubectl := "https://dl.k8s.io/release/v9.9.9/bin/linux/amd64/kubectl"
-	env := "TALOS_VERSION=v9.9.9\nTALOSCTL_SHA256=" + sha256Of("bytes of "+talosctl) +
+	env := "TALOS_VERSION=v9.9.9\nTALOSCTL_SHA256=" + sha256Of("bytes of "+talosctlURL) +
 		"\nKUBERNETES_VERSION=v9.9.9\nKUBECTL_SHA256=" + sha256Of("bytes of "+kubectl) + "\n"
 	for line := range strings.Lines(writtenFile(t, "/etc/mitstack-gateway/tools.env")) {
 		if !strings.HasPrefix(line, "TALOS") && !strings.HasPrefix(line, "KUBE") {
 			env += line
 		}
 	}
-	toolsEnv := write("tools.env", env)
+	toolsEnv := write("tools.env", env+strings.Join(settings, "\n")+"\n")
 	imageList := write("images.txt", strings.Join(images, "\n")+"\n")
 	manifests := write("manifests.txt", "argocd.yaml "+manifestSHA256+" https://example.test/argocd.yaml\n")
 	require.NoError(t, os.Mkdir(filepath.Join(run.dir, "bin"), 0o755))
 
+	began := time.Now()
 	run.out, run.err = testutil.RunBash(t, script, run.tools.Env("PREPARE_BIN_DIR="+filepath.Join(run.dir, "bin")),
 		toolsEnv, imageList, manifests, filepath.Join(run.dir, "manifests"), run.completionFile())
+	run.took = time.Since(began)
 	return run
 }
 
@@ -348,6 +363,10 @@ func (r prepareRun) completionFile() string {
 	return filepath.Join(r.dir, "state", "mirror-complete")
 }
 
+// console stands in for the VGA console, and issue for the login prompt's issue file.
+func (r prepareRun) console() string { return filepath.Join(r.dir, "tty1") }
+func (r prepareRun) issue() string   { return filepath.Join(r.dir, "issue.d", "mitstack-gateway.issue") }
+
 func TestPrepareScript_MarksTheMirrorCompleteOnlyOnceEveryImageAndManifestIsInPlace(t *testing.T) {
 	done := runPrepare(t, sha256Of("bytes of https://example.test/argocd.yaml"))
 	refused := runPrepare(t, sha256Of("other bytes"))
@@ -364,22 +383,143 @@ const mirrorComplete = "/var/lib/mitstack-gateway/mirror-complete"
 func TestRender_ServesNoMirrorRequestBeforePrepareHasFinished(t *testing.T) {
 	rendered, err := gateway.Render(inputs(t))
 	require.NoError(t, err)
-	var runcmd [][]string
+	var runcmd []string
 	for _, c := range testutil.Field(t, testutil.Documents(t, rendered)[0], "runcmd").([]any) {
 		var args []string
 		for _, a := range c.([]any) {
 			args = append(args, a.(string))
 		}
-		runcmd = append(runcmd, args)
+		runcmd = append(runcmd, strings.Join(args, " "))
 	}
 
 	assert.Contains(t, writtenFile(t, "/etc/systemd/system/mitstack-caddy.service"), "\nConditionPathExists="+mirrorComplete+"\n",
 		"Caddy can start, at the first boot or any later one, before prepare has filled the mirror")
-	prepare := slices.IndexFunc(runcmd, func(c []string) bool { return c[0] == "/usr/local/bin/mitstack-gateway-prepare" })
+	prepare := slices.Index(runcmd, "systemctl start mitstack-gateway-prepare")
 	require.GreaterOrEqual(t, prepare, 0, "the cloud-config runs no prepare: %v", runcmd)
-	assert.Equal(t, mirrorComplete, runcmd[prepare][len(runcmd[prepare])-1], "the file prepare writes once it has finished")
-	start := slices.IndexFunc(runcmd, func(c []string) bool { return slices.Equal(c, []string{"systemctl", "start", "mitstack-caddy"}) })
+	execStart := strings.Fields(execStart(t, writtenFile(t, "/etc/systemd/system/mitstack-gateway-prepare.service")))
+	assert.Equal(t, "/usr/local/bin/mitstack-gateway-prepare", execStart[0])
+	assert.Equal(t, mirrorComplete, execStart[len(execStart)-1], "the file prepare writes once it has finished")
+	start := slices.Index(runcmd, "systemctl start mitstack-caddy")
 	assert.Greater(t, start, prepare, "Caddy is not started once prepare has finished: %v", runcmd)
+	serve := slices.Index(runcmd, "systemctl start mitstack-gateway-serve")
+	assert.Greater(t, serve, start, "the TLS server's start is not watched once Caddy starts: %v", runcmd)
+}
+
+// keyValues reads a systemd unit or tools.env written to path as its key=value lines.
+func keyValues(t *testing.T, path string) map[string]string {
+	t.Helper()
+	keys := map[string]string{}
+	for line := range strings.Lines(writtenFile(t, path)) {
+		if key, value, ok := strings.Cut(strings.TrimSpace(line), "="); ok {
+			keys[key] = value
+		}
+	}
+	return keys
+}
+
+func unit(t *testing.T, name string) map[string]string {
+	return keyValues(t, "/etc/systemd/system/"+name)
+}
+
+// bound reads a positive whole number of seconds.
+func bound(t *testing.T, seconds string) time.Duration {
+	t.Helper()
+	n, err := strconv.Atoi(seconds)
+	require.NoError(t, err)
+	require.Positive(t, n)
+	return time.Duration(n) * time.Second
+}
+
+func TestRender_RunsThePreparationAndTheTLSServersStartEachWithinItsBoundAndPowersOffOnEitherFailing(t *testing.T) {
+	prepareUnit, serveUnit := unit(t, "mitstack-gateway-prepare.service"), unit(t, "mitstack-gateway-serve.service")
+	env := keyValues(t, "/etc/mitstack-gateway/tools.env")
+
+	for name, u := range map[string]map[string]string{"prepare": prepareUnit, "serve": serveUnit} {
+		assert.Equal(t, "poweroff", u["FailureAction"], "the %s unit's failure or overrun leaves the gateway running", name)
+		assert.Equal(t, "oneshot", u["Type"], "the %s unit is started before it has finished", name)
+	}
+	assert.Less(t, bound(t, env["DOWNLOAD_CONNECT_SECONDS"]), bound(t, env["DOWNLOAD_SECONDS"]))
+	assert.Less(t, bound(t, env["COPY_SECONDS"]), bound(t, prepareUnit["TimeoutStartSec"]), "one copy may take the whole preparation")
+	assert.Equal(t, mirrorComplete, serveUnit["ConditionPathExists"], "the TLS server's start is watched before the mirror is complete")
+	assert.Contains(t, serveUnit["ExecStart"], "https://10.0.0.2/v2/", "the start is watched where the nodes pull")
+	assert.Greater(t, gateway.Deadline, bound(t, prepareUnit["TimeoutStartSec"])+bound(t, serveUnit["TimeoutStartSec"]),
+		"the plane's deadline leaves the boot no time before the preparation starts")
+}
+
+// stopPost runs a unit's ExecStopPost as systemd would after the unit ended with result, with the console and the
+// issue file moved into dir, and returns what each holds.
+func stopPost(t *testing.T, name, result, dir string, replace ...string) (console, issue string) {
+	t.Helper()
+	replace = append(replace, "$$", "$", "/dev/tty1", filepath.Join(dir, "tty1"), "/etc/issue.d/mitstack-gateway.issue", filepath.Join(dir, "issue"))
+	command := strings.NewReplacer(replace...).Replace(unit(t, name)["ExecStopPost"])
+	fields := strings.SplitN(command, " ", 3)
+	require.Equal(t, []string{"/bin/sh", "-c"}, fields[:2], "the unit's ExecStopPost")
+	cmd := exec.Command("sh", "-c", strings.Trim(fields[2], "'"))
+	cmd.Env = []string{"SERVICE_RESULT=" + result, "PATH=" + os.Getenv("PATH")}
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	read := func(name string) string { b, _ := os.ReadFile(filepath.Join(dir, name)); return string(b) }
+	return read("tty1"), read("issue")
+}
+
+// unfolded is a console message with the line breaks its folding added taken out again.
+func unfolded(message string) string { return strings.ReplaceAll(message, "\n", "") }
+
+// assertOnOneScreen fails a console message that does not lead with what failed, or would not fit one 80 by 25 screen
+// beside its login prompt.
+func assertOnOneScreen(t *testing.T, message, stage string) {
+	t.Helper()
+	lines := strings.Split(strings.TrimSuffix(message, "\n"), "\n")
+	assert.True(t, strings.HasPrefix(lines[0], "mitstack gateway: "), "the console's first line: %q", lines[0])
+	assert.Contains(t, unfolded(message), stage, "the stage the console names")
+	assert.Contains(t, unfolded(message), "powers itself off")
+	assert.LessOrEqual(t, len(lines), 20, "lines on the console: %q", message)
+	for _, line := range lines {
+		assert.LessOrEqual(t, len(line), 80, "a console line: %q", line)
+	}
+}
+
+func TestRender_ATLSServerThatDoesNotStartWritesTheStageAndCurlsErrorToTheVGAConsoleAndTheIssueFile(t *testing.T) {
+	dir := t.TempDir()
+	closed, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	require.NoError(t, closed.Close())
+	serveUnit := unit(t, "mitstack-gateway-serve.service")
+	start := strings.NewReplacer("$$", "$", "10.0.0.2", closed.Addr().String(), "/etc/mitstack-gateway/ca.crt", "/dev/null",
+		"/run/mitstack-gateway-serve.err", filepath.Join(dir, "serve.err")).Replace(serveUnit["ExecStart"])
+	fields := strings.SplitN(start, " ", 3)
+	require.Equal(t, []string{"/bin/sh", "-c"}, fields[:2], "the unit's ExecStart")
+	began := time.Now()
+
+	err = exec.Command("timeout", "3", "sh", "-c", strings.Trim(fields[2], "'")).Run()
+
+	assert.Error(t, err, "the start of a TLS server that never answers ended")
+	assert.Less(t, time.Since(began), 10*time.Second, "systemd's TimeoutStartSec, which timeout stands in for, could not end the wait")
+	console, issue := stopPost(t, "mitstack-gateway-serve.service", "timeout", dir, "/run/mitstack-gateway-serve.err", filepath.Join(dir, "serve.err"))
+	assertOnOneScreen(t, console, "the TLS server start")
+	assert.Contains(t, unfolded(console), "within "+serveUnit["TimeoutStartSec"]+"s (timeout)")
+	assert.Contains(t, unfolded(console), "curl: (7)", "the console names curl's last error")
+	assert.Equal(t, console, issue, "the login prompt's issue file shows the failure again on every later boot")
+	console, _ = stopPost(t, "mitstack-gateway-serve.service", "success", t.TempDir())
+	assert.Empty(t, console, "a TLS server that started writes nothing to the console")
+	prepared := t.TempDir()
+	console, issue = stopPost(t, "mitstack-gateway-prepare.service", "timeout", prepared)
+	assertOnOneScreen(t, console, "the preparation ended with timeout")
+	assert.Equal(t, console, issue)
+	again, issueAgain := stopPost(t, "mitstack-gateway-prepare.service", "exit-code", prepared)
+	assert.Equal(t, []string{console, issue}, []string{again, issueAgain}, "a message already on the screen, as the script's is, stays the only one")
+}
+
+func TestRender_NamesTheVGAConsoleAndTheIssueFileAsWhereABuildFailureIsWritten(t *testing.T) {
+	env := keyValues(t, "/etc/mitstack-gateway/tools.env")
+
+	assert.Equal(t, []string{"/dev/tty1", "/etc/issue.d/mitstack-gateway.issue"}, []string{env["GATEWAY_CONSOLE"], env["GATEWAY_ISSUE"]})
+	rendered, err := gateway.Render(inputs(t))
+	require.NoError(t, err)
+	for key := range testutil.Documents(t, rendered)[0] {
+		assert.NotContains(t, []string{"users", "ssh_authorized_keys", "chpasswd", "password", "ssh_pwauth"}, key,
+			"the console is the gateway's only screen, and it holds no login")
+	}
 }
 
 func TestPrepareScript_InstallsThePinnedToolsMirrorsByDigestAndFetchesTheManifests(t *testing.T) {
@@ -417,4 +557,68 @@ func TestPrepareScript_RefusesAManifestWhoseBytesDifferFromItsPin(t *testing.T) 
 	require.Error(t, run.err)
 	assert.Contains(t, run.out, "https://example.test/argocd.yaml does not have sha256")
 	assert.NoFileExists(t, filepath.Join(run.dir, "manifests", "argocd.yaml"))
+}
+
+const scriptAllowance = 5 * time.Second // what the script's own steps around a stage may add to its bound when loaded
+
+// assertPoweredOff fails a run that did not stop at stage within bound, power the gateway off and write why to the
+// console and the issue file.
+func assertPoweredOff(t *testing.T, run prepareRun, took, bound time.Duration, stage, why string) {
+	t.Helper()
+	require.Error(t, run.err, run.out)
+	assert.Less(t, took, bound, "the stage ran past its bound: %s", run.out)
+	assert.Contains(t, run.tools.Calls(t), "systemctl poweroff", "the gateway stays up with its build stopped")
+	assert.NoFileExists(t, run.completionFile())
+	console, err := os.ReadFile(run.console())
+	require.NoError(t, err, "nothing reached the console: %s", run.out)
+	assertOnOneScreen(t, string(console), stage)
+	assert.Contains(t, unfolded(string(console)), why, "the console names the stage's error")
+	issue, err := os.ReadFile(run.issue())
+	require.NoError(t, err)
+	assert.Equal(t, string(console), string(issue), "the login prompt's issue file shows the failure again on every later boot")
+}
+
+func TestPrepareScript_PowersTheGatewayOffNamingTheDownloadWhenTheTalosctlDownloadHangs(t *testing.T) {
+	silent, err := net.Listen("tcp", "127.0.0.1:0") // the kernel completes the handshake, and nothing ever answers
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = silent.Close() })
+	curl, err := exec.LookPath("curl")
+	require.NoError(t, err)
+	hanging := `case "$*" in *` + talosctlURL + `*) exec ` + curl + ` "${@/#https:\/\/github.com\/*/https://` + silent.Addr().String() + `/}" ;; esac
+` + fakeCurl
+
+	run := prepareWith(t, []string{"DOWNLOAD_CONNECT_SECONDS=1", "DOWNLOAD_SECONDS=2"}, map[string]string{"docker": "", "curl": hanging},
+		sha256Of("bytes of https://example.test/argocd.yaml"), cilium)
+
+	assertPoweredOff(t, run, run.took, 2*time.Second+scriptAllowance, "the download of "+talosctlURL, "curl: (28)")
+	assert.NoFileExists(t, filepath.Join(run.dir, "bin", "talosctl"))
+}
+
+func TestPrepareScript_PowersTheGatewayOffNamingTheManifestDownloadThatAnsweredAnError(t *testing.T) {
+	refusing := `case "$*" in *argocd.yaml*) echo 'curl: (22) The requested URL returned error: 503' >&2; exit 22 ;; esac
+` + fakeCurl
+
+	run := prepare(t, map[string]string{"docker": "", "curl": refusing}, sha256Of("bytes of https://example.test/argocd.yaml"), cilium)
+
+	assertPoweredOff(t, run, 0, time.Second, "the download of https://example.test/argocd.yaml", "curl: (22)")
+}
+
+func TestPrepareScript_PowersTheGatewayOffNamingTheImageWhoseCopyHangs(t *testing.T) {
+	run := prepareWith(t, []string{"COPY_SECONDS=1"}, map[string]string{"docker": "exec sleep 60"},
+		sha256Of("bytes of https://example.test/argocd.yaml"), cilium)
+
+	assertPoweredOff(t, run, run.took, 1*time.Second+scriptAllowance, "the copy of "+cilium, "did not copy into the gateway's image mirror within 1s")
+}
+
+func TestPrepareScript_FinishesALargeListCopiedSlowlyButSteadilyWithinEachCopysBound(t *testing.T) {
+	const trustManager = "quay.io/jetstack/trust-manager:v0.25.0@sha256:0521921c2a46d14d0417336b20bcde69215ef3164f2977cc939d53c6e5224a17"
+	images := []string{cilium, trustManager, cilium, trustManager, cilium}
+
+	run := prepareWith(t, []string{"COPY_SECONDS=2"}, map[string]string{"docker": "sleep 0.6"},
+		sha256Of("bytes of https://example.test/argocd.yaml"), images...)
+
+	require.NoError(t, run.err, run.out)
+	assert.FileExists(t, run.completionFile(), "a build whose every copy finished inside its bound, though all of them took longer than one")
+	assert.NotContains(t, run.tools.Calls(t), "systemctl poweroff")
+	assert.NoFileExists(t, run.console(), "a build that finished wrote to the console")
 }

@@ -21,6 +21,8 @@ import (
 const (
 	CauseSingleGateway = "the cluster was built by an older release that cannot be upgraded in place; rebuild the cluster"
 	CauseGatewayDown   = "a server the block powered back on after an outage does not serve; read its console log and replace it with an upgrade"
+	// CauseGatewayOverdue leaves the upgrade waiting, since the gateway may still serve and the platform judges it.
+	CauseGatewayOverdue = "a server an upgrade built has neither served nor powered itself off by its deadline; read its console log"
 )
 
 // KeyGatewayUpgrade on the network names the list an upgrade replaces the gateways with, so a re-drive carries the
@@ -340,7 +342,7 @@ func (p Plane) replacement(st State, network Network) (replacement, error) {
 }
 
 // waitingOn is the first gateway built from this release's list that does not run at its address, or that no report
-// has read serving since its creation.
+// has read serving since its creation. Its reading names the deadline of one running past it.
 func (p Plane) waitingOn(ctx context.Context, r replacement, network Network) (Server, GatewayReading, bool, error) {
 	for _, gw := range r.current {
 		if gw.Status != ServerRunning || gw.PrivateIPs[network.ID] != gatewayAddressOf(gw) {
@@ -351,10 +353,39 @@ func (p Plane) waitingOn(ctx context.Context, r replacement, network Network) (S
 			return Server{}, GatewayReading{}, false, err
 		}
 		if !reading.Serving {
+			if p.pastDeadline(gw) {
+				reading.Detail += "; " + overdueDetail(gw)
+			}
 			return gw, reading, true, nil
 		}
 	}
 	return Server{}, GatewayReading{}, false, nil
+}
+
+func gatewayDeadline(gw Server) time.Time { return gw.Created.Add(gateway.Deadline) }
+
+func (p Plane) pastDeadline(gw Server) bool { return !p.now().Before(gatewayDeadline(gw)) }
+
+func overdueDetail(gw Server) string {
+	return fmt.Sprintf("gateway %d in %s has neither served nor powered itself off by its deadline at %s, %s after its creation",
+		gw.ID, gw.Location, gatewayDeadline(gw).UTC().Format(time.RFC3339), gateway.Deadline)
+}
+
+// overdueGateway is the gateway an upgrade waits on that still runs, serving nothing, past its deadline.
+func (p Plane) overdueGateway(ctx context.Context, st State) (Server, GatewayReading, bool, error) {
+	network, ok := st.Network()
+	if !ok {
+		return Server{}, GatewayReading{}, false, nil
+	}
+	r, err := p.replacement(st, network)
+	if err != nil || !r.active {
+		return Server{}, GatewayReading{}, false, err
+	}
+	gw, reading, waiting, err := p.waitingOn(ctx, r, network)
+	if err != nil || !waiting || gw.Status != ServerRunning || !p.pastDeadline(gw) {
+		return Server{}, GatewayReading{}, false, err
+	}
+	return gw, reading, true, nil
 }
 
 // upgradeMarkStep marks the network on the upgrade's own call, before any other step, since the re-drives that carry
@@ -521,5 +552,9 @@ func (p Plane) Unhealthy(ctx context.Context, st State) (cause, detail string, e
 				gw.ID, loc, at.Format(time.RFC3339), gw.Status, r.Detail), nil
 		}
 	}
-	return "", "", nil
+	_, r, overdue, err := p.overdueGateway(ctx, st)
+	if err != nil || !overdue {
+		return "", "", err
+	}
+	return CauseGatewayOverdue, r.Detail, nil
 }

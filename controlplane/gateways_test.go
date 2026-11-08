@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
+	"github.com/mitstack-eu/talos-cluster-kit/gateway"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 )
 
@@ -406,23 +407,91 @@ func TestPlane_RefusesTheUpgradeOfAClusterBuiltWithOneGateway(t *testing.T) {
 	assert.Equal(t, writes, h.cloud.Writes(), "writes on a refused upgrade")
 }
 
-func TestBuilder_TheReportReadsEachGatewaysMirrorUnderTheGatewayCAAndATLSConnectionToLetsEncrypt(t *testing.T) {
+func TestBuilder_TheOutsideProbeReadsEachGatewaysMirrorUnderTheGatewayCAAndTheReportATLSConnectionToLetsEncrypt(t *testing.T) {
 	h := installedOnce(t)
 
 	manifests := inlineManifests(t, builderConfiguration(t, h))
 
-	var env map[string]string
+	env := map[string]map[string]string{}
 	for _, job := range testutil.Kind(manifests["mitstack-node-report"], "CronJob") {
-		if testutil.Field(t, job, "metadata", "name") == "mitstack-node-report" {
-			env = testutil.ContainerEnv(t, testutil.Field(t, job, "spec", "jobTemplate", "spec", "template", "spec", "containers", "0"))
-		}
+		env[testutil.Field(t, job, "metadata", "name").(string)] = testutil.ContainerEnv(t,
+			testutil.Field(t, job, "spec", "jobTemplate", "spec", "template", "spec", "containers", "0"))
 	}
 	var gateways []string
 	for _, loc := range controlplane.Locations {
-		gateways = append(gateways, controlplane.GatewayAddresses[loc]+"=https://"+controlplane.GatewayAddresses[loc])
+		gateways = append(gateways, controlplane.GatewayAddresses[loc])
 	}
-	assert.Equal(t, strings.Join(gateways, " "), env["GATEWAYS"], "each gateway's mirror the report reads")
-	assert.Equal(t, string(h.installed[0].GatewayCA), env["GATEWAY_CA"], "the CA the report trusts for the mirrors")
-	assert.NotContains(t, env["GATEWAY_CA"], "PRIVATE KEY", "the report carries the CA's certificate alone")
-	assert.Equal(t, "https://acme-v02.api.letsencrypt.org/directory", env["EGRESS_URL"], "the TLS connection the report opens")
+	probe, report := env["mitstack-mesh-probe"], env["mitstack-node-report"]
+	assert.Equal(t, strings.Join(gateways, " "), probe["GATEWAYS"], "each gateway's mirror the outside probe reads")
+	assert.Equal(t, strings.Join(gateways, " "), report["GATEWAYS"], "each gateway the report names a reading of")
+	assert.Equal(t, string(h.installed[0].GatewayCA), probe["GATEWAY_CA"], "the CA the outside probe trusts for the mirrors")
+	assert.NotContains(t, probe["GATEWAY_CA"], "PRIVATE KEY", "the outside probe carries the CA's certificate alone")
+	assert.Equal(t, "https://acme-v02.api.letsencrypt.org/directory", report["EGRESS_URL"], "the TLS connection the report opens")
+}
+
+// upgradeToFailingReplacement starts an upgrade whose first replacement no report reads serving, and drives the plane
+// until that replacement runs at its address.
+func upgradeToFailingReplacement(h *harness) controlplane.Server {
+	h.t.Helper()
+	h.built()
+	h.relabelGateways("an-earlier-list")
+	h.failing = []string{controlplane.GatewayAddress}
+	h.plane.Upgrading = true
+	require.NoError(h.t, h.ensure())
+	h.plane.Upgrading = false
+	for range 30 {
+		require.NoError(h.t, h.converge())
+		gw := h.gatewayIn(controlplane.GatewayLocation)
+		if gw.Labels[controlplane.KeyGatewayList] != "an-earlier-list" && gw.Status == controlplane.ServerRunning {
+			return gw
+		}
+		h.now = h.now.Add(time.Minute)
+		h.cloud.Advance(h.buildTakes, h.imageTakes)
+	}
+	h.t.Fatal("the replacement in fsn1 never ran")
+	return controlplane.Server{}
+}
+
+func TestPlane_NamesAReplacementRunningPastItsDeadlineUnhealthyAndKeepsWaitingWithoutDeletingAGateway(t *testing.T) {
+	h := newHarness(t, withReports)
+	replacement := upgradeToFailingReplacement(h)
+	others := []int64{h.gatewayIn("nbg1").ID, h.gatewayIn("hel1").ID}
+	deadline := replacement.Created.Add(gateway.Deadline)
+	h.now = deadline.Add(time.Minute)
+
+	require.NoError(t, h.converge())
+
+	cause, detail, err := h.plane.Unhealthy(context.Background(), h.read())
+	require.NoError(t, err)
+	missed := fmt.Sprintf("gateway %d in fsn1 has neither served nor powered itself off by its deadline at %s", replacement.ID,
+		deadline.UTC().Format(time.RFC3339))
+	assert.Equal(t, controlplane.CauseGatewayOverdue, cause)
+	assert.Contains(t, detail, missed)
+	assert.Contains(t, strings.Join(h.plane.Problems(context.Background(), h.read()), "; "), missed, "the step still waits and names the deadline")
+	assert.Equal(t, others, []int64{h.gatewayIn("nbg1").ID, h.gatewayIn("hel1").ID}, "the gateways the upgrade has yet to replace")
+	assert.Equal(t, replacement.ID, h.gatewayIn(controlplane.GatewayLocation).ID, "the replacement past its deadline")
+
+	h.failing = nil
+	h.now = h.now.Add(reportEvery)
+	require.NoError(t, h.converge())
+
+	assert.NotEqual(t, others[0], h.gatewayIn("nbg1").ID, "a replacement read serving after its deadline lets the upgrade move on")
+	cause, _, err = h.plane.Unhealthy(context.Background(), h.read())
+	require.NoError(t, err)
+	assert.Empty(t, cause)
+}
+
+func TestPlane_NamesNoDeadlineForAReplacementThatHasNotReachedIt(t *testing.T) {
+	h := newHarness(t, withReports)
+	replacement := upgradeToFailingReplacement(h)
+	h.now = replacement.Created.Add(gateway.Deadline - time.Minute)
+
+	require.NoError(t, h.converge())
+
+	cause, detail, err := h.plane.Unhealthy(context.Background(), h.read())
+	require.NoError(t, err)
+	assert.Empty(t, cause, detail)
+	problems := strings.Join(h.plane.Problems(context.Background(), h.read()), "; ")
+	assert.Contains(t, problems, fmt.Sprintf("gateway %d in fsn1, built from this release's list, has not been read serving", replacement.ID))
+	assert.NotContains(t, problems, "deadline")
 }

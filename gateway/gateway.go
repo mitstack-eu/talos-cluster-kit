@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/etcd"
@@ -32,6 +33,33 @@ const (
 	caddyImage    = "docker.io/library/caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d"
 	// skopeoImage copies the mirror, since Ubuntu 24.04's skopeo 1.13.3 cannot copy an OCI index with its digests kept.
 	skopeoImage = "quay.io/skopeo/stable:v1.20.0@sha256:47853bb9fb24202af9110531ebd6e43c5f97701254ca290596640290d17942f4"
+)
+
+// Each stage of a gateway's build runs under its own bound, which tools.env and the units that run the stages carry,
+// and a gateway that fails or overruns a stage powers itself off.
+const (
+	downloadConnectBound = 15 * time.Second
+	// downloadBound bounds each tools and manifest download whole.
+	downloadBound = 5 * time.Minute
+	// copyBound bounds each image copy into the mirror, skopeo's own retries included.
+	copyBound = 15 * time.Minute
+	// prepareBound bounds the whole preparation, every download and copy included.
+	prepareBound = time.Hour
+	// serveBound bounds the TLS server's start, from the mirror's completion to its first answer on the private network.
+	serveBound = 2 * time.Minute
+	// bootBound is what the plane allows from a gateway's creation to the start of its preparation: its power-on, boot
+	// and package install, which the gateway does not bound itself.
+	bootBound = 15 * time.Minute
+)
+
+// Deadline is how long after its creation a gateway either serves or has powered itself off, the sum of its bounds.
+const Deadline = bootBound + prepareBound + serveBound
+
+// A gateway has no login, so a failed build writes why to consolePath, the VGA console Hetzner's web console shows and
+// /dev/console may not reach, and to issuePath, which the login prompt shows again on every later boot.
+const (
+	consolePath = "/dev/tty1"
+	issuePath   = "/etc/issue.d/mitstack-gateway.issue"
 )
 
 var (
@@ -124,13 +152,26 @@ func (in Inputs) templateData() (map[string]string, error) {
 		"Key":             string(in.TLS.Key),
 		"Images":          string(mirror.Render(in.List.images)),
 		"Manifests":       in.manifestList(),
-		"ToolsEnv":        tools.Env + "SKOPEO_IMAGE=" + skopeoImage + "\n",
+		"ToolsEnv":        tools.Env + "SKOPEO_IMAGE=" + skopeoImage + "\n" + boundsEnv(),
+		"PrepareSeconds":  seconds(prepareBound),
+		"ServeSeconds":    seconds(serveBound),
+		"Console":         consolePath,
+		"Issue":           issuePath,
 		"PrepareScript":   prepareScript,
 		"BootstrapScript": string(etcd.BootstrapScript()),
 		"RegistryImage":   registryImage,
 		"CaddyImage":      caddyImage,
 	}, nil
 }
+
+// boundsEnv is the lines of tools.env that bound each download and copy prepare.sh runs, and name where it writes a
+// failure.
+func boundsEnv() string {
+	return "DOWNLOAD_CONNECT_SECONDS=" + seconds(downloadConnectBound) + "\nDOWNLOAD_SECONDS=" + seconds(downloadBound) +
+		"\nCOPY_SECONDS=" + seconds(copyBound) + "\nGATEWAY_CONSOLE=" + consolePath + "\nGATEWAY_ISSUE=" + issuePath + "\n"
+}
+
+func seconds(d time.Duration) string { return strconv.Itoa(int(d / time.Second)) }
 
 func (in Inputs) egressPorts() (string, error) {
 	if in.Logs.IsZero() {

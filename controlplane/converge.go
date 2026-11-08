@@ -158,7 +158,7 @@ func (p Plane) powerOnGateway(gw Server) Step {
 }
 
 // gatewayOffStep powers on a gateway that never ran or whose builder finished, and refuses the build of one that ran and
-// is off before then, since its prepare powers it off only when a copy into its image mirror fails.
+// is off before then, since its build powers it off only when a stage of it fails or overruns its bound.
 func (p Plane) gatewayOffStep(ctx context.Context, gw, builder Server, hasBuilder bool) (Step, bool, error) {
 	started, err := p.API.ServerStarted(ctx, gw.ID)
 	if err != nil {

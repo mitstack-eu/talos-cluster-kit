@@ -84,7 +84,8 @@ func fixtures() ([]fixture, error) {
 // TokenSecret is the Secret the block writes into the report's namespace, holding the bearer token under the key token.
 const TokenSecret = "mitstack-report-token"
 
-// The outside probe runs in kube-system, which the mesh leaves out, and writes its calls' outcomes into one ConfigMap.
+// The outside probe runs in kube-system, which the mesh leaves out, and writes its calls' outcomes into one ConfigMap:
+// the mesh probe's target's and each gateway mirror's, since ztunnel would turn a mirror's closed port into a reset.
 const (
 	outsideProbeNamespace = "kube-system"
 	outsideProbeConfigMap = "mitstack-mesh-probe"
@@ -100,7 +101,7 @@ type Inputs struct {
 	ToolsImage string
 	// ProofScript signs each report; a block passes block-kit's reportproof.TokenRequestScript, so this kit needs no framework.
 	ProofScript string
-	// Gateways are the gateways' private addresses, whose mirrors each report reads under GatewayCA.
+	// Gateways are the gateways' private addresses, whose mirrors the outside probe reads under GatewayCA.
 	Gateways []netip.Addr
 	// GatewayCA is the PEM certificate of the CA that signs every gateway's certificate, without its key.
 	GatewayCA []byte
@@ -110,11 +111,12 @@ type Inputs struct {
 // connection to it reads the egress the network's default route gives the nodes.
 const egressURL = "https://acme-v02.api.letsencrypt.org/directory"
 
-// gateways names each gateway as address=URL, the URL its mirror's certificate holds.
+// gateways lists each gateway's address, where its mirror answers on https, since every byte of an inline manifest
+// counts against a builder's user data limit.
 func (in Inputs) gateways() string {
 	named := make([]string, 0, len(in.Gateways))
 	for _, addr := range in.Gateways {
-		named = append(named, addr.String()+"=https://"+addr.String())
+		named = append(named, addr.String())
 	}
 	return strings.Join(named, " ")
 }
@@ -149,7 +151,6 @@ func Manifests(in Inputs) ([]byte, error) {
 		"MeshProbeConfigMap": outsideProbeNamespace + "/" + outsideProbeConfigMap,
 		"OpenBaoMembers":     openBaoMembers(),
 		"Gateways":           in.gateways(),
-		"GatewayCA":          string(in.GatewayCA),
 		"EgressURL":          egressURL,
 	})
 	if err != nil {
@@ -164,6 +165,9 @@ func Manifests(in Inputs) ([]byte, error) {
 		"Host":            components.MeshProbeHost,
 		"Port":            components.MeshProbePort,
 		"TargetNamespace": components.MeshProbeNamespace,
+		"Gateways":        in.gateways(),
+		"GatewayAddrs":    in.Gateways,
+		"GatewayCA":       string(in.GatewayCA),
 	})
 	if err != nil {
 		return nil, err
@@ -194,7 +198,19 @@ func Manifests(in Inputs) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return bytes.Join([][]byte{report, probe, admission, scan}, []byte("---\n")), nil
+	return withoutComments(bytes.Join([][]byte{report, probe, admission, scan}, []byte("---\n"))), nil
+}
+
+// withoutComments drops each line starting with #, which YAML reads as a comment at column 0, because a machine config
+// has no reader for one and every byte of it counts against a builder's user data limit.
+func withoutComments(manifests []byte) []byte {
+	var kept []byte
+	for line := range bytes.Lines(manifests) {
+		if !bytes.HasPrefix(line, []byte("#")) {
+			kept = append(kept, line...)
+		}
+	}
+	return kept
 }
 
 func (in Inputs) validate() error {

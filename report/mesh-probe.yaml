@@ -64,8 +64,8 @@ subjects:
     namespace: {{ .ReportNamespace }}
 ---
 # kube-system takes no default-deny, so this names the outside probe's only flows: the lookup of the target's name, the
-# API server for its one patch, and the target's port and 15008. The probe names the target with a final dot, so the
-# resolver sends that one name and no search-domain variant the DNS proxy would refuse.
+# API server for its one patch, the target's port and 15008, and each mirror's 443. The probe names the target with a
+# final dot, so the resolver sends that one name and no search-domain variant the DNS proxy would refuse.
 apiVersion: cilium.io/v2
 kind: CiliumClusterwideNetworkPolicy
 metadata:
@@ -92,6 +92,10 @@ spec:
             k8s:app.kubernetes.io/name: mitstack-mesh-probe
       toPorts:
         - ports: [{port: "{{ .Port }}", protocol: TCP}, {port: "15008", protocol: TCP}]
+{{- if .GatewayAddrs }}
+    - toCIDR: [{{ range $i, $a := .GatewayAddrs }}{{ if $i }}, {{ end }}{{ $a }}/32{{ end }}]
+      toPorts: [{ports: [{port: "443", protocol: TCP}]}]
+{{- end }}
 ---
 apiVersion: batch/v1
 kind: CronJob
@@ -131,6 +135,10 @@ spec:
                   value: "{{ .Port }}"
                 - name: MESH_PROBE_CONFIGMAP
                   value: {{ .ConfigMap }}
+                - name: GATEWAYS
+                  value: {{ printf "%q" .Gateways }}
+                - name: GATEWAY_CA
+                  value: {{ printf "%q" .GatewayCA }}
                 - name: POD_NAMESPACE
                   valueFrom:
                     fieldRef:

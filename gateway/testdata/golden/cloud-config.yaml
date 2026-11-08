@@ -103,6 +103,11 @@ write_files:
       KUBERNETES_VERSION=v1.37.1
       KUBECTL_SHA256=65691ff77eb6fa44c908b77a1082c9f092c3b9733b5cefabec0d1104890e21a8
       SKOPEO_IMAGE=quay.io/skopeo/stable:v1.20.0@sha256:47853bb9fb24202af9110531ebd6e43c5f97701254ca290596640290d17942f4
+      DOWNLOAD_CONNECT_SECONDS=15
+      DOWNLOAD_SECONDS=300
+      COPY_SECONDS=900
+      GATEWAY_CONSOLE=/dev/tty1
+      GATEWAY_ISSUE=/etc/issue.d/mitstack-gateway.issue
   - path: /etc/mitstack-gateway/images.txt
     content: |
       docker.io/istio/install-cni:1.30.7-distroless@sha256:5d65fa948ff28fac54d99f272205a3f71ee84e609d7e46792eecd77db0501d79
@@ -149,13 +154,11 @@ write_files:
     permissions: "0755"
     content: |
       #!/usr/bin/env bash
-      # Prepares a gateway once its packages are installed: installs the talosctl
-      # and kubectl that tools.env pins after checking their sha256, copies every
-      # image of the mirror list into the local registry by digest with the skopeo
-      # image tools.env pins, and fetches every served manifest, refusing one whose
-      # sha256 differs from the list. Only then does it write the completion file,
-      # which Caddy waits for. A copy that fails powers the gateway off, which the
-      # plane reads from Hetzner as a failed mirror.
+      # Prepares a gateway once its packages are installed: installs the talosctl and kubectl that tools.env pins after
+      # checking their sha256, copies every image of the mirror list into the local registry by digest with the skopeo image
+      # tools.env pins, and fetches every served manifest, refusing one whose sha256 differs from the list. Only then does it
+      # write the completion file, which Caddy waits for. Each step runs within its tools.env bound. The gateway has no login,
+      # so a failure writes its stage and error to GATEWAY_CONSOLE and GATEWAY_ISSUE, then powers the gateway off.
       # Usage: prepare.sh <tools.env> <images.txt> <manifests.txt> <manifest dir> <completion file>
       #   images.txt holds one name:tag@sha256:digest per line, and manifests.txt
       #   one "<file name> <sha256> <url>" per line. PREPARE_BIN_DIR names where the
@@ -165,17 +168,44 @@ write_files:
       set -euo pipefail
 
       readonly registry=127.0.0.1:5000
+      stage="its start"
+      completion=
+      errors=$(mktemp)
+      GATEWAY_CONSOLE=/dev/tty1
+      GATEWAY_ISSUE=/etc/issue.d/mitstack-gateway.issue
 
       fail() {
-        echo "prepare: $*" >&2
+        echo "prepare: $*" >> "$errors"
         exit 1
       }
+
+      power_off_unless_complete() {
+        local status=$?
+        set +e
+        cat "$errors" >&2
+        if [ -z "$completion" ] || [ ! -e "$completion" ]; then
+          {
+            echo "mitstack gateway: the build failed at $stage (exit status $status), so the gateway powers itself off."
+            tail -n 5 "$errors"
+          } | fold -w 80 | head -n 20 > "$errors.screen"
+          mkdir -p "$(dirname "$GATEWAY_ISSUE")" 2> /dev/null || true
+          cat "$errors.screen" >> "$GATEWAY_ISSUE" 2> /dev/null || true
+          cat "$errors.screen" > "$GATEWAY_CONSOLE" 2> /dev/null || true
+          cat "$errors.screen" >&2
+          systemctl poweroff
+        fi
+        rm -f "$errors" "$errors.screen"
+      }
+      trap power_off_unless_complete EXIT
+      trap 'exit 143' TERM
 
       # fetch_checked <url> <sha256> <dest> <mode> writes a download only once its bytes match.
       fetch_checked() {
         local tmp
+        stage="the download of $1"
         tmp=$(mktemp)
-        curl -fsSL --proto '=https' -o "$tmp" "$1"
+        curl -fsSL --proto '=https' --connect-timeout "$DOWNLOAD_CONNECT_SECONDS" --max-time "$DOWNLOAD_SECONDS" \
+          -o "$tmp" "$1" 2>> "$errors"
         if ! echo "$2  $tmp" | sha256sum -c --quiet - > /dev/null 2>&1; then
           rm -f "$tmp"
           fail "$1 does not have sha256 $2"
@@ -186,27 +216,34 @@ write_files:
 
       install_tools() {
         local bin_dir=${PREPARE_BIN_DIR:-/usr/local/bin}
-        # shellcheck source=/dev/null
-        . "$1"
         fetch_checked "https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/talosctl-linux-amd64" "$TALOSCTL_SHA256" "$bin_dir/talosctl" 0755
         fetch_checked "https://dl.k8s.io/release/${KUBERNETES_VERSION}/bin/linux/amd64/kubectl" "$KUBECTL_SHA256" "$bin_dir/kubectl" 0755
       }
 
-      # mirror_image <name:tag@digest> copies one image, its digest preserved, under its name and tag.
+      # mirror_image <name:tag@digest> copies one image, its digest preserved, under its name and tag, within COPY_SECONDS.
       mirror_image() {
-        local ref=$1 name_tag digest
+        local ref=$1 name_tag digest status=0
+        stage="the copy of $ref"
         name_tag=${ref%@*}
         digest=${ref##*@}
-        if ! docker run --rm --network host "$SKOPEO_IMAGE" copy --all --preserve-digests --retry-times 3 --dest-tls-verify=false \
-          "docker://${name_tag%:*}@${digest}" "docker://${registry}/${name_tag}"; then
-          systemctl poweroff
-          fail "$ref did not copy into the gateway's image mirror, so the gateway powers itself off"
-        fi
+        timeout -k 10 "$COPY_SECONDS" docker run --rm --network host "$SKOPEO_IMAGE" copy --all --preserve-digests --retry-times 3 --dest-tls-verify=false \
+          "docker://${name_tag%:*}@${digest}" "docker://${registry}/${name_tag}" 2>> "$errors" || status=$?
+        case $status in
+          0) ;;
+          124) fail "$ref did not copy into the gateway's image mirror within ${COPY_SECONDS}s" ;;
+          *) fail "$ref did not copy into the gateway's image mirror" ;;
+        esac
       }
 
       main() {
         [ "$#" -eq 5 ] || fail "usage: prepare.sh <tools.env> <images.txt> <manifests.txt> <manifest dir> <completion file>"
-        install_tools "$1"
+        completion=$5
+        # shellcheck source=/dev/null
+        . "$1"
+        if [ -z "${DOWNLOAD_CONNECT_SECONDS:-}" ] || [ -z "${DOWNLOAD_SECONDS:-}" ] || [ -z "${COPY_SECONDS:-}" ]; then
+          fail "tools.env names no bound for a download or a copy"
+        fi
+        install_tools
 
         local ref file sha256 url
         while read -r ref; do
@@ -220,7 +257,8 @@ write_files:
             fetch_checked "$url" "$sha256" "$4/$file" 0644
           fi
         done < "$3"
-        install -D -m 0644 /dev/null "$5"
+        stage="the completion file"
+        install -D -m 0644 /dev/null "$completion"
         echo "prepare: the mirror and the manifests are in place"
       }
 
@@ -356,6 +394,34 @@ write_files:
       Restart=always
       [Install]
       WantedBy=multi-user.target
+  - path: /etc/systemd/system/mitstack-gateway-prepare.service
+    content: |
+      [Unit]
+      Description=Fills the image mirror and fetches the served manifests
+      After=docker.service mitstack-registry.service
+      Requires=docker.service
+      FailureAction=poweroff
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      TimeoutStartSec=3600
+      ExecStart=/usr/local/bin/mitstack-gateway-prepare /etc/mitstack-gateway/tools.env /etc/mitstack-gateway/images.txt /etc/mitstack-gateway/manifests.txt /srv/mitstack/manifests /var/lib/mitstack-gateway/mirror-complete
+      ExecStopPost=/bin/sh -c '[ "$$SERVICE_RESULT" = success ] || [ -s /etc/issue.d/mitstack-gateway.issue ] || { echo "mitstack gateway: the preparation ended with $$SERVICE_RESULT within its 3600s bound, so the gateway powers itself off." | fold -w 80 | tee -a /etc/issue.d/mitstack-gateway.issue > /dev/tty1; }'
+  - path: /etc/systemd/system/mitstack-gateway-serve.service
+    content: |
+      [Unit]
+      Description=Waits for the TLS server to answer on the private network
+      After=mitstack-caddy.service
+      ConditionPathExists=/var/lib/mitstack-gateway/mirror-complete
+      FailureAction=poweroff
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      TimeoutStartSec=120
+      ExecStart=/bin/sh -c 'until curl -fsS --cacert /etc/mitstack-gateway/ca.crt --connect-timeout 5 --max-time 10 -o /dev/null https://10.0.0.2/v2/ 2> /run/mitstack-gateway-serve.err; do sleep 5; done'
+      ExecStopPost=/bin/sh -c '[ "$$SERVICE_RESULT" = success ] || { { echo "mitstack gateway: the build failed at the TLS server start: https://10.0.0.2/v2/ did not answer within 120s ($$SERVICE_RESULT), so the gateway powers itself off."; tail -n 3 /run/mitstack-gateway-serve.err; } | fold -w 80 | head -n 20 | tee -a /etc/issue.d/mitstack-gateway.issue > /dev/tty1; }'
+      [Install]
+      WantedBy=multi-user.target
   - path: /etc/systemd/system/mitstack-record-dns-ntp.service
     content: |
       [Unit]
@@ -375,10 +441,11 @@ write_files:
       [Install]
       WantedBy=multi-user.target
 runcmd:
-  - [mkdir, -p, /var/log/mitstack, /var/lib/mitstack-registry, /srv/mitstack/manifests]
+  - [mkdir, -p, /var/log/mitstack, /var/lib/mitstack-registry, /srv/mitstack/manifests, /etc/issue.d]
   - [sysctl, --system]
   - [systemctl, enable, --now, nftables]
   - [systemctl, daemon-reload]
-  - [systemctl, enable, --now, mitstack-record-dns-ntp, mitstack-record-flows, mitstack-registry, mitstack-caddy]
-  - [/usr/local/bin/mitstack-gateway-prepare, /etc/mitstack-gateway/tools.env, /etc/mitstack-gateway/images.txt, /etc/mitstack-gateway/manifests.txt, /srv/mitstack/manifests, /var/lib/mitstack-gateway/mirror-complete]
+  - [systemctl, enable, --now, mitstack-record-dns-ntp, mitstack-record-flows, mitstack-registry, mitstack-caddy, mitstack-gateway-serve]
+  - [systemctl, start, mitstack-gateway-prepare]
   - [systemctl, start, mitstack-caddy]
+  - [systemctl, start, mitstack-gateway-serve]

@@ -3,6 +3,7 @@ package report_test
 import (
 	"encoding/json"
 	"encoding/pem"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -67,7 +68,8 @@ func egressTarget(t *testing.T) string {
 	return server.URL + "/directory"
 }
 
-// tcpPeer takes the probe's one connection and hands it to answer, as a port that resets, closes or speaks no TLS does.
+// tcpPeer takes the probe's one connection, reads its TLS hello and hands it to answer, as a port that resets, closes
+// or speaks no TLS once asked does.
 func tcpPeer(t *testing.T, answer func(*net.TCPConn)) string {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -75,10 +77,20 @@ func tcpPeer(t *testing.T, answer func(*net.TCPConn)) string {
 	t.Cleanup(func() { _ = l.Close() })
 	go func() {
 		if c, err := l.Accept(); err == nil {
+			readHello(c)
 			answer(c.(*net.TCPConn))
 		}
 	}()
 	return "https://" + l.Addr().String()
+}
+
+// readHello reads the probe's first TLS record whole, since a peer that answers before it races curl's connect, which
+// curl then reads as a closed port, and one that closes with it unread sends a reset.
+func readHello(c net.Conn) {
+	header := make([]byte, 5)
+	if _, err := io.ReadFull(c, header); err == nil {
+		_, _ = io.ReadFull(c, make([]byte, int(header[3])<<8|int(header[4])))
+	}
 }
 
 // probeGateways runs the outside probe with the real curl over gateways under ca, and returns a file holding the

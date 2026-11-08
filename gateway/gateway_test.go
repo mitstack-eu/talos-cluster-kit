@@ -291,6 +291,7 @@ type prepareRun struct {
 	dir   string
 	out   string
 	err   error
+	took  time.Duration // the script's own run, without the render that sets it up
 }
 
 const cilium = "quay.io/cilium/cilium:v1.19.9@sha256:f3014d42121a04272cb4a5f4f96dbe7836c9a7919990f17e9b6838e8fd4aa33a"
@@ -338,8 +339,10 @@ func prepareWith(t *testing.T, settings []string, fakes map[string]string, manif
 	manifests := write("manifests.txt", "argocd.yaml "+manifestSHA256+" https://example.test/argocd.yaml\n")
 	require.NoError(t, os.Mkdir(filepath.Join(run.dir, "bin"), 0o755))
 
+	began := time.Now()
 	run.out, run.err = testutil.RunBash(t, script, run.tools.Env("PREPARE_BIN_DIR="+filepath.Join(run.dir, "bin")),
 		toolsEnv, imageList, manifests, filepath.Join(run.dir, "manifests"), run.completionFile())
+	run.took = time.Since(began)
 	return run
 }
 
@@ -556,6 +559,9 @@ func TestPrepareScript_RefusesAManifestWhoseBytesDifferFromItsPin(t *testing.T) 
 	assert.NoFileExists(t, filepath.Join(run.dir, "manifests", "argocd.yaml"))
 }
 
+// scriptAllowance is what the prepare script's own steps around a stage may add to the stage's bound on a loaded runner.
+const scriptAllowance = 5 * time.Second
+
 // assertPoweredOff fails a run that did not stop at stage within bound, power the gateway off and write why to the
 // console and the issue file.
 func assertPoweredOff(t *testing.T, run prepareRun, took, bound time.Duration, stage, why string) {
@@ -581,12 +587,11 @@ func TestPrepareScript_PowersTheGatewayOffNamingTheDownloadWhenTheTalosctlDownlo
 	require.NoError(t, err)
 	hanging := `case "$*" in *` + talosctlURL + `*) exec ` + curl + ` "${@/#https:\/\/github.com\/*/https://` + silent.Addr().String() + `/}" ;; esac
 ` + fakeCurl
-	began := time.Now()
 
 	run := prepareWith(t, []string{"DOWNLOAD_CONNECT_SECONDS=1", "DOWNLOAD_SECONDS=2"}, map[string]string{"docker": "", "curl": hanging},
 		sha256Of("bytes of https://example.test/argocd.yaml"), cilium)
 
-	assertPoweredOff(t, run, time.Since(began), 10*time.Second, "the download of "+talosctlURL, "curl: (28)")
+	assertPoweredOff(t, run, run.took, 2*time.Second+scriptAllowance, "the download of "+talosctlURL, "curl: (28)")
 	assert.NoFileExists(t, filepath.Join(run.dir, "bin", "talosctl"))
 }
 
@@ -600,12 +605,10 @@ func TestPrepareScript_PowersTheGatewayOffNamingTheManifestDownloadThatAnsweredA
 }
 
 func TestPrepareScript_PowersTheGatewayOffNamingTheImageWhoseCopyHangs(t *testing.T) {
-	began := time.Now()
-
 	run := prepareWith(t, []string{"COPY_SECONDS=1"}, map[string]string{"docker": "exec sleep 60"},
 		sha256Of("bytes of https://example.test/argocd.yaml"), cilium)
 
-	assertPoweredOff(t, run, time.Since(began), 20*time.Second, "the copy of "+cilium, "did not copy into the gateway's image mirror within 1s")
+	assertPoweredOff(t, run, run.took, 1*time.Second+scriptAllowance, "the copy of "+cilium, "did not copy into the gateway's image mirror within 1s")
 }
 
 func TestPrepareScript_FinishesALargeListCopiedSlowlyButSteadilyWithinEachCopysBound(t *testing.T) {

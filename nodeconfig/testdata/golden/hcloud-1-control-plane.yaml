@@ -911,6 +911,7 @@ manifest: |
               receivers: [tcplog/service, tcplog/kernel]
               processors: [batch]
               exporters: [otlp_grpc]
+    # Talos trims each document before it decodes it, so this line keeps the value above whole.
     ---
     apiVersion: apps/v1
     kind: DaemonSet

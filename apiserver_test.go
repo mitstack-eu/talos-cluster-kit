@@ -261,19 +261,33 @@ func envVariable(t *testing.T, env any, namespace string) string {
 }
 
 // builtInObjects are the objects of rendered in a built-in API group, in Talos's order, which leaves out each kind whose
-// CRD the bare API server lacks.
+// CRD the bare API server lacks, after a Namespace for each namespace they name that another manifest creates.
 func builtInObjects(t *testing.T, rendered []byte) []byte {
 	t.Helper()
-	var out bytes.Buffer
-	for _, o := range testutil.TalosOrder(t, map[string][]byte{"mitstack-node-report": rendered}) {
-		group, _, _ := strings.Cut(o.Doc["apiVersion"].(string), "/")
-		if strings.Contains(group, ".") && !strings.HasSuffix(group, ".k8s.io") {
-			continue
+	objects := testutil.TalosOrder(t, map[string][]byte{"mitstack-node-report": rendered})
+	created := map[string]bool{}
+	for _, o := range objects {
+		if o.Doc["kind"] == "Namespace" {
+			created[testutil.Field(t, o.Doc, "metadata", "name").(string)] = true
 		}
-		data, err := yaml.Marshal(o.Doc)
+	}
+	var out bytes.Buffer
+	write := func(doc map[string]any) {
+		data, err := yaml.Marshal(doc)
 		require.NoError(t, err)
 		out.WriteString("---\n")
 		out.Write(data)
+	}
+	for _, o := range objects {
+		if namespace, _ := o.Doc["metadata"].(map[string]any)["namespace"].(string); namespace != "" && !created[namespace] {
+			created[namespace] = true
+			write(map[string]any{"apiVersion": "v1", "kind": "Namespace", "metadata": map[string]any{"name": namespace}})
+		}
+	}
+	for _, o := range objects {
+		if group, _, _ := strings.Cut(o.Doc["apiVersion"].(string), "/"); !strings.Contains(group, ".") || strings.HasSuffix(group, ".k8s.io") {
+			write(o.Doc)
+		}
 	}
 	return out.Bytes()
 }

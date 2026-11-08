@@ -105,8 +105,7 @@ func TalosObjects(t *testing.T, manifest []byte) (trimmed, untrimmed []map[strin
 	return setYAML(t, manifest, bytes.TrimSpace), setYAML(t, manifest, func(doc []byte) []byte { return doc })
 }
 
-// setYAML is the decoding loop of SetYAML in internal/app/machined/pkg/adapters/k8s/manifest.go, with prepare in place
-// of its trim.
+// setYAML is the decoding loop of Talos v1.14.4's SetYAML, with prepare in place of its trim.
 func setYAML(t *testing.T, manifest []byte, prepare func([]byte) []byte) []map[string]any {
 	t.Helper()
 	reader := k8syaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(manifest)))

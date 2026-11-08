@@ -783,7 +783,7 @@ func TestBuilder_EveryManifestTheNodeAppliesDecodesToTheSameObjectsOnceTalosTrim
 	for _, tc := range []struct {
 		name      string
 		manifests func(t *testing.T) map[string][]byte
-		among     string
+		includes  string
 	}{
 		{"the default set", func(t *testing.T) map[string][]byte {
 			return appliedManifests(t, installedOnce(t), components.Default().Served)
@@ -806,7 +806,7 @@ func TestBuilder_EveryManifestTheNodeAppliesDecodesToTheSameObjectsOnceTalosTrim
 			for name := range manifests {
 				applied = append(applied, testutil.ManifestName(name))
 			}
-			require.Contains(t, applied, tc.among, "the manifests the node applies")
+			require.Contains(t, applied, tc.includes, "the manifests the node applies")
 			for name, manifest := range manifests {
 				trimmed, untrimmed := testutil.TalosObjects(t, manifest)
 				require.Len(t, trimmed, len(untrimmed), "the objects Talos reads from %s", name)

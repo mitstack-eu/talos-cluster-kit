@@ -125,7 +125,7 @@ func (p Plane) routeProblem(ctx context.Context, st State, network Network) (str
 	if !ok {
 		return fmt.Sprintf("network %d's default route goes to %s, where no gateway of this subscription is", network.ID, route.Gateway), nil
 	}
-	if up, err := p.serving(ctx, gw, network); err != nil || up {
+	if failing, err := p.readFailing(ctx, gw, network); err != nil || !failing {
 		return "", err
 	}
 	return fmt.Sprintf("network %d's default route goes to gateway %d in %s, which does not serve", network.ID, gw.ID, gw.Location), nil
@@ -149,7 +149,8 @@ func (p Plane) replacementProblem(ctx context.Context, st State, network Network
 		return fmt.Sprintf("gateway %d in %s, built from this release's list, has not been read serving since its creation at %s, so the upgrade waits on it: %s",
 			waiting.ID, waiting.Location, waiting.Created.UTC().Format(time.RFC3339), reading.Detail), nil
 	case len(r.stale) > 0:
-		return fmt.Sprintf("gateway %d in %s was built from an earlier list, and the upgrade replaces it next", r.stale[0].ID, r.stale[0].Location), nil
+		next, err := p.nextToReplace(ctx, r, network)
+		return fmt.Sprintf("gateway %d in %s was built from an earlier list, and the upgrade replaces it next", next.ID, next.Location), err
 	}
 	return fmt.Sprintf("every gateway serves from this release's list, and network %d still carries the upgrade's mark", network.ID), nil
 }

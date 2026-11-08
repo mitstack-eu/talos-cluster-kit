@@ -6,10 +6,13 @@ import (
 	_ "embed"
 	"fmt"
 	"net/netip"
+	"time"
 
 	"github.com/mitstack-eu/talos-cluster-kit/internal/check"
 	"github.com/mitstack-eu/talos-cluster-kit/internal/tmpl"
 	"github.com/mitstack-eu/talos-cluster-kit/nodeconfig"
+	"github.com/mitstack-eu/talos-cluster-kit/redundant"
+	"github.com/mitstack-eu/talos-cluster-kit/report"
 )
 
 var (
@@ -34,9 +37,16 @@ type RemoveMember struct {
 	Hostname string
 	// ToolsImage is the image built from tools/Dockerfile, by digest, which carries bash, talosctl and kubectl.
 	ToolsImage string
+	// Report is the newest node report, whose etcd members, the lost one among them, must show a majority serving without it.
+	Report report.Read
+	// StepStart is when the lost node's replacement began, so a report read before then proves nothing.
+	StepStart time.Time
+	// Guard is block-kit's redundancy guard, which the block passes.
+	Guard redundant.Guard
 }
 
-// RemoveMemberJob renders the objects that remove r's member, in the namespace the node report creates.
+// RemoveMemberJob renders the objects that remove r's member, in the namespace the node report creates, once r.Guard
+// finds a majority of the other members read serving since r.StepStart.
 func RemoveMemberJob(r RemoveMember) ([]byte, error) {
 	if err := check.DNS1123Label(r.Hostname); err != nil {
 		return nil, fmt.Errorf("lost node: %w", err)
@@ -46,6 +56,14 @@ func RemoveMemberJob(r RemoveMember) ([]byte, error) {
 	}
 	if err := check.DigestRef(r.ToolsImage); err != nil {
 		return nil, fmt.Errorf("tools image: %w", err)
+	}
+	members, err := r.Report.EtcdMembers()
+	if err != nil {
+		return nil, err
+	}
+	set := redundant.Set{Name: "etcd members", Members: members, Minimum: redundant.Majority}
+	if err := r.Guard.Allow(set, r.Hostname, r.StepStart); err != nil {
+		return nil, err
 	}
 	return tmpl.Execute(removeMemberJob, map[string]string{
 		"Name":      jobNamePrefix + r.Hostname,

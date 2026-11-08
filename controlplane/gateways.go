@@ -10,11 +10,13 @@ import (
 	"maps"
 	"net/netip"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/gateway"
+	"github.com/mitstack-eu/talos-cluster-kit/redundant"
 )
 
 // The causes a cluster reads unhealthy with, word for word as the catalogue type lists them under failures.
@@ -33,6 +35,8 @@ const KeyGatewayUpgrade = "mitstack.dev/gateway-upgrade"
 type GatewayReading struct {
 	// Read is false when no report since then reads the gateway at all.
 	Read, Serving bool
+	// At is when the reading was taken, as report.GatewayReadAt gives it, and no removal rests on a reading without one.
+	At time.Time
 	// Detail names the report's receivedAt and, when the gateway does not serve, why.
 	Detail string
 }
@@ -159,13 +163,28 @@ func (p Plane) singleGatewayStep(ctx context.Context, st State, s site) (Step, b
 	return p.routeStep(ctx, st, s)
 }
 
-// serving reports whether a gateway runs at its address and no report since its creation reads its mirror failing.
+func runsAtItsAddress(gw Server, network Network) bool {
+	return gw.Status == ServerRunning && gw.PrivateIPs[network.ID] == gatewayAddressOf(gw)
+}
+
+// serving reports whether a gateway runs at its address and a report since its creation reads its mirror answering,
+// so one no report has read does not serve, as waitingOn judges it.
 func (p Plane) serving(ctx context.Context, gw Server, network Network) (bool, error) {
-	if gw.Status != ServerRunning || gw.PrivateIPs[network.ID] != gatewayAddressOf(gw) {
+	if !runsAtItsAddress(gw, network) {
 		return false, nil
 	}
 	r, err := p.reading(ctx, gw, gw.Created)
-	return !r.Read || r.Serving, err
+	return r.Read && r.Serving, err
+}
+
+// readFailing reports whether a gateway is off its address or a report since its creation reads its mirror failing,
+// which alone makes its route a problem, since a cluster sends its first report once it is built.
+func (p Plane) readFailing(ctx context.Context, gw Server, network Network) (bool, error) {
+	if !runsAtItsAddress(gw, network) {
+		return true, nil
+	}
+	r, err := p.reading(ctx, gw, gw.Created)
+	return r.Read && !r.Serving, err
 }
 
 func defaultRouteOf(n Network) (Route, bool) {
@@ -398,8 +417,20 @@ func (p Plane) upgradeMarkStep(_ context.Context, st State, s site) (Step, bool,
 	return p.markStep(s.network, r.digest), true, nil
 }
 
-// replaceStep replaces the first gateway built from an earlier list once every gateway built from this one serves,
-// moving the route off it first, so only one location is ever without its gateway.
+// nextToReplace is the gateway built from an earlier list that an upgrade replaces next: the first in location order
+// that does not serve, since replacing it takes nothing from the gateways that do, else the first.
+func (p Plane) nextToReplace(ctx context.Context, r replacement, network Network) (Server, error) {
+	for _, gw := range r.stale {
+		up, err := p.serving(ctx, gw, network)
+		if err != nil || !up {
+			return gw, err
+		}
+	}
+	return r.stale[0], nil
+}
+
+// replaceStep replaces a gateway built from an earlier list once every gateway built from this one serves and the
+// plane's redundancy guard finds every other gateway read serving since its replacement began, moving the route first.
 func (p Plane) replaceStep(ctx context.Context, st State, s site) (Step, bool, error) {
 	r, err := p.replacement(st, s.network)
 	if err != nil || !r.active {
@@ -415,7 +446,10 @@ func (p Plane) replaceStep(ctx context.Context, st State, s site) (Step, bool, e
 		}
 		return p.markStep(s.network, ""), true, nil
 	}
-	old := r.stale[0]
+	old, err := p.nextToReplace(ctx, r, s.network)
+	if err != nil {
+		return Step{}, false, err
+	}
 	if route, ok := defaultRouteOf(s.network); ok && route.Gateway == gatewayAddressOf(old) {
 		target, ok, err := p.routeTarget(ctx, st, s.network, route.Gateway)
 		if err != nil || !ok {
@@ -423,13 +457,67 @@ func (p Plane) replaceStep(ctx context.Context, st State, s site) (Step, bool, e
 		}
 		return p.moveRoute(s.network, route, target, "the gateway in "+old.Location+" is to be replaced"), true, nil
 	}
+	began, ok := RemovalBegan(old, r.digest)
+	if !ok {
+		return Step{"begin replacing the gateway in " + old.Location + ", so only a node report read after now judges the others", func(ctx context.Context) error {
+			return p.API.SetServerLabels(ctx, old.ID, BeginRemoval(old, p.now(), r.digest))
+		}}, true, nil
+	}
+	set, details, err := p.gatewaySet(ctx, st, s.network, began)
+	if err != nil {
+		return Step{}, false, err
+	}
+	if err := p.Guard.Allow(set, gatewayName(old), began); err != nil {
+		if !redundant.Held(err) {
+			return Step{}, false, err
+		}
+		p.notify(ctx, "the upgrade keeps gateway %d in %s until the others serve: %s", old.ID, old.Location, err)
+		return Step{}, false, nil
+	}
+	judged := describeServing(set, details, gatewayName(old))
 	return Step{"delete the gateway in " + old.Location + ", built from an earlier list", func(ctx context.Context) error {
 		if err := p.API.DeleteServer(ctx, old.ID); err != nil {
 			return fmt.Errorf("deleting the gateway %d in %s: %w", old.ID, old.Location, err)
 		}
-		p.notify(ctx, "deleted gateway %d in %s, built from an earlier list, so one built from this release's list takes %s", old.ID, old.Location, gatewayAddressOf(old))
+		p.notify(ctx, "deleted gateway %d in %s, built from an earlier list, so one built from this release's list takes %s, judged by readings since %s: %s",
+			old.ID, old.Location, gatewayAddressOf(old), began.Format(time.RFC3339), judged)
 		return nil
 	}}, true, nil
+}
+
+func gatewayName(gw Server) string { return fmt.Sprintf("gateway %d in %s", gw.ID, gw.Location) }
+
+// gatewaySet is every gateway with its newest reading since began, off its address as Hetzner reads it now, else as a
+// report since began reads its mirror, with each reading's detail naming that report.
+func (p Plane) gatewaySet(ctx context.Context, st State, network Network, began time.Time) (redundant.Set, map[string]string, error) {
+	set, details := redundant.Set{Name: "gateways", Minimum: redundant.AllButOne}, map[string]string{}
+	for _, loc := range Locations {
+		gw, ok := st.GatewayIn(loc)
+		if !ok {
+			continue
+		}
+		member := redundant.Member{Name: gatewayName(gw)}
+		if !runsAtItsAddress(gw, network) {
+			member.Reading = &redundant.Reading{At: p.now(), Serving: false}
+		} else if r, err := p.reading(ctx, gw, began); err != nil {
+			return redundant.Set{}, nil, err
+		} else if r.Read {
+			member.Reading, details[member.Name] = &redundant.Reading{At: r.At, Serving: r.Serving}, r.Detail
+		}
+		set.Members = append(set.Members, member)
+	}
+	return set, details, nil
+}
+
+// describeServing names each member but removed with when and from which report the guard read it serving.
+func describeServing(set redundant.Set, details map[string]string, removed string) string {
+	var parts []string
+	for _, m := range set.Members {
+		if m.Name != removed && m.Reading != nil {
+			parts = append(parts, fmt.Sprintf("%q read serving at %s (%s)", m.Name, m.Reading.At.UTC().Format(time.RFC3339), details[m.Name]))
+		}
+	}
+	return strings.Join(parts, "; ")
 }
 
 // markStep sets the network's upgrade mark to digest, or takes it off when digest is empty, once every gateway is built

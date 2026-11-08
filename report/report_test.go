@@ -41,6 +41,22 @@ const (
 	etcdStatusRead    = "-n 10.0.0.6,10.0.0.5,10.0.0.7 etcd status"
 	volumesRead       = "-n 10.0.0.5,10.0.0.6,10.0.0.7 get volumestatus -o json"
 	meshProbeRead     = "get configmap mitstack-mesh-probe -n kube-system -o json"
+	sealedSecretsRead = "get sealedsecrets.bitnami.com -n argocd -o json"
+	appProjectsRead   = "get appprojects.argoproj.io -n argocd -o json"
+	fixturesRead      = "get configmap admission-fixtures -n mitstack-admission-probe -o json"
+	dryRun            = "create --dry-run=server -n mitstack-admission-probe -f "
+	scansRead         = "get configmap mitstack-security-scans -n kube-system -o json"
+	scanCronJobRead   = "get cronjob.batch mitstack-security-scan -n kube-system -o json"
+	// dryRunAnswer refuses the app-label and Pod Security fixtures as Kyverno and the API server word it, and admits the rest.
+	dryRunAnswer = `case "$(cat "${@: -1}")" in
+*refused-require-app-label*)
+  echo 'Error from server: admission webhook "vpol.validate.kyverno.svc-fail" denied the request: mitstack-require-app-label: every pod must carry a non-empty mitstack.dev/app label' >&2
+  exit 1 ;;
+*pod-security-restricted*)
+  echo 'Error from server (Forbidden): pods "pod-security-restricted" is forbidden: violates PodSecurity "restricted:latest": privileged' >&2
+  exit 1 ;;
+*) echo 'deployment.apps/refused-require-image-digest created (server dry run)' ;;
+esac`
 	tokenRequest      = "create token mitstack-node-report -n mitstack-node "
 	reportProof       = "report-proof-fixture"
 	proofScript       = `exec kubectl create token "$4" -n "$3" --for "$2" --body-sha256 "$(sha256sum < "$1" | cut -d ' ' -f 1)"`
@@ -79,7 +95,10 @@ func kubectlAnswering(overrides map[string]string) string {
 	answers := map[string]string{nodesRead: "cat testdata/nodes.json", applicationsRead: "cat testdata/applications.json",
 		keySetRead: "cat testdata/jwks.json", cloudNativePGRead: "cat testdata/cloudnative-pg.json", storageRead: "cat testdata/storage-and-services.json",
 		tokenRequest: "echo " + reportProof, meshProbeRead: "cat testdata/mesh-probe.json", podsRead: "cat testdata/pods.json",
-		ingressesRead: `echo '{"apiVersion": "v1", "kind": "List", "items": []}'`, defaultDenyRead: "cat testdata/default-deny.json"}
+		ingressesRead: `echo '{"apiVersion": "v1", "kind": "List", "items": []}'`, defaultDenyRead: "cat testdata/default-deny.json",
+		sealedSecretsRead: "cat testdata/sealed-secrets.json", appProjectsRead: "cat testdata/app-projects.json",
+		fixturesRead: "cat testdata/admission-fixtures.json", dryRun: dryRunAnswer, scansRead: "cat testdata/security-scans.json",
+		scanCronJobRead: "cat testdata/security-scan-cronjob.json"}
 	for _, kind := range subscriptionKinds {
 		answers[subscriptionRead(kind)] = "cat testdata/subscription-resources/" + kind + ".json"
 	}
@@ -173,7 +192,8 @@ func cronJob(t *testing.T, rendered []byte, name string) (job map[string]any, la
 	return job, stringMap(testutil.Field(t, pod, "metadata", "labels")), testutil.Field(t, pod, "spec", "containers", "0")
 }
 
-var imageScripts = map[string]string{"mitstack-node-report": "report.sh", "mitstack-mesh-probe": "mesh-probe.sh"}
+var imageScripts = map[string]string{"mitstack-node-report": "report.sh", "mitstack-mesh-probe": "mesh-probe.sh",
+	"mitstack-security-scan": "security-scan.sh"}
 
 func renderedScript(t *testing.T, url, name string) (script string, env map[string]string) {
 	t.Helper()
@@ -322,11 +342,14 @@ func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipA
 	calls := tools.Calls(t)
 	require.NotEmpty(t, calls)
 	beside := []string{"kubectl " + meshProbeRead, "kubectl " + podsRead, "kubectl " + ingressesRead, "kubectl " + defaultDenyRead,
-		"talosctl " + etcdStatusRead}
+		"talosctl " + etcdStatusRead, "kubectl " + sealedSecretsRead, "kubectl " + appProjectsRead, "kubectl " + fixturesRead,
+		"kubectl " + scansRead, "kubectl " + scanCronJobRead}
 	for _, read := range beside {
 		assert.Contains(t, calls[:len(calls)-1], read, "a read beside the others ends before the proof")
 	}
-	calls = slices.DeleteFunc(calls, func(c string) bool { return slices.Contains(beside, c) || strings.HasPrefix(c, "date ") })
+	calls = slices.DeleteFunc(calls, func(c string) bool {
+		return slices.Contains(beside, c) || strings.HasPrefix(c, "date ") || strings.HasPrefix(c, "kubectl "+dryRun)
+	})
 	assert.Equal(t, append(wantCalls, "kubectl "+proofRequest(posted)), calls, "the proof is minted once the body is final")
 	assert.Equal(t, reportProof, posted.proof, "the post carries the proof the block's script printed for its exact body")
 }
@@ -530,7 +553,7 @@ func TestReport_PostsEachMemberItReadsFromAHealthyCluster(t *testing.T) {
 	fakes["date"] = reportAt
 	_, posted, out, err := runReport(t, fakes)
 	require.NoError(t, err, out)
-	unreadable := func(reason string) map[string]any { return map[string]any{"unreadable": reason} }
+	assert.NotContains(t, string(posted.raw), "CIPHERTEXT", "no sealed credential's encrypted data leaves the cluster")
 	cases := map[string]struct {
 		member, msg string
 		want        any
@@ -577,12 +600,42 @@ func TestReport_PostsEachMemberItReadsFromAHealthyCluster(t *testing.T) {
 				"policyTypes": []any{"Ingress", "Egress"}, "ingressRules": float64(0), "egressRules": float64(0), "managedBy": "kyverno"},
 			map[string]any{"namespace": "app-pg", "name": "mitstack-default-deny", "podSelector": map[string]any{"matchLabels": map[string]any{"app": "pg"}},
 				"policyTypes": []any{"Ingress"}, "ingressRules": float64(1), "egressRules": float64(0), "managedBy": nil}}},
-		"the credentials member, unreadable with its reason": {"repositorySecrets", "",
-			unreadable("the report holds no Secret right, and no list of the declared repository credentials reaches it yet")},
-		"the admission member, unreadable with its reason": {"admission", "",
-			unreadable("the cluster has no admission probe namespace for the report to dry-run fixtures into yet")},
-		"the scan member, unreadable with its reason": {"securityScans", "",
-			unreadable("no kube-bench or kubescape scan runs on this cluster yet, so the report has no summary to carry")},
+		"each sealed repository credential's name, secret type, project and URL, from its template alone": {"repositorySecrets", "", []any{
+			map[string]any{"name": "cluster-repository", "secretType": "repository", "project": "",
+				"url": "ssh://git@ssh.github.com:443/mitstack-eu/poc-talos4-cluster.git"},
+			map[string]any{"name": "app-repository-shop", "secretType": "repository", "project": "app-shop",
+				"url": "ssh://git@ssh.github.com:443/mitstack-eu/shop-gitops.git"},
+			map[string]any{"name": "write-back", "secretType": "repo-creds", "project": "", "url": ""}}},
+		"each AppProject with its source repositories": {"appProjects", "", []any{
+			map[string]any{"name": "app-shop", "sourceRepos": []any{"ssh://git@ssh.github.com:443/mitstack-eu/shop-gitops.git"}},
+			map[string]any{"name": "default", "sourceRepos": []any{}}}},
+		"each admission fixture named for a rule, dry-run in rule order with its answer": {"admission", "", []any{
+			map[string]any{"rule": "mitstack-require-app-label", "exitStatus": float64(1),
+				"fixture": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: refused-require-app-label\n",
+				"message": "Error from server: admission webhook \"vpol.validate.kyverno.svc-fail\" denied the request: " +
+					"mitstack-require-app-label: every pod must carry a non-empty mitstack.dev/app label\n"},
+			map[string]any{"rule": "mitstack-require-image-digest", "exitStatus": float64(0),
+				"fixture": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: refused-require-image-digest\n",
+				"message": "deployment.apps/refused-require-image-digest created (server dry run)\n"},
+			map[string]any{"rule": "pod-security-restricted", "exitStatus": float64(1),
+				"fixture": "apiVersion: v1\nkind: Pod\nmetadata:\n  name: pod-security-restricted\n",
+				"message": "Error from server (Forbidden): pods \"pod-security-restricted\" is forbidden: " +
+					"violates PodSecurity \"restricted:latest\": privileged\n"}}},
+		"the scan CronJob's last runs and each kept summary": {"securityScans", "", map[string]any{
+			"runner": map[string]any{"exitStatus": float64(0),
+				"output": "the CronJob kube-system/mitstack-security-scan last started a scan at 2026-11-07T03:17:00Z, and one last succeeded at 2026-11-07T03:19:06Z"},
+			"lastRun": map[string]any{"finishedAt": "2026-11-07T03:19:05Z", "exitStatus": float64(0), "output": "kube-bench: ran; kubescape: ran"},
+			"kubeBench": map[string]any{"tool": "kube-bench", "version": "v0.16.0", "startedAt": "2026-11-07T03:17:02Z", "profile": "cis-1.10",
+				"totals": map[string]any{"pass": float64(69), "fail": float64(1), "warn": float64(46), "info": float64(14)},
+				"failed": []any{map[string]any{"id": "1.2.30", "scored": true,
+					"text": "Ensure that the --service-account-extend-token-expiration parameter is set to false (Automated)"}},
+				"finishedAt": "2026-11-07T03:17:41Z"},
+			"kubescape": map[string]any{"tool": "kubescape", "version": "v4.0.15", "startedAt": "2026-11-07T03:17:41Z", "framework": "NSA",
+				"controlsVersion": "v2.0.38", "failedControlsBySeverity": map[string]any{"criticalSeverity": float64(0), "highSeverity": float64(0),
+					"mediumSeverity": float64(1), "lowSeverity": float64(0)},
+				"failed": []any{map[string]any{"id": "C-0013", "name": "Non-root containers", "severity": "Medium", "failedResources": float64(3),
+					"resources": []any{}}},
+				"finishedAt": "2026-11-07T03:19:05Z"}}},
 		"a call from inside the mesh answered, and a plain call from outside refused while ztunnel presents the target's certificate": {
 			"mesh", "", map[string]any{"callFromInside": map[string]any{"passed": true},
 				"plainCallFromOutside": map[string]any{"passed": true, "probedAt": "2026-10-23T15:42:31Z", "curlExitStatus": float64(56),
@@ -738,8 +791,7 @@ func TestManifests_LetsTheReportListPodsEachKindItReadsAndCloudNativePGsObjectsA
 	assert.Equal(t, testutil.Field(t, tokenRoles[0], "metadata", "name"), testutil.Field(t, bindings[0], "roleRef", "name"))
 	assert.Equal(t, []any{map[string]any{"kind": "ServiceAccount", "name": "mitstack-node-report", "namespace": "mitstack-node"}},
 		testutil.Field(t, bindings[0], "subjects"))
-	require.Len(t, roles, 1)
-	rules := testutil.Field(t, roles[0], "rules").([]any)
+	rules := testutil.Field(t, named(t, roles, "ClusterRole", "mitstack-node-report"), "rules").([]any)
 	assert.ElementsMatch(t, []any{
 		map[string]any{"apiGroups": []any{""}, "resources": []any{"nodes"}, "verbs": []any{"get", "list"}},
 		map[string]any{"apiGroups": []any{""}, "resources": []any{"pods"}, "verbs": []any{"list"}},

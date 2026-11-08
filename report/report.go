@@ -3,7 +3,8 @@ package report
 
 import (
 	"bytes"
-	_ "embed"
+	"embed"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -11,6 +12,8 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+
+	"go.yaml.in/yaml/v4"
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/internal/check"
@@ -24,12 +27,59 @@ var (
 	reportTemplate string
 	//go:embed mesh-probe.yaml
 	meshProbeTemplate string
+	//go:embed admission-probe.yaml
+	admissionProbeTemplate string
+	//go:embed security-scan.yaml
+	securityScanTemplate string
+	//go:embed admission/*.yaml
+	admissionFixtures embed.FS
 )
 
 var (
-	manifests          = tmpl.Must("the node report", reportTemplate)
-	meshProbeManifests = tmpl.Must("the mesh probe", meshProbeTemplate)
+	manifests               = tmpl.Must("the node report", reportTemplate)
+	meshProbeManifests      = tmpl.Must("the mesh probe", meshProbeTemplate)
+	admissionProbeManifests = tmpl.Must("the admission probe", admissionProbeTemplate)
+	securityScanManifests   = tmpl.Must("the security scan", securityScanTemplate)
 )
+
+// The report dry-runs each fixture of one ConfigMap in the probe namespace, and reads what the scan last kept from another.
+const (
+	admissionProbeNamespace = "mitstack-admission-probe"
+	admissionFixturesName   = "admission-fixtures"
+	securityScanNamespace   = "kube-system"
+	securityScansConfigMap  = "mitstack-security-scans"
+)
+
+// fixture is one admission fixture, under the name of the rule it breaks.
+type fixture struct {
+	Rule, Manifest string
+}
+
+// fixtures reads each embedded fixture as one line of JSON, in the order of its rule's name. A fixture's images exist only
+// to be refused, and the gateway mirrors every image line of a manifest, so the ConfigMap carries none.
+func fixtures() ([]fixture, error) {
+	entries, err := admissionFixtures.ReadDir("admission")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]fixture, 0, len(entries))
+	for _, entry := range entries {
+		data, err := admissionFixtures.ReadFile("admission/" + entry.Name())
+		if err != nil {
+			return nil, err
+		}
+		var manifest map[string]any
+		if err := yaml.Unmarshal(data, &manifest); err != nil {
+			return nil, fmt.Errorf("admission fixture %s: %w", entry.Name(), err)
+		}
+		line, err := json.Marshal(manifest)
+		if err != nil {
+			return nil, fmt.Errorf("admission fixture %s: %w", entry.Name(), err)
+		}
+		out = append(out, fixture{Rule: strings.TrimSuffix(entry.Name(), ".yaml"), Manifest: string(line)})
+	}
+	return out, nil
+}
 
 // TokenSecret is the Secret the block writes into the report's namespace, holding the bearer token under the key token.
 const TokenSecret = "mitstack-report-token"
@@ -118,7 +168,33 @@ func Manifests(in Inputs) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return append(append(report, "---\n"...), probe...), nil
+	probeFixtures, err := fixtures()
+	if err != nil {
+		return nil, err
+	}
+	admission, err := tmpl.Execute(admissionProbeManifests, map[string]any{
+		"Namespace":       admissionProbeNamespace,
+		"ConfigMap":       admissionFixturesName,
+		"ReportNamespace": nodeconfig.TalosAPINamespace,
+		"Fixtures":        probeFixtures,
+	})
+	if err != nil {
+		return nil, err
+	}
+	scan, err := tmpl.Execute(securityScanManifests, map[string]any{
+		"Namespace":        securityScanNamespace,
+		"ConfigMap":        securityScansConfigMap,
+		"ReportNamespace":  nodeconfig.TalosAPINamespace,
+		"Image":            in.ToolsImage,
+		"Script":           tools.ScriptDir + "/security-scan.sh",
+		"ScriptDir":        tools.ScriptDir,
+		"KubeBenchVersion": tools.Pin("KUBE_BENCH_VERSION"),
+		"ControlsVersion":  tools.Pin("KUBESCAPE_CONTROLS_VERSION"),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return bytes.Join([][]byte{report, probe, admission, scan}, []byte("---\n")), nil
 }
 
 func (in Inputs) validate() error {

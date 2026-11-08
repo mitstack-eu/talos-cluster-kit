@@ -1,0 +1,249 @@
+# The node report's security scan: a CronJob in kube-system, which Talos and Kyverno leave out of pod security, that
+# runs kube-bench against its control-plane node and kubescape against the cluster's objects once a day, and patches a
+# summary of each into one ConfigMap. kube-bench reads each component's flags from its process and its config from the
+# host, read-only. The scan may read the cluster's objects but never a Secret, and patch that ConfigMap alone; the
+# report may only read the ConfigMap and the CronJob. kube-bench runs first, as root with the host's files and no token,
+# and kubescape after it as a non-root user with the token and no host file, so neither tool holds both.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .ConfigMap }}
+  namespace: {{ .Namespace }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mitstack-security-scan
+  namespace: {{ .Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mitstack-security-scan
+rules:
+  - apiGroups: [""]
+    resources: [pods, services, serviceaccounts, configmaps, namespaces, nodes, persistentvolumes, persistentvolumeclaims,
+      replicationcontrollers, limitranges, resourcequotas, endpoints]
+    verbs: [get, list]
+  - apiGroups: [apps]
+    resources: [deployments, daemonsets, statefulsets, replicasets]
+    verbs: [get, list]
+  - apiGroups: [batch]
+    resources: [jobs, cronjobs]
+    verbs: [get, list]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [roles, rolebindings, clusterroles, clusterrolebindings]
+    verbs: [get, list]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies, ingresses]
+    verbs: [get, list]
+  - apiGroups: [policy]
+    resources: [poddisruptionbudgets]
+    verbs: [get, list]
+  - apiGroups: [admissionregistration.k8s.io]
+    resources: [validatingwebhookconfigurations, mutatingwebhookconfigurations]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mitstack-security-scan
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mitstack-security-scan
+subjects:
+  - kind: ServiceAccount
+    name: mitstack-security-scan
+    namespace: {{ .Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mitstack-security-scan
+  namespace: {{ .Namespace }}
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [{{ .ConfigMap }}]
+    verbs: [patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mitstack-security-scan
+  namespace: {{ .Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mitstack-security-scan
+subjects:
+  - kind: ServiceAccount
+    name: mitstack-security-scan
+    namespace: {{ .Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mitstack-node-report-security-scan
+  namespace: {{ .Namespace }}
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [{{ .ConfigMap }}]
+    verbs: [get]
+  - apiGroups: [batch]
+    resources: [cronjobs]
+    resourceNames: [mitstack-security-scan]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mitstack-node-report-security-scan
+  namespace: {{ .Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mitstack-node-report-security-scan
+subjects:
+  - kind: ServiceAccount
+    name: mitstack-node-report
+    namespace: {{ .ReportNamespace }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: mitstack-security-scan
+  namespace: {{ .Namespace }}
+spec:
+  schedule: "17 3 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 3600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: mitstack-security-scan
+        spec:
+          serviceAccountName: mitstack-security-scan
+          restartPolicy: Never
+          hostPID: true
+          automountServiceAccountToken: false
+          nodeSelector:
+            node-role.kubernetes.io/control-plane: ""
+          tolerations:
+            - key: node-role.kubernetes.io/control-plane
+              operator: Exists
+              effect: NoSchedule
+          initContainers:
+            - name: kube-bench
+              image: {{ .Image }}
+              command: [bash, {{ .Script }}, bench]
+              env:
+                - name: SCAN_RESULTS
+                  value: /results
+                - name: KUBE_BENCH_CONFIG
+                  value: {{ .ScriptDir }}/kube-bench/cfg
+                - name: KUBE_BENCH_VERSION
+                  value: {{ .KubeBenchVersion }}
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  cpu: 500m
+                  memory: 256Mi
+              securityContext:
+                runAsUser: 0
+                runAsNonRoot: false
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+                - name: results
+                  mountPath: /results
+                - name: etc-kubernetes
+                  mountPath: /etc/kubernetes
+                  readOnly: true
+                - name: kubelet
+                  mountPath: /var/lib/kubelet
+                  readOnly: true
+                - name: etcd
+                  mountPath: /var/lib/etcd
+                  readOnly: true
+          containers:
+            - name: scan
+              image: {{ .Image }}
+              command: [bash, {{ .Script }}]
+              env:
+                - name: SCAN_RESULTS
+                  value: /results
+                - name: SCAN_CONFIGMAP
+                  value: {{ .Namespace }}/{{ .ConfigMap }}
+                - name: KUBESCAPE_ARTIFACTS
+                  value: {{ .ScriptDir }}/kubescape
+                - name: KUBESCAPE_CONTROLS_VERSION
+                  value: {{ .ControlsVersion }}
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 512Mi
+                limits:
+                  cpu: "1"
+                  memory: 2Gi
+              securityContext:
+                runAsUser: 65532
+                runAsNonRoot: true
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+                - name: results
+                  mountPath: /results
+                - name: token
+                  mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+                  readOnly: true
+          volumes:
+            - name: tmp
+              emptyDir: {}
+            - name: results
+              emptyDir: {}
+            - name: token
+              projected:
+                sources:
+                  - serviceAccountToken:
+                      path: token
+                      expirationSeconds: 3600
+                  - configMap:
+                      name: kube-root-ca.crt
+                      items:
+                        - key: ca.crt
+                          path: ca.crt
+                  - downwardAPI:
+                      items:
+                        - path: namespace
+                          fieldRef:
+                            fieldPath: metadata.namespace
+            - name: etc-kubernetes
+              hostPath:
+                path: /etc/kubernetes
+                type: Directory
+            - name: kubelet
+              hostPath:
+                path: /var/lib/kubelet
+                type: Directory
+            - name: etcd
+              hostPath:
+                path: /var/lib/etcd
+                type: Directory

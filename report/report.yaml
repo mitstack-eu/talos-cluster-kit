@@ -11,7 +11,8 @@
 # whose pods may hold a Talos identity. Its read of the API server's key set
 # needs no rule here, since Kubernetes binds system:service-account-issuer-discovery
 # to every service account by default. A Role lets the report mint a token for
-# its own service account alone, which signs each report it posts.
+# its own service account alone, which signs each report it posts. Another lets it list Argo CD's SealedSecrets, whose
+# templates name each repository credential the cluster declares and whose data is ciphertext sealed to the cluster.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -107,6 +108,30 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: mitstack-node-report-sign
+subjects:
+  - kind: ServiceAccount
+    name: mitstack-node-report
+    namespace: {{ .Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mitstack-node-report-credentials
+  namespace: argocd
+rules:
+  - apiGroups: [bitnami.com]
+    resources: [sealedsecrets]
+    verbs: [list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mitstack-node-report-credentials
+  namespace: argocd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mitstack-node-report-credentials
 subjects:
   - kind: ServiceAccount
     name: mitstack-node-report

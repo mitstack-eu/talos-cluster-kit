@@ -1,6 +1,8 @@
 *
 !tools/tools.env
 !tools/jq.env
+!tools/scan.env
 !report/scripts/report.sh
 !report/scripts/mesh-probe.sh
+!report/scripts/security-scan.sh
 !topology/scripts/label-nodes.sh

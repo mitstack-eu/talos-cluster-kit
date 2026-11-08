@@ -1,0 +1,6 @@
+{"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "mitstack-security-scans", "namespace": "kube-system"},
+ "data": {
+  "kube-bench": "{\"tool\":\"kube-bench\",\"version\":\"v0.16.0\",\"startedAt\":\"2026-11-07T03:17:02Z\",\"profile\":\"cis-1.10\",\"totals\":{\"pass\":69,\"fail\":1,\"warn\":46,\"info\":14},\"failed\":[{\"id\":\"1.2.30\",\"scored\":true,\"text\":\"Ensure that the --service-account-extend-token-expiration parameter is set to false (Automated)\"}],\"finishedAt\":\"2026-11-07T03:17:41Z\"}",
+  "kubescape": "{\"tool\":\"kubescape\",\"version\":\"v4.0.15\",\"startedAt\":\"2026-11-07T03:17:41Z\",\"framework\":\"NSA\",\"controlsVersion\":\"v2.0.38\",\"failedControlsBySeverity\":{\"criticalSeverity\":0,\"highSeverity\":0,\"mediumSeverity\":1,\"lowSeverity\":0},\"failed\":[{\"id\":\"C-0013\",\"name\":\"Non-root containers\",\"severity\":\"Medium\",\"failedResources\":3,\"resources\":[]}],\"finishedAt\":\"2026-11-07T03:19:05Z\"}",
+  "last-run": "{\"finishedAt\":\"2026-11-07T03:19:05Z\",\"exitStatus\":0,\"output\":\"kube-bench: ran; kubescape: ran\"}"
+ }}

@@ -6,6 +6,8 @@
 # and the default storage classes, every Service's type, each default-deny NetworkPolicy, the objects labelled
 # mitstack.dev/subscription, the API server's key set, the mesh probe's results, whether each gateway's mirror answers
 # under the gateway CA, whether a TLS connection to Let's Encrypt's ACME API opens through the network's default route,
+# each repository credential Argo CD's SealedSecrets declare with each AppProject's source repositories, the API server's
+# answer to a dry run of each admission fixture, the security scan's last runs and kept summaries,
 # and a checks member naming each check of the platform's verdict, signed with a token the API server mints for the body through block-kit's
 # token-request.sh in REPORT_PROOF_SCRIPT.
 # When a read, the body or the token request fails or times out, it posts an unsigned report whose error names it
@@ -16,10 +18,14 @@ set -euo pipefail
 
 # Nine limits of 21 seconds, the token request's 5, each with a 5-second kill grace, and the post's 20 make 264, which
 # leaves 16 seconds of the Job's activeDeadlineSeconds of 280 for the tools to start. The mesh, pod, Argo CD,
-# default-deny, OpenBao, etcd status, gateway and egress reads run beside them, each within one limit.
+# default-deny, credential, scan, OpenBao, etcd status, gateway and egress reads run beside them, each within one limit,
+# and the admission fixtures' read and their dry runs within two.
 limit=${REPORT_READ_SECONDS:-21}
 # The outside probe writes every five minutes, so a result three runs old means it stopped.
 mesh_probe_max_age=900
+# The report dry-runs the admission fixtures in the probe namespace, and reads what the security scan last kept.
+probe_namespace=mitstack-admission-probe
+scans_configmap=kube-system/mitstack-security-scans
 # Kinds as kubectl --show-kind names them, as blocks name their objects; never secret, as the report holds no Secret right.
 subscription_kinds=(namespace serviceaccount service resourcequota limitrange deployment.apps
   ingress.networking.k8s.io networkpolicy.networking.k8s.io role.rbac.authorization.k8s.io
@@ -103,6 +109,11 @@ read_cluster() {
   local member
   read_beside pods kubectl get pods -A -o json &
   read_beside default-deny kubectl get networkpolicies.networking.k8s.io -A --field-selector metadata.name=mitstack-default-deny -o json &
+  read_beside sealed-secrets kubectl get sealedsecrets.bitnami.com -n argocd -o json &
+  read_beside app-projects kubectl get appprojects.argoproj.io -n argocd -o json &
+  read_beside security-scans kubectl get configmap "${scans_configmap#*/}" -n "${scans_configmap%%/*}" -o json &
+  read_beside security-scan-cronjob kubectl get cronjob.batch mitstack-security-scan -n "${scans_configmap%%/*}" -o json &
+  read_admission &
   mkdir "$work/openbao"
   for member in $OPENBAO_MEMBERS; do
     read_beside "openbao/${member%%=*}.seal-status" curl -sS --fail --proto '=https' --cacert "$OPENBAO_CA_FILE" \
@@ -111,6 +122,34 @@ read_cluster() {
       --max-time 5 "${member#*=}/v1/sys/leader" &
   done
   wait
+}
+
+# read_admission reads the probe namespace's fixtures and has the API server dry-run each one named for a rule, all at
+# the same time, so each answer is the admission chain's verdict on that fixture and nothing is created.
+read_admission() {
+  local rule dir=$work/fixtures
+  mkdir "$dir"
+  : > "$work/admission.json"
+  read_beside admission-fixtures kubectl get configmap admission-fixtures -n "$probe_namespace" -o json
+  [ "$(cat "$work/admission-fixtures.status")" = 0 ] || return 0
+  jq -r '.data // {} | keys[] | select(test("^[a-z0-9-]+$"))' "$work/admission-fixtures.out" > "$dir/rules" 2> /dev/null || return 0
+  while read -r rule; do
+    jq -j --arg rule "$rule" '.data[$rule]' "$work/admission-fixtures.out" > "$dir/$rule.yaml"
+    dry_run "$dir/$rule" &
+  done < "$dir/rules"
+  wait
+  while read -r rule; do
+    jq -c -n --arg rule "$rule" --rawfile fixture "$dir/$rule.yaml" --rawfile answer "$dir/$rule.answer" \
+      --argjson status "$(cat "$dir/$rule.status")" \
+      '{rule: $rule, fixture: $fixture[0:4096], exitStatus: $status, message: $answer[0:2048]}' >> "$work/admission.json"
+  done < "$dir/rules"
+}
+
+# dry_run PATH sends PATH.yaml to the API server as a server-side dry run, keeping its answer and exit status beside it.
+dry_run() {
+  local status=0
+  limited "$limit" kubectl create --dry-run=server -n "$probe_namespace" -f "$1.yaml" > "$1.answer" 2>&1 || status=$?
+  printf '%s' "$status" > "$1.status"
 }
 
 # read_etcd_status asks each etcd member's node for that member's status through the Talos API. talosctl prints a row
@@ -299,6 +338,22 @@ body() {
     --arg egress_url "$EGRESS_URL" \
     --rawfile egress_err "$work/egress.err" \
     --argjson egress_status "$(cat "$work/egress.status")" \
+    --rawfile sealed "$work/sealed-secrets.out" \
+    --rawfile sealed_err "$work/sealed-secrets.err" \
+    --argjson sealed_status "$(cat "$work/sealed-secrets.status")" \
+    --rawfile projects "$work/app-projects.out" \
+    --rawfile projects_err "$work/app-projects.err" \
+    --argjson projects_status "$(cat "$work/app-projects.status")" \
+    --slurpfile admission "$work/admission.json" \
+    --rawfile fixtures_err "$work/admission-fixtures.err" \
+    --argjson fixtures_status "$(cat "$work/admission-fixtures.status")" \
+    --rawfile scans "$work/security-scans.out" \
+    --rawfile scans_err "$work/security-scans.err" \
+    --argjson scans_status "$(cat "$work/security-scans.status")" \
+    --arg scans_configmap "$scans_configmap" \
+    --rawfile scan_job "$work/security-scan-cronjob.out" \
+    --rawfile scan_job_err "$work/security-scan-cronjob.err" \
+    --argjson scan_job_status "$(cat "$work/security-scan-cronjob.status")" \
     --from-file /dev/stdin <<'JQ'
     def talos_version: (.status.nodeInfo.osImage // "") | (try capture("^Talos \\((?<v>[^)]+)\\)").v catch null);
     def ready: [.status.conditions[]? | select(.type == "Ready") | .status == "True"] | any;
@@ -412,6 +467,35 @@ body() {
           failed("the target closed the plain call, but it did not answer the report either, so it may be down: \($inside.reason)")
         else {passed: true, curlExitStatus: $call.exitStatus, stderr: $call.stderr} end
       | . + {probedAt: ($probe.probedAt // null)};
+    # A sealed credential's template names the Secret it unseals into, its Argo CD type and its plain project and URL.
+    def repository_credential: (.spec.template // {}) as $t | ($t.metadata.labels["argocd.argoproj.io/secret-type"] // null) as $type
+      | select($type != null)
+      | {name: ($t.metadata.name // .metadata.name), secretType: $type, project: ($t.data.project // ""), url: ($t.data.url // "")};
+    # runner is when the scan CronJob last started a scan and when one last succeeded, or why the report could not read it.
+    def runner:
+      if $scan_job_status != 0 then {exitStatus: $scan_job_status, output: $scan_job_err[-512:]}
+      else (try ($scan_job | fromjson | .status // {}) catch null) as $s
+        | if ($s | type) != "object" then {exitStatus: 0, output: "kubectl exited 0, and its output is not the scan CronJob"}
+          else {exitStatus: 0, output: ("the CronJob \($scans_configmap | split("/")[0])/mitstack-security-scan "
+            + (if $s.lastScheduleTime then "last started a scan at \($s.lastScheduleTime)" else "has started no scan yet" end)
+            + (if $s.lastSuccessfulTime then ", and one last succeeded at \($s.lastSuccessfulTime)" else ", and none has succeeded yet" end))}
+          end
+      end;
+    # kept is one summary the scan kept, while it is one JSON object within the 16 KiB the report carries of it.
+    def kept($data; $key): $data[$key] as $v
+      | if $v == null then null
+        elif ($v | utf8bytelength) > 16384 then {unreadable: "the kept \($key) summary is \($v | utf8bytelength) bytes, over the 16384 the report carries"}
+        else (try ($v | fromjson) catch null) as $o
+          | if ($o | type) == "object" then $o else {unreadable: "the kept \($key) summary is not one JSON object"} end
+        end;
+    def security_scans:
+      if $scans_status != 0 then
+        {unreadable: "reading the ConfigMap \($scans_configmap) ended with exit status \($scans_status): \($scans_err[-512:])"}
+      else (try ($scans | fromjson | .data // {}) catch null) as $data
+        | if ($data | type) != "object" then {unreadable: "kubectl exited 0, and its output is not the ConfigMap \($scans_configmap)"}
+          else {runner: runner, lastRun: kept($data; "last-run"), kubeBench: kept($data; "kube-bench"), kubescape: kept($data; "kubescape")}
+          end
+      end;
     def mesh:
       outside_probe as $probe | call_from_inside as $inside | judged(workload_identity($probe)) as $identity | {
         callFromInside: $inside,
@@ -472,10 +556,12 @@ body() {
         $default_deny | fromjson | [.items[] | default_deny_policy]),
       subscriptionResources: $listed.objects,
       subscriptionResourceKinds: $listed.kinds,
-      # The report cannot read these three yet, so each says why and its check fails with that reason.
-      repositorySecrets: {unreadable: "the report holds no Secret right, and no list of the declared repository credentials reaches it yet"},
-      admission: {unreadable: "the cluster has no admission probe namespace for the report to dry-run fixtures into yet"},
-      securityScans: {unreadable: "no kube-bench or kubescape scan runs on this cluster yet, so the report has no summary to carry"},
+      repositorySecrets: beside($sealed_status; $sealed_err; "kubectl exited 0, and its output is not Argo CD's SealedSecrets";
+        $sealed | fromjson | [.items[] | repository_credential]),
+      appProjects: beside($projects_status; $projects_err; "kubectl exited 0, and its output is not Argo CD's AppProjects";
+        $projects | fromjson | [.items[] | {name: .metadata.name, sourceRepos: (.spec.sourceRepos // [])}]),
+      admission: beside($fixtures_status; $fixtures_err; "kubectl exited 0, and its output is not the admission fixtures"; $admission),
+      securityScans: security_scans,
       jwks: $jwks[0],
       mesh: mesh,
       gateways: $gateways,

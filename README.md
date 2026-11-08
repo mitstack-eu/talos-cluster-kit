@@ -47,7 +47,7 @@ the order a block uses them.
 | `mirror` | Lists every image the nodes pull, each by digest | `List`, `Render` |
 | `gateway` | Renders the cloud-config of the gateway in each location, and mints the cluster's gateway CA and each gateway's certificate | `Render`, `Inputs`, `NewCA`, `CA.Issue`, `ReleaseURL` |
 | `etcd` | Renders the Job that removes a lost node's etcd member and then its Node object, and holds the gateway's script that bootstraps etcd empty or from a snapshot | `RemoveMemberJob`, `BootstrapScript`, `Bootstrap.Args` |
-| `report` | Renders the node report, a CronJob that reads the cluster and posts what it read to the platform, signed for its exact body. [What the node report carries](#what-the-node-report-carries) lists its members, the nine checks it names and what happens when a read fails. It also renders the outside probe, a CronJob in `kube-system` that calls the mesh probe's target with no workload identity. The report holds no right on Secrets | `Manifests` |
+| `report` | Renders the node report, a CronJob that reads the cluster and posts what it read to the platform, signed for its exact body. [What the node report carries](#what-the-node-report-carries) lists its members, the nine checks it names and what happens when a read fails. It also renders the outside probe, a CronJob in `kube-system` that calls the mesh probe's target with no workload identity, the admission probe namespace and the daily security scan. The report holds no right on Secrets | `Manifests` |
 | `topology` | Renders the topology labeller, a CronJob that labels each Cloud node with its zone and region, and holds the two label names | `Manifests`, `Labels`, `ZoneLabel`, `RegionLabel`, `FieldManager` |
 | `openbaoinit` | Renders OpenBao's init Job, which the hosting set carries: it initialises a hosting cluster's OpenBao once, commits the root token and recovery key to the cluster repository as PGP messages, then writes the policy each slice's External Secrets reads with | `Manifests`, `Inputs`, `InitFile` |
 | `rollout` | Gives a running cluster that hosts the platform a release's hosting policies: the files a block commits to the cluster repository, where Argo CD applies, changes and prunes them, and the read-back of each one from the node report | `Current`, `Release.Files`, `Release.ReadBack` |
@@ -748,7 +748,10 @@ change `report/scripts/report.sh`.
 | `mesh` | The mesh probe's results, which [the section on the mesh](#how-the-node-report-shows-the-mesh-refusing-a-call) explains | The probe's target and its ConfigMap |
 | `gateways` | Each gateway's `address`, `passed` when its mirror answered HTTP 200 on `/v2/` over a certificate the gateway CA signs, and otherwise a `reason` naming curl's exit status or the answer | Each mirror in `GATEWAYS`, verified against `GATEWAY_CA`, the CA's certificate alone |
 | `egress` | `passed` when a TLS connection to Let's Encrypt's ACME directory opened and answered, and otherwise a `reason` naming curl's exit status. The connection leaves through the network's default route, so it reads the egress of the gateway that route names | `EGRESS_URL`, `https://acme-v02.api.letsencrypt.org/directory` |
-| `repositorySecrets`, `admission` and `securityScans` | An `unreadable` reason in place of the list each would hold, since the report cannot read them yet | Fixed text in `report.sh` |
+| `repositorySecrets` | Each repository credential the cluster declares, with its `name`, `secretType`, `project` and `url`. These come from the template of each SealedSecret in `argocd` that carries an `argocd.argoproj.io/secret-type` label, so the report reads no Secret and carries no ciphertext. A credential written straight into a Secret, as the cluster tokens write `cluster-repository` on a cluster that reads its repository with a platform token, is not listed | `kubectl get sealedsecrets.bitnami.com -n argocd` |
+| `appProjects` | Each AppProject with its `sourceRepos`, which the platform holds each app's credential to | `kubectl get appprojects.argoproj.io -n argocd` |
+| `admission` | Each fixture in the `admission-fixtures` ConfigMap of `mitstack-admission-probe` whose key names a rule, with the `rule`, the `fixture` up to 4 KiB, the dry run's `exitStatus` and the API server's `message` up to 2 KiB | `kubectl create --dry-run=server` in the probe namespace, [described below](#how-the-report-tries-each-admission-rule) |
+| `securityScans` | The scan CronJob's last start and success as `runner`, the scan's outcome as `lastRun`, and the summaries it kept as `kubeBench` and `kubescape`. A summary that is not one JSON object within 16 KiB reads `unreadable` | The `mitstack-security-scans` ConfigMap and the `mitstack-security-scan` CronJob in `kube-system`, [described below](#how-the-security-scan-runs) |
 | `checks` | Contract `node-report/v1` and the nine checks the report declares | Fixed text in `report.sh` |
 
 The nine checks are `routes`, `exposure`, `credentials`, `version`,
@@ -759,6 +762,51 @@ as the finding.
 The 17 routes are listed in `argocd_routes` in `report.sh`. Each request
 sends no credential, cookie or body. The report keeps each answer's status and
 size, and for userinfo whether it says a caller is signed in.
+
+### How the report tries each admission rule
+
+The `mitstack-admission-probe` namespace enforces Pod Security `restricted`
+and holds one fixture per rule in `report/admission/`, each breaking its own
+rule and no other. Five are Deployments, which Pod Security only warns about,
+so the Kyverno rule they break is what refuses them. The sixth,
+`pod-security-restricted`, is a privileged Pod that breaks no Kyverno rule.
+The `admission-fixtures` ConfigMap holds each fixture as one line of JSON.
+The gateways mirror every image an inline manifest names on a line of its
+own, and a fixture's images exist only to be refused.
+
+The report asks the API server for a server-side dry run of each fixture.
+It may only read the fixtures and create pods and Deployments in that
+namespace. A ValidatingAdmissionPolicy there refuses every request that is not
+a dry run, so nothing the report sends is ever kept.
+
+The platform requires a refusal naming its rule for each of the six. A
+Talos cluster runs only `mitstack-require-app-label` of the five Kyverno
+rules, so the other four fixtures read `accepted`, and the admission check
+fails naming each one until the cluster enforces it.
+
+### How the security scan runs
+
+The `mitstack-security-scan` CronJob runs once a day in `kube-system`, on a
+control-plane node, from the tools image. kube-bench runs the `cis-1.10`
+benchmark, the one Sidero documents for Talos, since kube-bench's version
+mapping picks none for Talos. It reads each component's flags from its
+process and `/etc/kubernetes`, `/var/lib/kubelet` and `/var/lib/etcd`
+read-only. kubescape scans the NSA framework with an empty exception list and
+no host sensor, under an identity that may read the cluster's objects but no
+Secret.
+
+The two tools run as two steps of one pod, so neither holds both the host's
+files and the API token. kube-bench runs first, as root with those three
+directories and no token, and leaves its summary in a shared scratch
+directory. kubescape runs after it as a non-root user, with the token and no
+host file, and then patches both summaries. A non-root user cannot reach a
+root process through the host's process table.
+
+The scan patches each summary into the `mitstack-security-scans` ConfigMap,
+which the report may only read. Each failed list is cut to fit 16 KiB while the
+totals stay whole, so the platform sees when a list was cut. A tool that fails
+is kept as its summary's `error`, and the Job runs again. `tools/scan.env`
+pins kube-bench, kubescape and the NSA framework by SHA-256.
 
 ### What happens when a read fails
 

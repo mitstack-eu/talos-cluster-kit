@@ -154,7 +154,14 @@ func TestManifests_LetsTheOutsideProbePatchAndTheReportReadOnlyTheProbesConfigMa
 	only := func(verb string) []any {
 		return []any{map[string]any{"apiGroups": []any{""}, "resources": []any{"configmaps"}, "resourceNames": []any{"mitstack-mesh-probe"}, "verbs": []any{verb}}}
 	}
-	assert.Equal(t, map[string]any{"mitstack-mesh-probe": only("patch"), "mitstack-node-report-mesh-probe": only("get")}, granted)
+	scans := func(verb string) map[string]any {
+		return map[string]any{"apiGroups": []any{""}, "resources": []any{"configmaps"}, "resourceNames": []any{"mitstack-security-scans"}, "verbs": []any{verb}}
+	}
+	assert.Equal(t, map[string]any{"mitstack-mesh-probe": only("patch"), "mitstack-node-report-mesh-probe": only("get"),
+		"mitstack-security-scan": []any{scans("patch")},
+		"mitstack-node-report-security-scan": []any{scans("get"), map[string]any{"apiGroups": []any{"batch"}, "resources": []any{"cronjobs"},
+			"resourceNames": []any{"mitstack-security-scan"}, "verbs": []any{"get"}}},
+	}, granted, "kube-system grants nothing beyond the mesh probe's and the security scan's ConfigMaps by name")
 	subjects := map[string]any{}
 	for _, binding := range inNamespace(t, testutil.Kind(docs, "RoleBinding"), "kube-system") {
 		subjects[testutil.Field(t, binding, "roleRef", "name").(string)] = testutil.Field(t, binding, "subjects", "0")
@@ -162,6 +169,9 @@ func TestManifests_LetsTheOutsideProbePatchAndTheReportReadOnlyTheProbesConfigMa
 	assert.Equal(t, map[string]any{
 		"mitstack-mesh-probe":             map[string]any{"kind": "ServiceAccount", "name": "mitstack-mesh-probe", "namespace": "kube-system"},
 		"mitstack-node-report-mesh-probe": map[string]any{"kind": "ServiceAccount", "name": "mitstack-node-report", "namespace": "mitstack-node"},
+		"mitstack-security-scan":          map[string]any{"kind": "ServiceAccount", "name": "mitstack-security-scan", "namespace": "kube-system"},
+		"mitstack-node-report-security-scan": map[string]any{"kind": "ServiceAccount", "name": "mitstack-node-report",
+			"namespace": "mitstack-node"},
 	}, subjects)
 	job, _, _ := cronJob(t, rendered, "mitstack-mesh-probe")
 	assert.Equal(t, "kube-system", testutil.Field(t, job, "metadata", "namespace"), "the outside probe runs where the mesh leaves it out")

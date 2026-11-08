@@ -26,6 +26,7 @@ fail() {
 
 power_off_unless_complete() {
   local status=$?
+  set +e
   cat "$errors" >&2
   if [ -z "$completion" ] || [ ! -e "$completion" ]; then
     {
@@ -84,7 +85,8 @@ main() {
   completion=$5
   # shellcheck source=/dev/null
   . "$1"
-  : "${DOWNLOAD_CONNECT_SECONDS:?}" "${DOWNLOAD_SECONDS:?}" "${COPY_SECONDS:?}"
+  [ -n "${DOWNLOAD_CONNECT_SECONDS:-}" ] && [ -n "${DOWNLOAD_SECONDS:-}" ] && [ -n "${COPY_SECONDS:-}" ] ||
+    fail "tools.env names no bound for a download or a copy"
   install_tools
 
   local ref file sha256 url

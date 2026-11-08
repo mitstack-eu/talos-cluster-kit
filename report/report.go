@@ -111,11 +111,12 @@ type Inputs struct {
 // connection to it reads the egress the network's default route gives the nodes.
 const egressURL = "https://acme-v02.api.letsencrypt.org/directory"
 
-// gateways names each gateway as address=URL, the URL its mirror's certificate holds.
+// gateways lists each gateway's address, where its mirror answers on https, since every byte of an inline manifest
+// counts against a builder's user data limit.
 func (in Inputs) gateways() string {
 	named := make([]string, 0, len(in.Gateways))
 	for _, addr := range in.Gateways {
-		named = append(named, addr.String()+"=https://"+addr.String())
+		named = append(named, addr.String())
 	}
 	return strings.Join(named, " ")
 }
@@ -197,7 +198,19 @@ func Manifests(in Inputs) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return bytes.Join([][]byte{report, probe, admission, scan}, []byte("---\n")), nil
+	return withoutComments(bytes.Join([][]byte{report, probe, admission, scan}, []byte("---\n"))), nil
+}
+
+// withoutComments drops each line starting with #, which YAML reads as a comment at column 0, because a machine config
+// has no reader for one and every byte of it counts against a builder's user data limit.
+func withoutComments(manifests []byte) []byte {
+	var kept []byte
+	for line := range bytes.Lines(manifests) {
+		if !bytes.HasPrefix(line, []byte("#")) {
+			kept = append(kept, line...)
+		}
+	}
+	return kept
 }
 
 func (in Inputs) validate() error {

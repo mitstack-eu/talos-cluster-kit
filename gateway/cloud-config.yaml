@@ -129,7 +129,7 @@ write_files:
       RemainAfterExit=yes
       TimeoutStartSec={{ .PrepareSeconds }}
       ExecStart=/usr/local/bin/mitstack-gateway-prepare /etc/mitstack-gateway/tools.env /etc/mitstack-gateway/images.txt /etc/mitstack-gateway/manifests.txt /srv/mitstack/manifests /var/lib/mitstack-gateway/mirror-complete
-      ExecStopPost=/bin/sh -c '[ "$$SERVICE_RESULT" = success ] || { echo "mitstack gateway: the preparation ended with $$SERVICE_RESULT within its {{ .PrepareSeconds }}s bound, so the gateway powers itself off." | fold -w 80 | tee -a {{ .Issue }} > {{ .Console }}; }'
+      ExecStopPost=/bin/sh -c '[ "$$SERVICE_RESULT" = success ] || [ -s {{ .Issue }} ] || { echo "mitstack gateway: the preparation ended with $$SERVICE_RESULT within its {{ .PrepareSeconds }}s bound, so the gateway powers itself off." | fold -w 80 | tee -a {{ .Issue }} > {{ .Console }}; }'
   - path: /etc/systemd/system/mitstack-gateway-serve.service
     content: |
       [Unit]

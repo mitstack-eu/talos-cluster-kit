@@ -4,15 +4,15 @@
 # route answers a caller without a session, Argo CD's Services, Ingresses and pod images, CloudNativePG's objects with
 # each cluster's primary, every pod's node and phase, each OpenBao member's seal state and the active one, each claim
 # and the default storage classes, every Service's type, each default-deny NetworkPolicy, the objects labelled
-# mitstack.dev/subscription, the API server's key set, the mesh probe's results, how the outside probe's last call to
-# each gateway's mirror ended, whether a TLS connection to Let's Encrypt's ACME API opens through the network's default route,
+# mitstack.dev/subscription, the API server's key set, the mesh probe's results, the outside probe's reading of
+# each gateway's mirror, whether a TLS connection to Let's Encrypt's ACME API opens through the network's default route,
 # each repository credential Argo CD's SealedSecrets declare with each AppProject's source repositories, the API server's
 # answer to a dry run of each admission fixture, the security scan's last runs and kept summaries,
 # and a checks member naming each check of the platform's verdict, signed with a token the API server mints for the body through block-kit's
 # token-request.sh in REPORT_PROOF_SCRIPT.
 # When a read, the body or the token request fails or times out, it posts an unsigned report whose error names it
 # instead, then exits non-zero.
-# Usage: REPORT_URL=<https url> SUBSCRIPTION_ID=<id> HOST_IP=<this pod's node> REPORT_PROOF_SCRIPT=<script> MESH_PROBE_URL=<target's url> MESH_PROBE_ANSWER=<its answer> MESH_PROBE_IDENTITY=<its SPIFFE id> MESH_PROBE_CONFIGMAP=<namespace/name> OPENBAO_MEMBERS="<name>=<https url> ..." OPENBAO_CA_FILE=<pem> ARGOCD_URL=<https url> GATEWAYS="<address>=<https url> ..." EGRESS_URL=<https url> [POD_NAMESPACE=mitstack-node] [REPORT_TOKEN_FILE=/var/run/mitstack/token] [REPORT_READ_SECONDS=21] report.sh
+# Usage: REPORT_URL=<https url> SUBSCRIPTION_ID=<id> HOST_IP=<this pod's node> REPORT_PROOF_SCRIPT=<script> MESH_PROBE_URL=<target's url> MESH_PROBE_ANSWER=<its answer> MESH_PROBE_IDENTITY=<its SPIFFE id> MESH_PROBE_CONFIGMAP=<namespace/name> OPENBAO_MEMBERS="<name>=<https url> ..." OPENBAO_CA_FILE=<pem> ARGOCD_URL=<https url> GATEWAYS="<address> ..." EGRESS_URL=<https url> [POD_NAMESPACE=mitstack-node] [REPORT_TOKEN_FILE=/var/run/mitstack/token] [REPORT_READ_SECONDS=21] report.sh
 # It exists so the platform sees a cluster it never dials into, as ADR 0072 requires, with os:reader and no Secret right.
 set -euo pipefail
 
@@ -76,8 +76,7 @@ collect() {
 }
 
 # read_egress opens a TLS connection to EGRESS_URL. -q reads no ~/.curlrc, and without --fail any answer over a verified
-# connection counts. The gateways' mirrors are read by the outside probe, since ztunnel would answer this pod's call to a
-# closed port by accepting and resetting it.
+# connection counts.
 read_egress() {
   read_beside egress curl -q -sS --proto '=https' --max-time 5 -o /dev/null "$EGRESS_URL"
 }
@@ -475,8 +474,6 @@ body() {
           else {runner: runner, lastRun: kept($data; "last-run"), kubeBench: kept($data; "kube-bench"), kubescape: kept($data; "kubescape")}
           end
       end;
-    # A mirror's connection ends served, answered, closed, reset, tls-failure, timed-out or failed, as the outside probe
-    # names it.
     def connection_words($read):
       if $read.connection == "answered" then "the mirror answered HTTP \($read.httpCode)"
       else ({closed: "nothing took the connection to the mirror's port", reset: "the connection was reset or closed before the mirror answered",
@@ -484,10 +481,9 @@ body() {
           // "the outside probe read the connection as \($read.connection)")
         + ": curl ended with exit status \($read.exitStatus): \($read.stderr)"
       end;
-    # gateway_readings is one reading per gateway, from what the outside probe last read of its mirror, under the time it
-    # read it: passed when the mirror served, or how the connection ended and why.
+    # gateway_readings is the reading of each gateway in the result of the outside probe, with the time it was taken.
     def gateway_readings($probe):
-      [$gateways | splits(" +") | select(. != "") | split("=")[0]] as $addresses
+      [$gateways | splits(" +") | select(. != "")] as $addresses
       | try [$addresses[] as $address
           | if $probe.error then {address: $address, passed: false, reason: $probe.error}
             else ([$probe.gateways[]? | select(.address == $address)] | first) as $read
@@ -603,7 +599,7 @@ main() {
   : "${MESH_PROBE_IDENTITY:?names the SPIFFE identity of the target}" "${MESH_PROBE_CONFIGMAP:?names the ConfigMap of the outside probe}"
   : "${OPENBAO_MEMBERS:?names each OpenBao member and its URL}" "${OPENBAO_CA_FILE:?names the authority that signs the OpenBao certificate}"
   : "${ARGOCD_URL:?names the URL of the Argo CD server}" "${EGRESS_URL:?names where the egress reading opens a TLS connection}"
-  : "${GATEWAYS?names each gateway and the URL of its mirror}"
+  : "${GATEWAYS?names the address of each gateway}"
   local token_file=${REPORT_TOKEN_FILE:-/var/run/mitstack/token} status=0
   [ -s "$token_file" ] || fail "no report token at $token_file"
   token=$(cat "$token_file")

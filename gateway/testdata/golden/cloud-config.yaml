@@ -139,17 +139,17 @@ write_files:
       registry.k8s.io/pause:3.10.2@sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4
   - path: /etc/mitstack-gateway/manifests.txt
     content: |
-      00-cilium.yaml c5057491cfc1cdc8c019b27fc8bc48f983aea2da0198586f4f145e41e25b07de https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/cilium/cilium.yaml
+      00-cilium.yaml aafec70d4cc5115dd5ceb6d982cd1646eae61dbdb5e29a83f2a08f020e87eb59 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/cilium/cilium.yaml
       01-cilium-policy-crd.yaml 582273fd2b7d7238563ad2976ba36905ba818834ed71c58cad6e51bb4762088b https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/cilium/policy-crd.yaml
-      09-argocd.yaml a83dcef315b27221ec57431c64772e2ab3ee3d23058fde295a501d7b730942c4 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/argocd/argocd.yaml
+      09-argocd.yaml c89e44159b3e66aa474daadfa910575e91e5e87fff4071f779cff585cc90c924 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/argocd/argocd.yaml
       13-kyverno.yaml 30c3d2833991432a4d5e7ca1de8f5f8fe198a5f6933f7ec5bce6fd369bd712f3 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/kyverno/kyverno.yaml
-      11-cloudnative-pg.yaml f1768c6f991b5516cf8e39cfe63b597cd8681a47add18bb7ede32fb9272cde30 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/cloudnative-pg/cloudnative-pg.yaml
-      14-local-path-provisioner.yaml b2dfa76fee341a7ff10719b32edd35a857ab34d467bcd31889d6193691c30d39 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/local-path-provisioner/local-path-provisioner.yaml
+      11-cloudnative-pg.yaml 8e60fb45bca3cf568e58402c93d77f662f8efb63e5ffe7dcd552568c98f3bc9e https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/cloudnative-pg/cloudnative-pg.yaml
+      14-local-path-provisioner.yaml 1f15539874470b12f4cd835e6276cfcc2cbcaf42b6dcaa7d018775b93ef0e8f1 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/local-path-provisioner/local-path-provisioner.yaml
       02-istio-base.yaml 21fd1e9fea0b26e16f6d1784db982b690eee1bfd36b91ec58fee2ea06af826eb https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/istio/istio-base.yaml
-      03-istiod.yaml 228e5605e6c50962b9e307b4dad7f468bc4cb408c8fb09a7bdc46a25ff227b54 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/istio/istiod.yaml
+      03-istiod.yaml 55513ab62611aaf3a03497248daf88f36a0e6ce11e58dcb0a6434b9290594c15 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/istio/istiod.yaml
       04-istio-cni.yaml 4e468eb1ce1722df46f859dd8318c28507127a0a129e0cb51ab8cc8060372526 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/istio/istio-cni.yaml
       05-ztunnel.yaml fac3f7016c82389be8f1340a961e9b81c47c981bbae4853a77ed2a62117c8663 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/istio/ztunnel.yaml
-      26-mitstack-mesh-probe.yaml c4943f558eee7a699cfebd9d2d79c62159268ce75986d905c53429e0beae8240 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/mesh/probe.yaml
+      26-mitstack-mesh-probe.yaml 71cd5ea890bb802ee2d9c9160c3d47c6a09e37070654fc108ba966ffa5ba596d https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/mesh/probe.yaml
   - path: /usr/local/bin/mitstack-gateway-prepare
     permissions: "0755"
     content: |

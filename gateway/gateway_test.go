@@ -559,8 +559,7 @@ func TestPrepareScript_RefusesAManifestWhoseBytesDifferFromItsPin(t *testing.T) 
 	assert.NoFileExists(t, filepath.Join(run.dir, "manifests", "argocd.yaml"))
 }
 
-// scriptAllowance is what the prepare script's own steps around a stage may add to the stage's bound on a loaded runner.
-const scriptAllowance = 5 * time.Second
+const scriptAllowance = 5 * time.Second // what the script's own steps around a stage may add to its bound when loaded
 
 // assertPoweredOff fails a run that did not stop at stage within bound, power the gateway off and write why to the
 // console and the issue file.

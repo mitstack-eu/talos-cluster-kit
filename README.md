@@ -795,6 +795,13 @@ read-only. kubescape scans the NSA framework with an empty exception list and
 no host sensor, under an identity that may read the cluster's objects but no
 Secret.
 
+The two tools run as two steps of one pod, so neither holds both the host's
+files and the API token. kube-bench runs first, as root with those three
+directories and no token, and leaves its summary in a shared scratch
+directory. kubescape runs after it as a non-root user, with the token and no
+host file, and then patches both summaries. A non-root user cannot reach a
+root process through the host's process table.
+
 The scan patches each summary into the `mitstack-security-scans` ConfigMap,
 which the report may only read. Each failed list is cut to fit 16 KiB while the
 totals stay whole, so the platform sees when a list was cut. A tool that fails

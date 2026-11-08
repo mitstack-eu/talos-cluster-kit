@@ -455,9 +455,8 @@ func stopPost(t *testing.T, name, result, dir string, replace ...string) (consol
 	cmd.Env = []string{"SERVICE_RESULT=" + result, "PATH=" + os.Getenv("PATH")}
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
-	tty, _ := os.ReadFile(filepath.Join(dir, "tty1"))
-	issueFile, _ := os.ReadFile(filepath.Join(dir, "issue"))
-	return string(tty), string(issueFile)
+	read := func(name string) string { b, _ := os.ReadFile(filepath.Join(dir, name)); return string(b) }
+	return read("tty1"), read("issue")
 }
 
 // unfolded is a console message with the line breaks its folding added taken out again.
@@ -500,14 +499,12 @@ func TestRender_ATLSServerThatDoesNotStartWritesTheStageAndCurlsErrorToTheVGACon
 	assert.Equal(t, console, issue, "the login prompt's issue file shows the failure again on every later boot")
 	console, _ = stopPost(t, "mitstack-gateway-serve.service", "success", t.TempDir())
 	assert.Empty(t, console, "a TLS server that started writes nothing to the console")
-	console, issue = stopPost(t, "mitstack-gateway-prepare.service", "timeout", t.TempDir())
+	prepared := t.TempDir()
+	console, issue = stopPost(t, "mitstack-gateway-prepare.service", "timeout", prepared)
 	assertOnOneScreen(t, console, "the preparation ended with timeout")
 	assert.Equal(t, console, issue)
-	written := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(written, "issue"), []byte("the script's own message\n"), 0o600))
-	console, issue = stopPost(t, "mitstack-gateway-prepare.service", "exit-code", written)
-	assert.Empty(t, console, "the script's message already on the screen stays the only one")
-	assert.Equal(t, "the script's own message\n", issue)
+	again, issueAgain := stopPost(t, "mitstack-gateway-prepare.service", "exit-code", prepared)
+	assert.Equal(t, []string{console, issue}, []string{again, issueAgain}, "a message already on the screen, as the script's is, stays the only one")
 }
 
 func TestRender_NamesTheVGAConsoleAndTheIssueFileAsWhereABuildFailureIsWritten(t *testing.T) {

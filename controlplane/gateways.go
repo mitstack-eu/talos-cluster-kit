@@ -85,7 +85,8 @@ func (p Plane) gatewayList() (gateway.List, error) {
 	return list, nil
 }
 
-// zoneStep creates the gateway of a location that has none and attaches each gateway at its address.
+// zoneStep creates the gateway of a location that has none, once nodes run from a node report since the loss, attaches
+// each gateway at its address, and takes the record of a loss off once the location has its gateway again.
 func (p Plane) zoneStep(ctx context.Context, st State, s site) (Step, bool, error) {
 	if st.SingleGateway() {
 		return Step{}, false, nil
@@ -97,8 +98,11 @@ func (p Plane) zoneStep(ctx context.Context, st State, s site) (Step, bool, erro
 				return Step{}, false, refuse("gateway-ca-unknown",
 					"the gateway in %s is gone and the block holds no gateway CA to sign a new one's certificate with; unsubscribe and subscribe again to rebuild the cluster", loc)
 			}
+			if len(st.Servers[RoleNode]) > 0 {
+				return p.rebuildStep(ctx, st, s, loc, sibling)
+			}
 			return Step{"create the gateway in " + loc + " from this release's list", func(ctx context.Context) error {
-				return p.createGateway(ctx, st, s, loc, sibling)
+				return p.createGateway(ctx, st, s, loc, sibling, nil)
 			}}, true, nil
 		}
 	}
@@ -108,6 +112,11 @@ func (p Plane) zoneStep(ctx context.Context, st State, s site) (Step, bool, erro
 			return Step{"attach the gateway in " + loc + " to the network at its fixed address before its first boot", func(ctx context.Context) error {
 				return p.API.AttachServerToNetwork(ctx, gw.ID, s.network.ID, GatewayAddresses[loc])
 			}}, true, nil
+		}
+	}
+	for _, loc := range Locations {
+		if _, recorded := gatewayGoneAt(s.network, loc); recorded {
+			return p.setGatewayGone(s.network, loc, nil), true, nil
 		}
 	}
 	return Step{}, false, nil
@@ -132,18 +141,25 @@ func (p Plane) neverStartedStep(ctx context.Context, st State) (Step, bool, erro
 }
 
 // builtGatewayStep keeps the gateways of a cluster whose nodes exist: each zone's gateway, the route, a gateway
-// powered back on once an outage, and an upgrade's replacements, one location at a time.
+// powered back on once an outage, and an upgrade's replacements, one location at a time and none while a location waits
+// on its gateway.
 func (p Plane) builtGatewayStep(ctx context.Context, st State, s site) (Step, bool, error) {
 	if st.SingleGateway() {
 		return p.singleGatewayStep(ctx, st, s)
 	}
 	for _, next := range []func(context.Context, State, site) (Step, bool, error){
+		p.keptListStep,
 		p.upgradeMarkStep,
 		p.zoneStep,
 		func(ctx context.Context, st State, _ site) (Step, bool, error) { return p.neverStartedStep(ctx, st) },
 		p.routeStep,
 		p.powerBackStep,
-		p.replaceStep,
+		func(ctx context.Context, st State, s site) (Step, bool, error) {
+			if st.lacksGateway() {
+				return Step{}, false, nil
+			}
+			return p.replaceStep(ctx, st, s)
+		},
 	} {
 		if step, ok, err := next(ctx, st, s); err != nil || ok {
 			return step, ok, err
@@ -541,8 +557,9 @@ func (p Plane) markStep(network Network, digest string) Step {
 }
 
 // createGateway builds a location's gateway stopped and off the network, with a certificate the kept CA signs for its
-// address, and with no first-node bootstrap, since only the install's first gateway bootstraps etcd.
-func (p Plane) createGateway(ctx context.Context, st State, s site, loc string, sibling Server) error {
+// address, mirroring what k keeps beside the release's list, and with no first-node bootstrap, since only the install's
+// first gateway bootstraps etcd.
+func (p Plane) createGateway(ctx context.Context, st State, s site, loc string, sibling Server, k *keeping) error {
 	ingress, _ := st.LoadBalancerIn(RoleIngress, GatewayLocation)
 	ingressAddr, err := netip.ParseAddr(ingress.PublicIPv4)
 	if err != nil {
@@ -551,6 +568,9 @@ func (p Plane) createGateway(ctx context.Context, st State, s site, loc string, 
 	list, err := p.gatewayList()
 	if err != nil {
 		return err
+	}
+	if k != nil {
+		list = list.Keeping(k.kept)
 	}
 	userData, tls, err := p.renderGateway(loc, ingressAddr, p.now(), *p.GatewayCA, list, nil)
 	if err != nil {
@@ -568,6 +588,9 @@ func (p Plane) createGateway(ctx context.Context, st State, s site, loc string, 
 		return errors.Join(fmt.Errorf("creating the gateway in %s: %w", loc, err), p.deleteUnattachedGateway(ctx, loc, s))
 	}
 	p.notify(ctx, "%s", event)
+	if k != nil {
+		p.notify(ctx, "%s", k.event(loc, list))
+	}
 	return nil
 }
 

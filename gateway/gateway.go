@@ -84,13 +84,15 @@ type Inputs struct {
 	ManifestBaseURL string
 	// Logs is the receiver the node-local Collectors export to, whose port the gateway forwards when there is one.
 	Logs components.LogExport
+	// Gzipped says the caller sends the cloud-config gzipped and judges that against Hetzner's limit itself.
+	Gzipped bool
 }
 
 func ReleaseURL(version string) string {
 	return "https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/" + version
 }
 
-// Render returns the gateway's cloud-config, refusing one past Hetzner's user data limit.
+// Render returns the gateway's cloud-config, refusing one past Hetzner's user data limit unless it travels gzipped.
 func Render(in Inputs) ([]byte, error) {
 	if err := in.validate(); err != nil {
 		return nil, err
@@ -103,7 +105,7 @@ func Render(in Inputs) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(out) > UserDataLimit {
+	if !in.Gzipped && len(out) > UserDataLimit {
 		return nil, fmt.Errorf("the gateway's cloud-config is %d bytes, over Hetzner's %d", len(out), UserDataLimit)
 	}
 	return out, nil
@@ -150,7 +152,7 @@ func (in Inputs) templateData() (map[string]string, error) {
 		"CA":              string(in.TLS.CA),
 		"Cert":            string(in.TLS.Cert),
 		"Key":             string(in.TLS.Key),
-		"Images":          string(mirror.Render(in.List.images)),
+		"Images":          string(mirror.Render(in.List.mirrored())),
 		"Manifests":       in.manifestList(),
 		"ToolsEnv":        tools.Env + "SKOPEO_IMAGE=" + skopeoImage + "\n" + boundsEnv(),
 		"PrepareSeconds":  seconds(prepareBound),
@@ -192,11 +194,36 @@ func (in Inputs) egressPorts() (string, error) {
 	return strings.Join(ports, ", "), nil
 }
 
-// List is the images a gateway mirrors and the manifests it serves, read out of a component set once.
+// List is the images a gateway mirrors and the manifests it serves, read out of a component set once, and the images it
+// keeps beside them because the cluster still runs them.
 type List struct {
 	images []components.Image
 	served []components.Manifest
 	digest string
+	kept   []components.Image
+}
+
+// Keeping is the list that also mirrors each of images it lacks, with its digest still the release's list alone, so a
+// kept image never marks a gateway stale.
+func (l List) Keeping(images []components.Image) List {
+	var kept []components.Image
+	for _, image := range images {
+		if !slices.Contains(l.images, image) && !slices.Contains(kept, image) {
+			kept = append(kept, image)
+		}
+	}
+	slices.SortFunc(kept, func(a, b components.Image) int { return strings.Compare(a.Ref(), b.Ref()) })
+	l.kept = kept
+	return l
+}
+
+// Kept is each image the list mirrors beyond the release's, in reference order.
+func (l List) Kept() []components.Image { return slices.Clone(l.kept) }
+
+func (l List) mirrored() []components.Image {
+	all := append(slices.Clone(l.images), l.kept...)
+	slices.SortFunc(all, func(a, b components.Image) int { return strings.Compare(a.Ref(), b.Ref()) })
+	return all
 }
 
 // NewList reads the images out of every manifest of set, which takes the better part of a second, so one list serves

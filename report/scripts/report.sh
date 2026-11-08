@@ -2,8 +2,8 @@
 # Posts the node report: nodes with their zone and region labels, etcd members with their health and the leader, each
 # node's STATE and EPHEMERAL encryption, Argo CD's health with each Application's applied objects, what each Argo CD
 # route answers a caller without a session, Argo CD's Services, Ingresses and pod images, CloudNativePG's objects with
-# each cluster's primary, every pod's node and phase, each OpenBao member's seal state and the active one, each claim
-# and the default storage classes, every Service's type, each default-deny NetworkPolicy, the objects labelled
+# each cluster's primary, every pod's node and phase, each image reference the pods and the workloads' pod templates
+# name, each OpenBao member's seal state and the active one, each claim and the default storage classes, every Service's type, each default-deny NetworkPolicy, the objects labelled
 # mitstack.dev/subscription, the API server's key set, the mesh probe's results, the outside probe's reading of
 # each gateway's mirror, whether a TLS connection to Let's Encrypt's ACME API opens through the network's default route,
 # each repository credential Argo CD's SealedSecrets declare with each AppProject's source repositories, the API server's
@@ -17,7 +17,7 @@
 set -euo pipefail
 
 # Nine limits of 21 seconds, the token request's 5, each with a 5-second kill grace, and the post's 20 make 264, which
-# leaves 16 seconds of the Job's activeDeadlineSeconds of 280 for the tools to start. The mesh, pod, Argo CD,
+# leaves 16 seconds of the Job's activeDeadlineSeconds of 280 for the tools to start. The mesh, pod, workload, Argo CD,
 # default-deny, credential, scan, OpenBao, etcd status, gateway and egress reads run beside them, each within one limit,
 # and the admission fixtures' read and their dry runs within two.
 limit=${REPORT_READ_SECONDS:-21}
@@ -81,11 +81,12 @@ read_egress() {
   read_beside egress curl -q -sS --proto '=https' --max-time 5 -o /dev/null "$EGRESS_URL"
 }
 
-# read_cluster reads every pod and each default-deny NetworkPolicy, and asks each OpenBao member for its seal state and
-# whether it is the active one, which OpenBao answers without a token.
+# read_cluster reads every pod, every workload with a pod template, and each default-deny NetworkPolicy, and asks each
+# OpenBao member for its seal state and whether it is the active one, which OpenBao answers without a token.
 read_cluster() {
   local member
   read_beside pods kubectl get pods -A -o json &
+  read_beside workloads kubectl get deployments.apps,statefulsets.apps,daemonsets.apps,jobs.batch,cronjobs.batch -A -o json &
   read_beside default-deny kubectl get networkpolicies.networking.k8s.io -A --field-selector metadata.name=mitstack-default-deny -o json &
   read_beside sealed-secrets kubectl get sealedsecrets.bitnami.com -n argocd -o json &
   read_beside app-projects kubectl get appprojects.argoproj.io -n argocd -o json &
@@ -283,6 +284,9 @@ body() {
     --rawfile pods "$work/pods.out" \
     --rawfile pods_err "$work/pods.err" \
     --argjson pods_status "$(cat "$work/pods.status")" \
+    --rawfile workloads "$work/workloads.out" \
+    --rawfile workloads_err "$work/workloads.err" \
+    --argjson workloads_status "$(cat "$work/workloads.status")" \
     --slurpfile routes "$work/routes.json" \
     --rawfile ingresses "$work/argocd-ingresses.out" \
     --rawfile ingresses_err "$work/argocd-ingresses.err" \
@@ -386,6 +390,25 @@ body() {
       if $status != 0 then {exitStatus: $status, stderr: $stderr[-1024:]}
       else try read catch {exitStatus: 0, stderr: $refusal}
       end;
+    def named_digest: (capture("@(?<d>sha256:[0-9a-f]{64})$").d // null);
+    def containers: (.containers // []) + (.initContainers // []);
+    # pod_images names each container's image with its own digest, or else the one the pod's status reports it runs by.
+    def pod_images: ([(.status.containerStatuses // []) + (.status.initContainerStatuses // []) | .[]
+        | {key: .name, value: ((.imageID // "") | named_digest)}] | from_entries) as $ran
+      | .spec | containers | .[] | {image, digest: ((.image | named_digest) // $ran[.name])};
+    def template_images: (if .kind == "CronJob" then .spec.jobTemplate.spec.template else .spec.template end).spec
+      | containers | .[] | {image, digest: (.image | named_digest)};
+    # images lists each reference once, and a template's reference with no digest only when no pod resolves it.
+    def images($refs): ([$refs[] | select(.digest != null) | .image] | unique) as $resolved
+      | [$refs[] | select(.digest != null or (.image as $i | any($resolved[]; . == $i) | not))] | unique;
+    def image_list:
+      beside($pods_status; $pods_err; "kubectl exited 0, and its output is not the pods this report reads";
+        $pods | fromjson | [.items[] | pod_images]) as $ran
+      | beside($workloads_status; $workloads_err; "kubectl exited 0, and its output is not the workloads this report reads";
+        $workloads | fromjson | [.items[] | template_images]) as $templated
+      | if ($ran | type) != "array" then $ran + {read: "pods"}
+        elif ($templated | type) != "array" then $templated + {read: "workloads"}
+        else images($ran + $templated) end;
     # An applied object carries no field but these five, so the list holds no Secret's contents.
     def applied: {group: (.group // ""), kind: .kind, namespace: (.namespace // null), name: .name, sync: (.status // "Unknown")};
     # A kind is listed whole or not at all, and 1000 objects keep the body inside the platform's 256 KiB.
@@ -544,6 +567,7 @@ body() {
         $cnpg | fromjson | [.items[] | cloudnative_pg]),
       pods: beside($pods_status; $pods_err; "kubectl exited 0, and its output is not the pods this report reads";
         $pods | fromjson | [.items[] | pod]),
+      images: image_list,
       openbao: {members: $openbao, leader: ([$openbao[] | select(.active == true) | .name] | .[0])},
       storage: beside($storage_status; $storage_err;
         "kubectl exited 0, and its output is not the claims, storage classes and Services this report reads";

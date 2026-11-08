@@ -2,6 +2,7 @@ package report
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/netip"
 	"time"
@@ -40,4 +41,38 @@ func Gateway(body []byte, address netip.Addr, since time.Time) (named, passed bo
 		return true, g.Passed, g.Reason
 	}
 	return false, false, ""
+}
+
+// ImageRef is one image reference a report lists: the image as a pod or a pod template names it, and the digest it runs
+// by, empty when neither the reference nor a pod's status names one.
+type ImageRef struct {
+	Image  string `json:"image"`
+	Digest string `json:"digest"`
+}
+
+// Images reads a report's image list, and refuses a report that lists none or whose reads behind the list failed.
+func Images(body []byte) ([]ImageRef, error) {
+	var report struct {
+		Images json.RawMessage `json:"images"`
+	}
+	if err := json.Unmarshal(body, &report); err != nil {
+		return nil, fmt.Errorf("the report cannot be read: %w", err)
+	}
+	if len(report.Images) == 0 || string(report.Images) == "null" {
+		return nil, errors.New("the report lists no images, as a report made before the image list was added")
+	}
+	var refs []ImageRef
+	if err := json.Unmarshal(report.Images, &refs); err == nil {
+		return refs, nil
+	}
+	var failed struct {
+		Read       string `json:"read"`
+		ExitStatus int    `json:"exitStatus"`
+		Stderr     string `json:"stderr"`
+	}
+	if err := json.Unmarshal(report.Images, &failed); err != nil || failed.Read == "" {
+		return nil, errors.New("the report's images member is neither a list nor a failed read")
+	}
+	return nil, fmt.Errorf("the report's read of the %s ended with exit status %d, so its image list is not whole: %s",
+		failed.Read, failed.ExitStatus, failed.Stderr)
 }

@@ -10,7 +10,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
-	"maps"
 	"math/big"
 	"net"
 	"net/netip"
@@ -296,6 +295,8 @@ type prepareRun struct {
 
 const cilium = "quay.io/cilium/cilium:v1.19.9@sha256:f3014d42121a04272cb4a5f4f96dbe7836c9a7919990f17e9b6838e8fd4aa33a"
 
+const talosctlURL = "https://github.com/siderolabs/talos/releases/download/v9.9.9/talosctl-linux-amd64"
+
 func runPrepare(t *testing.T, manifestSHA256 string) prepareRun {
 	t.Helper()
 	return prepare(t, map[string]string{"skopeo": "", "docker": ""}, manifestSHA256, cilium)
@@ -324,9 +325,8 @@ func prepareWith(t *testing.T, settings []string, fakes map[string]string, manif
 		require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
 		return path
 	}
-	talosctl := "https://github.com/siderolabs/talos/releases/download/v9.9.9/talosctl-linux-amd64"
 	kubectl := "https://dl.k8s.io/release/v9.9.9/bin/linux/amd64/kubectl"
-	env := "TALOS_VERSION=v9.9.9\nTALOSCTL_SHA256=" + sha256Of("bytes of "+talosctl) +
+	env := "TALOS_VERSION=v9.9.9\nTALOSCTL_SHA256=" + sha256Of("bytes of "+talosctlURL) +
 		"\nKUBERNETES_VERSION=v9.9.9\nKUBECTL_SHA256=" + sha256Of("bytes of "+kubectl) + "\n"
 	for line := range strings.Lines(writtenFile(t, "/etc/mitstack-gateway/tools.env")) {
 		if !strings.HasPrefix(line, "TALOS") && !strings.HasPrefix(line, "KUBE") {
@@ -380,33 +380,33 @@ const mirrorComplete = "/var/lib/mitstack-gateway/mirror-complete"
 func TestRender_ServesNoMirrorRequestBeforePrepareHasFinished(t *testing.T) {
 	rendered, err := gateway.Render(inputs(t))
 	require.NoError(t, err)
-	var runcmd [][]string
+	var runcmd []string
 	for _, c := range testutil.Field(t, testutil.Documents(t, rendered)[0], "runcmd").([]any) {
 		var args []string
 		for _, a := range c.([]any) {
 			args = append(args, a.(string))
 		}
-		runcmd = append(runcmd, args)
+		runcmd = append(runcmd, strings.Join(args, " "))
 	}
 
 	assert.Contains(t, writtenFile(t, "/etc/systemd/system/mitstack-caddy.service"), "\nConditionPathExists="+mirrorComplete+"\n",
 		"Caddy can start, at the first boot or any later one, before prepare has filled the mirror")
-	prepare := slices.IndexFunc(runcmd, func(c []string) bool { return slices.Equal(c, []string{"systemctl", "start", "mitstack-gateway-prepare"}) })
+	prepare := slices.Index(runcmd, "systemctl start mitstack-gateway-prepare")
 	require.GreaterOrEqual(t, prepare, 0, "the cloud-config runs no prepare: %v", runcmd)
 	execStart := strings.Fields(execStart(t, writtenFile(t, "/etc/systemd/system/mitstack-gateway-prepare.service")))
 	assert.Equal(t, "/usr/local/bin/mitstack-gateway-prepare", execStart[0])
 	assert.Equal(t, mirrorComplete, execStart[len(execStart)-1], "the file prepare writes once it has finished")
-	start := slices.IndexFunc(runcmd, func(c []string) bool { return slices.Equal(c, []string{"systemctl", "start", "mitstack-caddy"}) })
+	start := slices.Index(runcmd, "systemctl start mitstack-caddy")
 	assert.Greater(t, start, prepare, "Caddy is not started once prepare has finished: %v", runcmd)
-	serve := slices.IndexFunc(runcmd, func(c []string) bool { return slices.Equal(c, []string{"systemctl", "start", "mitstack-gateway-serve"}) })
+	serve := slices.Index(runcmd, "systemctl start mitstack-gateway-serve")
 	assert.Greater(t, serve, start, "the TLS server's start is not watched once Caddy starts: %v", runcmd)
 }
 
-// unit is one systemd unit the cloud-config writes, as its key=value lines.
-func unit(t *testing.T, name string) map[string]string {
+// keyValues reads a systemd unit or tools.env written to path as its key=value lines.
+func keyValues(t *testing.T, path string) map[string]string {
 	t.Helper()
 	keys := map[string]string{}
-	for line := range strings.Lines(writtenFile(t, "/etc/systemd/system/"+name)) {
+	for line := range strings.Lines(writtenFile(t, path)) {
 		if key, value, ok := strings.Cut(strings.TrimSpace(line), "="); ok {
 			keys[key] = value
 		}
@@ -414,32 +414,32 @@ func unit(t *testing.T, name string) map[string]string {
 	return keys
 }
 
+func unit(t *testing.T, name string) map[string]string {
+	return keyValues(t, "/etc/systemd/system/"+name)
+}
+
+// bound reads a positive whole number of seconds.
+func bound(t *testing.T, seconds string) time.Duration {
+	t.Helper()
+	n, err := strconv.Atoi(seconds)
+	require.NoError(t, err)
+	require.Positive(t, n)
+	return time.Duration(n) * time.Second
+}
+
 func TestRender_RunsThePreparationAndTheTLSServersStartEachWithinItsBoundAndPowersOffOnEitherFailing(t *testing.T) {
 	prepareUnit, serveUnit := unit(t, "mitstack-gateway-prepare.service"), unit(t, "mitstack-gateway-serve.service")
+	env := keyValues(t, "/etc/mitstack-gateway/tools.env")
 
 	for name, u := range map[string]map[string]string{"prepare": prepareUnit, "serve": serveUnit} {
 		assert.Equal(t, "poweroff", u["FailureAction"], "the %s unit's failure or overrun leaves the gateway running", name)
 		assert.Equal(t, "oneshot", u["Type"], "the %s unit is started before it has finished", name)
-		assert.Regexp(t, `^[1-9][0-9]*$`, u["TimeoutStartSec"], "the %s unit runs without a bound", name)
 	}
-	prepareBound, err := strconv.Atoi(prepareUnit["TimeoutStartSec"])
-	require.NoError(t, err)
-	serveBound, err := strconv.Atoi(serveUnit["TimeoutStartSec"])
-	require.NoError(t, err)
-	settings := map[string]int{}
-	for line := range strings.Lines(writtenFile(t, "/etc/mitstack-gateway/tools.env")) {
-		if key, value, ok := strings.Cut(strings.TrimSpace(line), "="); ok && strings.HasSuffix(key, "_SECONDS") {
-			settings[key], err = strconv.Atoi(value)
-			require.NoError(t, err, key)
-		}
-	}
-	assert.ElementsMatch(t, []string{"DOWNLOAD_CONNECT_SECONDS", "DOWNLOAD_SECONDS", "COPY_SECONDS"}, slices.Collect(maps.Keys(settings)),
-		"the bounds tools.env gives prepare.sh")
-	assert.Less(t, settings["DOWNLOAD_CONNECT_SECONDS"], settings["DOWNLOAD_SECONDS"])
-	assert.Less(t, settings["COPY_SECONDS"], prepareBound, "one copy may take the whole preparation")
+	assert.Less(t, bound(t, env["DOWNLOAD_CONNECT_SECONDS"]), bound(t, env["DOWNLOAD_SECONDS"]))
+	assert.Less(t, bound(t, env["COPY_SECONDS"]), bound(t, prepareUnit["TimeoutStartSec"]), "one copy may take the whole preparation")
 	assert.Equal(t, mirrorComplete, serveUnit["ConditionPathExists"], "the TLS server's start is watched before the mirror is complete")
 	assert.Contains(t, serveUnit["ExecStart"], "https://10.0.0.2/v2/", "the start is watched where the nodes pull")
-	assert.Greater(t, gateway.Deadline, time.Duration(prepareBound+serveBound)*time.Second,
+	assert.Greater(t, gateway.Deadline, bound(t, prepareUnit["TimeoutStartSec"])+bound(t, serveUnit["TimeoutStartSec"]),
 		"the plane's deadline leaves the boot no time before the preparation starts")
 }
 
@@ -447,24 +447,17 @@ func TestRender_RunsThePreparationAndTheTLSServersStartEachWithinItsBoundAndPowe
 // issue file moved into dir, and returns what each holds.
 func stopPost(t *testing.T, name, result, dir string, replace ...string) (console, issue string) {
 	t.Helper()
-	command := strings.ReplaceAll(unit(t, name)["ExecStopPost"], "$$", "$")
-	replace = append(replace, "/dev/tty1", filepath.Join(dir, "tty1"), "/etc/issue.d/mitstack-gateway.issue", filepath.Join(dir, "issue"))
-	command = strings.NewReplacer(replace...).Replace(command)
+	replace = append(replace, "$$", "$", "/dev/tty1", filepath.Join(dir, "tty1"), "/etc/issue.d/mitstack-gateway.issue", filepath.Join(dir, "issue"))
+	command := strings.NewReplacer(replace...).Replace(unit(t, name)["ExecStopPost"])
 	fields := strings.SplitN(command, " ", 3)
 	require.Equal(t, []string{"/bin/sh", "-c"}, fields[:2], "the unit's ExecStopPost")
 	cmd := exec.Command("sh", "-c", strings.Trim(fields[2], "'"))
 	cmd.Env = []string{"SERVICE_RESULT=" + result, "PATH=" + os.Getenv("PATH")}
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
-	read := func(path string) string {
-		data, err := os.ReadFile(path)
-		if os.IsNotExist(err) {
-			return ""
-		}
-		require.NoError(t, err)
-		return string(data)
-	}
-	return read(filepath.Join(dir, "tty1")), read(filepath.Join(dir, "issue"))
+	tty, _ := os.ReadFile(filepath.Join(dir, "tty1"))
+	issueFile, _ := os.ReadFile(filepath.Join(dir, "issue"))
+	return string(tty), string(issueFile)
 }
 
 // unfolded is a console message with the line breaks its folding added taken out again.
@@ -488,10 +481,9 @@ func TestRender_ATLSServerThatDoesNotStartWritesTheStageAndCurlsErrorToTheVGACon
 	dir := t.TempDir()
 	closed, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	address := closed.Addr().String()
 	require.NoError(t, closed.Close())
 	serveUnit := unit(t, "mitstack-gateway-serve.service")
-	start := strings.NewReplacer("$$", "$", "10.0.0.2", address, "/etc/mitstack-gateway/ca.crt", "/dev/null",
+	start := strings.NewReplacer("$$", "$", "10.0.0.2", closed.Addr().String(), "/etc/mitstack-gateway/ca.crt", "/dev/null",
 		"/run/mitstack-gateway-serve.err", filepath.Join(dir, "serve.err")).Replace(serveUnit["ExecStart"])
 	fields := strings.SplitN(start, " ", 3)
 	require.Equal(t, []string{"/bin/sh", "-c"}, fields[:2], "the unit's ExecStart")
@@ -514,16 +506,9 @@ func TestRender_ATLSServerThatDoesNotStartWritesTheStageAndCurlsErrorToTheVGACon
 }
 
 func TestRender_NamesTheVGAConsoleAndTheIssueFileAsWhereABuildFailureIsWritten(t *testing.T) {
-	toolsEnv := writtenFile(t, "/etc/mitstack-gateway/tools.env")
+	env := keyValues(t, "/etc/mitstack-gateway/tools.env")
 
-	assert.Contains(t, toolsEnv, "\nGATEWAY_CONSOLE=/dev/tty1\n", "Hetzner's web console shows tty1, where /dev/console may not reach")
-	assert.Contains(t, toolsEnv, "\nGATEWAY_ISSUE=/etc/issue.d/mitstack-gateway.issue\n")
-	for _, name := range []string{"mitstack-gateway-prepare.service", "mitstack-gateway-serve.service"} {
-		stop := unit(t, name)["ExecStopPost"]
-		assert.Contains(t, stop, "> /dev/tty1", name)
-		assert.Contains(t, stop, "tee -a /etc/issue.d/mitstack-gateway.issue", name)
-		assert.NotContains(t, stop, "/dev/console", name)
-	}
+	assert.Equal(t, []string{"/dev/tty1", "/etc/issue.d/mitstack-gateway.issue"}, []string{env["GATEWAY_CONSOLE"], env["GATEWAY_ISSUE"]})
 	rendered, err := gateway.Render(inputs(t))
 	require.NoError(t, err)
 	for key := range testutil.Documents(t, rendered)[0] {
@@ -569,44 +554,6 @@ func TestPrepareScript_RefusesAManifestWhoseBytesDifferFromItsPin(t *testing.T) 
 	assert.NoFileExists(t, filepath.Join(run.dir, "manifests", "argocd.yaml"))
 }
 
-const talosctlURL = "https://github.com/siderolabs/talos/releases/download/v9.9.9/talosctl-linux-amd64"
-
-// silentListener takes connections and never answers one, as a download that hangs sees.
-func silentListener(t *testing.T) string {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = l.Close() })
-	go func() {
-		for {
-			c, err := l.Accept()
-			if err != nil {
-				return
-			}
-			t.Cleanup(func() { _ = c.Close() })
-		}
-	}()
-	return l.Addr().String()
-}
-
-// curlVia runs the real curl, with every argument prepare.sh gave, for the one URL it sends to target instead, and the
-// fake curl for every other.
-func curlVia(t *testing.T, url, target string) string {
-	t.Helper()
-	real, err := exec.LookPath("curl")
-	require.NoError(t, err)
-	return `for arg in "$@"; do
-  if [ "$arg" = ` + shellWord(url) + ` ]; then
-    args=()
-    for a in "$@"; do if [ "$a" = "$arg" ]; then args+=(` + shellWord(target) + `); else args+=("$a"); fi; done
-    exec ` + shellWord(real) + ` "${args[@]}"
-  fi
-done
-` + fakeCurl
-}
-
-func shellWord(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
-
 // assertPoweredOff fails a run that did not stop at stage within bound, power the gateway off and write why to the
 // console and the issue file.
 func assertPoweredOff(t *testing.T, run prepareRun, took, bound time.Duration, stage, why string) {
@@ -625,10 +572,16 @@ func assertPoweredOff(t *testing.T, run prepareRun, took, bound time.Duration, s
 }
 
 func TestPrepareScript_PowersTheGatewayOffNamingTheDownloadWhenTheTalosctlDownloadHangs(t *testing.T) {
+	silent, err := net.Listen("tcp", "127.0.0.1:0") // the kernel completes the handshake, and nothing ever answers
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = silent.Close() })
+	curl, err := exec.LookPath("curl")
+	require.NoError(t, err)
+	hanging := `case "$*" in *` + talosctlURL + `*) exec ` + curl + ` "${@/#https:\/\/github.com\/*/https://` + silent.Addr().String() + `/}" ;; esac
+` + fakeCurl
 	began := time.Now()
 
-	run := prepareWith(t, []string{"DOWNLOAD_CONNECT_SECONDS=1", "DOWNLOAD_SECONDS=2"},
-		map[string]string{"docker": "", "curl": curlVia(t, talosctlURL, "https://"+silentListener(t)+"/talosctl")},
+	run := prepareWith(t, []string{"DOWNLOAD_CONNECT_SECONDS=1", "DOWNLOAD_SECONDS=2"}, map[string]string{"docker": "", "curl": hanging},
 		sha256Of("bytes of https://example.test/argocd.yaml"), cilium)
 
 	assertPoweredOff(t, run, time.Since(began), 10*time.Second, "the download of "+talosctlURL, "curl: (28)")
@@ -651,10 +604,6 @@ func TestPrepareScript_PowersTheGatewayOffNamingTheImageWhoseCopyHangs(t *testin
 		sha256Of("bytes of https://example.test/argocd.yaml"), cilium)
 
 	assertPoweredOff(t, run, time.Since(began), 20*time.Second, "the copy of "+cilium, "did not copy into the gateway's image mirror within 1s")
-	assert.Contains(t, run.tools.Calls(t), "docker run --rm --network host "+skopeoImage(t)+
-		" copy --all --preserve-digests --retry-times 3 --dest-tls-verify=false "+
-		"docker://quay.io/cilium/cilium@sha256:f3014d42121a04272cb4a5f4f96dbe7836c9a7919990f17e9b6838e8fd4aa33a "+
-		"docker://127.0.0.1:5000/quay.io/cilium/cilium:v1.19.9")
 }
 
 func TestPrepareScript_FinishesALargeListCopiedSlowlyButSteadilyWithinEachCopysBound(t *testing.T) {

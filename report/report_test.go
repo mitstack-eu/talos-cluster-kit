@@ -227,10 +227,8 @@ func runReport(t *testing.T, fakes map[string]string, env ...string) (*testutil.
 	script, rendered := renderedScript(t, server.URL, "mitstack-node-report")
 
 	ca := writeServerCA(t, server)
-	gatewayCA, err := os.ReadFile(ca)
-	require.NoError(t, err)
 	out, err := testutil.RunBash(t, script, tools.Env(append([]string{
-		"GATEWAYS=" + servingGateways(t), "GATEWAY_CA=" + string(gatewayCA), "EGRESS_URL=" + egressTarget(t),
+		"GATEWAYS=10.0.0.2=https://10.0.0.2 10.0.0.248=https://10.0.0.248 10.0.0.249=https://10.0.0.249", "EGRESS_URL=" + egressTarget(t),
 		"REPORT_URL=" + server.URL, "SUBSCRIPTION_ID=sub_0123456789ab", "HOST_IP=10.0.0.6", "REPORT_PROOF_SCRIPT=" + rendered["REPORT_PROOF_SCRIPT"],
 		"REPORT_TOKEN_FILE=" + token, "CURL_CA_BUNDLE=" + ca, "MESH_PROBE_URL=" + meshTarget(t),
 		"MESH_PROBE_ANSWER=" + rendered["MESH_PROBE_ANSWER"], "MESH_PROBE_IDENTITY=" + rendered["MESH_PROBE_IDENTITY"],

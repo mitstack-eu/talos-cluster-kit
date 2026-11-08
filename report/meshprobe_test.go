@@ -95,7 +95,8 @@ func TestReport_NamesEachMeshResultItCannotPassAsFailedWithItsReason(t *testing.
 	}
 }
 
-func runMeshProbe(t *testing.T, fakes map[string]string) (*testutil.Tools, map[string]any) {
+// runMeshProbe runs the outside probe with fakes and env, which wins over the rendered settings, and returns its result.
+func runMeshProbe(t *testing.T, fakes map[string]string, env ...string) (*testutil.Tools, map[string]any) {
 	t.Helper()
 	realOpenSSL, err := exec.LookPath("openssl")
 	require.NoError(t, err)
@@ -105,10 +106,10 @@ func runMeshProbe(t *testing.T, fakes map[string]string) (*testutil.Tools, map[s
 	maps.Copy(all, fakes)
 	tools := testutil.NewTools(t, all)
 	tools.AddImageJq(t)
-	script, env := renderedScript(t, reportURL, "mitstack-mesh-probe")
+	script, rendered := renderedScript(t, reportURL, "mitstack-mesh-probe")
 
-	out, err := testutil.RunBash(t, script, tools.Env("MESH_PROBE_HOST="+env["MESH_PROBE_HOST"], "MESH_PROBE_PORT="+env["MESH_PROBE_PORT"],
-		"MESH_PROBE_CONFIGMAP="+env["MESH_PROBE_CONFIGMAP"], "POD_NAMESPACE=kube-system"))
+	out, err := testutil.RunBash(t, script, tools.Env(append([]string{"MESH_PROBE_HOST=" + rendered["MESH_PROBE_HOST"],
+		"MESH_PROBE_PORT=" + rendered["MESH_PROBE_PORT"], "MESH_PROBE_CONFIGMAP=" + rendered["MESH_PROBE_CONFIGMAP"], "POD_NAMESPACE=kube-system"}, env...)...))
 	require.NoError(t, err, out)
 	var written struct{ Data struct{ Result string } }
 	data, err := os.ReadFile(patch)

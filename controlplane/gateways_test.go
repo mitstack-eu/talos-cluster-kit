@@ -6,6 +6,7 @@ package controlplane_test
 import (
 	"context"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -20,16 +21,38 @@ import (
 
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
 	"github.com/mitstack-eu/talos-cluster-kit/gateway"
+	"github.com/mitstack-eu/talos-cluster-kit/report"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 )
 
 const reportEvery = 5 * time.Minute
 
+// reportReceived is when the newest node report arrived: every five minutes, until h.reportsStopAt.
+func (h *harness) reportReceived() time.Time {
+	if !h.reportsStopAt.IsZero() && h.now.After(h.reportsStopAt) {
+		return h.reportsStopAt.Truncate(reportEvery)
+	}
+	return h.now.Truncate(reportEvery)
+}
+
 // withReports reads each gateway as the node report every five minutes would: serving once it runs at its address,
-// unless h.failing names its address, or h.unread names it and the report names no gateway there.
+// unless h.failing names its address, or h.unread names it and the report names no gateway there. Each report lists
+// h.images.
 func withReports(h *harness) {
+	h.plane.ReadReport = func(_ context.Context, since time.Time) (*report.Read, error) {
+		received := h.reportReceived()
+		if !received.After(since) {
+			return nil, nil
+		}
+		body := map[string]any{"images": append([]report.ImageRef{}, h.images...)}
+		if h.noImageList {
+			body = map[string]any{"pods": []any{}}
+		}
+		data, err := json.Marshal(body)
+		return &report.Read{Body: data, At: received}, err
+	}
 	h.plane.ReadGateway = func(_ context.Context, address string, since time.Time) (controlplane.GatewayReading, error) {
-		received := h.now.Truncate(reportEvery)
+		received := h.reportReceived()
 		if !received.After(since) {
 			return controlplane.GatewayReading{Detail: "no node report was received since " + since.Format(time.RFC3339)}, nil
 		}
@@ -606,7 +629,7 @@ func TestBuilder_TheOutsideProbeReadsEachGatewaysMirrorUnderTheGatewayCAAndTheRe
 }
 
 // upgradeToFailingReplacement starts an upgrade whose first replacement no report reads serving, and drives the plane
-// until that replacement runs at its address.
+// until that replacement runs at its address, past the minutes fsn1 waits on a node report without a gateway.
 func upgradeToFailingReplacement(h *harness) controlplane.Server {
 	h.t.Helper()
 	h.built()
@@ -617,9 +640,10 @@ func upgradeToFailingReplacement(h *harness) controlplane.Server {
 	h.plane.Upgrading = false
 	for range 30 {
 		require.NoError(h.t, h.converge())
-		gw := h.gatewayIn(controlplane.GatewayLocation)
-		if gw.Labels[controlplane.KeyGatewayList] != "an-earlier-list" && gw.Status == controlplane.ServerRunning {
-			return gw
+		for _, gw := range controlplane.ServersIn(h.byRole(controlplane.RoleGateway), controlplane.GatewayLocation) {
+			if gw.Labels[controlplane.KeyGatewayList] != "an-earlier-list" && gw.Status == controlplane.ServerRunning {
+				return gw
+			}
 		}
 		h.now = h.now.Add(time.Minute)
 		h.cloud.Advance(h.buildTakes, h.imageTakes)
@@ -653,7 +677,8 @@ func TestPlane_NamesAReplacementRunningPastItsDeadlineUnhealthyAndKeepsWaitingWi
 		require.NoError(t, h.converge())
 	}
 
-	assert.NotEqual(t, others[0], h.gatewayIn("nbg1").ID, "a replacement read serving after its deadline lets the upgrade move on, once a report from after nbg1's replacement began reads it")
+	assert.NotContains(t, controlplane.IDs(h.byRole(controlplane.RoleGateway), controlplane.ServerID), others[0],
+		"a replacement read serving after its deadline lets the upgrade move on, once a report from after nbg1's replacement began reads it")
 	cause, _, err = h.plane.Unhealthy(context.Background(), h.read())
 	require.NoError(t, err)
 	assert.Empty(t, cause)

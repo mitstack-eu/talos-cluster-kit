@@ -19,6 +19,7 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/gateway"
 	"github.com/mitstack-eu/talos-cluster-kit/internal/redundanttest"
 	"github.com/mitstack-eu/talos-cluster-kit/nodeconfig"
+	"github.com/mitstack-eu/talos-cluster-kit/report"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -56,6 +57,11 @@ type harness struct {
 	events  []string
 	failing []string
 	unread  []string
+	// images is the image list of each node report withReports sends, reportsStopAt when the cluster stops sending them,
+	// and noImageList sends a report from before the list.
+	images        []report.ImageRef
+	reportsStopAt time.Time
+	noImageList   bool
 	// hostingKeys holds the keys each call to a hosting plane's DeployKeys hook received, and deployKeysErr is what it answers.
 	hostingKeys   []controlplane.HostingKeys
 	deployKeysErr error

@@ -1,0 +1,12 @@
+[
+  {"image": "ghcr.io/mitstack-eu/talos-tools:v0.36.0@sha256:f45478093f69bbc3641a597844fcca5908a6779996fd7d5f83a679cae16369ba", "digest": "sha256:f45478093f69bbc3641a597844fcca5908a6779996fd7d5f83a679cae16369ba"},
+  {"image": "ghcr.io/acme/init:v1", "digest": "sha256:bb54068aea85faa7e487530083366be9962390af822e4c71ef1aca7033c83e66"},
+  {"image": "ghcr.io/acme/web:v2", "digest": "sha256:4b5e57f6eb2f42b9039b3d1e13929295f231749c510cbe341cd68036d9af97e2"},
+  {"image": "nginx:1.27", "digest": null},
+  {"image": "ghcr.io/cloudnative-pg/postgresql:16.15@sha256:730f75dafd73e047b86acb2dbd74e75dcb93272fa084a9082848f2341aa1abb6", "digest": "sha256:730f75dafd73e047b86acb2dbd74e75dcb93272fa084a9082848f2341aa1abb6"},
+  {"image": "quay.io/acme/agent-init:v1@sha256:698856b929e0c0c1c2845fa0b2ffce0b5abdb49e30d05f342ce17cf2e0cd5cb1", "digest": "sha256:698856b929e0c0c1c2845fa0b2ffce0b5abdb49e30d05f342ce17cf2e0cd5cb1"},
+  {"image": "quay.io/acme/agent:v1@sha256:d4f0bc5a29de06b510f9aa428f1eedba926012b591fef7a518e776a7c9bd1824", "digest": "sha256:d4f0bc5a29de06b510f9aa428f1eedba926012b591fef7a518e776a7c9bd1824"},
+  {"image": "ghcr.io/acme/migrate:v3@sha256:3bc801a33ea83df414e1aeb962a52412835be99db28668ec25de73fdd4733804", "digest": "sha256:3bc801a33ea83df414e1aeb962a52412835be99db28668ec25de73fdd4733804"},
+  {"image": "ghcr.io/acme/nightly-export:v2.1.0@sha256:2a3b62b53ddb9f167b63d22202a360811ba78df015021f704d01ee9abad4169c", "digest": "sha256:2a3b62b53ddb9f167b63d22202a360811ba78df015021f704d01ee9abad4169c"},
+  {"image": "ghcr.io/acme/cleanup:latest", "digest": null}
+]

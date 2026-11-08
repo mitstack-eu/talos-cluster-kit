@@ -1,6 +1,7 @@
 # The node report's outside probe: a CronJob in kube-system, which the mesh leaves out, that calls the mesh probe's
-# target without a workload identity and writes what came back into one ConfigMap. It may patch that ConfigMap alone,
-# by name, and the report may only read it.
+# target without a workload identity, asks each gateway's mirror under the gateway CA, whose certificate alone it
+# carries, and writes what came back into one ConfigMap. It may patch that ConfigMap alone, by name, and the report may
+# only read it.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -64,7 +65,7 @@ subjects:
     namespace: {{ .ReportNamespace }}
 ---
 # kube-system takes no default-deny, so this names the outside probe's only flows: the lookup of the target's name, the
-# API server for its one patch, and the target's port and 15008. The probe names the target with a final dot, so the
+# API server for its one patch, the target's port and 15008, and each gateway's mirror on 443. The probe names the target with a final dot, so the
 # resolver sends that one name and no search-domain variant the DNS proxy would refuse.
 apiVersion: cilium.io/v2
 kind: CiliumClusterwideNetworkPolicy
@@ -92,6 +93,14 @@ spec:
             k8s:app.kubernetes.io/name: mitstack-mesh-probe
       toPorts:
         - ports: [{port: "{{ .Port }}", protocol: TCP}, {port: "15008", protocol: TCP}]
+{{- if .GatewayAddrs }}
+    - toCIDR:
+{{- range .GatewayAddrs }}
+        - {{ . }}/32
+{{- end }}
+      toPorts:
+        - ports: [{port: "443", protocol: TCP}]
+{{- end }}
 ---
 apiVersion: batch/v1
 kind: CronJob
@@ -131,6 +140,10 @@ spec:
                   value: "{{ .Port }}"
                 - name: MESH_PROBE_CONFIGMAP
                   value: {{ .ConfigMap }}
+                - name: GATEWAYS
+                  value: {{ printf "%q" .Gateways }}
+                - name: GATEWAY_CA
+                  value: {{ printf "%q" .GatewayCA }}
                 - name: POD_NAMESPACE
                   valueFrom:
                     fieldRef:

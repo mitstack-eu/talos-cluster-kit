@@ -117,6 +117,34 @@ write_files:
       Restart=always
       [Install]
       WantedBy=multi-user.target
+  - path: /etc/systemd/system/mitstack-gateway-prepare.service
+    content: |
+      [Unit]
+      Description=Fills the image mirror and fetches the served manifests
+      After=docker.service mitstack-registry.service
+      Requires=docker.service
+      FailureAction=poweroff
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      TimeoutStartSec={{ .PrepareSeconds }}
+      ExecStart=/usr/local/bin/mitstack-gateway-prepare /etc/mitstack-gateway/tools.env /etc/mitstack-gateway/images.txt /etc/mitstack-gateway/manifests.txt /srv/mitstack/manifests /var/lib/mitstack-gateway/mirror-complete
+      ExecStopPost=/bin/sh -c '[ "$$SERVICE_RESULT" = success ] || { echo "mitstack gateway: the preparation ended with $$SERVICE_RESULT within its {{ .PrepareSeconds }}s bound, so the gateway powers itself off." | fold -w 80 | tee -a {{ .Issue }} > {{ .Console }}; }'
+  - path: /etc/systemd/system/mitstack-gateway-serve.service
+    content: |
+      [Unit]
+      Description=Waits for the TLS server to answer on the private network
+      After=mitstack-caddy.service
+      ConditionPathExists=/var/lib/mitstack-gateway/mirror-complete
+      FailureAction=poweroff
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      TimeoutStartSec={{ .ServeSeconds }}
+      ExecStart=/bin/sh -c 'until curl -fsS --cacert /etc/mitstack-gateway/ca.crt --connect-timeout 5 --max-time 10 -o /dev/null https://{{ .Address }}/v2/ 2> /run/mitstack-gateway-serve.err; do sleep 5; done'
+      ExecStopPost=/bin/sh -c '[ "$$SERVICE_RESULT" = success ] || { { echo "mitstack gateway: the build failed at the TLS server start: https://{{ .Address }}/v2/ did not answer within {{ .ServeSeconds }}s ($$SERVICE_RESULT), so the gateway powers itself off."; tail -n 3 /run/mitstack-gateway-serve.err; } | fold -w 80 | head -n 20 | tee -a {{ .Issue }} > {{ .Console }}; }'
+      [Install]
+      WantedBy=multi-user.target
   - path: /etc/systemd/system/mitstack-record-dns-ntp.service
     content: |
       [Unit]
@@ -136,10 +164,11 @@ write_files:
       [Install]
       WantedBy=multi-user.target
 runcmd:
-  - [mkdir, -p, /var/log/mitstack, /var/lib/mitstack-registry, /srv/mitstack/manifests]
+  - [mkdir, -p, /var/log/mitstack, /var/lib/mitstack-registry, /srv/mitstack/manifests, /etc/issue.d]
   - [sysctl, --system]
   - [systemctl, enable, --now, nftables]
   - [systemctl, daemon-reload]
-  - [systemctl, enable, --now, mitstack-record-dns-ntp, mitstack-record-flows, mitstack-registry, mitstack-caddy]
-  - [/usr/local/bin/mitstack-gateway-prepare, /etc/mitstack-gateway/tools.env, /etc/mitstack-gateway/images.txt, /etc/mitstack-gateway/manifests.txt, /srv/mitstack/manifests, /var/lib/mitstack-gateway/mirror-complete]
+  - [systemctl, enable, --now, mitstack-record-dns-ntp, mitstack-record-flows, mitstack-registry, mitstack-caddy, mitstack-gateway-serve]
+  - [systemctl, start, mitstack-gateway-prepare]
   - [systemctl, start, mitstack-caddy]
+  - [systemctl, start, mitstack-gateway-serve]

@@ -84,7 +84,8 @@ func fixtures() ([]fixture, error) {
 // TokenSecret is the Secret the block writes into the report's namespace, holding the bearer token under the key token.
 const TokenSecret = "mitstack-report-token"
 
-// The outside probe runs in kube-system, which the mesh leaves out, and writes its calls' outcomes into one ConfigMap.
+// The outside probe runs in kube-system, which the mesh leaves out, and writes its calls' outcomes into one ConfigMap:
+// the mesh probe's target's and each gateway mirror's, since ztunnel would turn a mirror's closed port into a reset.
 const (
 	outsideProbeNamespace = "kube-system"
 	outsideProbeConfigMap = "mitstack-mesh-probe"
@@ -100,7 +101,7 @@ type Inputs struct {
 	ToolsImage string
 	// ProofScript signs each report; a block passes block-kit's reportproof.TokenRequestScript, so this kit needs no framework.
 	ProofScript string
-	// Gateways are the gateways' private addresses, whose mirrors each report reads under GatewayCA.
+	// Gateways are the gateways' private addresses, whose mirrors the outside probe reads under GatewayCA.
 	Gateways []netip.Addr
 	// GatewayCA is the PEM certificate of the CA that signs every gateway's certificate, without its key.
 	GatewayCA []byte
@@ -149,7 +150,6 @@ func Manifests(in Inputs) ([]byte, error) {
 		"MeshProbeConfigMap": outsideProbeNamespace + "/" + outsideProbeConfigMap,
 		"OpenBaoMembers":     openBaoMembers(),
 		"Gateways":           in.gateways(),
-		"GatewayCA":          string(in.GatewayCA),
 		"EgressURL":          egressURL,
 	})
 	if err != nil {
@@ -164,6 +164,9 @@ func Manifests(in Inputs) ([]byte, error) {
 		"Host":            components.MeshProbeHost,
 		"Port":            components.MeshProbePort,
 		"TargetNamespace": components.MeshProbeNamespace,
+		"Gateways":        in.gateways(),
+		"GatewayAddrs":    in.Gateways,
+		"GatewayCA":       string(in.GatewayCA),
 	})
 	if err != nil {
 		return nil, err

@@ -45,9 +45,9 @@ the order a block uses them.
 | `nodeconfig` | Renders a control-plane node's or a worker node's machine configuration with Talos's own `machinery` module and validates it against Talos's schema | `Render`, `RenderWorker`, `Cluster`, `Node`, `NewSecrets`, `ParseSecrets`, `Secrets.AdminTalosconfig` |
 | `image` | Runs imager, Sidero Labs' open-source image builder, with the `hcloud` or the `metal` profile, and discards its output | `Run`, `Build` |
 | `mirror` | Lists every image the nodes pull, each by digest | `List`, `Render` |
-| `gateway` | Renders the cloud-config of the gateway in each location, and mints the cluster's gateway CA and each gateway's certificate | `Render`, `Inputs`, `NewCA`, `CA.Issue`, `ReleaseURL` |
+| `gateway` | Renders the cloud-config of the gateway in each location, and mints the cluster's gateway CA and each gateway's certificate | `Render`, `Inputs`, `Deadline`, `NewCA`, `CA.Issue`, `ReleaseURL` |
 | `etcd` | Renders the Job that removes a lost node's etcd member and then its Node object, and holds the gateway's script that bootstraps etcd empty or from a snapshot | `RemoveMemberJob`, `BootstrapScript`, `Bootstrap.Args` |
-| `report` | Renders the node report, a CronJob that reads the cluster and posts what it read to the platform, signed for its exact body. [What the node report carries](#what-the-node-report-carries) lists its members, the nine checks it names and what happens when a read fails. It also renders the outside probe, a CronJob in `kube-system` that calls the mesh probe's target with no workload identity, the admission probe namespace and the daily security scan. The report holds no right on Secrets | `Manifests` |
+| `report` | Renders the node report, a CronJob that reads the cluster and posts what it read to the platform, signed for its exact body. [What the node report carries](#what-the-node-report-carries) lists its members, the nine checks it names and what happens when a read fails. It also renders the outside probe, a CronJob in `kube-system` that calls the mesh probe's target with no workload identity and reads each gateway's mirror from outside the mesh, the admission probe namespace and the daily security scan. The report holds no right on Secrets | `Manifests` |
 | `topology` | Renders the topology labeller, a CronJob that labels each Cloud node with its zone and region, and holds the two label names | `Manifests`, `Labels`, `ZoneLabel`, `RegionLabel`, `FieldManager` |
 | `openbaoinit` | Renders OpenBao's init Job, which the hosting set carries: it initialises a hosting cluster's OpenBao once, commits the root token and recovery key to the cluster repository as PGP messages, then writes the policy each slice's External Secrets reads with | `Manifests`, `Inputs`, `InitFile` |
 | `rollout` | Gives a running cluster that hosts the platform a release's hosting policies: the files a block commits to the cluster repository, where Argo CD applies, changes and prunes them, and the read-back of each one from the node report | `Current`, `Release.Files`, `Release.ReadBack` |
@@ -225,6 +225,19 @@ plane that reading. Each call does one of the following, as the cluster needs:
    the old gateway, deletes it, and builds its replacement at the same address
    with a fresh certificate. The next location waits until a node report reads
    the replacement serving.
+
+A gateway bounds its own build. Each download, each image copy, the whole
+preparation and the TLS server's start run within a fixed time. A stage that
+fails or overruns writes the stage and its error to the VGA console, which
+Hetzner's web console shows, and to the login prompt of every later boot, and
+then powers the gateway off. The gateway has no login, so that screen is the
+only place to read why its build failed.
+
+The plane gives each gateway a deadline, `gateway.Deadline` after its
+creation. A replacement that has neither served nor powered itself off by then
+keeps the upgrade waiting, and both the step's wait and `Unhealthy`, with
+cause `CauseGatewayOverdue`, name the gateway and its deadline. No gateway is
+deleted for it.
 
 The plane hands each of these events to `Notify`, with each certificate it
 issues.
@@ -678,13 +691,15 @@ target, on 8080 and on 15008, and no other pod:
   target's port 15008. In a TLS handshake the server sends its certificate
   before it asks for the caller's, so the probe sees the certificate ztunnel
   presents for the target, and ztunnel then refuses the probe for presenting
-  none. The probe writes both outcomes into the ConfigMap
+  none. It then reads each gateway's mirror on 443, where ztunnel cannot turn a
+  closed port into a TLS failure, and names each connection closed, reset, a
+  TLS failure or served. The probe writes these outcomes into the ConfigMap
   `kube-system/mitstack-mesh-probe`. It may patch that one ConfigMap by name,
   and the report may only read it.
 
 The probe's own Cilium policy, `mitstack-mesh-probe-outside`, lets it look up
-the target's name and no other, reach the API server, and reach the target's
-two ports, and nothing else. The probe writes the target's name with a final
+the target's name and no other, reach the API server, the target's two ports
+and each gateway's address on 443, and nothing else. The probe writes the target's name with a final
 dot, which makes it an absolute DNS name. Without the dot, the resolver would
 first try the name under each search domain, Cilium's DNS proxy would refuse
 those names, and the probe's resolver, musl's, stops at the first refusal.
@@ -746,7 +761,7 @@ change `report/scripts/report.sh`.
 | `subscriptionResources` and `subscriptionResourceKinds` | The objects a block labels `mitstack.dev/subscription`, and the object types the report read whole | One read per object type in `subscription_kinds` in `report.sh` |
 | `jwks` | The key set the API server signs service-account tokens with | `/openid/v1/jwks` |
 | `mesh` | The mesh probe's results, which [the section on the mesh](#how-the-node-report-shows-the-mesh-refusing-a-call) explains | The probe's target and its ConfigMap |
-| `gateways` | Each gateway's `address`, `passed` when its mirror answered HTTP 200 on `/v2/` over a certificate the gateway CA signs, and otherwise a `reason` naming curl's exit status or the answer | Each mirror in `GATEWAYS`, verified against `GATEWAY_CA`, the CA's certificate alone |
+| `gateways` | Each gateway's `address`, its `connection`, and `passed` when its mirror answered HTTP 200 on `/v2/` over a certificate the gateway CA signs, and otherwise a `reason` naming curl's exit status or the answer. The `connection` is `closed`, `reset`, `tls-failure`, `timed-out`, `answered`, `served` or `failed`, and `probedAt` is when the outside probe read it | The outside probe's reading of each mirror in `GATEWAYS`, verified against `GATEWAY_CA`, the CA's certificate alone, from outside the mesh |
 | `egress` | `passed` when a TLS connection to Let's Encrypt's ACME directory opened and answered, and otherwise a `reason` naming curl's exit status. The connection leaves through the network's default route, so it reads the egress of the gateway that route names | `EGRESS_URL`, `https://acme-v02.api.letsencrypt.org/directory` |
 | `repositorySecrets` | Each repository credential the cluster declares, with its `name`, `secretType`, `project` and `url`. These come from the template of each SealedSecret in `argocd` that carries an `argocd.argoproj.io/secret-type` label, so the report reads no Secret and carries no ciphertext. A credential written straight into a Secret, as the cluster tokens write `cluster-repository` on a cluster that reads its repository with a platform token, is not listed | `kubectl get sealedsecrets.bitnami.com -n argocd` |
 | `appProjects` | Each AppProject with its `sourceRepos`, which the platform holds each app's credential to | `kubectl get appprojects.argoproj.io -n argocd` |

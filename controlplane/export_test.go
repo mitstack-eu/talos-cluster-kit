@@ -40,14 +40,22 @@ func BuilderUserData(machineConfig []byte) (string, error) {
 	return builderUserData("builder", machineConfig, nil, nil)
 }
 
-// ClusterComponents mints the gateway CA a plane that installed nothing holds none of.
+// WithGatewayCA is p holding a newly minted gateway CA, which a plane that installed nothing holds none of.
+func (p Plane) WithGatewayCA() (Plane, error) {
+	ca, err := gateway.NewCA(time.Now(), gatewayCAValidity, gatewayAddrs())
+	if err != nil {
+		return Plane{}, err
+	}
+	p.GatewayCA = &ca
+	return p, nil
+}
+
 func (p Plane) ClusterComponents(enrolmentToken string) (components.Set, error) {
 	if p.GatewayCA == nil {
-		ca, err := gateway.NewCA(time.Now(), gatewayCAValidity, gatewayAddrs())
-		if err != nil {
+		var err error
+		if p, err = p.WithGatewayCA(); err != nil {
 			return components.Set{}, err
 		}
-		p.GatewayCA = &ca
 	}
 	return p.clusterComponents(components.Default(), enrolmentToken)
 }

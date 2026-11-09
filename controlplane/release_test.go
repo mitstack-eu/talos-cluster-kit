@@ -6,14 +6,12 @@ import (
 	"context"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
-	"github.com/mitstack-eu/talos-cluster-kit/gateway"
 	"github.com/mitstack-eu/talos-cluster-kit/rollout"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 )
@@ -24,14 +22,6 @@ import (
 var buildOnly = []string{
 	"mitstack-openbao-seal-key", "mitstack-sealed-secrets-key", "mitstack-openbao-deploy-key", "mitstack-cluster-repository",
 	"mitstack-openbao-storage", "mitstack-openbao-init", "mitstack-cluster-application",
-}
-
-// gatewayCA is the gateway CA an install mints, for a plane that installed nothing.
-func gatewayCA(t *testing.T) *gateway.CA {
-	t.Helper()
-	ca, err := gateway.NewCA(testStart, time.Hour, controlplane.GatewayAddrs())
-	require.NoError(t, err)
-	return &ca
 }
 
 func manifestNames(manifests []components.Manifest) []string {
@@ -52,7 +42,9 @@ func TestRelease_CarriesWhatTheBuildAppliedButTheHostingKeysTheEnrolmentTokenAnd
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t, tc.opts...)
-			h.plane.GatewayCA = gatewayCA(t)
+			var err error
+			h.plane, err = h.plane.WithGatewayCA()
+			require.NoError(t, err)
 			built, err := h.plane.BuildSet(context.Background(), testStart, "enrolment-token")
 			require.NoError(t, err)
 			var carriedAtBuild []components.Manifest
@@ -93,8 +85,9 @@ func TestRelease_RefusesAPlaneThatCannotRenderTheBuildsOwnManifests(t *testing.T
 	}{
 		{"a plane without the gateway CA", func(h *harness) controlplane.Plane { return h.plane }, "gateway CA"},
 		{"a plane without the cluster repository", func(h *harness) controlplane.Plane {
-			p := h.plane
-			p.GatewayCA, p.RepoURL = gatewayCA(h.t), ""
+			p, err := h.plane.WithGatewayCA()
+			require.NoError(h.t, err)
+			p.RepoURL = ""
 			return p
 		}, "repository"},
 	} {

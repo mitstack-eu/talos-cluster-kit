@@ -27,7 +27,6 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane/cloudtest"
-	"github.com/mitstack-eu/talos-cluster-kit/gateway"
 	"github.com/mitstack-eu/talos-cluster-kit/image"
 	"github.com/mitstack-eu/talos-cluster-kit/nodeconfig"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
@@ -524,10 +523,19 @@ func mirroredImages(t *testing.T, kit renderedCloudConfig) map[string]string {
 	return mirrored
 }
 
-func TestGateway_MirrorsTheClustersImagesByDigestAndFetchesTheirManifestsFromTheKitRelease(t *testing.T) {
-	release, err := controlplane.KitRelease()
-	require.NoError(t, err)
+// assertCopiesOutOfTheToolsImage fails a gateway that would copy its tools or a served manifest out of other than the
+// release's tools image, which its mirror holds.
+func assertCopiesOutOfTheToolsImage(t *testing.T, kit renderedCloudConfig) {
+	t.Helper()
+	assert.Contains(t, strings.Fields(kit.file(t, "/etc/mitstack-gateway/images.txt").Content), tools.Image, "the mirror holds the tools image")
+	assert.Contains(t, strings.Split(kit.file(t, "/etc/mitstack-gateway/tools.env").Content, "\n"), "TOOLS_IMAGE="+tools.Image)
+	copied := strings.Fields(kit.file(t, "/etc/mitstack-gateway/manifests.txt").Content)
+	for _, m := range components.Default().Served {
+		assert.Contains(t, copied, tools.ManifestPath(m.Path), "where in the tools image the gateway copies %s from", m.Name)
+	}
+}
 
+func TestGateway_MirrorsTheClustersImagesByDigestAndCopiesTheirManifestsOutOfTheToolsImageItMirrors(t *testing.T) {
 	kit := installedOnce(t).gatewayKitPart()
 
 	mirrored := mirroredImages(t, kit)
@@ -539,13 +547,20 @@ func TestGateway_MirrorsTheClustersImagesByDigestAndFetchesTheirManifestsFromThe
 	} {
 		assert.Regexp(t, `^sha256:[0-9a-f]{64}$`, mirrored[repo], "the mirror's digest for %s", repo)
 	}
-	fetched := strings.Fields(kit.file(t, "/etc/mitstack-gateway/manifests.txt").Content)
-	for _, path := range []string{
-		"kyverno/kyverno", "cloudnative-pg/cloudnative-pg", "local-path-provisioner/local-path-provisioner",
-		"istio/istio-base", "istio/istiod", "istio/istio-cni", "istio/ztunnel",
-	} {
-		assert.Contains(t, fetched, gateway.ReleaseURL(release)+"/components/"+path+".yaml", "where the gateway fetches %s", path)
-	}
+	assertCopiesOutOfTheToolsImage(t, kit)
+}
+
+func TestGateway_ALostGatewaysRebuildCopiesItsToolsAndManifestsOutOfTheToolsImageItMirrors(t *testing.T) {
+	h := newHarness(t, withReports)
+	h.built()
+	lost := h.gatewayIn("hel1").ID
+
+	h.lose("hel1")
+	h.built()
+
+	rebuilt := h.gatewayIn("hel1")
+	require.NotEqual(t, lost, rebuilt.ID, "the gateway in hel1 was not rebuilt")
+	assertCopiesOutOfTheToolsImage(t, decodeCloudConfig(t, gatewayParts(t, h.cloud.UserData[rebuilt.ID])[0]))
 }
 
 func TestCluster_PutsEveryPodInIstiosAmbientMeshWithStrictMTLS(t *testing.T) {

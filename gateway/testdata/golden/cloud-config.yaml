@@ -103,8 +103,8 @@ write_files:
       KUBERNETES_VERSION=v1.37.1
       KUBECTL_SHA256=65691ff77eb6fa44c908b77a1082c9f092c3b9733b5cefabec0d1104890e21a8
       SKOPEO_IMAGE=quay.io/skopeo/stable:v1.20.0@sha256:47853bb9fb24202af9110531ebd6e43c5f97701254ca290596640290d17942f4
-      DOWNLOAD_CONNECT_SECONDS=15
-      DOWNLOAD_SECONDS=300
+      TOOLS_IMAGE=ghcr.io/mitstack-eu/talos-tools:v0.1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      EXTRACT_SECONDS=300
       COPY_SECONDS=900
       GATEWAY_CONSOLE=/dev/tty1
       GATEWAY_ISSUE=/etc/issue.d/mitstack-gateway.issue
@@ -139,35 +139,38 @@ write_files:
       registry.k8s.io/pause:3.10.2@sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4
   - path: /etc/mitstack-gateway/manifests.txt
     content: |
-      00-cilium.yaml aafec70d4cc5115dd5ceb6d982cd1646eae61dbdb5e29a83f2a08f020e87eb59 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/cilium/cilium.yaml
-      01-cilium-policy-crd.yaml 582273fd2b7d7238563ad2976ba36905ba818834ed71c58cad6e51bb4762088b https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/cilium/policy-crd.yaml
-      09-argocd.yaml c89e44159b3e66aa474daadfa910575e91e5e87fff4071f779cff585cc90c924 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/argocd/argocd.yaml
-      13-kyverno.yaml 30c3d2833991432a4d5e7ca1de8f5f8fe198a5f6933f7ec5bce6fd369bd712f3 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/kyverno/kyverno.yaml
-      11-cloudnative-pg.yaml 8e60fb45bca3cf568e58402c93d77f662f8efb63e5ffe7dcd552568c98f3bc9e https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/cloudnative-pg/cloudnative-pg.yaml
-      14-local-path-provisioner.yaml 1f15539874470b12f4cd835e6276cfcc2cbcaf42b6dcaa7d018775b93ef0e8f1 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/local-path-provisioner/local-path-provisioner.yaml
-      02-istio-base.yaml 21fd1e9fea0b26e16f6d1784db982b690eee1bfd36b91ec58fee2ea06af826eb https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/istio/istio-base.yaml
-      03-istiod.yaml 55513ab62611aaf3a03497248daf88f36a0e6ce11e58dcb0a6434b9290594c15 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/istio/istiod.yaml
-      04-istio-cni.yaml 4e468eb1ce1722df46f859dd8318c28507127a0a129e0cb51ab8cc8060372526 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/istio/istio-cni.yaml
-      05-ztunnel.yaml fac3f7016c82389be8f1340a961e9b81c47c981bbae4853a77ed2a62117c8663 https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/istio/ztunnel.yaml
-      26-mitstack-mesh-probe.yaml 71cd5ea890bb802ee2d9c9160c3d47c6a09e37070654fc108ba966ffa5ba596d https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/v0.1.0/components/mesh/probe.yaml
+      00-cilium.yaml aafec70d4cc5115dd5ceb6d982cd1646eae61dbdb5e29a83f2a08f020e87eb59 /usr/local/lib/mitstack/components/cilium/cilium.yaml
+      01-cilium-policy-crd.yaml 582273fd2b7d7238563ad2976ba36905ba818834ed71c58cad6e51bb4762088b /usr/local/lib/mitstack/components/cilium/policy-crd.yaml
+      09-argocd.yaml c89e44159b3e66aa474daadfa910575e91e5e87fff4071f779cff585cc90c924 /usr/local/lib/mitstack/components/argocd/argocd.yaml
+      13-kyverno.yaml 30c3d2833991432a4d5e7ca1de8f5f8fe198a5f6933f7ec5bce6fd369bd712f3 /usr/local/lib/mitstack/components/kyverno/kyverno.yaml
+      11-cloudnative-pg.yaml 8e60fb45bca3cf568e58402c93d77f662f8efb63e5ffe7dcd552568c98f3bc9e /usr/local/lib/mitstack/components/cloudnative-pg/cloudnative-pg.yaml
+      14-local-path-provisioner.yaml 1f15539874470b12f4cd835e6276cfcc2cbcaf42b6dcaa7d018775b93ef0e8f1 /usr/local/lib/mitstack/components/local-path-provisioner/local-path-provisioner.yaml
+      02-istio-base.yaml 21fd1e9fea0b26e16f6d1784db982b690eee1bfd36b91ec58fee2ea06af826eb /usr/local/lib/mitstack/components/istio/istio-base.yaml
+      03-istiod.yaml 55513ab62611aaf3a03497248daf88f36a0e6ce11e58dcb0a6434b9290594c15 /usr/local/lib/mitstack/components/istio/istiod.yaml
+      04-istio-cni.yaml 4e468eb1ce1722df46f859dd8318c28507127a0a129e0cb51ab8cc8060372526 /usr/local/lib/mitstack/components/istio/istio-cni.yaml
+      05-ztunnel.yaml fac3f7016c82389be8f1340a961e9b81c47c981bbae4853a77ed2a62117c8663 /usr/local/lib/mitstack/components/istio/ztunnel.yaml
+      26-mitstack-mesh-probe.yaml 71cd5ea890bb802ee2d9c9160c3d47c6a09e37070654fc108ba966ffa5ba596d /usr/local/lib/mitstack/components/mesh/probe.yaml
   - path: /usr/local/bin/mitstack-gateway-prepare
     permissions: "0755"
     content: |
       #!/usr/bin/env bash
-      # Prepares a gateway once its packages are installed: installs the talosctl and kubectl that tools.env pins after
-      # checking their sha256, copies every image of the mirror list into the local registry by digest with the skopeo image
-      # tools.env pins, and fetches every served manifest, refusing one whose sha256 differs from the list. Only then does it
-      # write the completion file, which Caddy waits for. Each step runs within its tools.env bound. The gateway has no login,
-      # so a failure writes its stage and error to GATEWAY_CONSOLE and GATEWAY_ISSUE, then powers the gateway off.
+      # Prepares a gateway once its packages are installed: copies every image of the mirror list into the local registry by
+      # digest with the skopeo image tools.env pins, then copies talosctl, kubectl and every served manifest out of the tools
+      # image tools.env names, read from that registry by its digest, refusing a file whose sha256 differs from tools.env or
+      # the list. Only then does it write the completion file, which Caddy waits for. Each step runs within its tools.env
+      # bound. The gateway has no login, so a failure writes its stage and error to GATEWAY_CONSOLE and GATEWAY_ISSUE, then
+      # powers the gateway off.
       # Usage: prepare.sh <tools.env> <images.txt> <manifests.txt> <manifest dir> <completion file>
       #   images.txt holds one name:tag@sha256:digest per line, and manifests.txt
-      #   one "<file name> <sha256> <url>" per line. PREPARE_BIN_DIR names where the
-      #   binaries go, /usr/local/bin by default.
+      #   one "<file name> <sha256> <path in the tools image>" per line.
+      #   PREPARE_BIN_DIR names where the binaries go, /usr/local/bin by default.
       # It exists so the nodes pull and fetch only from the gateway, while the
       # gateway alone reaches the public registries, and only for pinned bytes.
       set -euo pipefail
 
       readonly registry=127.0.0.1:5000
+      # The tools container is created and never started, so nothing in the tools image runs on the gateway.
+      readonly tools_container=mitstack-gateway-tools
       stage="its start"
       completion=
       errors=$(mktemp)
@@ -199,25 +202,13 @@ write_files:
       trap power_off_unless_complete EXIT
       trap 'exit 143' TERM
 
-      # fetch_checked <url> <sha256> <dest> <mode> writes a download only once its bytes match.
-      fetch_checked() {
-        local tmp
-        stage="the download of $1"
-        tmp=$(mktemp)
-        curl -fsSL --proto '=https' --connect-timeout "$DOWNLOAD_CONNECT_SECONDS" --max-time "$DOWNLOAD_SECONDS" \
-          -o "$tmp" "$1" 2>> "$errors"
-        if ! echo "$2  $tmp" | sha256sum -c --quiet - > /dev/null 2>&1; then
-          rm -f "$tmp"
-          fail "$1 does not have sha256 $2"
-        fi
-        install -m "$4" "$tmp" "$3"
-        rm -f "$tmp"
-      }
-
-      install_tools() {
-        local bin_dir=${PREPARE_BIN_DIR:-/usr/local/bin}
-        fetch_checked "https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/talosctl-linux-amd64" "$TALOSCTL_SHA256" "$bin_dir/talosctl" 0755
-        fetch_checked "https://dl.k8s.io/release/${KUBERNETES_VERSION}/bin/linux/amd64/kubectl" "$KUBECTL_SHA256" "$bin_dir/kubectl" 0755
+      # check_bounded <status> <what did not happen> <bound> fails on a step's non-zero status, naming the bound it overran.
+      check_bounded() {
+        case $1 in
+          0) ;;
+          124) fail "$2 within ${3}s" ;;
+          *) fail "$2" ;;
+        esac
       }
 
       # mirror_image <name:tag@digest> copies one image, its digest preserved, under its name and tag, within COPY_SECONDS.
@@ -228,11 +219,50 @@ write_files:
         digest=${ref##*@}
         timeout -k 10 "$COPY_SECONDS" docker run --rm --network host "$SKOPEO_IMAGE" copy --all --preserve-digests --retry-times 3 --dest-tls-verify=false \
           "docker://${name_tag%:*}@${digest}" "docker://${registry}/${name_tag}" 2>> "$errors" || status=$?
-        case $status in
-          0) ;;
-          124) fail "$ref did not copy into the gateway's image mirror within ${COPY_SECONDS}s" ;;
-          *) fail "$ref did not copy into the gateway's image mirror" ;;
-        esac
+        check_bounded "$status" "$ref did not copy into the gateway's image mirror" "$COPY_SECONDS"
+      }
+
+      # open_tools_image creates the tools container from TOOLS_IMAGE as the local registry holds it, by its digest.
+      open_tools_image() {
+        local name_tag=${TOOLS_IMAGE%@*} status=0
+        stage="the read of $TOOLS_IMAGE from the gateway's image mirror"
+        timeout -k 10 "$EXTRACT_SECONDS" docker create --network none --name "$tools_container" \
+          "${registry}/${name_tag%:*}@${TOOLS_IMAGE##*@}" > /dev/null 2>> "$errors" || status=$?
+        check_bounded "$status" "$TOOLS_IMAGE did not read from the gateway's image mirror" "$EXTRACT_SECONDS"
+      }
+
+      # extract_checked <path> <sha256> <dest> <mode> copies one file out of the tools container within EXTRACT_SECONDS, and
+      # writes it only once its bytes match.
+      extract_checked() {
+        local tmp status=0
+        stage="the copy of $1 out of the tools image"
+        tmp=$(mktemp)
+        timeout -k 10 "$EXTRACT_SECONDS" docker cp "$tools_container:$1" "$tmp" 2>> "$errors" || status=$?
+        check_bounded "$status" "$1 did not copy out of the tools image" "$EXTRACT_SECONDS"
+        if ! echo "$2  $tmp" | sha256sum -c --quiet - > /dev/null 2>&1; then
+          rm -f "$tmp"
+          fail "$1 in the tools image does not have sha256 $2"
+        fi
+        install -m "$4" "$tmp" "$3"
+        rm -f "$tmp"
+      }
+
+      # install_from_tools_image <manifests.txt> <manifest dir> copies talosctl, kubectl and every served manifest out of the
+      # tools image, which the mirror holds by now.
+      install_from_tools_image() {
+        local bin_dir=${PREPARE_BIN_DIR:-/usr/local/bin} file sha256 path status=0
+        open_tools_image
+        extract_checked /usr/local/bin/talosctl "$TALOSCTL_SHA256" "$bin_dir/talosctl" 0755
+        extract_checked /usr/local/bin/kubectl "$KUBECTL_SHA256" "$bin_dir/kubectl" 0755
+        mkdir -p "$2"
+        while read -r file sha256 path; do
+          if [ -n "$file" ]; then
+            extract_checked "$path" "$sha256" "$2/$file" 0644
+          fi
+        done < "$1"
+        stage="the removal of the tools container"
+        timeout -k 10 "$EXTRACT_SECONDS" docker rm "$tools_container" > /dev/null 2>> "$errors" || status=$?
+        check_bounded "$status" "the tools container did not go" "$EXTRACT_SECONDS"
       }
 
       main() {
@@ -240,26 +270,21 @@ write_files:
         completion=$5
         # shellcheck source=/dev/null
         . "$1"
-        if [ -z "${DOWNLOAD_CONNECT_SECONDS:-}" ] || [ -z "${DOWNLOAD_SECONDS:-}" ] || [ -z "${COPY_SECONDS:-}" ]; then
-          fail "tools.env names no bound for a download or a copy"
+        if [ -z "${EXTRACT_SECONDS:-}" ] || [ -z "${COPY_SECONDS:-}" ]; then
+          fail "tools.env names no bound for a copy"
         fi
-        install_tools
+        [ -n "${TOOLS_IMAGE:-}" ] || fail "tools.env names no tools image"
 
-        local ref file sha256 url
+        local ref
         while read -r ref; do
           if [ -n "$ref" ]; then
             mirror_image "$ref"
           fi
         done < "$2"
-        mkdir -p "$4"
-        while read -r file sha256 url; do
-          if [ -n "$file" ]; then
-            fetch_checked "$url" "$sha256" "$4/$file" 0644
-          fi
-        done < "$3"
+        install_from_tools_image "$3" "$4"
         stage="the completion file"
         install -D -m 0644 /dev/null "$completion"
-        echo "prepare: the mirror and the manifests are in place"
+        echo "prepare: the mirror, the tools and the manifests are in place"
       }
 
       main "$@"
@@ -397,7 +422,7 @@ write_files:
   - path: /etc/systemd/system/mitstack-gateway-prepare.service
     content: |
       [Unit]
-      Description=Fills the image mirror and fetches the served manifests
+      Description=Fills the image mirror and copies the tools and the served manifests out of the tools image
       After=docker.service mitstack-registry.service
       Requires=docker.service
       FailureAction=poweroff

@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v4"
@@ -76,6 +78,31 @@ func RunBash(t *testing.T, script string, env []string, args ...string) (string,
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+// StartGatewayRegistry runs the registry image the gateway's registry unit runs, named name, on 127.0.0.1:5000 as
+// prepare expects, and waits for it to answer.
+func StartGatewayRegistry(t *testing.T, unit, name string) {
+	t.Helper()
+	var start []string
+	for line := range strings.Lines(unit) {
+		if rest, ok := strings.CutPrefix(line, "ExecStart="); ok {
+			start = strings.Fields(rest)
+		}
+	}
+	require.NotEmpty(t, start, "the registry unit has no ExecStart")
+	out, err := exec.Command("docker", "run", "-d", "--rm", "--name", name, "--network", "host",
+		"-e", "REGISTRY_HTTP_ADDR=127.0.0.1:5000", start[len(start)-1]).CombinedOutput()
+	require.NoError(t, err, string(out))
+	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", name).Run() })
+	require.Eventually(t, func() bool {
+		resp, err := http.Get("http://127.0.0.1:5000/v2/")
+		if err != nil {
+			return false
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode == http.StatusOK
+	}, time.Minute, time.Second, "the gateway's registry never answered")
 }
 
 func shellQuote(s string) string {

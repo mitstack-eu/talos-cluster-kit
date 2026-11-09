@@ -154,9 +154,9 @@ func (p Plane) neverStartedStep(ctx context.Context, st State) (Step, bool, erro
 	return Step{}, false, nil
 }
 
-// builtGatewayStep keeps the gateways of a cluster whose nodes exist: each zone's gateway, the route, a gateway
-// powered back on once an outage, a failed gateway's replacement, and an upgrade's replacements, one location at a time
-// and none while a location waits on its gateway.
+// builtGatewayStep keeps the gateways of a cluster whose nodes exist, building a missing location's gateway, moving the
+// route and powering a stopped gateway back on before it replaces one, since a replacement takes a location's gateway
+// away and waits while any location lacks one.
 func (p Plane) builtGatewayStep(ctx context.Context, st State, s site) (Step, bool, error) {
 	if st.SingleGateway() {
 		return p.singleGatewayStep(ctx, st, s)
@@ -183,9 +183,8 @@ func (p Plane) builtGatewayStep(ctx context.Context, st State, s site) (Step, bo
 	return Step{}, false, nil
 }
 
-// singleGatewayStep keeps a cluster built before a gateway ran in each location as it stands, since no kept key can sign
-// a gateway its nodes trust, and refuses the upgrade that would replace its gateway. It is transition code, to go once
-// no cluster predates a gateway in each location.
+// singleGatewayStep keeps a cluster built before a gateway ran in each location as it stands and refuses the upgrade
+// that would replace its gateway, since no kept key can sign a gateway its nodes trust.
 func (p Plane) singleGatewayStep(ctx context.Context, st State, s site) (Step, bool, error) {
 	if p.Upgrading {
 		return Step{}, false, refuse("gateway-predates-zones",

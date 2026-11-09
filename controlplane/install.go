@@ -147,17 +147,31 @@ func (p Plane) render(ctx context.Context, apiAddr, ingressAddr netip.Addr, now 
 	if err != nil {
 		return installation{}, err
 	}
-	base := components.Default()
-	if p.Hosting != nil {
-		if base, err = p.hostingSet(ctx, now); err != nil {
-			return installation{}, err
-		}
-	}
-	// The node report trusts the CA this install mints for the gateways' mirrors.
+	// The node report this install renders reads the gateways' mirrors under the CA it mints, and p is this call's copy.
 	p.GatewayCA = &gatewayCA
-	set, err := p.clusterComponents(base, token)
+	inst, set, err := p.renderNodes(ctx, apiAddr, now, secrets, token, bucket)
 	if err != nil {
 		return installation{}, err
+	}
+	if err := p.renderGateways(&inst, set, apiAddr, ingressAddr, now, secrets); err != nil {
+		return installation{}, err
+	}
+	return inst, nil
+}
+
+// renderNodes renders the cluster under the plane's gateway CA, and the user data of the builder, the worker builder and
+// a hosting cluster's serving server.
+func (p Plane) renderNodes(ctx context.Context, apiAddr netip.Addr, now time.Time, secrets *nodeconfig.Secrets, token, bucket string) (installation, components.Set, error) {
+	base := components.Default()
+	if p.Hosting != nil {
+		var err error
+		if base, err = p.hostingSet(ctx, now); err != nil {
+			return installation{}, components.Set{}, err
+		}
+	}
+	set, err := p.clusterComponents(base, token)
+	if err != nil {
+		return installation{}, components.Set{}, err
 	}
 	cluster := nodeconfig.Cluster{
 		Name:                 p.clusterName(),
@@ -168,12 +182,12 @@ func (p Plane) render(ctx context.Context, apiAddr, ingressAddr netip.Addr, now 
 		Network:              netip.MustParsePrefix(NetworkIPRange),
 		APIAddresses:         []netip.Addr{apiAddr},
 		Gateways:             gatewayAddrs(),
-		GatewayCA:            gatewayCA.Cert,
+		GatewayCA:            p.GatewayCA.Cert,
 		ServiceAccountIssuer: issuerURL(bucket, p.Subscription),
 		AppsOnWorkers:        p.AppsOnWorkers,
 	}
 	inst := installation{
-		cluster: cluster, enrolmentDigest: enrolmentTokenDigest(token), issuerBucket: bucket, gatewayCA: gatewayCA,
+		cluster: cluster, enrolmentDigest: enrolmentTokenDigest(token), issuerBucket: bucket, gatewayCA: *p.GatewayCA,
 		gatewayUserData: map[string]string{},
 	}
 	carried, fetched := cluster, []components.Manifest(nil)
@@ -182,53 +196,59 @@ func (p Plane) render(ctx context.Context, apiAddr, ingressAddr netip.Addr, now 
 	}
 	config, err := nodeconfig.Render(carried, nodeconfig.Node{})
 	if err != nil {
-		return installation{}, err
+		return installation{}, components.Set{}, err
 	}
 	var fetch *hostingFetch
 	if p.Hosting != nil {
 		if inst.servingUserData, fetch, err = servingUserData(fetched, now); err != nil {
-			return installation{}, err
+			return installation{}, components.Set{}, err
 		}
 	}
-	if inst.builderUserData, err = builderUserData("builder", config, gatewayCA.Cert, fetch); err != nil {
-		return installation{}, err
+	if inst.builderUserData, err = builderUserData("builder", config, p.GatewayCA.Cert, fetch); err != nil {
+		return installation{}, components.Set{}, err
 	}
 	workerConfig, err := nodeconfig.RenderWorker(cluster, nodeconfig.Node{})
 	if err != nil {
-		return installation{}, err
+		return installation{}, components.Set{}, err
 	}
-	if inst.workerBuilderUserData, err = builderUserData("worker builder", workerConfig, gatewayCA.Cert, nil); err != nil {
-		return installation{}, err
+	if inst.workerBuilderUserData, err = builderUserData("worker builder", workerConfig, p.GatewayCA.Cert, nil); err != nil {
+		return installation{}, components.Set{}, err
 	}
+	return inst, set, nil
+}
+
+// renderGateways renders each location's gateway from the release's list, the first with the etcd bootstrap, and
+// records each certificate it issues.
+func (p Plane) renderGateways(inst *installation, set components.Set, apiAddr, ingressAddr netip.Addr, now time.Time, secrets *nodeconfig.Secrets) error {
 	list, err := p.gatewayList()
 	if err != nil {
-		return installation{}, err
+		return err
 	}
 	if err := sameList(set, list); err != nil {
-		return installation{}, err
+		return err
 	}
 	inst.listDigest = list.Digest()
 	// The address only fills the talosconfig's defaults, since the bootstrap names the node it finds on every call.
 	talosconfig, err := secrets.AdminTalosconfig(apiAddr, adminTalosconfigTTL, now)
 	if err != nil {
-		return installation{}, err
+		return err
 	}
 	bootstrap := &firstNodeBootstrap{talosconfig: talosconfig, deadline: now.Add(adminTalosconfigTTL)}
 	for _, loc := range Locations {
 		if loc != GatewayLocation {
 			bootstrap = nil
 		}
-		userData, tls, err := p.renderGateway(loc, ingressAddr, now, gatewayCA, list, bootstrap)
+		userData, tls, err := p.renderGateway(loc, ingressAddr, now, *p.GatewayCA, list, bootstrap)
 		if err != nil {
-			return installation{}, err
+			return err
 		}
 		event, err := certificateEvent(loc, tls)
 		if err != nil {
-			return installation{}, err
+			return err
 		}
 		inst.gatewayUserData[loc], inst.certificateEvents = userData, append(inst.certificateEvents, event)
 	}
-	return inst, nil
+	return nil
 }
 
 // sameList refuses an install whose gateways would mirror or serve other than the cluster's whole set needs, since a

@@ -74,8 +74,7 @@ func refuse(class, format string, args ...any) error {
 	return &Refusal{Class: class, Message: fmt.Sprintf(format, args...)}
 }
 
-// Step is one change the plane lacks, which waits on Hetzner at most once. A route move is the one exception: it waits
-// on its delete, then on its add.
+// Step is one change the plane lacks, which waits on Hetzner at most once, or twice for a route move's delete and add.
 type Step struct {
 	What string
 	Run  func(ctx context.Context) error
@@ -136,7 +135,7 @@ var Locations = []string{"fsn1", "nbg1", "hel1"}
 // GatewayLocation is where the first gateway, the builder and both load balancers run.
 var GatewayLocation = Locations[0]
 
-// GatewayAddresses fix each location's gateway, since a replacement takes the address every node names. The others sit
+// GatewayAddresses fix each location's gateway, since a replacement takes the address every node names, with the others
 // high in the subnet, above any address Hetzner gives a server joining with none.
 var GatewayAddresses = map[string]string{"fsn1": GatewayAddress, "nbg1": "10.0.0.248", "hel1": "10.0.0.249"}
 

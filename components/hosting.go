@@ -149,8 +149,7 @@ func HostingServed() Set {
 	return set
 }
 
-// HostingPolicies are the hosting set's flow policies, which a running cluster also takes from a release through the
-// rollout package, since Talos creates each object only at the build.
+// HostingPolicies are the hosting set's flow policies.
 func HostingPolicies() []Manifest {
 	return []Manifest{{Name: "mitstack-hosting-flows", Path: "components/hosting/flows.yaml", Bytes: hostingFlowsManifest}}
 }

@@ -492,6 +492,22 @@ func (p Plane) waitingOn(ctx context.Context, r replacement, network Network) (S
 	return Server{}, GatewayReading{}, false, nil
 }
 
+// GatewaysServeRelease is whether every location's gateway is built from this release's list, runs at its address and
+// is read serving since its creation, so every image of the release is mirrored and a manifest naming one may reach the
+// cluster.
+func (p Plane) GatewaysServeRelease(ctx context.Context, st State) (bool, error) {
+	network, ok := st.Network()
+	if !ok || st.SingleGateway() {
+		return false, nil
+	}
+	r, err := p.replacement(st, network)
+	if err != nil || len(r.stale) > 0 || len(r.current) != len(Locations) {
+		return false, err
+	}
+	_, _, waiting, err := p.waitingOn(ctx, r, network)
+	return err == nil && !waiting, err
+}
+
 func gatewayDeadline(gw Server) time.Time { return gw.Created.Add(gateway.Deadline) }
 
 func (p Plane) pastDeadline(gw Server) bool { return !p.now().Before(gatewayDeadline(gw)) }

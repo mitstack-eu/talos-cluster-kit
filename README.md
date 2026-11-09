@@ -232,7 +232,8 @@ as the cluster needs:
 3. It replaces one gateway built from an earlier list, once the upgrade's own
    call, with `Upgrading` set, has marked the network. It takes first a gateway
    that does not serve, since replacing it takes nothing from those that do. It
-   moves the route off the old gateway and labels it with the time its
+   moves the route off the old gateway to one that serves, leaving it where it
+   is when none does, and labels the old gateway with the time its
    replacement began, `mitstack.dev/removal-began`, and the digest of the list
    it is replaced for, `mitstack.dev/removal-for`. A label for another list
    counts for nothing, so an upgrade that took over from an abandoned one
@@ -272,7 +273,7 @@ catalogue type lists each cause word for word.
 | Cause | The gateway | What happens next |
 |---|---|---|
 | `CauseGatewayDown` | Built from this release's list, and still down after its power-on | The plane replaces it |
-| `CauseGatewayOverdue` | Built from this release's list, and running past its deadline without serving | The plane replaces it |
+| `CauseGatewayOverdue` | Built from this release's list, running past its deadline, and not read serving by the newest node report since its creation | The plane replaces it |
 | `CauseGatewayFailedAgain` | A successor that failed from the same list as the gateway it replaced | The plane leaves it, and an upgrade to a release with a new list replaces it |
 | `CauseEarlierGatewayDown` | Built from an earlier list, and still down after its power-on | An upgrade replaces it |
 
@@ -330,8 +331,9 @@ so that screen is the only place to read why its build failed.
 
 The plane gives each gateway a deadline of 77 minutes after its creation,
 `gateway.Deadline`, which adds 15 minutes for its boot and package install to
-the bounds above. A gateway of this release's list that has neither served
-nor powered itself off by then is replaced, as step 4 above describes. While
+the bounds above. A gateway of this release's list that still runs by then,
+and that the newest node report since its creation does not read serving, is
+replaced, as step 4 above describes. While
 an upgrade waits on such a gateway, the step's wait, which a block reports as
 its status detail, names the gateway and its deadline. `Unhealthy` returns
 cause `CauseGatewayOverdue` with the same words.

@@ -664,8 +664,8 @@ func TestPlane_NamesAReplacementRunningPastItsDeadlineUnhealthyAndKeepsWaitingWi
 
 	cause, detail, err := h.plane.Unhealthy(context.Background(), h.read())
 	require.NoError(t, err)
-	missed := fmt.Sprintf("gateway %d in fsn1 has neither served nor powered itself off by its deadline at %s", replacement.ID,
-		deadline.UTC().Format(time.RFC3339))
+	missed := fmt.Sprintf("gateway %d in fsn1 runs past its deadline at %s, %s after its creation, and the newest node report since its creation does not read it serving",
+		replacement.ID, deadline.UTC().Format(time.RFC3339), gateway.Deadline)
 	assert.Equal(t, controlplane.CauseGatewayOverdue, cause)
 	assert.Contains(t, detail, missed)
 	assert.Contains(t, strings.Join(h.plane.Problems(context.Background(), h.read()), "; "), missed, "the step still waits and names the deadline")
@@ -804,7 +804,7 @@ func TestPlane_AnUpgradeReplacesItsReplacementPastItsDeadlineWithoutServingFromT
 
 	deleted := h.deletedGateways(from)
 	require.Len(t, deleted, len(controlplane.Locations), "gateways deleted")
-	assert.True(t, strings.HasPrefix(deleted[0], fmt.Sprintf("deleted gateway %d in fsn1, which has neither served nor powered itself off by its deadline", failed.ID)),
+	assert.True(t, strings.HasPrefix(deleted[0], fmt.Sprintf("deleted gateway %d in fsn1, which runs past its deadline at ", failed.ID)),
 		"the first deletion: %s", deleted[0])
 	assert.Equal(t, strconv.FormatInt(failed.ID, 10), h.gatewayIn(controlplane.GatewayLocation).Labels[controlplane.KeyGatewayReplaces], "the gateway fsn1's successor replaced")
 	for _, loc := range controlplane.Locations {
@@ -846,6 +846,49 @@ func TestPlane_ReplacesNoFailedGatewayWhileASecondGatewayDoesNotServeAndNamesIt(
 	}
 }
 
+func TestPlane_DeletesNoGatewayAndRoutesViaNoneWhileNoNodeReportReadsTheGatewaysPastTheirDeadline(t *testing.T) {
+	noReport := func(h *harness) {
+		h.plane.ReadReport = func(context.Context, time.Time) (*report.Read, error) { return nil, nil }
+		h.plane.ReadGateway = func(_ context.Context, _ string, since time.Time) (controlplane.GatewayReading, error) {
+			return controlplane.GatewayReading{Detail: "no node report was received since " + since.Format(time.RFC3339)}, nil
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		opts []func(*harness)
+	}{
+		{"with no node report at all", []func(*harness){noReport}},
+		{"from a block that reads no node report", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, tc.opts...)
+			h.built()
+			gateways, routes, from := h.gatewayIDs(), h.network().Routes, len(h.events)
+			require.NotEmpty(t, routes, "the route the cluster was built with")
+			for _, gw := range h.byRole(controlplane.RoleGateway) {
+				if deadline := gw.Created.Add(gateway.Deadline); deadline.After(h.now) {
+					h.now = deadline
+				}
+			}
+
+			for range 30 {
+				require.NoError(t, h.converge())
+				h.now = h.now.Add(time.Minute)
+			}
+
+			assert.Equal(t, gateways, h.gatewayIDs(), "the gateways")
+			assert.Empty(t, h.deletedGateways(from), "gateways deleted")
+			assert.Equal(t, routes, h.network().Routes, "the route, which moves to no gateway without a reading")
+			events := strings.Join(h.events[from:], "\n")
+			for _, loc := range []string{"nbg1", "hel1"} {
+				assert.Contains(t, events, fmt.Sprintf("%q has no reading", fmt.Sprintf("gateway %d in %s", h.gatewayIn(loc).ID, loc)),
+					"the refusal names the gateway in %s", loc)
+			}
+			assert.Contains(t, events, "refused:redundancy-below-minimum")
+		})
+	}
+}
+
 func TestPlane_LeavesASuccessorThatFailsFromTheSameListInPlaceAndReadsUnhealthyNamingBothGateways(t *testing.T) {
 	h := newHarness(t, withReports)
 	h.built()
@@ -865,7 +908,7 @@ func TestPlane_LeavesASuccessorThatFailsFromTheSameListInPlaceAndReadsUnhealthyN
 	cause, detail, err := h.plane.Unhealthy(context.Background(), h.read())
 	require.NoError(t, err)
 	assert.Equal(t, controlplane.CauseGatewayFailedAgain, cause)
-	assert.Contains(t, detail, fmt.Sprintf("gateway %d in fsn1 has neither served nor powered itself off by its deadline", successor.ID))
+	assert.Contains(t, detail, fmt.Sprintf("gateway %d in fsn1 runs past its deadline at ", successor.ID))
 	assert.Contains(t, detail, fmt.Sprintf("gateway %d", failed.ID), "the detail names the gateway the successor replaced")
 }
 

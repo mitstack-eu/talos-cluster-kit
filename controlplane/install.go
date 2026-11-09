@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
-	"runtime/debug"
 	"time"
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
@@ -17,8 +16,6 @@ import (
 )
 
 const (
-	kitModule = "github.com/mitstack-eu/talos-cluster-kit"
-
 	gatewayCAValidity   = 10 * 365 * 24 * time.Hour
 	gatewayCertValidity = 365 * 24 * time.Hour
 	// adminTalosconfigTTL covers the build, the snapshot and the node's first boot, after which the gateway's copy is worthless.
@@ -255,40 +252,22 @@ func (p Plane) renderGateway(loc string, ingressAddr netip.Addr, now time.Time, 
 	if err != nil {
 		return "", gateway.TLS{}, err
 	}
-	release, err := kitRelease()
+	tools, err := components.ParseImage(toolsImage())
 	if err != nil {
-		return "", gateway.TLS{}, err
+		return "", gateway.TLS{}, fmt.Errorf("the tools image: %w", err)
 	}
 	kitPart, err := gateway.Render(gateway.Inputs{
-		Address:         address,
-		Network:         netip.MustParsePrefix(NetworkIPRange),
-		Ingress:         ingressAddr,
-		TLS:             tls,
-		List:            list,
-		ManifestBaseURL: gateway.ReleaseURL(release),
-		Gzipped:         true,
+		Address: address,
+		Network: netip.MustParsePrefix(NetworkIPRange),
+		Ingress: ingressAddr,
+		TLS:     tls,
+		List:    list,
+		Tools:   tools,
+		Gzipped: true,
 	})
 	if err != nil {
 		return "", gateway.TLS{}, err
 	}
 	userData, err := p.gatewayUserData(kitPart, bootstrap)
 	return userData, tls, err
-}
-
-// kitRelease is the talos-cluster-kit tag the binary is built against, whose files the gateway fetches, or the
-// main module's version when the binary is the kit's own test.
-func kitRelease() (string, error) {
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return "", errors.New("the binary carries no build information, so the talos-cluster-kit release is unknown")
-	}
-	if info.Main.Path == kitModule {
-		return info.Main.Version, nil
-	}
-	for _, dep := range info.Deps {
-		if dep.Path == kitModule {
-			return dep.Version, nil
-		}
-	}
-	return "", fmt.Errorf("the binary is not built against %s", kitModule)
 }

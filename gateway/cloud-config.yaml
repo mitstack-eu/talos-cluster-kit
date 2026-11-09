@@ -120,7 +120,7 @@ write_files:
   - path: /etc/systemd/system/mitstack-gateway-prepare.service
     content: |
       [Unit]
-      Description=Fills the image mirror and fetches the served manifests
+      Description=Fills the image mirror and copies the tools and the served manifests out of the tools image
       After=docker.service mitstack-registry.service
       Requires=docker.service
       FailureAction=poweroff

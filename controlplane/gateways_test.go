@@ -26,7 +26,7 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 )
 
-const reportEvery = 5 * time.Minute
+const reportEvery = report.Interval
 
 // reportReceived is when the newest node report arrived: every five minutes, until h.reportsStopAt.
 func (h *harness) reportReceived() time.Time {
@@ -36,9 +36,9 @@ func (h *harness) reportReceived() time.Time {
 	return h.now.Truncate(reportEvery)
 }
 
-// withReports reads each gateway as the node report every five minutes would: serving once it runs at its address,
-// unless h.failing names its address, or h.unread names it and the report names no gateway there. Each report lists
-// h.images.
+// withReports reads each gateway as the node report every five minutes would: serving once it runs at its address and
+// h.servesAfter has passed since its creation, unless h.failing names its address, or h.unread names it and the report
+// names no gateway there. Each report lists h.images.
 func withReports(h *harness) {
 	h.plane.ReadReport = func(_ context.Context, since time.Time) (*report.Read, error) {
 		received := h.reportReceived()
@@ -68,7 +68,7 @@ func withReports(h *harness) {
 			command, stoppedAt, err := h.cloud.LastPowerAction(context.Background(), gw.ID)
 			require.NoError(h.t, err)
 			ranAtReport := gw.Status == controlplane.ServerRunning || command == controlplane.StopServerCommand && stoppedAt.After(received)
-			if ranAtReport && slices.Contains(slices.Collect(maps.Values(gw.PrivateIPs)), address) && !gw.Created.After(received) {
+			if ranAtReport && slices.Contains(slices.Collect(maps.Values(gw.PrivateIPs)), address) && !gw.Created.Add(h.servesAfter).After(received) {
 				return controlplane.GatewayReading{Read: true, Serving: true, At: received, Detail: detail}, nil
 			}
 		}
@@ -321,6 +321,38 @@ func TestPlane_UpgradeReplacesOneLocationsGatewayAtATimeAtItsAddressAndNoNode(t 
 	issued := slices.DeleteFunc(slices.Clone(h.events[installEvents:]), func(e string) bool { return !strings.HasPrefix(e, "issued the certificate") })
 	assert.Len(t, issued, len(controlplane.Locations), "certificate events of the replacements")
 	assert.NotContains(t, h.network().Labels, controlplane.KeyGatewayUpgrade, "the network's labels once the upgrade is done")
+}
+
+func TestPlane_AnUpgradeWhoseReplacementsServeOnlyInTheLastReportBeforeTheirDeadlineEndsWithinGatewayUpgradeBound(t *testing.T) {
+	h := newHarness(t, withReports)
+	h.built()
+	old := controlplane.IDs(h.byRole(controlplane.RoleGateway), controlplane.ServerID)
+	h.relabelGateways("an-earlier-list")
+	h.servesAfter = gateway.Deadline - reportEvery
+	h.now = h.now.Add(h.servesAfter)
+	began := h.now
+
+	h.upgrade(func() {})
+
+	for _, loc := range controlplane.Locations {
+		assert.NotContains(t, old, h.gatewayIn(loc).ID, "the gateway in %s was not replaced", loc)
+	}
+	assert.LessOrEqual(t, h.now.Sub(began), controlplane.GatewayUpgradeBound, "how long the upgrade took")
+}
+
+func TestCluster_RunsTheNodeReportAndTheOutsideProbeOnceEveryReportInterval(t *testing.T) {
+	set, err := newHarness(t).plane.ClusterComponents("enrolment-token")
+
+	require.NoError(t, err)
+	schedules := map[string]any{}
+	for _, m := range slices.Concat(set.Served, set.Inline) {
+		for _, job := range testutil.Kind(testutil.Documents(t, m.Bytes), "CronJob") {
+			schedules[testutil.Field(t, job, "metadata", "name").(string)] = testutil.Field(t, job, "spec", "schedule")
+		}
+	}
+	every := fmt.Sprintf("*/%d * * * *", int(report.Interval/time.Minute))
+	assert.Equal(t, every, schedules["mitstack-node-report"], "the node report's schedule")
+	assert.Equal(t, every, schedules["mitstack-mesh-probe"], "the outside probe's schedule")
 }
 
 func locationOf(address string) string {

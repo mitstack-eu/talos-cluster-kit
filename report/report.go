@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 
 	"go.yaml.in/yaml/v4"
 
@@ -80,6 +81,9 @@ func fixtures() ([]fixture, error) {
 	}
 	return out, nil
 }
+
+// Interval is how often the node report and the outside probe whose result it carries run, as their CronJobs schedule them.
+const Interval = 5 * time.Minute
 
 // TokenSecret is the Secret the block writes into the report's namespace, holding the bearer token under the key token.
 const TokenSecret = "mitstack-report-token"

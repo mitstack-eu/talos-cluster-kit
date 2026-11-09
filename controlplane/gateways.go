@@ -17,6 +17,7 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/gateway"
 	"github.com/mitstack-eu/talos-cluster-kit/redundant"
+	"github.com/mitstack-eu/talos-cluster-kit/report"
 )
 
 // The causes a cluster reads unhealthy with, word for word as the catalogue type lists them under failures.
@@ -38,6 +39,11 @@ const (
 	KeyGatewayFailed   = "mitstack.dev/gateway-failed-"
 	KeyGatewayReplaces = "mitstack.dev/gateway-replaces"
 )
+
+// GatewayUpgradeBound is the longest an upgrade takes to replace every gateway in turn when none fails, which a block's
+// settle budget must cover: per location, two report intervals for the others' reading, one for a report since the
+// loss, and the replacement's deadline, by which a report reads it serving.
+var GatewayUpgradeBound = time.Duration(len(Locations)) * (gateway.Deadline + 3*report.Interval)
 
 // GatewayReading is what the newest node report received since a given time read of one gateway's mirror.
 type GatewayReading struct {

@@ -86,11 +86,10 @@ fails it.
 
 Talos applies each manifest of the set once, creating every object that does
 not exist yet and leaving an existing one as it is. A change to a component or
-a policy therefore reaches only a cluster built from the release that carries
-it. The one exception is the hosting policies that
-`components.HostingPolicies` returns, which a running cluster takes through the
-`rollout` package, as
-[the README's rollout section](../README.md#how-a-running-cluster-takes-a-releases-policies)
+a policy therefore reaches a running cluster only through the `rollout`
+package, which an upgrade commits to the cluster repository for Argo CD to
+apply, as
+[the README's rollout section](../README.md#how-a-running-cluster-takes-a-releases-components)
 explains. On a new cluster, the first pass skips each object whose CRD is not yet
 registered, such as the Kyverno policies, and Talos applies it on a later pass.
 

@@ -846,7 +846,7 @@ func TestPlane_ReplacesNoFailedGatewayWhileASecondGatewayDoesNotServeAndNamesIt(
 	}
 }
 
-func TestPlane_DeletesNoGatewayAndRoutesViaNoneWhileNoNodeReportReadsTheGatewaysPastTheirDeadline(t *testing.T) {
+func TestPlane_DeletesNoGatewayAndMovesNoRouteWhileNoNodeReportReadsTheGatewaysPastTheirDeadline(t *testing.T) {
 	noReport := func(h *harness) {
 		h.plane.ReadReport = func(context.Context, time.Time) (*report.Read, error) { return nil, nil }
 		h.plane.ReadGateway = func(_ context.Context, _ string, since time.Time) (controlplane.GatewayReading, error) {

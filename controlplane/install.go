@@ -159,17 +159,23 @@ func (p Plane) render(ctx context.Context, apiAddr, ingressAddr netip.Addr, now 
 	return inst, nil
 }
 
+// buildSet is the component set an install applies, and the base set it renders it from: the default set, or a hosting
+// cluster's with its keys.
+func (p Plane) buildSet(ctx context.Context, now time.Time, token string) (set, base components.Set, err error) {
+	base = components.Default()
+	if p.Hosting != nil {
+		if base, err = p.hostingSet(ctx, now); err != nil {
+			return components.Set{}, components.Set{}, err
+		}
+	}
+	set, err = p.clusterComponents(base, token)
+	return set, base, err
+}
+
 // renderNodes renders the cluster under the plane's gateway CA, and the user data of the builder, the worker builder and
 // a hosting cluster's serving server.
 func (p Plane) renderNodes(ctx context.Context, apiAddr netip.Addr, now time.Time, secrets *nodeconfig.Secrets, token, bucket string) (installation, components.Set, error) {
-	base := components.Default()
-	if p.Hosting != nil {
-		var err error
-		if base, err = p.hostingSet(ctx, now); err != nil {
-			return installation{}, components.Set{}, err
-		}
-	}
-	set, err := p.clusterComponents(base, token)
+	set, base, err := p.buildSet(ctx, now, token)
 	if err != nil {
 		return installation{}, components.Set{}, err
 	}

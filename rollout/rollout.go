@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path"
 	"slices"
 	"strings"
 	"sync"
@@ -37,8 +36,8 @@ const (
 	healthy         = "Healthy"
 )
 
-// LegacyFiles are what releases before the whole set's carriage committed for the hosting policies alone, which the
-// carriage takes out in the commit that gives the policies their own Application.
+// LegacyFiles apply the hosting policies apart from the carriage, which takes them out so that one Application alone
+// applies each policy.
 var LegacyFiles = []string{"cluster/mitstack-hosting.yaml", "hosting/policies.yaml"}
 
 //go:embed application.yaml
@@ -115,10 +114,19 @@ func (r Release) Retired(held []string) ([]string, error) {
 	return retired, nil
 }
 
+// ownedByCarriage is whether p is a path the carriage writes for some component, or one of LegacyFiles, so a file an app
+// keeps beside them is never taken out.
 func ownedByCarriage(p string) bool {
-	dir, base := path.Split(p)
-	return strings.HasPrefix(p, ComponentsDir+"/") || slices.Contains(LegacyFiles, p) ||
-		dir == clusterDir+"/" && strings.HasPrefix(base, ApplicationPrefix) && strings.HasSuffix(base, ".yaml")
+	if slices.Contains(LegacyFiles, p) {
+		return true
+	}
+	if name, ok := strings.CutPrefix(p, ComponentsDir+"/"); ok {
+		name, ok = strings.CutSuffix(name, "/"+manifestFile)
+		return ok && check.DNS1123Label(ApplicationPrefix+name) == nil
+	}
+	app, inCluster := strings.CutPrefix(p, clusterDir+"/")
+	app, isYAML := strings.CutSuffix(app, ".yaml")
+	return inCluster && isYAML && strings.HasPrefix(app, ApplicationPrefix) && check.DNS1123Label(app) == nil
 }
 
 // carriedCache keeps each component's carried bytes by its digest, since splitting the set's documents decodes every

@@ -149,14 +149,20 @@ func (h *harness) converge() error {
 // true, a call fails, or the settle budget runs out.
 func (h *harness) settle(stop func() bool) error {
 	h.t.Helper()
-	for began := h.now; h.now.Sub(began) < settleBudget; {
+	return h.advance(settleBudget, func() bool {
+		return stop != nil && stop() || len(h.plane.Problems(context.Background(), h.read())) == 0
+	})
+}
+
+// advance converges, then lets a minute pass for Hetzner and the builder, until done reads true after a call, a call
+// fails, or the budget runs out.
+func (h *harness) advance(budget time.Duration, done func() bool) error {
+	h.t.Helper()
+	for began := h.now; h.now.Sub(began) < budget; {
 		if err := h.converge(); err != nil {
 			return err
 		}
-		if stop != nil && stop() {
-			return nil
-		}
-		if len(h.plane.Problems(context.Background(), h.read())) == 0 {
+		if done() {
 			return nil
 		}
 		h.now = h.now.Add(time.Minute)

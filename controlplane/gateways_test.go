@@ -716,20 +716,6 @@ var gatewayFailures = []struct {
 	}},
 }
 
-// redrive re-drives the plane a minute at a time, as the platform's observe does, until done reads true after a call.
-func (h *harness) redrive(done func() bool) {
-	h.t.Helper()
-	for range 120 {
-		require.NoError(h.t, h.converge())
-		if done() {
-			return
-		}
-		h.now = h.now.Add(time.Minute)
-		h.cloud.Advance(h.buildTakes, h.imageTakes)
-	}
-	h.t.Fatal("the plane did not get there within 120 minutes")
-}
-
 func (h *harness) gatewayIDs() []int64 {
 	return controlplane.IDs(h.byRole(controlplane.RoleGateway), controlplane.ServerID)
 }
@@ -762,12 +748,12 @@ func TestPlane_ReplacesAFailedGatewayOfThisReleasesListAtItsAddressFromTheSameLi
 
 			tc.fail(h, failed)
 			var routesOnceGone []controlplane.Route
-			h.redrive(func() bool {
+			require.NoError(t, h.advance(2*time.Hour, func() bool {
 				if routesOnceGone == nil && !slices.Contains(h.gatewayIDs(), failed.ID) {
 					routesOnceGone, h.failing = h.network().Routes, nil
 				}
 				return h.servesInPlaceOf(failed)
-			})
+			}))
 
 			successor := h.gatewayIn(controlplane.GatewayLocation)
 			assert.Equal(t, failed.Labels[controlplane.KeyGatewayList], successor.Labels[controlplane.KeyGatewayList], "the successor's list")
@@ -865,7 +851,7 @@ func TestPlane_LeavesASuccessorThatFailsFromTheSameListInPlaceAndReadsUnhealthyN
 	h.built()
 	failed := h.gatewayIn(controlplane.GatewayLocation)
 	gatewayFailures[0].fail(h, failed)
-	h.redrive(func() bool { return h.runsInPlaceOf(failed) })
+	require.NoError(t, h.advance(2*time.Hour, func() bool { return h.runsInPlaceOf(failed) }))
 	successor, from := h.gatewayIn(controlplane.GatewayLocation), len(h.events)
 
 	h.now = successor.Created.Add(gateway.Deadline)

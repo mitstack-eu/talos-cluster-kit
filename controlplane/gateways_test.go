@@ -591,6 +591,65 @@ func TestPlane_AnUpgradeWithNoGatewayToReplaceChangesNothingThoughNoReportNamesA
 	assert.Empty(t, h.plane.Problems(context.Background(), h.read()), "problems")
 }
 
+func (h *harness) servesRelease() bool {
+	h.t.Helper()
+	ok, err := h.plane.GatewaysServeRelease(context.Background(), h.read())
+	require.NoError(h.t, err)
+	return ok
+}
+
+func TestPlane_GatewaysServeTheReleaseOnlyOnceEveryLocationsGatewayIsBuiltFromItsListAndReadServing(t *testing.T) {
+	h := newHarness(t, withReports)
+	h.built()
+	current := h.gatewayIn(controlplane.GatewayLocation).Labels[controlplane.KeyGatewayList]
+	built := h.servesRelease()
+	h.relabelGateways("an-earlier-list")
+	stale := h.servesRelease()
+	var heldEarly []string
+
+	h.upgrade(func() {
+		if !h.servesRelease() {
+			return
+		}
+		for _, gw := range h.byRole(controlplane.RoleGateway) {
+			if gw.Labels[controlplane.KeyGatewayList] != current || gw.Status != controlplane.ServerRunning {
+				heldEarly = append(heldEarly, gatewayLabel(gw))
+			}
+		}
+	})
+
+	assert.True(t, built, "whether the gateways of a cluster just built serve its release")
+	assert.False(t, stale, "whether gateways built from an earlier list serve the release")
+	assert.Empty(t, heldEarly, "gateways not yet built from this release's list or not running when the predicate held")
+	assert.True(t, h.servesRelease(), "whether the gateways serve the release once the upgrade is done")
+}
+
+func gatewayLabel(gw controlplane.Server) string {
+	return fmt.Sprintf("gateway %d in %s from %s, %s", gw.ID, gw.Location, gw.Labels[controlplane.KeyGatewayList], gw.Status)
+}
+
+func TestPlane_GatewaysDoNotServeTheReleaseWhileAReplacementIsNotReadServing(t *testing.T) {
+	h := newHarness(t, withReports)
+	h.built()
+	h.relabelGateways("an-earlier-list")
+	h.failing = []string{controlplane.GatewayAddress}
+	var served []string
+
+	h.plane.Upgrading = true
+	require.NoError(t, h.ensure())
+	h.plane.Upgrading = false
+	for range 60 {
+		require.NoError(t, h.converge())
+		if h.servesRelease() {
+			served = append(served, h.now.Format(time.RFC3339))
+		}
+		h.now = h.now.Add(time.Minute)
+		h.cloud.Advance(h.buildTakes, h.imageTakes)
+	}
+
+	assert.Empty(t, served, "the times the predicate held while fsn1's replacement was never read serving")
+}
+
 func TestPlane_RefusesToRebuildALostGatewayWithoutTheGatewayCA(t *testing.T) {
 	h := newHarness(t)
 	h.built()

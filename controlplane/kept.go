@@ -162,6 +162,8 @@ func (p Plane) setGatewayGone(network Network, loc string, at *time.Time) Step {
 		if at != nil {
 			// Rounded up, so a report from earlier in the second the loss was seen never reads as after it.
 			labels[KeyGatewayGone+loc] = strconv.FormatInt(at.Add(time.Second-1).Unix(), 10)
+		} else {
+			delete(labels, KeyGatewayFailed+loc)
 		}
 		return p.API.SetNetworkLabels(ctx, network.ID, labels)
 	}}

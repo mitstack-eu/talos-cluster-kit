@@ -72,7 +72,7 @@ func (p Plane) buildDetail(ctx context.Context, b Server, img imageBuild) string
 
 // gatewayProblems names each location without a gateway as the plane builds it, a default route through none that
 // serves, and an upgrade's replacement still to run or waiting on a gateway. A gateway down after its power-back is no
-// problem here, since no step is left for it, and Unhealthy names it.
+// problem here, since the cluster serves through the others while it is replaced or left, and Unhealthy names it.
 func (p Plane) gatewayProblems(ctx context.Context, st State, network Network, firewall Firewall) ([]string, error) {
 	locations := Locations
 	if st.SingleGateway() {

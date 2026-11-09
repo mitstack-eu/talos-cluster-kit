@@ -23,7 +23,7 @@ import (
 const (
 	CauseSingleGateway      = "the cluster was built by an older release that cannot be upgraded in place; rebuild the cluster"
 	CauseGatewayDown        = "a gateway the block powered back on after an outage does not serve, so the block replaces it from the same list once a node report reads the other gateways serving; read its console log for why it failed"
-	CauseGatewayOverdue     = "a gateway has neither served nor powered itself off by its deadline, so the block replaces it from the same list once a node report reads the other gateways serving; read its console log for why it failed"
+	CauseGatewayOverdue     = "a gateway runs past its deadline and the newest node report since its creation does not read it serving, so the block replaces it from the same list once a node report reads the other gateways serving; read its console log for why it failed"
 	CauseGatewayFailedAgain = "a gateway the block built from the same list to replace one that failed has failed too, so the block leaves it; read its console log, and upgrade to a release with a new list to replace it"
 	CauseEarlierGatewayDown = "a server the block powered back on after an outage does not serve; read its console log and replace it with an upgrade"
 )
@@ -494,7 +494,7 @@ func (p Plane) pastDeadline(gw Server) bool { return !p.now().Before(gatewayDead
 func overdueDetail(gw Server) string { return gatewayName(gw) + " " + missedDeadline(gw) }
 
 func missedDeadline(gw Server) string {
-	return fmt.Sprintf("has neither served nor powered itself off by its deadline at %s, %s after its creation",
+	return fmt.Sprintf("runs past its deadline at %s, %s after its creation, and the newest node report since its creation does not read it serving",
 		gatewayDeadline(gw).UTC().Format(time.RFC3339), gateway.Deadline)
 }
 

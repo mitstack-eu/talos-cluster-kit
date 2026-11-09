@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,9 +18,11 @@ import (
 
 func TestPrepareScript_MirrorsTrustManagersIndexIntoTheGatewaysRegistryWithItsDigest(t *testing.T) {
 	image := hostingImage(t, "quay.io/jetstack/trust-manager")
-	startGatewayRegistry(t)
+	testutil.StartGatewayRegistry(t, writtenFile(t, "/etc/systemd/system/mitstack-registry.service"), "mitstack-mirror-check")
+	docker, err := exec.LookPath("docker")
+	require.NoError(t, err)
 
-	run := prepare(t, map[string]string{}, sha256Of("bytes of https://example.test/argocd.yaml"), image.Ref())
+	run := prepareWith(t, nil, map[string]string{"docker": `[ "$1" != run ] || exec ` + docker + ` "$@"`}, sha256Of("bytes of /stub/argocd.yaml"), image.Ref())
 
 	require.NoError(t, run.err, run.out)
 	assert.FileExists(t, run.completionFile())
@@ -37,25 +38,6 @@ func hostingImage(t *testing.T, name string) components.Image {
 	}
 	require.Fail(t, "the hosting set pulls no "+name)
 	return components.Image{}
-}
-
-// startGatewayRegistry runs the registry image the gateway runs, on 127.0.0.1:5000 as prepare expects.
-func startGatewayRegistry(t *testing.T) {
-	t.Helper()
-	fields := strings.Fields(execStart(t, writtenFile(t, "/etc/systemd/system/mitstack-registry.service")))
-	name := "mitstack-mirror-check"
-	out, err := exec.Command("docker", "run", "-d", "--rm", "--name", name, "--network", "host",
-		"-e", "REGISTRY_HTTP_ADDR=127.0.0.1:5000", fields[len(fields)-1]).CombinedOutput()
-	require.NoError(t, err, string(out))
-	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", name).Run() })
-	require.Eventually(t, func() bool {
-		resp, err := http.Get("http://127.0.0.1:5000/v2/")
-		if err != nil {
-			return false
-		}
-		_ = resp.Body.Close()
-		return resp.StatusCode == http.StatusOK
-	}, time.Minute, time.Second, "the gateway's registry never answered")
 }
 
 // servedDigest is the digest the local registry serves for the image's tag, as a node asking for any manifest type sees.

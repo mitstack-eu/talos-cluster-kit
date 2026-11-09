@@ -38,12 +38,11 @@ const (
 // Each stage of a gateway's build runs under its own bound, which tools.env and the units that run the stages carry,
 // and a gateway that fails or overruns a stage powers itself off.
 const (
-	downloadConnectBound = 15 * time.Second
-	// downloadBound bounds each tools and manifest download whole.
-	downloadBound = 5 * time.Minute
+	// extractBound bounds each copy of a file out of the tools image, and the image's read from the gateway's mirror.
+	extractBound = 5 * time.Minute
 	// copyBound bounds each image copy into the mirror, skopeo's own retries included.
 	copyBound = 15 * time.Minute
-	// prepareBound bounds the whole preparation, every download and copy included.
+	// prepareBound bounds the whole preparation, every copy included.
 	prepareBound = time.Hour
 	// serveBound bounds the TLS server's start, from the mirror's completion to its first answer on the private network.
 	serveBound = 2 * time.Minute
@@ -80,16 +79,13 @@ type Inputs struct {
 	TLS     TLS
 	// List is what the gateway mirrors and serves, as NewList makes it from the cluster's component set.
 	List List
-	// ManifestBaseURL is the release of this kit the served manifests are fetched from, as ReleaseURL returns.
-	ManifestBaseURL string
+	// Tools is the tools image the list mirrors, which the gateway copies talosctl, kubectl and every served manifest
+	// out of.
+	Tools components.Image
 	// Logs is the receiver the node-local Collectors export to, whose port the gateway forwards when there is one.
 	Logs components.LogExport
 	// Gzipped says the caller sends the cloud-config gzipped and judges that against Hetzner's limit itself.
 	Gzipped bool
-}
-
-func ReleaseURL(version string) string {
-	return "https://raw.githubusercontent.com/mitstack-eu/talos-cluster-kit/" + version
 }
 
 // Render returns the gateway's cloud-config, refusing one past Hetzner's user data limit unless it travels gzipped.
@@ -125,8 +121,8 @@ func (in Inputs) validate() error {
 	if in.List.digest == "" {
 		errs = append(errs, errors.New("the gateway has no list; build one with NewList"))
 	}
-	if !strings.HasPrefix(in.ManifestBaseURL, "https://") {
-		errs = append(errs, fmt.Errorf("manifest base URL %q is not https", in.ManifestBaseURL))
+	if !slices.Contains(in.List.images, in.Tools) {
+		errs = append(errs, fmt.Errorf("the list does not mirror the tools image %q, which the gateway copies its tools and manifests out of", in.Tools.Ref()))
 	}
 	if errs != nil {
 		return fmt.Errorf("gateway %s: %w", in.Address, errors.Join(errs...))
@@ -154,7 +150,7 @@ func (in Inputs) templateData() (map[string]string, error) {
 		"Key":             string(in.TLS.Key),
 		"Images":          string(mirror.Render(in.List.mirrored())),
 		"Manifests":       in.manifestList(),
-		"ToolsEnv":        tools.Env + "SKOPEO_IMAGE=" + skopeoImage + "\n" + boundsEnv(),
+		"ToolsEnv":        tools.Env + "SKOPEO_IMAGE=" + skopeoImage + "\nTOOLS_IMAGE=" + in.Tools.Ref() + "\n" + boundsEnv(),
 		"PrepareSeconds":  seconds(prepareBound),
 		"ServeSeconds":    seconds(serveBound),
 		"Console":         consolePath,
@@ -166,11 +162,10 @@ func (in Inputs) templateData() (map[string]string, error) {
 	}, nil
 }
 
-// boundsEnv is the lines of tools.env that bound each download and copy prepare.sh runs, and name where it writes a
-// failure.
+// boundsEnv is the lines of tools.env that bound each copy prepare.sh runs, and name where it writes a failure.
 func boundsEnv() string {
-	return "DOWNLOAD_CONNECT_SECONDS=" + seconds(downloadConnectBound) + "\nDOWNLOAD_SECONDS=" + seconds(downloadBound) +
-		"\nCOPY_SECONDS=" + seconds(copyBound) + "\nGATEWAY_CONSOLE=" + consolePath + "\nGATEWAY_ISSUE=" + issuePath + "\n"
+	return "EXTRACT_SECONDS=" + seconds(extractBound) + "\nCOPY_SECONDS=" + seconds(copyBound) +
+		"\nGATEWAY_CONSOLE=" + consolePath + "\nGATEWAY_ISSUE=" + issuePath + "\n"
 }
 
 func seconds(d time.Duration) string { return strconv.Itoa(int(d / time.Second)) }
@@ -242,8 +237,8 @@ func NewList(set components.Set, extra ...components.Image) (List, error) {
 	return List{images: images, served: slices.Clone(set.Served), digest: digest}, nil
 }
 
-// Digest names the list's images and manifests by their digests, leaving out the release the manifests are fetched
-// from, so a gateway built from it is replaced only when the pinned list changes.
+// Digest names the list's images and manifests by their digests, so a gateway built from it is replaced only when the
+// pinned list changes.
 func (l List) Digest() string { return l.digest }
 
 // ListDigest is the digest of the list NewList makes from set and extra.
@@ -255,11 +250,11 @@ func ListDigest(set components.Set, extra ...components.Image) (string, error) {
 	return l.Digest(), nil
 }
 
-// manifestList is one "<file> <sha256> <url>" line per served manifest, the form prepare.sh reads.
+// manifestList is one "<file> <sha256> <path in the tools image>" line per served manifest, the form prepare.sh reads.
 func (in Inputs) manifestList() string {
 	var lines []string
 	for _, m := range in.List.served {
-		lines = append(lines, fmt.Sprintf("%s.yaml %s %s/%s", m.TalosName(), m.SHA256(), in.ManifestBaseURL, m.Path))
+		lines = append(lines, fmt.Sprintf("%s.yaml %s %s", m.TalosName(), m.SHA256(), tools.ManifestPath(m.Path)))
 	}
 	return strings.Join(lines, "\n")
 }

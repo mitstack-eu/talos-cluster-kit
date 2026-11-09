@@ -30,6 +30,7 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/gateway"
 	"github.com/mitstack-eu/talos-cluster-kit/mirror"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
+	"github.com/mitstack-eu/talos-cluster-kit/tools"
 )
 
 func inputs(t *testing.T) gateway.Inputs {
@@ -39,14 +40,23 @@ func inputs(t *testing.T) gateway.Inputs {
 	list, err := gateway.NewList(components.Default(), tools)
 	require.NoError(t, err)
 	return gateway.Inputs{
-		Address:         netip.MustParseAddr("10.0.0.2"),
-		Network:         netip.MustParsePrefix("10.0.0.0/16"),
-		Ingress:         netip.MustParseAddr("198.51.100.7"),
-		TLS:             testutil.GatewayTLS(t),
-		List:            list,
-		ManifestBaseURL: gateway.ReleaseURL("v0.1.0"),
-		Logs:            testutil.LogExport(t),
+		Address: netip.MustParseAddr("10.0.0.2"),
+		Network: netip.MustParsePrefix("10.0.0.0/16"),
+		Ingress: netip.MustParseAddr("198.51.100.7"),
+		TLS:     testutil.GatewayTLS(t),
+		List:    list,
+		Tools:   tools,
+		Logs:    testutil.LogExport(t),
 	}
+}
+
+func hostingInputs(t *testing.T) gateway.Inputs {
+	t.Helper()
+	in := inputs(t)
+	var err error
+	in.List, err = gateway.NewList(components.HostingServed(), in.Tools)
+	require.NoError(t, err)
+	return in
 }
 
 func TestList_KeepingMirrorsEachKeptImageOnceAndLeavesTheDigestTheReleaseListsAlone(t *testing.T) {
@@ -54,17 +64,14 @@ func TestList_KeepingMirrorsEachKeptImageOnceAndLeavesTheDigestTheReleaseListsAl
 	release := in.List.Digest()
 	kept, err := components.ParseImage("ghcr.io/acme/nightly-export:v2.1.0@sha256:2a3b62b53ddb9f167b63d22202a360811ba78df015021f704d01ee9abad4169c")
 	require.NoError(t, err)
-	tools, err := components.ParseImage(testutil.ToolsImage)
-	require.NoError(t, err)
 
-	in.List = in.List.Keeping([]components.Image{kept, tools, kept})
-	got, err := gateway.Render(in)
+	in.List = in.List.Keeping([]components.Image{kept, in.Tools, kept})
+	images := writtenFileOf(t, in, "/etc/mitstack-gateway/images.txt")
 
-	require.NoError(t, err)
 	assert.Equal(t, release, in.List.Digest(), "a kept image never marks a gateway stale")
 	assert.Equal(t, []components.Image{kept}, in.List.Kept(), "an image the release lists is not kept again")
-	assert.Equal(t, 1, strings.Count(string(got), kept.Ref()+"\n"), "images.txt names the kept image once")
-	assert.Equal(t, 1, strings.Count(string(got), tools.Ref()+"\n"), "images.txt names the release's image once")
+	assert.Equal(t, 1, strings.Count(images, kept.Ref()+"\n"), "images.txt names the kept image once")
+	assert.Equal(t, 1, strings.Count(images, in.Tools.Ref()+"\n"), "images.txt names the release's image once")
 }
 
 func TestRender_RefusesACloudConfigPastHetznersLimitUnlessItTravelsGzipped(t *testing.T) {
@@ -82,23 +89,19 @@ func TestRender_RefusesACloudConfigPastHetznersLimitUnlessItTravelsGzipped(t *te
 }
 
 func TestRender_MirrorsAndServesTheListItIsGiven(t *testing.T) {
-	tools, err := components.ParseImage(testutil.ToolsImage)
-	require.NoError(t, err)
 	set := components.HostingServed()
-	in := inputs(t)
-	in.List, err = gateway.NewList(set, tools)
-	require.NoError(t, err)
+	in := hostingInputs(t)
 
 	got, err := gateway.Render(in)
 
 	require.NoError(t, err)
-	images, err := mirror.List(set, tools)
+	images, err := mirror.List(set, in.Tools)
 	require.NoError(t, err)
 	for _, image := range images {
 		assert.Contains(t, string(got), image.Ref()+"\n", "the gateway mirrors %s", image.Ref())
 	}
 	for _, m := range set.Served {
-		assert.Contains(t, string(got), m.TalosName()+".yaml "+m.SHA256()+" ", "the gateway serves %s", m.Name)
+		assert.Contains(t, string(got), m.TalosName()+".yaml "+m.SHA256()+" "+tools.ManifestPath(m.Path), "the gateway serves %s", m.Name)
 	}
 }
 
@@ -161,6 +164,7 @@ func TestRender_RefusesInputsItCannotServe(t *testing.T) {
 		"ingress address 10.0.0.4 is inside network 10.0.0.0/16": func(in *gateway.Inputs) { in.Ingress = netip.MustParseAddr("10.0.0.4") },
 		"192.168.0.2 is not inside network 10.0.0.0/16":          func(in *gateway.Inputs) { in.Address = netip.MustParseAddr("192.168.0.2") },
 		"the gateway has no list; build one with NewList":        func(in *gateway.Inputs) { in.List = gateway.List{} },
+		"the list does not mirror the tools image":               func(in *gateway.Inputs) { in.Tools.Digest = "sha256:" + strings.Repeat("f", 64) },
 	} {
 		in := valid
 		change(&in)
@@ -209,7 +213,12 @@ func TestRender_SendsMirrorPullsToTheRegistryAndRefusesEveryOtherMethod(t *testi
 
 func writtenFile(t *testing.T, path string) string {
 	t.Helper()
-	rendered, err := gateway.Render(inputs(t))
+	return writtenFileOf(t, inputs(t), path)
+}
+
+func writtenFileOf(t *testing.T, in gateway.Inputs, path string) string {
+	t.Helper()
+	rendered, err := gateway.Render(in)
 	require.NoError(t, err)
 	for _, f := range testutil.Field(t, testutil.Documents(t, rendered)[0], "write_files").([]any) {
 		if file := f.(map[string]any); file["path"] == path {
@@ -299,17 +308,18 @@ func parseCA(t *testing.T, ca gateway.CA) (*x509.Certificate, crypto.Signer) {
 	return cert, key
 }
 
-// fakeCurl writes "bytes of <url>" to the -o path, so a test knows each download's sha256.
-const fakeCurl = `
-out="" url=""
-while [ "$#" -gt 0 ]; do
-  case $1 in
-    -o) out=$2; shift 2 ;;
-    https://*) url=$1; shift ;;
-    *) shift ;;
+// refusingCurl refuses every URL, so a preparation that needs anything from outside the image registries fails.
+const refusingCurl = `echo "curl: (7) Failed to connect: the test refuses $*" >&2; exit 7`
+
+// toolsImageDocker copies a file out of the tools container as tools/Dockerfile builds the image: a manifest from the
+// repository, and any other file as "bytes of <path>", so a test knows its sha256.
+const toolsImageDocker = `
+if [ "$1" = cp ]; then
+  case ${2#*:} in
+    ` + tools.ScriptDir + `/*) cp "$REPOSITORY/${2#*:` + tools.ScriptDir + `/}" "$3" ;;
+    *) printf 'bytes of %s' "${2#*:}" > "$3" ;;
   esac
-done
-printf 'bytes of %s' "$url" > "$out"
+fi
 `
 
 func sha256Of(s string) string {
@@ -317,7 +327,7 @@ func sha256Of(s string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// prepareRun is one run of the prepare script the rendered cloud-config carries, against fake curl and skopeo.
+// prepareRun is one run of the prepare script the rendered cloud-config carries, against fake curl, docker and skopeo.
 type prepareRun struct {
 	tools *testutil.Tools
 	dir   string
@@ -328,27 +338,29 @@ type prepareRun struct {
 
 const cilium = "quay.io/cilium/cilium:v1.19.9@sha256:f3014d42121a04272cb4a5f4f96dbe7836c9a7919990f17e9b6838e8fd4aa33a"
 
-const talosctlURL = "https://github.com/siderolabs/talos/releases/download/v9.9.9/talosctl-linux-amd64"
-
 func runPrepare(t *testing.T, manifestSHA256 string) prepareRun {
 	t.Helper()
-	return prepare(t, map[string]string{"skopeo": "", "docker": ""}, manifestSHA256, cilium)
+	return prepareWith(t, nil, map[string]string{"skopeo": "", "docker": ""}, manifestSHA256, cilium, testutil.ToolsImage)
 }
 
-// prepare runs the rendered prepare script over images with fake curl, systemctl and the fakes given, and a tools.env
-// that pins fake talosctl and kubectl downloads beside every other line of the gateway's own.
-func prepare(t *testing.T, fakes map[string]string, manifestSHA256 string, images ...string) prepareRun {
-	t.Helper()
-	return prepareWith(t, nil, fakes, manifestSHA256, images...)
-}
-
-// prepareWith is prepare with settings appended to tools.env, which win over the gateway's own lines, a fake curl only
-// when fakes holds none, and the console and issue file in the run's own directory.
+// prepareWith runs the rendered prepare script over images with systemctl, the fakes given and a refusing curl when
+// they hold none. Its tools.env pins the tools image's talosctl and kubectl, then every other line of the gateway's
+// own, then settings, which win. The console and the issue file sit in the run's own directory.
 func prepareWith(t *testing.T, settings []string, fakes map[string]string, manifestSHA256 string, images ...string) prepareRun {
+	t.Helper()
+	return prepareManifests(t, settings, fakes, "argocd.yaml "+manifestSHA256+" /stub/argocd.yaml\n", images...)
+}
+
+// prepareManifests is prepareWith over manifests, the whole of manifests.txt, with a docker fake answering each copy
+// out of the tools container once its own body has run.
+func prepareManifests(t *testing.T, settings []string, fakes map[string]string, manifests string, images ...string) prepareRun {
 	t.Helper()
 	script := writtenFile(t, "/usr/local/bin/mitstack-gateway-prepare")
 	if _, ok := fakes["curl"]; !ok {
-		fakes["curl"] = fakeCurl
+		fakes["curl"] = refusingCurl
+	}
+	if body, ok := fakes["docker"]; ok {
+		fakes["docker"] = body + "\n" + toolsImageDocker
 	}
 	fakes["systemctl"] = ""
 	run := prepareRun{tools: testutil.NewTools(t, fakes), dir: t.TempDir()}
@@ -358,9 +370,7 @@ func prepareWith(t *testing.T, settings []string, fakes map[string]string, manif
 		require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
 		return path
 	}
-	kubectl := "https://dl.k8s.io/release/v9.9.9/bin/linux/amd64/kubectl"
-	env := "TALOS_VERSION=v9.9.9\nTALOSCTL_SHA256=" + sha256Of("bytes of "+talosctlURL) +
-		"\nKUBERNETES_VERSION=v9.9.9\nKUBECTL_SHA256=" + sha256Of("bytes of "+kubectl) + "\n"
+	env := "TALOSCTL_SHA256=" + sha256Of("bytes of /usr/local/bin/talosctl") + "\nKUBECTL_SHA256=" + sha256Of("bytes of /usr/local/bin/kubectl") + "\n"
 	for line := range strings.Lines(writtenFile(t, "/etc/mitstack-gateway/tools.env")) {
 		if !strings.HasPrefix(line, "TALOS") && !strings.HasPrefix(line, "KUBE") {
 			env += line
@@ -368,12 +378,12 @@ func prepareWith(t *testing.T, settings []string, fakes map[string]string, manif
 	}
 	toolsEnv := write("tools.env", env+strings.Join(settings, "\n")+"\n")
 	imageList := write("images.txt", strings.Join(images, "\n")+"\n")
-	manifests := write("manifests.txt", "argocd.yaml "+manifestSHA256+" https://example.test/argocd.yaml\n")
+	manifestList := write("manifests.txt", manifests)
 	require.NoError(t, os.Mkdir(filepath.Join(run.dir, "bin"), 0o755))
 
 	began := time.Now()
-	run.out, run.err = testutil.RunBash(t, script, run.tools.Env("PREPARE_BIN_DIR="+filepath.Join(run.dir, "bin")),
-		toolsEnv, imageList, manifests, filepath.Join(run.dir, "manifests"), run.completionFile())
+	run.out, run.err = testutil.RunBash(t, script, run.tools.Env("PREPARE_BIN_DIR="+filepath.Join(run.dir, "bin"), "REPOSITORY=.."),
+		toolsEnv, imageList, manifestList, filepath.Join(run.dir, "manifests"), run.completionFile())
 	run.took = time.Since(began)
 	return run
 }
@@ -400,7 +410,7 @@ func (r prepareRun) console() string { return filepath.Join(r.dir, "tty1") }
 func (r prepareRun) issue() string   { return filepath.Join(r.dir, "issue.d", "mitstack-gateway.issue") }
 
 func TestPrepareScript_MarksTheMirrorCompleteOnlyOnceEveryImageAndManifestIsInPlace(t *testing.T) {
-	done := runPrepare(t, sha256Of("bytes of https://example.test/argocd.yaml"))
+	done := runPrepare(t, sha256Of("bytes of /stub/argocd.yaml"))
 	refused := runPrepare(t, sha256Of("other bytes"))
 
 	require.NoError(t, done.err, done.out)
@@ -470,7 +480,7 @@ func TestRender_RunsThePreparationAndTheTLSServersStartEachWithinItsBoundAndPowe
 		assert.Equal(t, "poweroff", u["FailureAction"], "the %s unit's failure or overrun leaves the gateway running", name)
 		assert.Equal(t, "oneshot", u["Type"], "the %s unit is started before it has finished", name)
 	}
-	assert.Less(t, bound(t, env["DOWNLOAD_CONNECT_SECONDS"]), bound(t, env["DOWNLOAD_SECONDS"]))
+	assert.Less(t, bound(t, env["EXTRACT_SECONDS"]), bound(t, prepareUnit["TimeoutStartSec"]), "one copy out of the tools image may take the whole preparation")
 	assert.Less(t, bound(t, env["COPY_SECONDS"]), bound(t, prepareUnit["TimeoutStartSec"]), "one copy may take the whole preparation")
 	assert.Equal(t, mirrorComplete, serveUnit["ConditionPathExists"], "the TLS server's start is watched before the mirror is complete")
 	assert.Contains(t, serveUnit["ExecStart"], "https://10.0.0.2/v2/", "the start is watched where the nodes pull")
@@ -554,12 +564,15 @@ func TestRender_NamesTheVGAConsoleAndTheIssueFileAsWhereABuildFailureIsWritten(t
 	}
 }
 
-func TestPrepareScript_InstallsThePinnedToolsMirrorsByDigestAndFetchesTheManifests(t *testing.T) {
-	run := runPrepare(t, sha256Of("bytes of https://example.test/argocd.yaml"))
+func TestPrepareScript_InstallsTalosctlAndKubectlFromTheToolsImageWithTheirPinsWhileEveryOutsideURLIsRefused(t *testing.T) {
+	run := runPrepare(t, sha256Of("bytes of /stub/argocd.yaml"))
 
 	require.NoError(t, run.err, run.out)
-	assert.FileExists(t, filepath.Join(run.dir, "bin", "talosctl"))
-	assert.FileExists(t, filepath.Join(run.dir, "bin", "kubectl"))
+	for _, tool := range []string{"talosctl", "kubectl"} {
+		installed, err := os.ReadFile(filepath.Join(run.dir, "bin", tool))
+		require.NoError(t, err, "prepare installed no %s", tool)
+		assert.Equal(t, sha256Of("bytes of /usr/local/bin/"+tool), sha256Of(string(installed)), "the sha256 of the %s installed", tool)
+	}
 	assert.FileExists(t, filepath.Join(run.dir, "manifests", "argocd.yaml"))
 	calls := run.tools.Calls(t)
 	assert.Contains(t, calls, "docker run --rm --network host "+skopeoImage(t)+
@@ -568,27 +581,55 @@ func TestPrepareScript_InstallsThePinnedToolsMirrorsByDigestAndFetchesTheManifes
 		"docker://127.0.0.1:5000/quay.io/cilium/cilium:v1.19.9")
 	assert.False(t, slices.ContainsFunc(calls, func(c string) bool { return strings.HasPrefix(c, "skopeo ") }),
 		"prepare ran the host's own skopeo, which no pin names: %v", calls)
+	mirrored := slices.Index(calls, "docker run --rm --network host "+skopeoImage(t)+" copy --all --preserve-digests --retry-times 3 --dest-tls-verify=false "+
+		"docker://ghcr.io/mitstack-eu/talos-tools@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef docker://127.0.0.1:5000/ghcr.io/mitstack-eu/talos-tools:v0.1.0")
+	read := slices.Index(calls, "docker create --network none --name mitstack-gateway-tools 127.0.0.1:5000/ghcr.io/mitstack-eu/talos-tools@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	assert.True(t, mirrored >= 0 && read > mirrored, "the tools image is read from the mirror by its digest once the mirror holds it: %v", calls)
+}
+
+func TestPrepareScript_StopsBeforeTheMirrorIsCompleteNamingTalosctlWhenTheToolsImageCarriesAnotherOne(t *testing.T) {
+	another := `case "$*" in "cp mitstack-gateway-tools:/usr/local/bin/talosctl "*) printf 'another talosctl' > "$3"; exit ;; esac`
+
+	run := prepareWith(t, nil, map[string]string{"docker": another}, sha256Of("bytes of /stub/argocd.yaml"), cilium)
+
+	assertPoweredOff(t, run, 0, time.Second, "the copy of /usr/local/bin/talosctl out of the tools image", "/usr/local/bin/talosctl in the tools image does not have sha256 "+sha256Of("bytes of /usr/local/bin/talosctl"))
+	assert.NoFileExists(t, filepath.Join(run.dir, "bin", "talosctl"))
+}
+
+func TestPrepareScript_CopiesEveryManifestTheDefaultAndTheHostingSetServeOutOfTheToolsImageWithItsListedSHA256(t *testing.T) {
+	require.Subset(t, components.HostingServed().Served, components.Default().Served, "the hosting set serves every manifest the default set does")
+
+	run := prepareManifests(t, nil, map[string]string{"docker": ""}, writtenFileOf(t, hostingInputs(t), "/etc/mitstack-gateway/manifests.txt"), cilium)
+
+	require.NoError(t, run.err, run.out)
+	for _, m := range components.HostingServed().Served {
+		served, err := os.ReadFile(filepath.Join(run.dir, "manifests", m.TalosName()+".yaml"))
+		require.NoError(t, err, "the gateway serves no %s", m.Name)
+		assert.Equal(t, m.SHA256(), sha256Of(string(served)), "the sha256 of the %s the gateway serves", m.Name)
+	}
 }
 
 func TestPrepareScript_PowersTheGatewayOffAndLeavesTheMirrorIncompleteWhenACopyFails(t *testing.T) {
-	const trustManager = "quay.io/jetstack/trust-manager:v0.25.0@sha256:0521921c2a46d14d0417336b20bcde69215ef3164f2977cc939d53c6e5224a17"
-	failTrustManager := `case "$*" in *trust-manager*) echo 'Instructed to preserve digests' >&2; exit 1 ;; esac`
+	failTools := `case "$*" in *"copy "*talos-tools*) echo 'Instructed to preserve digests' >&2; exit 1 ;; esac`
 
-	run := prepare(t, map[string]string{"docker": failTrustManager}, sha256Of("bytes of https://example.test/argocd.yaml"),
-		cilium, trustManager)
+	run := prepareWith(t, nil, map[string]string{"docker": failTools}, sha256Of("bytes of /stub/argocd.yaml"), cilium, testutil.ToolsImage)
 
 	require.Error(t, run.err)
 	assert.NoFileExists(t, run.completionFile(), "a prepare whose copy failed marked the mirror complete")
 	assert.Contains(t, run.tools.Calls(t), "systemctl poweroff", "the gateway stays up with its mirror incomplete")
-	assert.Contains(t, run.out, trustManager)
+	assert.Contains(t, run.out, testutil.ToolsImage)
+	for _, file := range []string{"bin/talosctl", "bin/kubectl", "manifests/argocd.yaml"} {
+		assert.NoFileExists(t, filepath.Join(run.dir, file), "a prepare whose tools image did not copy installed a file")
+	}
 }
 
 func TestPrepareScript_RefusesAManifestWhoseBytesDifferFromItsPin(t *testing.T) {
 	run := runPrepare(t, sha256Of("other bytes"))
 
 	require.Error(t, run.err)
-	assert.Contains(t, run.out, "https://example.test/argocd.yaml does not have sha256")
+	assert.Contains(t, run.out, "/stub/argocd.yaml in the tools image does not have sha256 "+sha256Of("other bytes"))
 	assert.NoFileExists(t, filepath.Join(run.dir, "manifests", "argocd.yaml"))
+	assert.NoFileExists(t, run.completionFile(), "a prepare that refused a manifest marked the mirror complete")
 }
 
 const scriptAllowance = 5 * time.Second // what the script's own steps around a stage may add to its bound when loaded
@@ -610,34 +651,42 @@ func assertPoweredOff(t *testing.T, run prepareRun, took, bound time.Duration, s
 	assert.Equal(t, string(console), string(issue), "the login prompt's issue file shows the failure again on every later boot")
 }
 
-func TestPrepareScript_PowersTheGatewayOffNamingTheDownloadWhenTheTalosctlDownloadHangs(t *testing.T) {
-	silent, err := net.Listen("tcp", "127.0.0.1:0") // the kernel completes the handshake, and nothing ever answers
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = silent.Close() })
-	curl, err := exec.LookPath("curl")
-	require.NoError(t, err)
-	hanging := `case "$*" in *` + talosctlURL + `*) exec ` + curl + ` "${@/#https:\/\/github.com\/*/https://` + silent.Addr().String() + `/}" ;; esac
-` + fakeCurl
+func TestPrepareScript_PowersTheGatewayOffNamingTheCopyOutOfTheToolsImageWhenTalosctlsCopyHangs(t *testing.T) {
+	hanging := `case "$*" in "cp mitstack-gateway-tools:/usr/local/bin/talosctl "*) exec sleep 60 ;; esac`
 
-	run := prepareWith(t, []string{"DOWNLOAD_CONNECT_SECONDS=1", "DOWNLOAD_SECONDS=2"}, map[string]string{"docker": "", "curl": hanging},
-		sha256Of("bytes of https://example.test/argocd.yaml"), cilium)
+	run := prepareWith(t, []string{"EXTRACT_SECONDS=1"}, map[string]string{"docker": hanging}, sha256Of("bytes of /stub/argocd.yaml"), cilium)
 
-	assertPoweredOff(t, run, run.took, 2*time.Second+scriptAllowance, "the download of "+talosctlURL, "curl: (28)")
+	assertPoweredOff(t, run, run.took, 1*time.Second+scriptAllowance, "the copy of /usr/local/bin/talosctl out of the tools image", "did not copy out of the tools image within 1s")
 	assert.NoFileExists(t, filepath.Join(run.dir, "bin", "talosctl"))
 }
 
-func TestPrepareScript_PowersTheGatewayOffNamingTheManifestDownloadThatAnsweredAnError(t *testing.T) {
-	refusing := `case "$*" in *argocd.yaml*) echo 'curl: (22) The requested URL returned error: 503' >&2; exit 22 ;; esac
-` + fakeCurl
+func TestPrepareScript_PowersTheGatewayOffNamingTheManifestTheToolsImageLacks(t *testing.T) {
+	lacking := `case "$*" in *argocd.yaml*) echo 'Error response from daemon: Could not find the file /stub/argocd.yaml in container' >&2; exit 1 ;; esac`
 
-	run := prepare(t, map[string]string{"docker": "", "curl": refusing}, sha256Of("bytes of https://example.test/argocd.yaml"), cilium)
+	run := prepareWith(t, nil, map[string]string{"docker": lacking}, sha256Of("bytes of /stub/argocd.yaml"), cilium)
 
-	assertPoweredOff(t, run, 0, time.Second, "the download of https://example.test/argocd.yaml", "curl: (22)")
+	assertPoweredOff(t, run, 0, time.Second, "the copy of /stub/argocd.yaml out of the tools image", "Could not find the file /stub/argocd.yaml")
+}
+
+func TestPrepareScript_PowersTheGatewayOffNamingWhyItCouldNotOpenOrRemoveTheToolsContainer(t *testing.T) {
+	read := "the read of " + testutil.ToolsImage + " from the gateway's image mirror"
+	for name, c := range map[string]struct{ settings, docker, stage, why string }{
+		"no tools image":   {"TOOLS_IMAGE=", "", "its start", "tools.env names no tools image"},
+		"a failed read":    {"", `case $1 in create) echo 'Error response from daemon: manifest unknown' >&2; exit 1 ;; esac`, read, "manifest unknown"},
+		"a hung read":      {"EXTRACT_SECONDS=1", `case $1 in create) exec sleep 60 ;; esac`, read, "did not read from the gateway's image mirror within 1s"},
+		"a failed removal": {"", `case $1 in rm) echo 'Error response from daemon: removal in progress' >&2; exit 1 ;; esac`, "the removal of the tools container", "the tools container did not go"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			run := prepareWith(t, []string{c.settings}, map[string]string{"docker": c.docker}, sha256Of("bytes of /stub/argocd.yaml"), cilium)
+
+			assertPoweredOff(t, run, run.took, time.Second+scriptAllowance, c.stage, c.why)
+		})
+	}
 }
 
 func TestPrepareScript_PowersTheGatewayOffNamingTheImageWhoseCopyHangs(t *testing.T) {
 	run := prepareWith(t, []string{"COPY_SECONDS=1"}, map[string]string{"docker": "exec sleep 60"},
-		sha256Of("bytes of https://example.test/argocd.yaml"), cilium)
+		sha256Of("bytes of /stub/argocd.yaml"), cilium)
 
 	assertPoweredOff(t, run, run.took, 1*time.Second+scriptAllowance, "the copy of "+cilium, "did not copy into the gateway's image mirror within 1s")
 }
@@ -647,7 +696,7 @@ func TestPrepareScript_FinishesALargeListCopiedSlowlyButSteadilyWithinEachCopysB
 	images := []string{cilium, trustManager, cilium, trustManager, cilium}
 
 	run := prepareWith(t, []string{"COPY_SECONDS=2"}, map[string]string{"docker": "sleep 0.6"},
-		sha256Of("bytes of https://example.test/argocd.yaml"), images...)
+		sha256Of("bytes of /stub/argocd.yaml"), images...)
 
 	require.NoError(t, run.err, run.out)
 	assert.FileExists(t, run.completionFile(), "a build whose every copy finished inside its bound, though all of them took longer than one")

@@ -1,5 +1,5 @@
-// Package tools holds the talosctl and kubectl pins that the tools image and the gateway both install, the jq pin
-// the tools image alone installs, and the tools image a release of this kit published.
+// Package tools holds the talosctl and kubectl pins that the tools image carries and the gateway copies out of it, the
+// jq pin the tools image alone installs, and the tools image a release of this kit published.
 package tools
 
 import (
@@ -25,6 +25,9 @@ var scanEnv string
 // ScriptDir is where the tools image carries the scripts the kit's CronJobs run, so a node's machine configuration, which
 // the builder's user data caps, carries none of them.
 const ScriptDir = "/usr/local/lib/mitstack"
+
+// ManifestPath is where the tools image carries the manifest the repository holds at path, which a gateway copies out.
+func ManifestPath(path string) string { return ScriptDir + "/" + path }
 
 // Image is the tools image this release published and signed, which the release job writes into the commit it tags.
 const Image = "ghcr.io/mitstack-eu/talos-cluster-kit-tools:v0.35.0@sha256:9f3f51745e05bf0815682eed41fa4eb2bca2698dcc9577520044cef13118126a"

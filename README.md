@@ -45,14 +45,14 @@ the order a block uses them.
 | `nodeconfig` | Renders a control-plane node's or a worker node's machine configuration with Talos's own `machinery` module and validates it against Talos's schema | `Render`, `RenderWorker`, `Cluster`, `Node`, `NewSecrets`, `ParseSecrets`, `Secrets.AdminTalosconfig` |
 | `image` | Runs imager, Sidero Labs' open-source image builder, with the `hcloud` or the `metal` profile, and discards its output | `Run`, `Build` |
 | `mirror` | Lists every image the nodes pull, each by digest | `List`, `Render` |
-| `gateway` | Renders the cloud-config of the gateway in each location, and mints the cluster's gateway CA and each gateway's certificate | `Render`, `Inputs`, `Deadline`, `NewCA`, `CA.Issue`, `ReleaseURL` |
+| `gateway` | Renders the cloud-config of the gateway in each location, and mints the cluster's gateway CA and each gateway's certificate | `Render`, `Inputs`, `Deadline`, `NewCA`, `CA.Issue` |
 | `etcd` | Renders the Job that removes a lost node's etcd member and then its Node object, and holds the gateway's script that bootstraps etcd empty or from a snapshot | `RemoveMemberJob`, `BootstrapScript`, `Bootstrap.Args` |
 | `report` | Renders the node report, a CronJob that reads the cluster and posts what it read to the platform, signed for its exact body. [What the node report carries](#what-the-node-report-carries) lists its members, the nine checks it names and what happens when a read fails. It also renders the outside probe, a CronJob in `kube-system` that calls the mesh probe's target with no workload identity and reads each gateway's mirror from outside the mesh, the admission probe namespace and the daily security scan. The report holds no right on Secrets | `Manifests` |
 | `topology` | Renders the topology labeller, a CronJob that labels each Cloud node with its zone and region, and holds the two label names | `Manifests`, `Labels`, `ZoneLabel`, `RegionLabel`, `FieldManager` |
 | `openbaoinit` | Renders OpenBao's init Job, which the hosting set carries: it initialises a hosting cluster's OpenBao once, commits the root token and recovery key to the cluster repository as PGP messages, then writes the policy each slice's External Secrets reads with | `Manifests`, `Inputs`, `InitFile` |
 | `rollout` | Gives a running cluster that hosts the platform a release's hosting policies: the files a block commits to the cluster repository, where Argo CD applies, changes and prunes them, and the read-back of each one from the node report | `Current`, `Release.Files`, `Release.ReadBack` |
 | `controlplane` | Builds and deletes a Talos control plane on Hetzner Cloud: a network, a firewall, a gateway in each of `fsn1`, `nbg1` and `hel1`, a builder that makes the cluster's own snapshot, a node in each of `fsn1`, `nbg1` and `hel1`, and an API and an ingress load balancer. Each call reads the resources by their labels and takes the one change still missing. A refusal is a `*Refusal` with a `Class` and a `Message`, which the block answers as its own framework's refusal | `Plane`, `Plane.Read`, `Plane.EnsureNetwork`, `Plane.NextStep`, `Plane.Problems`, `Plane.Unhealthy`, `Plane.Outputs`, `Plane.Delete`, `NewAPI`, `Refusal`, `TopologyLabels` |
-| `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image and the gateway both install, and `tools/jq.env`, which pins the tools image's jq. It names the tools image a release published and the directory in that image that holds the node report's, its outside probe's and the labeller's scripts | `Env`, `Pin`, `Image`, `ScriptDir` |
+| `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image carries and the gateway copies out of it, and `tools/jq.env`, which pins the tools image's jq. It names the tools image a release published and the directory in that image that holds the node report's, its outside probe's and the labeller's scripts, and where in that image each served manifest sits | `Env`, `Pin`, `Image`, `ScriptDir`, `ManifestPath` |
 | `redundant` | Carries a removal's redundant set, each member with its reading, to the guard the block passes, block-kit's `redundancy.Set.AllowRemoval`, which this module does not import | `Set`, `Guard`, `Held` |
 | `testutil` | Holds the fixtures, fakes and decoders this module's tests and a block's tests share | `NewCluster`, `NewTools`, `Golden` |
 
@@ -321,13 +321,15 @@ once compressed. Its tests log about 17,500 bytes for the install's first
 gateway and about 29,400 for a gateway keeping 300 images, or about 19,000 and
 30,700 on a cluster that hosts the platform.
 
-A gateway bounds its own build. Each download must connect within 15 seconds
-and finish within 5 minutes, each image copy within 15 minutes, the whole
-preparation within an hour, and the TLS server's first answer within 2
-minutes. A stage that fails or overruns writes the stage and its error to the
-VGA console, which Hetzner's web console shows, and to the login prompt of
-every later boot, and then powers the gateway off. The gateway has no login,
-so that screen is the only place to read why its build failed.
+A gateway bounds its own build. Each image copy into its mirror must finish
+within 15 minutes. The tools image's read from the mirror, each file's copy
+out of it and the removal of its container must each finish within 5 minutes.
+The whole preparation must finish within an hour, and the TLS server's first
+answer must come within 2 minutes. A stage that fails or overruns writes the
+stage and its error to the VGA console, which Hetzner's web console shows, and
+to the login prompt of every later boot, and then powers the gateway off. The
+gateway has no login, so that screen is the only place to read why its build
+failed.
 
 The plane gives each gateway a deadline of 77 minutes after its creation,
 `gateway.Deadline`, which adds 15 minutes for its boot and package install to
@@ -432,11 +434,12 @@ its inputs change. A node that boots before the mirror holds its images
 therefore stays down until Talos's boot timeout reboots it, about 70 minutes
 later.
 
-The gateway's `gateway/scripts/prepare.sh` fills the mirror, fetches the
-served manifests, and only then writes `/var/lib/mitstack-gateway/mirror-complete`.
-Caddy, which serves both on the private network, starts only once that file
-exists, so the gateway answers no `/v2/` request before the mirror is
-complete.
+The gateway's `gateway/scripts/prepare.sh` fills the mirror first. It then
+copies talosctl, kubectl and the served manifests out of the tools image the
+mirror now holds, and only then writes `/var/lib/mitstack-gateway/mirror-complete`.
+Caddy, which serves the mirror and the manifests on the private network, starts
+only once that file exists, so the gateway answers no `/v2/` request before
+the mirror is complete.
 
 The plane reaches the cluster only through Hetzner's API, and the gateway
 answers nothing from outside the private network, so the builder carries the
@@ -1778,9 +1781,15 @@ names no published image, with the tag `unreleased` and a digest of zeros. A
 block reads it from the tag its `go.mod` requires, so a `go.mod` bump alone
 moves its tools image.
 
-The gateway fetches each served manifest from the release a block requires, at
-the URL `gateway.ReleaseURL` gives, and refuses any file whose sha256 differs
-from the one the kit renders.
+The tools image also carries every manifest a gateway serves, at the path
+`tools.ManifestPath` gives for its repository path. Each gateway's mirror
+copies the tools image by digest like any other image, and the gateway then
+copies talosctl, kubectl and those manifests out of it. It refuses a binary
+whose sha256 differs from `tools/tools.env`, and a manifest whose sha256
+differs from the one the kit renders. A gateway's build therefore fetches
+nothing from outside the registries its mirror copies from, so an outage of
+GitHub's release downloads, of `raw.githubusercontent.com` or of `dl.k8s.io`
+cannot stop it.
 
 ## How you change the module
 

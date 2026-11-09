@@ -25,7 +25,6 @@ var (
 	BootstrapFirstNodeScript = bootstrapFirstNodeScript
 	ClusterTokensScript      = clusterTokensScript
 	ServingFile              = servingFile
-	KitRelease               = kitRelease
 	GatewayAddrs             = gatewayAddrs
 )
 

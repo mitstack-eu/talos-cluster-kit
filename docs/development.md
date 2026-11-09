@@ -129,7 +129,7 @@ the builder's user data has no room for them inside a node's configuration.
 |---|---|---|---|
 | `etcd/scripts/remove-member.sh` | The member removal Job, inline in its command | Looks up the lost node's etcd member, removes it, then deletes the Node | `etcd/etcd_test.go` |
 | `etcd/scripts/bootstrap.sh` | The gateway, as `mitstack-talos-bootstrap` | Bootstraps etcd, or restores it and deletes the old Node objects, then deletes the admin talosconfig | `etcd/etcd_test.go` |
-| `gateway/scripts/prepare.sh` | The gateway, once at first boot | Installs talosctl and kubectl, copies each image into the local registry by digest, and fetches each served manifest | `gateway/gateway_test.go` |
+| `gateway/scripts/prepare.sh` | The gateway, once at first boot | Copies each image into the local registry by digest, then copies talosctl, kubectl and each served manifest out of the tools image that registry holds, refusing a file whose sha256 differs from its pin | `gateway/gateway_test.go`, and `toolsimage_test.go` against a built tools image |
 | `report/scripts/report.sh` | The node report's CronJob, from the tools image at `/usr/local/lib/mitstack/report.sh` | Reads the cluster and posts the node report, whose members, checks and failure rules [the README's section on the report](../README.md#what-the-node-report-carries) gives. The reads that every report needs run one after another, each under `REPORT_READ_SECONDS`, 21 by default. The labelled-object reads, one per object type in `subscription_kinds`, share one such limit. The mesh, pod, workload, Argo CD, default-deny, OpenBao, etcd status, gateway and egress reads run beside them. The script runs the proof script under a 5-second limit, and a proof script that prints nothing fails like a read that exits non-zero. A cluster whose claims, Services and pods, at about 60 to 100 bytes each, and images, at about 130 to 200 bytes each, take the body past 256 KiB gets HTTP 413 from the platform, and the Job fails | `report/report_test.go` |
 | `report/scripts/mesh-probe.sh` | The outside probe's CronJob in `kube-system`, from the tools image at `/usr/local/lib/mitstack/mesh-probe.sh` | Calls the mesh probe's target from outside the mesh, so the node report can show the mesh refusing a call with no workload identity. It makes a plain call to the target and a TLS handshake to its port 15008, and patches both outcomes into `kube-system/mitstack-mesh-probe`, with the certificate's SPIFFE identities, serial and validity | `report/meshprobe_test.go`, and `apiserver_test.go` against a real API server |
 | `topology/scripts/label-nodes.sh` | The topology labeller's CronJob, from the tools image at `/usr/local/lib/mitstack/label-nodes.sh` | Labels each node `TOPOLOGY_NODES` names with its zone and `TOPOLOGY_REGION` under the field manager `mitstack-node-topology`, leaves a node that has not joined to a later run, and fails on a node it cannot read or label | `topology/topology_test.go` |
@@ -143,16 +143,18 @@ The member removal Job, the node report and its outside probe, the topology
 labeller and OpenBao's init Job run in the tools image that `tools/Dockerfile`
 builds from the repository root: bash, curl, jq, gpg, openssl, talosctl and
 kubectl on Alpine 3.22, with the report's, the outside probe's and the
-labeller's scripts.
+labeller's scripts. The image also carries every manifest a gateway serves, at
+its repository path under `tools.ScriptDir`, as `tools.ManifestPath` gives it.
 `tools/Dockerfile.dockerignore` keeps every other file out of the build. `tools/tools.env` pins both binaries with
-their sha256, and the Dockerfile and the gateway's `prepare.sh` both install
-from it, so the image and the gateway run the same binaries. `tools/jq.env`
+their sha256. The Dockerfile checks the binaries it installs against it, and
+the gateway's `prepare.sh` checks the ones it copies out of the image, so the
+image and the gateway run the same binaries. `tools/jq.env`
 pins the image's jq the same way, and the report's tests fetch that jq, since
 jq-1.8 parses a number more strictly than the jq a runner may have. Each release
 pushes and signs that image and names it in `tools.Image`, which a block
 passes to `etcd.RemoveMemberJob`, `report.Manifests`, `openbaoinit.Inputs` and
 `gateway.NewList`, and which the control plane passes to
-`topology.Manifests`.
+`topology.Manifests` and as `gateway.Inputs.Tools`.
 [The README](../README.md#how-a-release-is-versioned) says how the release
 pins it.
 
@@ -189,6 +191,18 @@ on a workstation, build the image first:
 ```bash
 docker build -t talos-tools:ci -f tools/Dockerfile .
 TOOLS_IMAGE=talos-tools:ci go test -tags apiserver -count=1 -run '^TestAPIServer_' .
+```
+
+A third check runs a gateway's preparation against that built image, so an
+image the Dockerfile left a file out of fails before a release publishes it.
+It starts the registry the gateway runs on `127.0.0.1:5000`, pushes the image
+into it and removes the local tag. The preparation's Docker therefore reads the
+image from that registry by its digest, as a gateway does. The test runs the
+rendered `prepare.sh` with the hosting set's `tools.env` and `manifests.txt`,
+and expects talosctl, kubectl and every served manifest with its pinned sha256:
+
+```bash
+TOOLS_IMAGE=talos-tools:ci go test -tags toolsimage -count=1 -run '^TestToolsImage_' .
 ```
 
 | Test | What it proves | Against what |
@@ -284,12 +298,16 @@ TOOLS_IMAGE=talos-tools:ci go test -tags apiserver -count=1 -run '^TestAPIServer
 | `TestHosting_RendersNoExternalSecretGeneratorOrOtherWriterOfArgoCDRepositoryCredentials` | What `components.Hosting` returns holds no ExternalSecret or ClusterExternalSecret, the namespaced and cluster-wide External Secrets objects that write a Secret. It holds no object of the API group `generators.external-secrets.io`, whose objects mint values such as GitHub tokens. Argo CD reads a Secret labelled `argocd.argoproj.io/secret-type` as a credential, and the only object so labelled is the SealedSecret `TestHosting_GivesArgoCDTheClusterRepositoryOverSSHOnPort443FromTheSealedReadKey` checks | Every document of every manifest `components.Hosting` returns |
 | `TestHosting_TheInitJobTrustsTheSSHHostKeysArgoCDTrustsForGitHubOn443` | The init Job's known hosts are exactly the `[ssh.github.com]:443` entries of `argocd-ssh-known-hosts-cm` | The vendored Argo CD manifest |
 | `TestHosting_LetsTheInitJobReachOnlyClusterDNSOpenBaoAndGitHubsSSHOn443AndOpenBaoTakeItsCalls` | The init Job's pod may reach cluster DNS, OpenBao on 8200 or 15008 and `ssh.github.com` on 443 and nothing else, and OpenBao takes its calls | Cilium's view of each pod's labels |
-| `TestPrepareScript_RefusesAManifestWhoseBytesDifferFromItsPin` | The gateway installs no manifest whose sha256 differs from the list, and stops | Fake curl and docker |
-| `TestPrepareScript_InstallsThePinnedToolsMirrorsByDigestAndFetchesTheManifests` | Every copy runs the skopeo image `skopeoImage` in `gateway/gateway.go` pins by digest, which the rendered `tools.env` names as `SKOPEO_IMAGE`, through Docker with `--all --preserve-digests` | Fake curl and docker, and a fake skopeo that no copy may call |
-| `TestPrepareScript_PowersTheGatewayOffAndLeavesTheMirrorIncompleteWhenACopyFails` | A copy that fails runs `systemctl poweroff`, names the image, and writes no completion file | A fake docker that fails one image |
+| `TestPrepareScript_RefusesAManifestWhoseBytesDifferFromItsPin` | The gateway installs no manifest whose sha256 differs from the list, names its path in the tools image, and writes no completion file | A fake docker |
+| `TestPrepareScript_InstallsTalosctlAndKubectlFromTheToolsImageWithTheirPinsWhileEveryOutsideURLIsRefused` | With every URL refused, the gateway installs talosctl and kubectl with their `tools.env` pins out of the tools image. It reads that image from its own registry by digest, once the image is copied there. Every copy runs the skopeo image `skopeoImage` in `gateway/gateway.go` pins by digest, which the rendered `tools.env` names as `SKOPEO_IMAGE`, through Docker with `--all --preserve-digests` | A curl that refuses every URL, a fake docker, and a fake skopeo that no copy may call |
+| `TestPrepareScript_StopsBeforeTheMirrorIsCompleteNamingTalosctlWhenTheToolsImageCarriesAnotherOne` | A tools image whose talosctl differs from its pin powers the gateway off naming talosctl, with no completion file and no talosctl installed | A fake docker that copies out other bytes |
+| `TestPrepareScript_CopiesEveryManifestTheDefaultAndTheHostingSetServeOutOfTheToolsImageWithItsListedSHA256` | With every URL refused, the gateway serves each manifest of the hosting set, which holds the default set's, with the sha256 the rendered `manifests.txt` lists | A fake docker that copies each manifest out of the repository at the path `tools/Dockerfile` copies it to |
+| `TestPrepareScript_PowersTheGatewayOffAndLeavesTheMirrorIncompleteWhenACopyFails` | A tools image copy that fails runs `systemctl poweroff`, names the image, writes no completion file, and installs no binary or manifest | A fake docker that fails one image |
 | `TestPrepareScript_MirrorsTrustManagersIndexIntoTheGatewaysRegistryWithItsDigest` | trust-manager's OCI image index copies into the gateway's registry, and the registry serves the digest `testutil.HostingImages` pins for it. It runs only under the `mirror` build tag | The real skopeo image, registry image and quay.io, through Docker |
-| `TestPrepareScript_PowersTheGatewayOffNamingTheDownloadWhenTheTalosctlDownloadHangs` | A talosctl download that never answers ends within its bound, and the gateway powers off with the download named on its console and in its issue file | The real curl against a listener that never answers |
-| `TestPrepareScript_PowersTheGatewayOffNamingTheManifestDownloadThatAnsweredAnError` | A manifest download that answers 503 powers the gateway off naming the download and curl's error | A fake curl |
+| `TestToolsImage_AGatewaysPreparationCopiesTalosctlKubectlAndEveryServedManifestOutOfItByItsDigest` | The rendered `prepare.sh` reads the built tools image from the gateway's registry by digest and installs talosctl, kubectl and every hosting manifest with its pin. It runs only under the `toolsimage` build tag | The tools image the CI job builds, the gateway's registry image and Docker |
+| `TestPrepareScript_PowersTheGatewayOffNamingTheCopyOutOfTheToolsImageWhenTalosctlsCopyHangs` | A copy of talosctl out of the tools image that never ends stops within `EXTRACT_SECONDS`, and the gateway powers off with the copy named on its console and in its issue file | A fake docker that sleeps |
+| `TestPrepareScript_PowersTheGatewayOffNamingTheManifestTheToolsImageLacks` | A manifest the tools image lacks powers the gateway off naming its path and Docker's error | A fake docker |
+| `TestPrepareScript_PowersTheGatewayOffNamingWhyItCouldNotOpenOrRemoveTheToolsContainer` | A `tools.env` with no tools image, a read of the tools image that fails or hangs past `EXTRACT_SECONDS`, and a container removal that fails each power the gateway off naming the stage, with no completion file | A fake docker that fails or sleeps |
 | `TestPrepareScript_PowersTheGatewayOffNamingTheImageWhoseCopyHangs` | A copy that hangs ends within `COPY_SECONDS`, and the gateway powers off naming the image | A fake docker that sleeps |
 | `TestPrepareScript_FinishesALargeListCopiedSlowlyButSteadilyWithinEachCopysBound` | Five copies that each take longer than a second finish under a two-second bound per copy | A fake docker that sleeps |
 | `TestRender_RunsThePreparationAndTheTLSServersStartEachWithinItsBoundAndPowersOffOnEitherFailing` | The preparation and the TLS server's start each run as a oneshot unit with a bound and `FailureAction=poweroff`, and the plane's deadline covers both | The rendered units and `tools.env` |
@@ -386,7 +404,7 @@ and a manual run. Every job runs on the runner the repository variable
 |---|---|
 | `test` | `go vet ./...` and `go test -race ./...` pass on Go 1.26.10, and the `mirror check` step copies trust-manager's index through the gateway's skopeo into its registry |
 | `components` | Each rendered component matches a fresh render, and shellcheck passes on every script |
-| `tools image` | The tools image builds from the repository root, each of its commands runs, and it holds the report's, its outside probe's and the labeller's scripts byte for byte as the repository does. The outside probe and the security scan then write their ConfigMaps through a real API server, as [the section on the tests](#how-the-tests-run-the-scripts) describes |
+| `tools image` | The tools image builds from the repository root, each of its commands runs, and it holds the report's, its outside probe's and the labeller's scripts byte for byte as the repository does. The outside probe and the security scan then write their ConfigMaps through a real API server, and a gateway's preparation copies talosctl, kubectl and every served manifest out of it with their pins, as [the section on the tests](#how-the-tests-run-the-scripts) describes |
 | `pr key gate` | A pull request's title or commits name a board key |
 | `release` | On a push to `main` with a new version in `.github/version`, pushes and signs the tools image, pulls it with no login, and tags a commit on top that pins it in `tools.Image` |
 | `record delivery` | On a push to `main`, records the push's board keys on Plain |

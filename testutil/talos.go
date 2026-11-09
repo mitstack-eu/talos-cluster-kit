@@ -1,8 +1,13 @@
 package testutil
 
 import (
+	"bufio"
+	"bytes"
 	"cmp"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"regexp"
 	"slices"
@@ -12,6 +17,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v4"
+	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
 )
 
 var applyPlaceRe = regexp.MustCompile(`^[0-9]+-`)
@@ -90,6 +96,38 @@ func TalosOrder(t *testing.T, manifests map[string][]byte) []AppliedObject {
 		}
 	})
 	return objects
+}
+
+// TalosObjects are the objects Talos v1.14.4's SetYAML decodes from manifest, after it trims each document of the
+// whitespace around it, and untrimmed, the objects the same loop decodes with that trim left out.
+func TalosObjects(t *testing.T, manifest []byte) (trimmed, untrimmed []map[string]any) {
+	t.Helper()
+	return setYAML(t, manifest, bytes.TrimSpace), setYAML(t, manifest, func(doc []byte) []byte { return doc })
+}
+
+// setYAML is the decoding loop of Talos v1.14.4's SetYAML, with prepare in place of its trim.
+func setYAML(t *testing.T, manifest []byte, prepare func([]byte) []byte) []map[string]any {
+	t.Helper()
+	reader := k8syaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(manifest)))
+	var objects []map[string]any
+	for {
+		doc, err := reader.Read()
+		if errors.Is(err, io.EOF) {
+			return objects
+		}
+		require.NoError(t, err)
+		if doc = prepare(doc); len(doc) == 0 {
+			continue
+		}
+		data, err := k8syaml.ToJSON(doc)
+		require.NoError(t, err)
+		if string(data) == "null" || string(data) == "{}" {
+			continue
+		}
+		var object map[string]any
+		require.NoError(t, json.Unmarshal(data, &object))
+		objects = append(objects, object)
+	}
 }
 
 // Webhook is one admission webhook of an applied ValidatingWebhookConfiguration or MutatingWebhookConfiguration.

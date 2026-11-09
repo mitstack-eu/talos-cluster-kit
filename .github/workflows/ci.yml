@@ -1,7 +1,8 @@
 # Every event runs the Go suites, a copy through the gateway's own skopeo
 # into its own registry, the check that each vendored component matches a
 # fresh render of its pinned chart, the Kyverno policy tests, shellcheck over
-# every script, and a build of the tools image.
+# every script, and a build of the tools image, whose outside probe and security
+# scan then write their ConfigMaps through a real API server.
 # Once all of them pass on a push to main, the release job releases the
 # version .github/version names, unless that tag exists already, and the
 # record delivery job records the push's board keys on Plain. A block takes a
@@ -117,6 +118,15 @@ jobs:
           docker run --rm talos-tools:ci ls /usr/local/lib/mitstack/kube-bench/cfg/cis-1.10/master.yaml /usr/local/lib/mitstack/kube-bench/cfg/config.yaml
           docker run --rm talos-tools:ci kubescape version
           docker run --rm talos-tools:ci jq -e .settings.postureControlInputs /usr/local/lib/mitstack/kubescape/default_config_inputs > /dev/null
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26.10'
+
+      # The scripts run as their CronJobs run them, against the kube-apiserver and etcd the kit pins for Talos, which
+      # enforce the RBAC report.Manifests renders, so a verb kubectl needs and a Role lacks fails here.
+      - name: Write each CronJob's ConfigMap through a real API server
+        run: TOOLS_IMAGE=talos-tools:ci go test -tags apiserver -count=1 -run '^TestAPIServer_' .
 
   pr-key-gate:
     name: pr key gate

@@ -144,7 +144,7 @@ func TestMeshProbe_WritesAnAnsweredPlainCallAndAHandshakeThatGaveNoCertificateAs
 	assert.Equal(t, "connect:errno=111\n", testutil.Field(t, result, "handshake", "stderr"))
 }
 
-func TestManifests_LetsTheOutsideProbePatchAndTheReportReadOnlyTheProbesConfigMapByNameInKubeSystem(t *testing.T) {
+func TestManifests_LetsTheOutsideProbeAndTheScanReadAndPatchTheirOwnConfigMapAndTheReportOnlyReadItByNameInKubeSystem(t *testing.T) {
 	rendered := manifests(t, reportURL)
 	docs := testutil.Documents(t, rendered)
 
@@ -152,14 +152,14 @@ func TestManifests_LetsTheOutsideProbePatchAndTheReportReadOnlyTheProbesConfigMa
 	for _, role := range inNamespace(t, testutil.Kind(docs, "Role"), "kube-system") {
 		granted[testutil.Field(t, role, "metadata", "name").(string)] = role["rules"]
 	}
-	only := func(verb string) []any {
-		return []any{map[string]any{"apiGroups": []any{""}, "resources": []any{"configmaps"}, "resourceNames": []any{"mitstack-mesh-probe"}, "verbs": []any{verb}}}
+	only := func(verbs ...any) []any {
+		return []any{map[string]any{"apiGroups": []any{""}, "resources": []any{"configmaps"}, "resourceNames": []any{"mitstack-mesh-probe"}, "verbs": verbs}}
 	}
-	scans := func(verb string) map[string]any {
-		return map[string]any{"apiGroups": []any{""}, "resources": []any{"configmaps"}, "resourceNames": []any{"mitstack-security-scans"}, "verbs": []any{verb}}
+	scans := func(verbs ...any) map[string]any {
+		return map[string]any{"apiGroups": []any{""}, "resources": []any{"configmaps"}, "resourceNames": []any{"mitstack-security-scans"}, "verbs": verbs}
 	}
-	assert.Equal(t, map[string]any{"mitstack-mesh-probe": only("patch"), "mitstack-node-report-mesh-probe": only("get"),
-		"mitstack-security-scan": []any{scans("patch")},
+	assert.Equal(t, map[string]any{"mitstack-mesh-probe": only("get", "patch"), "mitstack-node-report-mesh-probe": only("get"),
+		"mitstack-security-scan": []any{scans("get", "patch")},
 		"mitstack-node-report-security-scan": []any{scans("get"), map[string]any{"apiGroups": []any{"batch"}, "resources": []any{"cronjobs"},
 			"resourceNames": []any{"mitstack-security-scan"}, "verbs": []any{"get"}}},
 	}, granted, "kube-system grants nothing beyond the mesh probe's and the security scan's ConfigMaps by name")

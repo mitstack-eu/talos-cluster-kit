@@ -9,6 +9,7 @@ data:
 {{ indent 4 .Recipient }}
   known_hosts: |
 {{ indent 4 .KnownHosts }}
+# Talos trims each document before it decodes it, so this line keeps the value above whole.
 ---
 apiVersion: v1
 kind: ServiceAccount

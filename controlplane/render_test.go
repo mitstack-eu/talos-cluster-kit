@@ -689,6 +689,13 @@ func appliedManifests(t *testing.T, h *harness, served []components.Manifest) ma
 	if h.plane.Hosting != nil {
 		config = append(config, servingFile(t, h)...)
 	}
+	return configuredManifests(t, config, served)
+}
+
+// configuredManifests are the manifests the documents of a control-plane node's configuration name, keyed by their
+// name in it, a served one read from served at the URL the node fetches it from.
+func configuredManifests(t *testing.T, config []map[string]any, served []components.Manifest) map[string][]byte {
+	t.Helper()
 	manifests := map[string][]byte{}
 	for _, doc := range testutil.Kind(config, "KubeInlineManifestConfig") {
 		manifests[doc["name"].(string)] = []byte(doc["manifest"].(string))
@@ -766,6 +773,47 @@ func TestBuilder_TalosAppliesEveryObjectAWebhookInterceptsAfterTheWebhookTheMesh
 			order := testutil.TalosOrder(t, appliedManifests(t, h, tc.served))
 
 			assert.Empty(t, webhookOrderFaults(t, order), "objects Talos creates before a webhook that intercepts them can answer")
+		})
+	}
+}
+
+func TestBuilder_EveryManifestTheNodeAppliesDecodesToTheSameObjectsOnceTalosTrimsEachOfItsDocuments(t *testing.T) {
+	hostingSet, err := components.Hosting(testutil.HostingInputs(t))
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		name      string
+		manifests func(t *testing.T) map[string][]byte
+		includes  string
+	}{
+		{"the default set", func(t *testing.T) map[string][]byte {
+			return appliedManifests(t, installedOnce(t), components.Default().Served)
+		}, "mitstack-mesh-probe"},
+		{"the hosting set", func(t *testing.T) map[string][]byte {
+			h := newHarness(t, hosting)
+			require.NoError(t, h.converge())
+			return appliedManifests(t, h, hostingSet.Served)
+		}, "openbao"},
+		{"a cluster whose logs go to a receiver", func(t *testing.T) map[string][]byte {
+			config, err := nodeconfig.Render(testutil.NewCluster(t), nodeconfig.Node{})
+			require.NoError(t, err)
+			return configuredManifests(t, testutil.Documents(t, config), components.Default().Served)
+		}, "mitstack-node-logs"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manifests := tc.manifests(t)
+
+			var applied []string
+			for name := range manifests {
+				applied = append(applied, testutil.ManifestName(name))
+			}
+			require.Contains(t, applied, tc.includes, "the manifests the node applies")
+			for name, manifest := range manifests {
+				trimmed, untrimmed := testutil.TalosObjects(t, manifest)
+				require.Len(t, trimmed, len(untrimmed), "the objects Talos reads from %s", name)
+				for i, object := range untrimmed {
+					assert.Equal(t, object, trimmed[i], "%s, as Talos reads it", testutil.AppliedObject{Manifest: name, Doc: object})
+				}
+			}
 		})
 	}
 }

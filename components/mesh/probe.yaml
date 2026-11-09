@@ -20,8 +20,7 @@ metadata:
   name: mitstack-mesh-probe-answer
   namespace: mitstack-mesh-probe
 data:
-  index.html: |
-    mitstack-mesh-probe answered
+  index.html: "mitstack-mesh-probe answered\n"
 ---
 apiVersion: apps/v1
 kind: Deployment

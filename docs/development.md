@@ -26,7 +26,7 @@ exceptions for callers with no identity, and a Postgres instance's port 8000.
 | `components/kyverno/kyverno.yaml` | The kyverno 3.9.1 chart with `components/render/kyverno-values.yaml`, its tests and Helm hooks off | Kyverno v1.19.1 in namespace `kyverno`, its images from `ghcr.io` and its webhooks skipping the system namespaces |
 | `components/local-path-provisioner/local-path-provisioner.yaml` | The local-path-provisioner 0.0.37 chart with `components/render/local-path-provisioner-values.yaml`, taken from the source archive of the commit the project's v0.0.37 tag names, since the project publishes no chart repository | Rancher's local path provisioner in namespace `local-path-storage`, behind the default StorageClass `local-path`, keeping each claim on the user volume `local-path-provisioner` |
 | `components/istio/istio-base.yaml`, `istiod.yaml`, `istio-cni.yaml`, `ztunnel.yaml` | Istio's base, istiod, cni and ztunnel 1.30.7 charts, each with its values file in `components/render/` | Istio in ambient mode in namespace `istio-system`: its CRDs, istiod with no sidecar injector, the CNI agent that puts every pod outside `kube-system`, `istio-system` and `kyverno` in the mesh, and ztunnel on every node |
-| `components/cloudnative-pg/cloudnative-pg.yaml`, `components/cloudnative-pg/namespace.yaml` | Copied from mitstack-eu/cluster-bases v0.4.0, with the operator's header and `POSTGRES_IMAGE_NAME` changed | The CloudNativePG 1.30.1 operator in namespace `cnpg-system`, with its PgBouncer image and its default Postgres image by digest. The default is Postgres 16.15, the image postgres-db-kube pins, so the gateway mirrors it |
+| `components/cloudnative-pg/cloudnative-pg.yaml`, `components/cloudnative-pg/namespace.yaml` | Copied from mitstack-eu/cluster-bases v0.4.0, with the operator's header and `POSTGRES_IMAGE_NAME` changed, and the closing comment line the render script gives a document that ends in a block scalar, which the paragraph below the table shows | The CloudNativePG 1.30.1 operator in namespace `cnpg-system`, with its PgBouncer image and its default Postgres image by digest. The default is Postgres 16.15, the image postgres-db-kube pins, so the gateway mirrors it |
 | `components/admission/policies/` | Written by hand | The Kyverno policies that require the `mitstack.dev/app` label, give each app namespace `mitstack-default-deny`, refuse a pod the mesh leaves out, and refuse a PeerAuthentication that takes a call with no workload identity |
 | `components/mesh/strict-mtls.yaml`, `probes.yaml`, `cloudnative-pg.yaml`, `argocd.yaml` | Written by hand | The mesh-wide `STRICT` PeerAuthentication, the Cilium policy that admits the kubelet's probes from `169.254.7.127`, the CloudNativePG operator's webhook exception and the ports a Postgres instance takes, and the network policies that admit the mesh's port 15008 between Argo CD's pods |
 | `components/mesh/probe.yaml` | Written by hand | The mesh probe's target in namespace `mitstack-mesh-probe`, on the local path provisioner's busybox image, and the Cilium policy that admits only the node report and its outside probe in `kube-system` to it, as [the README](../README.md#how-the-node-report-shows-the-mesh-refusing-a-call) explains |
@@ -63,6 +63,26 @@ scripts/render-components.sh
 
 CI then runs the same script with `--check`, which fails when a committed file
 differs from a fresh render.
+
+Talos trims the blank space at both ends of each document of a manifest before
+it decodes it, in `SetYAML` in Talos v1.14.4, so a document whose last value is
+a block scalar loses that value's final line break. A block scalar is a value
+written as `|` or `>` with its text on the indented lines below. The script ends
+each such document with this comment line:
+
+```yaml
+# Talos trims each document before it decodes it, so this line keeps the value above whole.
+```
+
+The trim then removes the blank space after the comment, the value's final
+line break stays inside the document, and the comment changes no object. The
+CloudNativePG copy and the templates written by hand, such as
+`components/logs/collector.yaml`, end such a document with the same line, and
+`components/mesh/probe.yaml` writes its one-line answer as a double-quoted
+string instead. `testutil.TalosObjects` in `testutil/talos.go` decodes a
+manifest the way `SetYAML` does, and a test checks every manifest a node
+applies with it, so a document a later change leaves ending in a block scalar
+fails it.
 
 Talos applies each manifest of the set once, creating every object that does
 not exist yet and leaving an existing one as it is. A change to a component or
@@ -111,13 +131,13 @@ the builder's user data has no room for them inside a node's configuration.
 | `etcd/scripts/bootstrap.sh` | The gateway, as `mitstack-talos-bootstrap` | Bootstraps etcd, or restores it and deletes the old Node objects, then deletes the admin talosconfig | `etcd/etcd_test.go` |
 | `gateway/scripts/prepare.sh` | The gateway, once at first boot | Installs talosctl and kubectl, copies each image into the local registry by digest, and fetches each served manifest | `gateway/gateway_test.go` |
 | `report/scripts/report.sh` | The node report's CronJob, from the tools image at `/usr/local/lib/mitstack/report.sh` | Reads the cluster and posts the node report, whose members, checks and failure rules [the README's section on the report](../README.md#what-the-node-report-carries) gives. The reads that every report needs run one after another, each under `REPORT_READ_SECONDS`, 21 by default. The labelled-object reads, one per object type in `subscription_kinds`, share one such limit. The mesh, pod, workload, Argo CD, default-deny, OpenBao, etcd status, gateway and egress reads run beside them. The script runs the proof script under a 5-second limit, and a proof script that prints nothing fails like a read that exits non-zero. A cluster whose claims, Services and pods, at about 60 to 100 bytes each, and images, at about 130 to 200 bytes each, take the body past 256 KiB gets HTTP 413 from the platform, and the Job fails | `report/report_test.go` |
-| `report/scripts/mesh-probe.sh` | The outside probe's CronJob in `kube-system`, from the tools image at `/usr/local/lib/mitstack/mesh-probe.sh` | Calls the mesh probe's target from outside the mesh, so the node report can show the mesh refusing a call with no workload identity. It makes a plain call to the target and a TLS handshake to its port 15008, and patches both outcomes into `kube-system/mitstack-mesh-probe`, with the certificate's SPIFFE identities, serial and validity | `report/meshprobe_test.go` |
+| `report/scripts/mesh-probe.sh` | The outside probe's CronJob in `kube-system`, from the tools image at `/usr/local/lib/mitstack/mesh-probe.sh` | Calls the mesh probe's target from outside the mesh, so the node report can show the mesh refusing a call with no workload identity. It makes a plain call to the target and a TLS handshake to its port 15008, and patches both outcomes into `kube-system/mitstack-mesh-probe`, with the certificate's SPIFFE identities, serial and validity | `report/meshprobe_test.go`, and `apiserver_test.go` against a real API server |
 | `topology/scripts/label-nodes.sh` | The topology labeller's CronJob, from the tools image at `/usr/local/lib/mitstack/label-nodes.sh` | Labels each node `TOPOLOGY_NODES` names with its zone and `TOPOLOGY_REGION` under the field manager `mitstack-node-topology`, leaves a node that has not joined to a later run, and fails on a node it cannot read or label | `topology/topology_test.go` |
 | `openbaoinit/scripts/openbao-init.sh` | OpenBao's init Job, inline in its command | Initialises OpenBao once, commits `openbao-init.asc`, then enables kv and Kubernetes auth and writes each slice's policies and roles, `app-secrets-reader` and `app-secrets-writer` | `openbaoinit/openbaoinit_test.go` |
 | `controlplane/scripts/build-image.sh` | A Cloud control plane's builder server, from its user data | Builds the cluster's Talos disk image with imager, writes it over the builder's own disk from a tmpfs and powers the builder off, so the block can snapshot that disk | `controlplane/scripts_test.go` |
 | `controlplane/scripts/bootstrap-first-node.sh` | A Cloud control plane's gateway, once at first boot | Finds the first node among the addresses the gateway has seen, proves it is the cluster's by its Talos API's certificate, bootstraps etcd on it and deletes the admin talosconfig | `controlplane/scripts_test.go` |
 | `controlplane/scripts/cluster-tokens.sh` | A Job and a CronJob in the Cloud control plane's cluster | Spends the enrolment token for the report token, Argo CD's notification token with the platform's URL and the cluster repository's token, refusing an answer missing one before it writes any, and renews the repository tokens with each app slice's | `controlplane/scripts_test.go` |
-| `scripts/render-components.sh` | A workstation and CI | Renders the component set | The `components` CI job |
+| `scripts/render-components.sh` | A workstation and CI | Renders the component set, and ends each document whose last value is a block scalar with a comment line | The `components` CI job |
 
 The member removal Job, the node report and its outside probe, the topology
 labeller and OpenBao's init Job run in the tools image that `tools/Dockerfile`
@@ -154,6 +174,21 @@ digest the registry serves for the tag:
 
 ```bash
 go test -tags mirror -count=1 -run '^TestPrepareScript_Mirrors' ./gateway/
+```
+
+A second check needs Docker and a built tools image, so the `tools image` CI
+job runs it once it has built one. It starts etcd and the kube-apiserver from
+the images `components/image.go` pins for Talos, with RBAC on, and applies
+every object `report.Manifests` renders in a built-in API group. It then runs
+the outside probe's and the security scan's containers in that image as their
+CronJobs run them: as their own service account and user, on a read-only root
+with a tmpfs at each `emptyDir`. A Role that lacks a verb the real kubectl
+needs therefore fails here, as the test's fake kubectl cannot show. To run it
+on a workstation, build the image first:
+
+```bash
+docker build -t talos-tools:ci -f tools/Dockerfile .
+TOOLS_IMAGE=talos-tools:ci go test -tags apiserver -count=1 -run '^TestAPIServer_' .
 ```
 
 | Test | What it proves | Against what |
@@ -223,7 +258,8 @@ go test -tags mirror -count=1 -run '^TestPrepareScript_Mirrors' ./gateway/
 | `TestReport_NamesEachMeshResultItCannotPassAsFailedWithItsReason` | A target that is down, a missing ConfigMap, a result over 15 minutes old or dated after the report, an answered plain call, a plain call that reached nothing, a refused handshake, a certificate for another workload, for no identity or out of its validity, a result of a shape the report cannot judge, and a ConfigMap that holds no data, a result that is not JSON or a read that prints no JSON each fail the results they touch, with the reason named, and the report still posts whole | Fake reads, a closed port and edits of the fixture |
 | `TestMeshProbe_WritesThePlainCallsOutcomeAndTheCertificateZtunnelPresentsIntoTheReportsConfigMap` | The outside probe calls the target's port 8080 and port 15008 by its absolute name, and patches its ConfigMap with curl's exit status and stderr and the certificate's serial, validity and SPIFFE identity | Fake curl and kubectl, and a fake `openssl s_client` printing `report/testdata/mesh-probe-handshake.txt`, which the real `openssl x509` reads |
 | `TestMeshProbe_WritesAnAnsweredPlainCallAndAHandshakeThatGaveNoCertificateAsTheyCame` | An answered plain call is written with its answer, and a handshake that gave no certificate is written with a null certificate and its stderr | Fake curl, openssl and kubectl |
-| `TestManifests_LetsTheOutsideProbePatchAndTheReportReadOnlyTheProbesConfigMapByNameInKubeSystem` | The outside probe may only patch `kube-system/mitstack-mesh-probe`, the report may only get it, each by name, and the outside probe runs in `kube-system` | The rendered Roles, RoleBindings and CronJob |
+| `TestManifests_LetsTheOutsideProbeAndTheScanReadAndPatchTheirOwnConfigMapAndTheReportOnlyReadItByNameInKubeSystem` | The outside probe may only get and patch `kube-system/mitstack-mesh-probe`, the scan's Role may only get and patch `kube-system/mitstack-security-scans`, and the report may only get each, all by name, and the outside probe runs in `kube-system` | The rendered Roles, RoleBindings and CronJob |
+| `TestAPIServer_TheOutsideProbeAndTheSecurityScanWriteTheirOwnConfigMapAndNoOtherUnderTheRenderedRBAC` | Run as their CronJobs run them, the outside probe writes its result into `mitstack-mesh-probe` and the security scan writes both summaries and its outcome into `mitstack-security-scans`. The API server refuses the probe a list, a read or a patch of another ConfigMap, and refuses either one a patch of the other's ConfigMap or of a third | A kube-apiserver and etcd from the images the kit pins for Talos, the objects `report.Manifests` renders, and the built tools image, under the `apiserver` build tag |
 | `TestMeshProbe_TheTargetAdmitsOnlyTheReportAndTheOutsideProbeWhichLooksUpOnlyItsNameAndReachesOnlyItAndTheAPIServer` | The target's Cilium policy admits the report's and the outside probe's pods, as they are labelled, on 8080 and 15008 and no other pod. The outside probe's own policy lets it look up only the target's name through Cilium's DNS proxy, and reach only the API server and the target on those two ports. The target carries `mitstack.dev/app`, serves the answer, identity and name the report expects, and adds no image to the mirror's list | The component set's target, the rendered CronJobs and Cilium's view of each pod's labels |
 | `TestRender_EncryptsStateAndEphemeralWithLUKS2UnderTheNodeIDKeyWithEphemeralsKeyLockedToState` | For one and three nodes on the `hcloud` and the `metal` profile, `STATE` and `EPHEMERAL` are LUKS2 under a `nodeID` key, `EPHEMERAL`'s locked to `STATE` and mounted secure | The rendered `VolumeConfig` documents |
 | `TestDefault_RunsKyvernoWithBothPoliciesAndCloudNativePGWithTheDatabaseSlicePolicy` | The set carries Kyverno, its app-label and default-deny policies, CloudNativePG and the slice policy, and the mirror holds each of their images by digest | The default set and its mirror list |
@@ -304,6 +340,7 @@ go test -tags mirror -count=1 -run '^TestPrepareScript_Mirrors' ./gateway/
 | `TestPlane_APinBumpReplacesNoGatewayWithoutAnUpgrade` | Gateways built from an earlier list stay without `Upgrading` | The same fake |
 | `TestPlane_KeepsAClusterBuiltWithOneGatewayAndReadsItUnhealthyWithItsRemedy` | A cluster with one unlabelled gateway keeps it, and `Unhealthy` names the rebuild | The same fake |
 | `TestBuilder_TheOutsideProbeReadsEachGatewaysMirrorUnderTheGatewayCAAndTheReportATLSConnectionToLetsEncrypt` | The builder's outside probe names each gateway's address, trusts the install's gateway CA by its certificate alone, and the report opens its egress connection to Let's Encrypt's ACME directory | The configuration the builder embeds |
+| `TestBuilder_EveryManifestTheNodeAppliesDecodesToTheSameObjectsOnceTalosTrimsEachOfItsDocuments` | Each manifest a control-plane node applies, inline or served, gives the same objects when each document is trimmed of the blank space around it as when it is not, for the default set, the hosting set and a cluster whose logs go to a receiver | `testutil.TalosObjects`, which decodes a manifest the way `SetYAML` does in Talos v1.14.4 |
 | `TestHosting_InstallsEveryNodeWithTheBuilderFetchingTheHostingSetFromTheServingServer` | A hosting install creates a node in each location, with the serving server at `10.0.0.251` serving to the builder alone and the builder pinning its key, and deletes the serving server after the build | The same fake |
 | `TestHosting_TheBuildersUserDataStaysWithinHetznersLimitAndHoldsNoHostingManifest` | With a 4096-bit Sealed Secrets key the builder's user data, whose size the test logs, fits in 32,768 bytes and carries none of the hosting set's inline manifests | The same fake |
 | `TestHosting_TheServingServerGoesWithABuildThatFails` | A build past its deadline takes the serving server with the builder | The same fake |
@@ -340,7 +377,7 @@ and a manual run. Every job runs on the runner the repository variable
 |---|---|
 | `test` | `go vet ./...` and `go test -race ./...` pass on Go 1.26.10, and the `mirror check` step copies trust-manager's index through the gateway's skopeo into its registry |
 | `components` | Each rendered component matches a fresh render, and shellcheck passes on every script |
-| `tools image` | The tools image builds from the repository root, each of its commands runs, and it holds the report's, its outside probe's and the labeller's scripts byte for byte as the repository does |
+| `tools image` | The tools image builds from the repository root, each of its commands runs, and it holds the report's, its outside probe's and the labeller's scripts byte for byte as the repository does. The outside probe and the security scan then write their ConfigMaps through a real API server, as [the section on the tests](#how-the-tests-run-the-scripts) describes |
 | `pr key gate` | A pull request's title or commits name a board key |
 | `release` | On a push to `main` with a new version in `.github/version`, pushes and signs the tools image, pulls it with no login, and tags a commit on top that pins it in `tools.Image` |
 | `record delivery` | On a push to `main`, records the push's board keys on Plain |

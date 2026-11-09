@@ -5,6 +5,9 @@
 # their charts, and Istio's ambient mesh from its base, istiod, cni and
 # ztunnel charts. It renders the hosting set's six charts too: OpenBao,
 # cert-manager, trust-manager, External Secrets, Sealed Secrets and Traefik.
+# It ends each document whose last value is a block scalar with a comment line,
+# since Talos trims every document before it decodes it and would otherwise cut
+# that value's final line break.
 # With --check it fails when a committed file differs from a fresh render or
 # names an image by anything but a digest.
 # Usage: scripts/render-components.sh [--check]
@@ -178,6 +181,25 @@ render_hosting_chart() {
   } > "$work/$1.yaml"
 }
 
+readonly block_scalar_end='# Talos trims each document before it decodes it, so this line keeps the value above whole.'
+
+# end_block_scalars <file> adds block_scalar_end after each document that ends inside a block scalar, which starts at a
+# line ending in | or > with any indicators and runs while each line holding text is indented deeper.
+end_block_scalars() {
+  awk -v end_line="$block_scalar_end" '
+    function indent(line) { match(line, /^ */); return RLENGTH }
+    function end_document() { if (in_block) print end_line; in_block = 0 }
+    /^---([ \t]|$)/ { end_document(); print; next }
+    {
+      if (in_block && $0 !~ /^[ \t]*$/ && indent($0) <= block_indent) in_block = 0
+      if (!in_block && $0 ~ /(^[ \t]*|[-:][ \t]+)[|>][-+0-9]*[ \t]*$/) { in_block = 1; block_indent = indent($0) }
+      print
+    }
+    END { end_document() }
+  ' "$1" > "$1.ended"
+  mv "$1.ended" "$1"
+}
+
 # compare <fresh> <committed> fails when the committed file differs from the fresh render.
 compare() {
   if ! diff -q "$2" "$1" > /dev/null; then
@@ -221,6 +243,7 @@ main() {
   done
   local pair failed=0
   for pair in "${pairs[@]}"; do
+    end_block_scalars "$work/${pair%%:*}"
     if $check; then
       compare "$work/${pair%%:*}" "$root/${pair#*:}" || failed=1
     else

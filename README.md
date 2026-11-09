@@ -771,8 +771,9 @@ target, on 8080 and on 15008, and no other pod:
   none. It then reads each gateway's mirror on 443, where ztunnel cannot turn a
   closed port into a TLS failure, and names how each connection ended. The
   probe writes these outcomes into the ConfigMap
-  `kube-system/mitstack-mesh-probe`. It may patch that one ConfigMap by name,
-  and the report may only read it.
+  `kube-system/mitstack-mesh-probe`. It may read and patch that one ConfigMap
+  by name, since `kubectl patch` reads an object before it patches it, and the
+  report may only read it.
 
 The probe's own Cilium policy, `mitstack-mesh-probe-outside`, lets it look up
 the target's name and no other, reach the API server, the target's two ports
@@ -896,10 +897,11 @@ host file, and then patches both summaries. A non-root user cannot reach a
 root process through the host's process table.
 
 The scan patches each summary into the `mitstack-security-scans` ConfigMap,
-which the report may only read. Each failed list is cut to fit 16 KiB while the
-totals stay whole, so the platform sees when a list was cut. A tool that fails
-is kept as its summary's `error`, and the Job runs again. `tools/scan.env`
-pins kube-bench, kubescape and the NSA framework by SHA-256.
+which its Role lets it read and patch by name, and which the report may only
+read. Each failed list is cut to fit 16 KiB while the totals stay whole, so the
+platform sees when a list was cut. A tool that fails is kept as its summary's
+`error`, and the Job runs again. `tools/scan.env` pins kube-bench, kubescape
+and the NSA framework by SHA-256.
 
 ### What happens when a read fails
 

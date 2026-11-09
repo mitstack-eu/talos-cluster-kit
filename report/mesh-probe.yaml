@@ -1,6 +1,6 @@
 # The node report's outside probe: a CronJob in kube-system, which the mesh leaves out, that calls the mesh probe's
-# target without a workload identity and writes what came back into one ConfigMap. It may patch that ConfigMap alone,
-# by name, and the report may only read it.
+# target without a workload identity and writes what came back into one ConfigMap. It may read and patch that
+# ConfigMap alone, by name, and the report may only read it.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -22,7 +22,8 @@ rules:
   - apiGroups: [""]
     resources: [configmaps]
     resourceNames: [{{ .ConfigMap }}]
-    verbs: [patch]
+    # kubectl patch reads the object before it patches it.
+    verbs: [get, patch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

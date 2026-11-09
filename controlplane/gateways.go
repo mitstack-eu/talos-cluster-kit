@@ -557,10 +557,13 @@ func (p Plane) replaceGateway(ctx context.Context, st State, s site, r removal) 
 	old := r.gw
 	if route, ok := defaultRouteOf(s.network); ok && route.Gateway == gatewayAddressOf(old) {
 		target, ok, err := p.routeTarget(ctx, st, s.network, route.Gateway)
-		if err != nil || !ok {
+		if err != nil {
 			return Step{}, false, err
 		}
-		return p.moveRoute(s.network, route, target, "the gateway in "+old.Location+" is to be replaced"), true, nil
+		// With no gateway serving to take the route, the guard below holds the replacement and names why.
+		if ok {
+			return p.moveRoute(s.network, route, target, "the gateway in "+old.Location+" is to be replaced"), true, nil
+		}
 	}
 	began, ok := RemovalBegan(old, r.plan)
 	if !ok {

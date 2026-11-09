@@ -33,7 +33,7 @@ const (
 const KeyGatewayUpgrade = "mitstack.dev/gateway-upgrade"
 
 // KeyGatewayFailed on the network, followed by a location, names the failed gateway the plane deleted there until the
-// location has its successor, which carries it as KeyGatewayReplaces, so a second failure there reads as the list's.
+// location has its successor, which carries it as KeyGatewayReplaces, so a second failure there reads as a repeat.
 const (
 	KeyGatewayFailed   = "mitstack.dev/gateway-failed-"
 	KeyGatewayReplaces = "mitstack.dev/gateway-replaces"
@@ -363,7 +363,7 @@ type gatewayFailure struct {
 }
 
 // failure judges a gateway failed once it is down after the plane's one power-on, or, never powered back on, once it
-// runs past its deadline with no report since its creation reading it serving; its cause is empty until then.
+// runs past its deadline and the newest report since its creation does not read it serving; else its cause is empty.
 func (p Plane) failure(ctx context.Context, gw Server, network Network) (gatewayFailure, error) {
 	if at, powered := poweredOnAt(gw); powered {
 		down, r, err := p.downAfterPowerOn(ctx, gw)

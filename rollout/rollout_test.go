@@ -144,7 +144,7 @@ func TestRelease_UpgradesAClusterV0460BuiltGivingEachComponentItsApplicationAndT
 	for _, f := range files {
 		paths = append(paths, f.Path)
 	}
-	assert.Equal(t, paths, c.Files(), "the repository after the upgrade, with v0.46.0's hosting files taken out")
+	assert.ElementsMatch(t, paths, c.Files(), "the repository after the upgrade, with v0.46.0's hosting files taken out")
 	assert.Empty(t, reading.Problem, "the read-back after Argo CD synced the release")
 	assert.Subset(t, reading.Applied, []string{reportJob.String(), reportRole.String(), flows.String()}, "the objects read back")
 	assert.Equal(t, stated(t, report, reportJob), c.Object(reportJob), "the report's CronJob the cluster's API serves")

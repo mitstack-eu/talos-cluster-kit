@@ -57,6 +57,8 @@ type harness struct {
 	events  []string
 	failing []string
 	unread  []string
+	// servesAfter is how long after its creation a gateway's mirror first answers a report.
+	servesAfter time.Duration
 	// images is the image list of each node report withReports sends, reportsStopAt when the cluster stops sending them,
 	// and noImageList sends a report from before the list.
 	images        []report.ImageRef

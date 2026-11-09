@@ -17,6 +17,7 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/gateway"
 	"github.com/mitstack-eu/talos-cluster-kit/redundant"
+	"github.com/mitstack-eu/talos-cluster-kit/report"
 )
 
 // The causes a cluster reads unhealthy with, word for word as the catalogue type lists them under failures.
@@ -38,6 +39,11 @@ const (
 	KeyGatewayFailed   = "mitstack.dev/gateway-failed-"
 	KeyGatewayReplaces = "mitstack.dev/gateway-replaces"
 )
+
+// GatewayUpgradeBound is the longest an upgrade takes to replace every gateway in turn when none fails, which a block's
+// settle budget must cover: per location, two report intervals for the others' reading, one for a report since the
+// loss, and the replacement's deadline, by which a report reads it serving.
+var GatewayUpgradeBound = time.Duration(len(Locations)) * (gateway.Deadline + 3*report.Interval)
 
 // GatewayReading is what the newest node report received since a given time read of one gateway's mirror.
 type GatewayReading struct {
@@ -148,9 +154,9 @@ func (p Plane) neverStartedStep(ctx context.Context, st State) (Step, bool, erro
 	return Step{}, false, nil
 }
 
-// builtGatewayStep keeps the gateways of a cluster whose nodes exist: each zone's gateway, the route, a gateway
-// powered back on once an outage, a failed gateway's replacement, and an upgrade's replacements, one location at a time
-// and none while a location waits on its gateway.
+// builtGatewayStep keeps the gateways of a cluster whose nodes exist, building a missing location's gateway, moving the
+// route and powering a stopped gateway back on before it replaces one, since a replacement takes a location's gateway
+// away and waits while any location lacks one.
 func (p Plane) builtGatewayStep(ctx context.Context, st State, s site) (Step, bool, error) {
 	if st.SingleGateway() {
 		return p.singleGatewayStep(ctx, st, s)
@@ -177,9 +183,8 @@ func (p Plane) builtGatewayStep(ctx context.Context, st State, s site) (Step, bo
 	return Step{}, false, nil
 }
 
-// singleGatewayStep keeps a cluster built before a gateway ran in each location as it stands, since no kept key can sign
-// a gateway its nodes trust, and refuses the upgrade that would replace its gateway. It is transition code, to go once
-// no cluster predates a gateway in each location.
+// singleGatewayStep keeps a cluster built before a gateway ran in each location as it stands and refuses the upgrade
+// that would replace its gateway, since no kept key can sign a gateway its nodes trust.
 func (p Plane) singleGatewayStep(ctx context.Context, st State, s site) (Step, bool, error) {
 	if p.Upgrading {
 		return Step{}, false, refuse("gateway-predates-zones",

@@ -322,12 +322,14 @@ gateway and about 29,400 for a gateway keeping 300 images, or about 19,000 and
 30,700 on a cluster that hosts the platform.
 
 A gateway bounds its own build. Each image copy into its mirror must finish
-within 15 minutes, and each file's copy out of the tools image within 5
-minutes. The whole preparation must finish within an hour, and the TLS
-server's first answer must come within 2 minutes. A stage that fails or overruns writes the stage and its error to the
-VGA console, which Hetzner's web console shows, and to the login prompt of
-every later boot, and then powers the gateway off. The gateway has no login,
-so that screen is the only place to read why its build failed.
+within 15 minutes. The tools image's read from the mirror, each file's copy
+out of it and the removal of its container must each finish within 5 minutes.
+The whole preparation must finish within an hour, and the TLS server's first
+answer must come within 2 minutes. A stage that fails or overruns writes the
+stage and its error to the VGA console, which Hetzner's web console shows, and
+to the login prompt of every later boot, and then powers the gateway off. The
+gateway has no login, so that screen is the only place to read why its build
+failed.
 
 The plane gives each gateway a deadline of 77 minutes after its creation,
 `gateway.Deadline`, which adds 15 minutes for its boot and package install to

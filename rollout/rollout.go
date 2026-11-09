@@ -27,13 +27,14 @@ import (
 const (
 	// ApplicationPrefix starts the name of each component's Application and of the file under cluster/ that holds it.
 	ApplicationPrefix = "component-"
-	ComponentsDir     = "components"
-	manifestFile      = "manifest.yaml"
-	clusterDir        = "cluster"
-	markerNamespace   = "argocd"
-	markerDigestLen   = 12
-	synced            = "Synced"
-	healthy           = "Healthy"
+	// ComponentsDir holds one directory per component, which its Application applies.
+	ComponentsDir   = "components"
+	manifestFile    = "manifest.yaml"
+	clusterDir      = "cluster"
+	markerNamespace = "argocd"
+	markerDigestLen = 12
+	synced          = "Synced"
+	healthy         = "Healthy"
 )
 
 // LegacyFiles are what releases before the whole set's carriage committed for the hosting policies alone, which the
@@ -50,6 +51,7 @@ type Release struct {
 	Components []components.Manifest
 }
 
+// File is one file of the release at its path in the cluster repository.
 type File struct {
 	Path  string
 	Bytes []byte

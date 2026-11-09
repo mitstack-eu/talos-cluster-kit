@@ -291,6 +291,7 @@ func TestRelease_RetiresOnlyTheFilesTheCarriageCommittedThatTheReleaseNoLongerSt
 		"openbao-init.asc", "cluster/mitstack-hosting.yaml", "hosting/policies.yaml",
 		"cluster/component-mitstack-node-report.yaml", "components/mitstack-node-report/manifest.yaml",
 		"cluster/component-local-path-provisioner-namespace.yaml", "components/local-path-provisioner-namespace/manifest.yaml",
+		"components/README.md", "components/shop/values.yaml", "components/shop/base/manifest.yaml", "cluster/component-shop.json",
 	}
 
 	retired, err := secondRelease(t).Retired(held)

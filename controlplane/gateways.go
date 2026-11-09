@@ -1,7 +1,7 @@
 package controlplane
 
-// A gateway is immutable: a new list or a lost gateway is answered by a new server at the same address, never by a
-// change to a running one, and the network's default route moves to another gateway while one is down.
+// A gateway is immutable: a new list, a lost gateway or a failed one is answered by a new server at the same address,
+// never by a change to a running one, and the network's default route moves to another gateway while one is down.
 
 import (
 	"context"
@@ -21,15 +21,23 @@ import (
 
 // The causes a cluster reads unhealthy with, word for word as the catalogue type lists them under failures.
 const (
-	CauseSingleGateway = "the cluster was built by an older release that cannot be upgraded in place; rebuild the cluster"
-	CauseGatewayDown   = "a server the block powered back on after an outage does not serve; read its console log and replace it with an upgrade"
-	// CauseGatewayOverdue leaves the upgrade waiting, since the gateway may still serve and the platform judges it.
-	CauseGatewayOverdue = "a server an upgrade built has neither served nor powered itself off by its deadline; read its console log"
+	CauseSingleGateway      = "the cluster was built by an older release that cannot be upgraded in place; rebuild the cluster"
+	CauseGatewayDown        = "a gateway the block powered back on after an outage does not serve, so the block replaces it from the same list once a node report reads the other gateways serving; read its console log for why it failed"
+	CauseGatewayOverdue     = "a gateway runs past its deadline and the newest node report since its creation does not read it serving, so the block replaces it from the same list once a node report reads the other gateways serving; read its console log for why it failed"
+	CauseGatewayFailedAgain = "a gateway the block built from the same list to replace one that failed has failed too, so the block leaves it; read its console log, and upgrade to a release with a new list to replace it"
+	CauseEarlierGatewayDown = "a server the block powered back on after an outage does not serve; read its console log and replace it with an upgrade"
 )
 
 // KeyGatewayUpgrade on the network names the list an upgrade replaces the gateways with, so a re-drive carries the
 // replacement on and a lost gateway's rebuild starts none.
 const KeyGatewayUpgrade = "mitstack.dev/gateway-upgrade"
+
+// KeyGatewayFailed on the network, followed by a location, names the failed gateway the plane deleted there until the
+// location has its successor, which carries it as KeyGatewayReplaces, so a second failure there reads as a repeat.
+const (
+	KeyGatewayFailed   = "mitstack.dev/gateway-failed-"
+	KeyGatewayReplaces = "mitstack.dev/gateway-replaces"
+)
 
 // GatewayReading is what the newest node report received since a given time read of one gateway's mirror.
 type GatewayReading struct {
@@ -141,8 +149,8 @@ func (p Plane) neverStartedStep(ctx context.Context, st State) (Step, bool, erro
 }
 
 // builtGatewayStep keeps the gateways of a cluster whose nodes exist: each zone's gateway, the route, a gateway
-// powered back on once an outage, and an upgrade's replacements, one location at a time and none while a location waits
-// on its gateway.
+// powered back on once an outage, a failed gateway's replacement, and an upgrade's replacements, one location at a time
+// and none while a location waits on its gateway.
 func (p Plane) builtGatewayStep(ctx context.Context, st State, s site) (Step, bool, error) {
 	if st.SingleGateway() {
 		return p.singleGatewayStep(ctx, st, s)
@@ -154,6 +162,7 @@ func (p Plane) builtGatewayStep(ctx context.Context, st State, s site) (Step, bo
 		func(ctx context.Context, st State, _ site) (Step, bool, error) { return p.neverStartedStep(ctx, st) },
 		p.routeStep,
 		p.powerBackStep,
+		p.failedStep,
 		func(ctx context.Context, st State, s site) (Step, bool, error) {
 			if st.lacksGateway() {
 				return Step{}, false, nil
@@ -349,6 +358,87 @@ func (p Plane) powerBack(ctx context.Context, gw Server) error {
 	return nil
 }
 
+type gatewayFailure struct {
+	cause, what, reading string
+}
+
+// failure judges a gateway failed once it is down after the plane's one power-on, or, never powered back on, once it
+// runs past its deadline and the newest report since its creation does not read it serving; else its cause is empty.
+func (p Plane) failure(ctx context.Context, gw Server, network Network) (gatewayFailure, error) {
+	if at, powered := poweredOnAt(gw); powered {
+		down, r, err := p.downAfterPowerOn(ctx, gw)
+		if err != nil || !down {
+			return gatewayFailure{}, err
+		}
+		return gatewayFailure{CauseGatewayDown, fmt.Sprintf("was powered back on at %s and is %s", at.Format(time.RFC3339), gw.Status), r.Detail}, nil
+	}
+	if gw.Status != ServerRunning || !p.pastDeadline(gw) {
+		return gatewayFailure{}, nil
+	}
+	r, err := p.reading(ctx, gw, gw.Created)
+	if err != nil || r.Read && r.Serving && runsAtItsAddress(gw, network) {
+		return gatewayFailure{}, err
+	}
+	return gatewayFailure{CauseGatewayOverdue, missedDeadline(gw), r.Detail}, nil
+}
+
+// failedStep replaces the first gateway of this release's list that failed, from the same list at its address, unless
+// it replaced one that failed, and ends the replacement of one a report reads serving again.
+func (p Plane) failedStep(ctx context.Context, st State, s site) (Step, bool, error) {
+	if st.lacksGateway() {
+		return Step{}, false, nil
+	}
+	list, err := p.gatewayList()
+	if err != nil {
+		return Step{}, false, err
+	}
+	for _, loc := range Locations {
+		gw, _ := st.GatewayIn(loc)
+		if gw.Labels[KeyGatewayList] != list.Digest() {
+			continue
+		}
+		f, err := p.failure(ctx, gw, s.network)
+		switch {
+		case err != nil:
+			return Step{}, false, err
+		case f.cause == "":
+			if step, ok, err := p.endReplacementStep(ctx, gw, s.network, list.Digest()); err != nil || ok {
+				return step, ok, err
+			}
+		case gw.Labels[KeyGatewayReplaces] == "":
+			return p.replaceGateway(ctx, st, s, removal{gw: gw, plan: list.Digest(), why: "which " + f.what, keeper: "the block",
+				record: func(ctx context.Context) error { return p.recordFailed(ctx, s.network, gw) }})
+		}
+	}
+	return Step{}, false, nil
+}
+
+// endReplacementStep ends the replacement of a gateway read serving again, so a later failure is judged afresh.
+func (p Plane) endReplacementStep(ctx context.Context, gw Server, network Network, plan string) (Step, bool, error) {
+	if _, began := RemovalBegan(gw, plan); !began {
+		return Step{}, false, nil
+	}
+	up, err := p.serving(ctx, gw, network)
+	if err != nil || !up {
+		return Step{}, false, err
+	}
+	return Step{"end the replacement of the gateway in " + gw.Location + ", which a node report reads serving again", func(ctx context.Context) error {
+		return p.API.SetServerLabels(ctx, gw.ID, EndRemoval(gw))
+	}}, true, nil
+}
+
+func (p Plane) recordFailed(ctx context.Context, network Network, gw Server) error {
+	labels := maps.Clone(network.Labels)
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	labels[KeyGatewayFailed+gw.Location] = strconv.FormatInt(gw.ID, 10)
+	if err := p.API.SetNetworkLabels(ctx, network.ID, labels); err != nil {
+		return fmt.Errorf("recording the failed gateway %d in %s on network %d: %w", gw.ID, gw.Location, network.ID, err)
+	}
+	return nil
+}
+
 // replacement is where an upgrade stands: the gateways built from an earlier list, and whether one is to replace them.
 type replacement struct {
 	digest  string
@@ -401,26 +491,11 @@ func gatewayDeadline(gw Server) time.Time { return gw.Created.Add(gateway.Deadli
 
 func (p Plane) pastDeadline(gw Server) bool { return !p.now().Before(gatewayDeadline(gw)) }
 
-func overdueDetail(gw Server) string {
-	return fmt.Sprintf("gateway %d in %s has neither served nor powered itself off by its deadline at %s, %s after its creation",
-		gw.ID, gw.Location, gatewayDeadline(gw).UTC().Format(time.RFC3339), gateway.Deadline)
-}
+func overdueDetail(gw Server) string { return gatewayName(gw) + " " + missedDeadline(gw) }
 
-// overdueGateway is the gateway an upgrade waits on that still runs, serving nothing, past its deadline.
-func (p Plane) overdueGateway(ctx context.Context, st State) (Server, GatewayReading, bool, error) {
-	network, ok := st.Network()
-	if !ok {
-		return Server{}, GatewayReading{}, false, nil
-	}
-	r, err := p.replacement(st, network)
-	if err != nil || !r.active {
-		return Server{}, GatewayReading{}, false, err
-	}
-	gw, reading, waiting, err := p.waitingOn(ctx, r, network)
-	if err != nil || !waiting || gw.Status != ServerRunning || !p.pastDeadline(gw) {
-		return Server{}, GatewayReading{}, false, err
-	}
-	return gw, reading, true, nil
+func missedDeadline(gw Server) string {
+	return fmt.Sprintf("runs past its deadline at %s, %s after its creation, and the newest node report since its creation does not read it serving",
+		gatewayDeadline(gw).UTC().Format(time.RFC3339), gateway.Deadline)
 }
 
 // upgradeMarkStep marks the network on the upgrade's own call, before any other step, since the re-drives that carry
@@ -466,17 +541,34 @@ func (p Plane) replaceStep(ctx context.Context, st State, s site) (Step, bool, e
 	if err != nil {
 		return Step{}, false, err
 	}
+	return p.replaceGateway(ctx, st, s, removal{gw: old, plan: r.digest, why: "built from an earlier list", keeper: "the upgrade"})
+}
+
+// removal is a gateway replaced for plan, why it goes and who keeps it, as its events say, and what to record first.
+type removal struct {
+	gw        Server
+	plan, why string
+	keeper    string
+	record    func(ctx context.Context) error
+}
+
+// replaceGateway moves the route off a gateway, then deletes it once the guard reads the others serving since it began.
+func (p Plane) replaceGateway(ctx context.Context, st State, s site, r removal) (Step, bool, error) {
+	old := r.gw
 	if route, ok := defaultRouteOf(s.network); ok && route.Gateway == gatewayAddressOf(old) {
 		target, ok, err := p.routeTarget(ctx, st, s.network, route.Gateway)
-		if err != nil || !ok {
+		if err != nil {
 			return Step{}, false, err
 		}
-		return p.moveRoute(s.network, route, target, "the gateway in "+old.Location+" is to be replaced"), true, nil
+		// With no gateway serving to take the route, the guard below holds the replacement and names why.
+		if ok {
+			return p.moveRoute(s.network, route, target, "the gateway in "+old.Location+" is to be replaced"), true, nil
+		}
 	}
-	began, ok := RemovalBegan(old, r.digest)
+	began, ok := RemovalBegan(old, r.plan)
 	if !ok {
 		return Step{"begin replacing the gateway in " + old.Location + ", so only a node report read after now judges the others", func(ctx context.Context) error {
-			return p.API.SetServerLabels(ctx, old.ID, BeginRemoval(old, p.now(), r.digest))
+			return p.API.SetServerLabels(ctx, old.ID, BeginRemoval(old, p.now(), r.plan))
 		}}, true, nil
 	}
 	set, details, err := p.gatewaySet(ctx, st, s.network, began)
@@ -487,18 +579,27 @@ func (p Plane) replaceStep(ctx context.Context, st State, s site) (Step, bool, e
 		if !redundant.Held(err) {
 			return Step{}, false, err
 		}
-		p.notify(ctx, "the upgrade keeps gateway %d in %s until the others serve: %s", old.ID, old.Location, err)
+		p.notify(ctx, "%s keeps gateway %d in %s until the others serve: %s", r.keeper, old.ID, old.Location, err)
 		return Step{}, false, nil
 	}
-	judged := describeServing(set, details, gatewayName(old))
-	return Step{"delete the gateway in " + old.Location + ", built from an earlier list", func(ctx context.Context) error {
+	return p.deletionStep(r, began, describeServing(set, details, gatewayName(old))), true, nil
+}
+
+func (p Plane) deletionStep(r removal, began time.Time, judged string) Step {
+	old := r.gw
+	return Step{"delete the gateway in " + old.Location + ", " + r.why, func(ctx context.Context) error {
+		if r.record != nil {
+			if err := r.record(ctx); err != nil {
+				return err
+			}
+		}
 		if err := p.API.DeleteServer(ctx, old.ID); err != nil {
 			return fmt.Errorf("deleting the gateway %d in %s: %w", old.ID, old.Location, err)
 		}
-		p.notify(ctx, "deleted gateway %d in %s, built from an earlier list, so one built from this release's list takes %s, judged by readings since %s: %s",
-			old.ID, old.Location, gatewayAddressOf(old), began.Format(time.RFC3339), judged)
+		p.notify(ctx, "deleted gateway %d in %s, %s, so one built from this release's list takes %s, judged by readings since %s: %s",
+			old.ID, old.Location, r.why, gatewayAddressOf(old), began.Format(time.RFC3339), judged)
 		return nil
-	}}, true, nil
+	}}
 }
 
 func gatewayName(gw Server) string { return fmt.Sprintf("gateway %d in %s", gw.ID, gw.Location) }
@@ -617,6 +718,9 @@ func (p Plane) gatewaySpec(ctx context.Context, orderable *OrderableTypes, loc, 
 	}
 	labels := p.Labels(RoleGateway)
 	labels[KeyEnrolmentSHA256], labels[KeyIssuerBucket], labels[KeyGatewayList] = enrolment, bucket, digest
+	if replaced := s.network.Labels[KeyGatewayFailed+loc]; replaced != "" {
+		labels[KeyGatewayReplaces] = replaced
+	}
 	return ServerSpec{
 		Name:        p.LocatedName(RoleGateway, loc),
 		ServerType:  serverType,
@@ -648,24 +752,44 @@ func (p Plane) Unhealthy(ctx context.Context, st State) (cause, detail string, e
 		return CauseSingleGateway, fmt.Sprintf("gateway %d in %s carries no %s label, so it was built before a gateway ran in each location, and the block holds no CA key to sign another gateway's certificate with",
 			gw.ID, gw.Location, KeyGatewayList), nil
 	}
+	list, err := p.gatewayList()
+	if err != nil {
+		return "", "", err
+	}
+	network, _ := st.Network()
 	for _, loc := range Locations {
 		gw, ok := st.GatewayIn(loc)
 		if !ok {
 			continue
 		}
-		down, r, err := p.downAfterPowerOn(ctx, gw)
+		f, err := p.failure(ctx, gw, network)
 		if err != nil {
 			return "", "", err
 		}
-		if down {
-			at, _ := poweredOnAt(gw)
-			return CauseGatewayDown, fmt.Sprintf("gateway %d in %s was powered back on at %s and is %s; %s",
-				gw.ID, loc, at.Format(time.RFC3339), gw.Status, r.Detail), nil
+		if cause, detail := f.unhealthy(gw, list.Digest()); cause != "" {
+			return cause, detail, nil
 		}
 	}
-	_, r, overdue, err := p.overdueGateway(ctx, st)
-	if err != nil || !overdue {
-		return "", "", err
+	return "", "", nil
+}
+
+// unhealthy names a failed gateway's cause, with how its replacement stands or why the plane leaves it.
+func (f gatewayFailure) unhealthy(gw Server, digest string) (cause, detail string) {
+	detail = fmt.Sprintf("%s %s; %s", gatewayName(gw), f.what, f.reading)
+	switch {
+	case f.cause == "":
+		return "", ""
+	case gw.Labels[KeyGatewayList] != digest && f.cause == CauseGatewayDown:
+		return CauseEarlierGatewayDown, detail
+	case gw.Labels[KeyGatewayList] != digest:
+		return "", ""
+	case gw.Labels[KeyGatewayReplaces] != "":
+		return CauseGatewayFailedAgain, fmt.Sprintf("%s; it replaced gateway %s, which failed from the same list, so the block leaves it in place",
+			detail, gw.Labels[KeyGatewayReplaces])
 	}
-	return CauseGatewayOverdue, r.Detail, nil
+	if began, ok := RemovalBegan(gw, digest); ok {
+		return f.cause, fmt.Sprintf("%s; the block began replacing it at %s and deletes it once a node report received after then reads the other gateways serving",
+			detail, began.Format(time.RFC3339))
+	}
+	return f.cause, detail + "; the block replaces it once a node report reads the other gateways serving"
 }

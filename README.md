@@ -228,11 +228,12 @@ as the cluster needs:
 1. It moves the default route off a gateway that does not serve, to one that
    does, by deleting the route and adding it again.
 2. It powers a stopped gateway back on, once. A gateway that still does not
-   serve is never powered on again, and `Unhealthy` names it.
+   serve is never powered on again.
 3. It replaces one gateway built from an earlier list, once the upgrade's own
    call, with `Upgrading` set, has marked the network. It takes first a gateway
    that does not serve, since replacing it takes nothing from those that do. It
-   moves the route off the old gateway and labels it with the time its
+   moves the route off the old gateway to one that serves, leaving it where it
+   is when none does, and labels the old gateway with the time its
    replacement began, `mitstack.dev/removal-began`, and the digest of the list
    it is replaced for, `mitstack.dev/removal-for`. A label for another list
    counts for nothing, so an upgrade that took over from an abandoned one
@@ -245,9 +246,36 @@ as the cluster needs:
    certificate, from a node report read after the deletion, as the
    paragraphs below explain. The next location waits until a node report
    reads the replacement serving.
+4. It replaces a gateway built from this release's list that has failed,
+   before an upgrade's next replacement. A gateway has failed when it is still
+   down after that one power-on, or when it was never powered back on, runs
+   past its deadline, and the newest node report since its creation does not
+   read it serving. The
+   plane moves the route off it and labels it as in step 3, with this
+   release's digest, and deletes it once the guard finds every other gateway
+   read serving by a node report from after that time. Just before the
+   deletion it records the gateway's id on the network as
+   `mitstack.dev/gateway-failed-<location>`. The location's next gateway is
+   built from the same list at the same address, as the paragraphs below
+   explain, and carries that id as `mitstack.dev/gateway-replaces`. A
+   gateway that carries it and fails too is left in place, since a fault that
+   repeats on one list needs a release with a new one. A gateway read serving
+   again before its deletion keeps its place, and the plane takes its
+   replacement label off.
 
 The plane hands each of these events to `Notify`, with each certificate it
 issues.
+
+`Unhealthy` names a failed gateway with one of these causes, and its detail
+names the gateway, the reading and how its replacement stands. A block's
+catalogue type lists each cause word for word.
+
+| Cause | The gateway | What happens next |
+|---|---|---|
+| `CauseGatewayDown` | Built from this release's list, and still down after its power-on | The plane replaces it |
+| `CauseGatewayOverdue` | Built from this release's list, running past its deadline, and not read serving by the newest node report since its creation | The plane replaces it |
+| `CauseGatewayFailedAgain` | A successor that failed from the same list as the gateway it replaced | The plane leaves it, and an upgrade to a release with a new list replaces it |
+| `CauseEarlierGatewayDown` | Built from an earlier list, and still down after its power-on | An upgrade replaces it |
 
 Each node pulls through the gateways' mirrors with no fallback to a public
 registry, so a gateway built once nodes run keeps every image the cluster
@@ -303,10 +331,12 @@ so that screen is the only place to read why its build failed.
 
 The plane gives each gateway a deadline of 77 minutes after its creation,
 `gateway.Deadline`, which adds 15 minutes for its boot and package install to
-the bounds above. A replacement that has neither served nor powered itself off
-by then keeps the upgrade waiting. The step's wait, which a block reports as
-its status detail, names the gateway and its deadline, and `Unhealthy` returns
-cause `CauseGatewayOverdue` with the same words. No gateway is deleted for it.
+the bounds above. A gateway of this release's list that still runs by then,
+and that the newest node report since its creation does not read serving, is
+replaced, as step 4 above describes. While
+an upgrade waits on such a gateway, the step's wait, which a block reports as
+its status detail, names the gateway and its deadline. `Unhealthy` returns
+cause `CauseGatewayOverdue` with the same words.
 
 Every step that removes a gateway, an etcd member or a Cloud worker asks one
 guard first, block-kit's `redundancy.Set.AllowRemoval`. This module imports no

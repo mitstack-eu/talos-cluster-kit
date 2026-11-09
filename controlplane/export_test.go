@@ -3,6 +3,7 @@ package controlplane
 // The tests sit in controlplane_test, since they share the cloudtest fake a block uses, which imports this package.
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -49,4 +50,10 @@ func (p Plane) ClusterComponents(enrolmentToken string) (components.Set, error) 
 		p.GatewayCA = &ca
 	}
 	return p.clusterComponents(components.Default(), enrolmentToken)
+}
+
+// BuildSet is the component set an install applies, rendered under the plane's gateway CA.
+func (p Plane) BuildSet(ctx context.Context, now time.Time, enrolmentToken string) (components.Set, error) {
+	set, _, err := p.buildSet(ctx, now, enrolmentToken)
+	return set, err
 }

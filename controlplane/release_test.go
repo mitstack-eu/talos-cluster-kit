@@ -3,14 +3,17 @@ package controlplane_test
 // The release a running cluster takes through its repository is the set its build applied, but what holds its keys.
 
 import (
+	"context"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
+	"github.com/mitstack-eu/talos-cluster-kit/gateway"
 	"github.com/mitstack-eu/talos-cluster-kit/rollout"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 )
@@ -21,6 +24,14 @@ import (
 var buildOnly = []string{
 	"mitstack-openbao-seal-key", "mitstack-sealed-secrets-key", "mitstack-openbao-deploy-key", "mitstack-cluster-repository",
 	"mitstack-openbao-storage", "mitstack-openbao-init", "mitstack-cluster-application",
+}
+
+// gatewayCA is the gateway CA an install mints, for a plane that installed nothing.
+func gatewayCA(t *testing.T) *gateway.CA {
+	t.Helper()
+	ca, err := gateway.NewCA(testStart, time.Hour, controlplane.GatewayAddrs())
+	require.NoError(t, err)
+	return &ca
 }
 
 func manifestNames(manifests []components.Manifest) []string {
@@ -41,9 +52,9 @@ func TestRelease_CarriesWhatTheBuildAppliedButTheHostingKeysTheEnrolmentTokenAnd
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t, tc.opts...)
-			require.NoError(t, h.converge())
-			h.plane.GatewayCA = h.ca
-			built := h.installed[0].Components
+			h.plane.GatewayCA = gatewayCA(t)
+			built, err := h.plane.BuildSet(context.Background(), testStart, "enrolment-token")
+			require.NoError(t, err)
 			var carriedAtBuild []components.Manifest
 			for _, m := range slices.Concat(built.Served, built.Inline) {
 				if !slices.Contains(buildOnly, m.Name) {
@@ -61,28 +72,16 @@ func TestRelease_CarriesWhatTheBuildAppliedButTheHostingKeysTheEnrolmentTokenAnd
 			got, err := release.Files(testutil.InitRepository)
 			require.NoError(t, err)
 			assert.ElementsMatch(t, want, got, "the files the release commits, against those of the manifests the build applied")
-		})
-	}
-}
-
-func TestRelease_CommitsNoSecretsDataNorTheEnrolmentJob(t *testing.T) {
-	h := newHarness(t, hosting)
-	require.NoError(t, h.converge())
-	h.plane.GatewayCA = h.ca
-	release, err := h.plane.Release()
-	require.NoError(t, err)
-
-	files, err := release.Files(testutil.InitRepository)
-
-	require.NoError(t, err)
-	for _, f := range files {
-		for _, doc := range testutil.Documents(t, f.Bytes) {
-			if doc["kind"] == "Secret" {
-				assert.Nil(t, doc["data"], "the data of Secret %v in %s", doc["metadata"], f.Path)
-				assert.Nil(t, doc["stringData"], "the string data of Secret %v in %s", doc["metadata"], f.Path)
+			for _, f := range got {
+				for _, doc := range testutil.Documents(t, f.Bytes) {
+					if doc["kind"] == "Secret" {
+						assert.Nil(t, doc["data"], "the data of Secret %v in %s", doc["metadata"], f.Path)
+						assert.Nil(t, doc["stringData"], "the string data of Secret %v in %s", doc["metadata"], f.Path)
+					}
+					assert.NotEqual(t, "Job", doc["kind"], "a Job %v in %s", doc["metadata"], f.Path)
+				}
 			}
-			assert.NotEqual(t, "Job", doc["kind"], "a Job %v in %s", doc["metadata"], f.Path)
-		}
+		})
 	}
 }
 
@@ -92,20 +91,15 @@ func TestRelease_RefusesAPlaneThatCannotRenderTheBuildsOwnManifests(t *testing.T
 		plane func(h *harness) controlplane.Plane
 		want  string
 	}{
-		{"a plane without the gateway CA", func(h *harness) controlplane.Plane {
-			p := h.plane
-			p.GatewayCA = nil
-			return p
-		}, "gateway CA"},
+		{"a plane without the gateway CA", func(h *harness) controlplane.Plane { return h.plane }, "gateway CA"},
 		{"a plane without the cluster repository", func(h *harness) controlplane.Plane {
 			p := h.plane
-			p.GatewayCA, p.RepoURL = h.ca, ""
+			p.GatewayCA, p.RepoURL = gatewayCA(h.t), ""
 			return p
 		}, "repository"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
-			require.NoError(t, h.converge())
 
 			_, err := tc.plane(h).Release()
 

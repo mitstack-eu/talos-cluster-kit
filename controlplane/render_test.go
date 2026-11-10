@@ -47,7 +47,6 @@ type renderedCloudConfig struct {
 	RunCmd     [][]string     `yaml:"runcmd"`
 }
 
-// renderedFile is a write_files entry as cloud-init reads it, its content still in the encoding it names.
 type renderedFile struct {
 	Path        string `yaml:"path"`
 	Permissions string `yaml:"permissions"`
@@ -63,7 +62,6 @@ func decodeCloudConfig(t *testing.T, data string) renderedCloudConfig {
 	return c
 }
 
-// file returns the file cloud-init writes at path, its content decoded as cloud-init's write_files decodes it.
 func (c renderedCloudConfig) file(t *testing.T, path string) renderedFile {
 	t.Helper()
 	for _, f := range c.WriteFiles {
@@ -478,7 +476,6 @@ func workloads(t *testing.T, docs []map[string]any) []workload {
 	return found
 }
 
-// exemptNamespaces are the namespaces a policy's namespaceSelector leaves out by name.
 func exemptNamespaces(t *testing.T, policy map[string]any) []string {
 	t.Helper()
 	var exempt []string

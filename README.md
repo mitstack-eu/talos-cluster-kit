@@ -1457,10 +1457,15 @@ block holds no credential for the cluster's API.
 The `rollout` package takes that other way through the cluster repository.
 The build installs one Argo CD Application of the cluster's own, named
 `cluster`, which applies every manifest in the repository's `cluster/`
-directory. This section calls the `rollout` package's work the carriage: a block's commit of a release's components to that repository, for the cluster's Argo CD to apply.
+directory. This section calls the `rollout` package's work the carriage: a
+block's commit of a release's components to that repository, for the
+cluster's Argo CD to apply.
+
 A block runs the carriage at each upgrade of a running cluster, the block's
-operation that moves it to a newer kit release. It builds the release, waits
-until `Plane.GatewaysServeRelease` reports that every gateway, the cluster's image mirror, holds the release's images, so that no component names an image the cluster cannot pull, and then commits.
+operation that moves it to a newer kit release. It builds the release and
+waits until `Plane.GatewaysServeRelease` reports that every gateway holds the
+release's images. The gateways are the cluster's image mirror, so no component
+then names an image the cluster cannot pull. The block commits after that.
 
 Two things are called a release here. A kit release is one tagged version of
 this module, such as v0.47.0. A `rollout.Release` is the Go value that lists
@@ -1469,15 +1474,16 @@ form, and "release" alone means the kit release.
 
 A component is one named manifest of the set: a `components.Manifest`, whose
 `Name` is the label `components.Default` and `components.HostingServed` give
-it where they build the set, such as `cilium`, `argocd` or `kyverno`. A component's name becomes part of its Application's name, so `component-` followed by it must be a valid Kubernetes name of at most 63 characters, lowercase letters, digits and hyphens that
-start and end with a letter or digit, since it names that component's
-Application, and `Release.Files` refuses a name that is not.
+it where they build the set, such as `cilium`, `argocd` or `kyverno`. A component's name becomes part of its Application's name, so `component-`
+followed by it must be a valid Kubernetes name: at most 63 characters, made of
+lowercase letters, digits and hyphens, and starting and ending with a letter
+or digit. `Release.Files` refuses a name that is not.
 
 A block builds a `rollout.Release` with `Plane.Release` in `controlplane` from
 the same plane it builds the cluster with. It holds every manifest the build
-applies, with two exceptions. The `rollout.Release` leaves out the hosting set's inline manifests stay out,
-since only an install's keys render them. The `cluster` Application stays out
-too, since the carriage runs through it. The block then commits the files
+applies, with two exceptions. It leaves out the hosting set's inline
+manifests, since only an install's keys render them, and it leaves out the
+`cluster` Application, since the carriage runs through that Application. The block then commits the files
 `Release.Files` returns in one commit, and reads the result back with
 `Release.ReadBack`:
 
@@ -1540,10 +1546,14 @@ Kubernetes hold an object's deletion until its controller has cleaned up;
 Argo CD's resources finalizer has it delete every object the Application
 applied before the Application itself goes. The effects:
 
-- Server-side apply writes no last-applied annotation, which a resource
-  definition past Kubernetes's 262,144 bytes of annotations would overflow.
-- The retries wait out a resource definition that another component's
-  Application has yet to apply.
+- Server-side apply writes no last-applied annotation. A resource
+  definition, here a CustomResourceDefinition (the CRD of the `components`
+  row), can be large enough that the annotation would push its object past
+  the 262,144 bytes Kubernetes allows for annotations.
+- The retries wait out a resource definition, again a CRD, that another
+  component's Application has yet to apply. A component that uses a custom
+  resource fails to sync until its definition exists, and a retry succeeds
+  once it does.
 - The finalizer deletes a component's objects once a release drops the
   component. Those objects include its resource definitions, and Kubernetes
   then deletes every custom resource of those definitions too. Deleting a
@@ -1561,8 +1571,11 @@ lists. Any other file, such as an app's own manifest under `components/`,
 stays.
 
 `LegacyFiles` are `hosting/policies.yaml` and `cluster/mitstack-hosting.yaml`.
-Kit release v0.32.0 gave a running cluster no way to change its hosting
-policies, because Talos alone applied them at the build. Kit release v0.33.0
+The hosting policies are the Cilium network policies of a cluster that hosts
+the platform, which `components.HostingPolicies` returns as the manifest
+`mitstack-hosting-flows`: it names the only network flows a hosting namespace's pods make or take. Kit
+release v0.32.0 gave a running cluster no way to change them, because Talos
+alone applied them at the build. Kit release v0.33.0
 added the `rollout` package, and releases through v0.46.0 committed those two
 files: `hosting/policies.yaml` held every hosting policy and a marker, and
 `cluster/mitstack-hosting.yaml` was the Application that applied it. Kit release v0.47.0 adds
@@ -1592,8 +1605,10 @@ CiliumClusterwideNetworkPolicy mitstack-hosting-flows
 ConfigMap argocd/component-mitstack-hosting-flows-3f9a1c0d2b7e
 ```
 
-The tests in `rollout/rollout_test.go` build a cluster from kit release
-v0.32.0's flows and one from kit release v0.46.0's committed files, as Talos and Argo CD would, and run them through upgrades to the release under test. In the first, "flows" are the hosting network policies. The cluster in `testutil/argocd.go` stands in for
+The tests in `rollout/rollout_test.go` build two clusters and run each through an upgrade to the release under
+test. One is built from the `mitstack-hosting-flows` manifest as kit release
+v0.32.0 shipped it, as Talos would apply it. The other is built from the
+files kit release v0.46.0 committed, as Talos and Argo CD would. The cluster in `testutil/argocd.go` stands in for
 the cluster's API and for Argo CD. It applies each Application's directory,
 prunes what the directory no longer holds, and deletes an Application's
 objects when the Application carrying the finalizer goes.
@@ -1879,10 +1894,10 @@ A block takes a change only by requiring a newer tag of this module in its
 `go.mod`, as `require github.com/mitstack-eu/talos-cluster-kit v0.1.0`. The
 file `.github/version` names the next release. Once a pull request merges and
 every CI job passes on `main`, the `release` job tags that commit `v` followed
-by the version, unless the tag exists already. The `record delivery` job then
-records the push's board keys on Plain, mitstack's board: the issues its
-commits deliver, whose subject opens `MIT-123:`, and none that a subject only
-references with a closing `(refs MIT-123)`.
+by the version, unless the tag exists already. The `record delivery` job then records on Plain, mitstack's board, the issues
+the push's commits deliver. A commit delivers an issue when its subject opens
+with the key and a colon, as in `MIT-123: fix the thing`. A subject that ends
+with `(refs MIT-123)` only names the issue, and the job records nothing for it.
 
 A release also publishes the tools image, which the kit's Jobs and CronJobs
 run in. The image carries the report's, its outside probe's and the

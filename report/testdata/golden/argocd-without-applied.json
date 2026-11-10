@@ -2,7 +2,7 @@
   "applications": [
     {
       "name": "cluster-root",
-      "health": "Healthy",
+      "health": "Degraded",
       "sync": "Synced"
     },
     {

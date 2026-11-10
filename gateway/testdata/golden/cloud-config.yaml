@@ -141,7 +141,7 @@ write_files:
     content: |
       00-cilium.yaml aafec70d4cc5115dd5ceb6d982cd1646eae61dbdb5e29a83f2a08f020e87eb59 /usr/local/lib/mitstack/components/cilium/cilium.yaml
       01-cilium-policy-crd.yaml 582273fd2b7d7238563ad2976ba36905ba818834ed71c58cad6e51bb4762088b /usr/local/lib/mitstack/components/cilium/policy-crd.yaml
-      09-argocd.yaml c89e44159b3e66aa474daadfa910575e91e5e87fff4071f779cff585cc90c924 /usr/local/lib/mitstack/components/argocd/argocd.yaml
+      09-argocd.yaml eb9cf57bcbe35139942ee3dfabe552b52abd1dc1e1b7cd8a1547658b31e5271d /usr/local/lib/mitstack/components/argocd/argocd.yaml
       13-kyverno.yaml 30c3d2833991432a4d5e7ca1de8f5f8fe198a5f6933f7ec5bce6fd369bd712f3 /usr/local/lib/mitstack/components/kyverno/kyverno.yaml
       11-cloudnative-pg.yaml 8e60fb45bca3cf568e58402c93d77f662f8efb63e5ffe7dcd552568c98f3bc9e /usr/local/lib/mitstack/components/cloudnative-pg/cloudnative-pg.yaml
       14-local-path-provisioner.yaml 1f15539874470b12f4cd835e6276cfcc2cbcaf42b6dcaa7d018775b93ef0e8f1 /usr/local/lib/mitstack/components/local-path-provisioner/local-path-provisioner.yaml

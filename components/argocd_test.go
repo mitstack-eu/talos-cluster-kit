@@ -38,3 +38,9 @@ func TestArgoCD_ReadsACloudNativePGClusterPassingThroughAPhaseAsProgressingAndAS
 		})
 	}
 }
+
+func TestArgoCD_KeepsEachObjectsHealthOnItsApplicationWhereTheNodeReportReadsIt(t *testing.T) {
+	cm := namedDocument(t, manifest(t, "argocd"), "ConfigMap", "argocd-cmd-params-cm")
+
+	assert.Equal(t, "true", testutil.Field(t, cm, "data", "controller.resource.health.persist"), "Argo CD 3 keeps object health off the Application otherwise")
+}

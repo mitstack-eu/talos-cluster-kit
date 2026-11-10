@@ -75,6 +75,10 @@ func subscriptionRead(kind string) string {
 	return "get " + kind + " -A -l mitstack.dev/subscription -o json"
 }
 
+func without(left ...string) []string {
+	return slices.DeleteFunc(slices.Clone(subscriptionKinds), func(k string) bool { return slices.Contains(left, k) })
+}
+
 var fakeKubectl = kubectlAnswering(nil)
 
 func kubectlWith(read, answer string) map[string]string {
@@ -326,7 +330,7 @@ func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipA
 			"allocatable": map[string]any{"cpu": "1950m", "memory": "3615Mi", "pods": "110"}, "zone": nil, "region": nil,
 			"zoneLabelManagers": []any{}},
 	}, posted.body["nodes"], "each node's zone and region labels, and every manager of its zone label")
-	assert.Equal(t, readJSON(t, "testdata", "golden", "argocd.json"), posted.body["argocd"], "a Secret is among the applied objects, each with five fields")
+	assert.Equal(t, readJSON(t, "testdata", "golden", "argocd.json"), posted.body["argocd"], "a Secret is among the applied objects, each with its identity, sync and health alone")
 	wantCalls := []string{
 		"kubectl " + nodesRead,
 		"kubectl get applications.argoproj.io -n argocd -o json",
@@ -484,15 +488,29 @@ func proofRequest(posted *postedReport) string {
 }
 
 func TestReport_LeavesOutEveryApplicationsAppliedObjectsWhenCarryingThemWouldPassThePlatformsLimit(t *testing.T) {
-	crowded := `jq '.items[0].status.resources = [range(4000) | {version: "v1", kind: "ConfigMap", namespace: "app-shop", name: "settings-\(.)", status: "Synced"}]' testdata/applications.json`
+	cases := map[string]struct {
+		answers map[string]string
+		kinds   []string
+		objects int
+	}{
+		"4000 applied objects": {map[string]string{applicationsRead: `jq '.items[0].status.resources = [range(4000) | {version: "v1", kind: "ConfigMap", namespace: "app-shop", name: "settings-\(.)", status: "Synced"}]' testdata/applications.json`}, without(), 4},
+		"1000 applied objects, each with a 256-character message, beside 1000 labelled namespaces": {map[string]string{
+			applicationsRead:              `jq '.items[0].status.resources = [range(1000) | {group: "apps", kind: "Deployment", namespace: "app-shop", name: "web-\(.)", status: "Synced", health: {status: "Degraded", message: ("x" * 256)}}]' testdata/applications.json`,
+			subscriptionRead("namespace"): `jq -n '{items: [range(1000) | {metadata: {name: "app-\(.)", labels: {"mitstack.dev/subscription": "sub_slice0123456"}}}]}'`,
+		}, without("deployment.apps", "appproject.argoproj.io", "externalsecret.external-secrets.io"), 1000},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, posted, out, err := runReport(t, map[string]string{"kubectl": kubectlAnswering(tc.answers)})
 
-	_, posted, out, err := runReport(t, kubectlWith(applicationsRead, crowded))
-
-	require.NoError(t, err, out)
-	assert.LessOrEqual(t, len(posted.raw), 256<<10, "the body fits the platform's limit")
-	assert.Equal(t, readJSON(t, "testdata", "golden", "argocd-without-applied.json"), posted.body["argocd"],
-		"no Application carries a list, so no observer reads a left-out object absent")
-	assert.Len(t, posted.body["nodes"], 3, "the rest of the report stays whole")
+			require.NoError(t, err, out)
+			assert.LessOrEqual(t, len(posted.raw), 256<<10, "the body fits the platform's limit")
+			assert.Equal(t, readJSON(t, "testdata", "golden", "argocd-without-applied.json"), posted.body["argocd"], "no Application carries a list, so no observer reads a left-out object absent")
+			assert.Len(t, posted.body["nodes"], 3, "the rest of the report stays whole")
+			assert.ElementsMatch(t, tc.kinds, posted.body["subscriptionResourceKinds"], "a kind whose objects would pass 1000 is left out whole")
+			assert.Len(t, posted.body["subscriptionResources"], tc.objects, "each kind listed is listed whole")
+		})
+	}
 }
 
 func readJSON(t *testing.T, path ...string) any {
@@ -505,9 +523,6 @@ func readJSON(t *testing.T, path ...string) any {
 }
 
 func TestReport_ListsTheObjectsOfEachKindItReadWholeAndLeavesOutAKindWhoseReadFailsOrIsCutShort(t *testing.T) {
-	without := func(left string) []string {
-		return slices.DeleteFunc(slices.Clone(subscriptionKinds), func(k string) bool { return k == left })
-	}
 	cases := map[string]struct {
 		read, answer string
 		wantKinds    []string
@@ -558,11 +573,7 @@ func TestReport_PostsEachMemberItReadsFromAHealthyCluster(t *testing.T) {
 		member, msg string
 		want        any
 	}{
-		"every pod with its namespace, node and phase": {"pods", "", []any{
-			map[string]any{"namespace": "argocd", "name": "argocd-server-5d9c7b8f4-x2x7q", "node": "poc-talos4-cp1", "phase": "Running"},
-			map[string]any{"namespace": "app-pg", "name": "shared-1", "node": "poc-talos4-cp2", "phase": "Running"},
-			map[string]any{"namespace": "app-pg", "name": "shared-2", "node": nil, "phase": "Pending"},
-			map[string]any{"namespace": "openbao", "name": "openbao-0", "node": "poc-talos4-cp1", "phase": "Running"}}},
+		"every pod with its namespace, node, phase and containers": {"pods", "", readJSON(t, "testdata", "golden", "pods.json")},
 		"each node's state and ephemeral volume with its encryption": {"systemVolumes", "",
 			readJSON(t, "testdata", "golden", "system-volumes.json")},
 		"the key set the API server signs service account tokens with, under jwks": {"jwks",
@@ -646,6 +657,18 @@ func TestReport_PostsEachMemberItReadsFromAHealthyCluster(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			assert.Equal(t, tc.want, testutil.Field(t, posted.body, strings.Split(tc.member, ".")...), tc.msg)
+		})
+	}
+}
+
+func TestReport_NamesEachAppliedObjectsArgoCDHealthAndEachContainersStateButNoTerminatedContainersMessage(t *testing.T) {
+	_, posted, out, err := runReport(t, nil)
+
+	require.NoError(t, err, out)
+	assert.NotContains(t, string(posted.raw), "termination-message-fixture", "a terminated container's message is whatever the app wrote")
+	for name, c := range readJSON(t, "testdata", "golden", "object-health.json").(map[string]any) {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, testutil.Field(t, c, "want"), testutil.Field(t, posted.body, strings.Split(testutil.Field(t, c, "member").(string), ".")...))
 		})
 	}
 }

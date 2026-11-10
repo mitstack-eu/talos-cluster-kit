@@ -1,0 +1,64 @@
+[
+  {
+    "namespace": "argocd",
+    "name": "argocd-server-5d9c7b8f4-x2x7q",
+    "node": "poc-talos4-cp1",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "server",
+        "state": "running"
+      }
+    ]
+  },
+  {
+    "namespace": "app-pg",
+    "name": "shared-1",
+    "node": "poc-talos4-cp2",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "bootstrap-controller",
+        "state": "terminated",
+        "reason": "Completed"
+      },
+      {
+        "name": "postgres",
+        "state": "running"
+      }
+    ]
+  },
+  {
+    "namespace": "app-pg",
+    "name": "shared-2",
+    "node": null,
+    "phase": "Pending",
+    "containers": []
+  },
+  {
+    "namespace": "openbao",
+    "name": "openbao-0",
+    "node": "poc-talos4-cp1",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "openbao",
+        "state": "running"
+      }
+    ]
+  },
+  {
+    "namespace": "app-shop",
+    "name": "shop-7d4b9c6f5-k8x2p",
+    "node": "poc-talos4-cp2",
+    "phase": "Pending",
+    "containers": [
+      {
+        "name": "shop",
+        "state": "waiting",
+        "reason": "ImagePullBackOff",
+        "message": "Back-off pulling image \"ghcr.io/acme/shop:v3\": ErrImagePull: failed to pull and unpack image \"ghcr.io/acme/shop:v3\": failed to resolve reference \"ghcr.io/acme/shop:v3\": failed to authorize: failed to fetch anonymous token: unexpected status from GET reques"
+      }
+    ]
+  }
+]

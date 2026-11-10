@@ -2,7 +2,7 @@
   "applications": [
     {
       "name": "cluster-root",
-      "health": "Healthy",
+      "health": "Degraded",
       "sync": "Synced",
       "resources": [
         {
@@ -10,14 +10,42 @@
           "kind": "Namespace",
           "namespace": null,
           "name": "app-shop",
-          "sync": "Synced"
+          "sync": "Synced",
+          "health": "Healthy"
         },
         {
           "group": "argoproj.io",
           "kind": "Application",
           "namespace": "argocd",
           "name": "app-shop",
-          "sync": "Synced"
+          "sync": "Synced",
+          "health": "Progressing",
+          "message": null
+        },
+        {
+          "group": "external-secrets.io",
+          "kind": "ExternalSecret",
+          "namespace": "app-shop",
+          "name": "shop-db",
+          "sync": "Synced",
+          "health": "Degraded",
+          "message": "could not get secret data from provider: cannot read secret data from Vault: Error making API request. URL: GET https://openbao.openbao.svc:8200/v1/kv/data/app-shop/db Code: 403. Errors: * permission denied: the policy app-shop-reader grants read on kv/dat"
+        },
+        {
+          "group": "postgresql.cnpg.io",
+          "kind": "Cluster",
+          "namespace": "app-pg",
+          "name": "shared",
+          "sync": "Synced",
+          "health": "Healthy"
+        },
+        {
+          "group": "",
+          "kind": "ServiceAccount",
+          "namespace": "app-shop",
+          "name": "shop-runtime",
+          "sync": "Synced",
+          "health": null
         }
       ]
     },

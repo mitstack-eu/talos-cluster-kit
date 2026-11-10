@@ -448,6 +448,7 @@ data:
   commitserver.log.level: info
   controller.log.format: text
   controller.log.level: info
+  controller.resource.health.persist: "true"
   dexserver.log.format: text
   dexserver.log.level: info
   notificationscontroller.log.format: text
@@ -32253,7 +32254,7 @@ spec:
   template:
     metadata:
       annotations:
-        checksum/cmd-params: 53cfc3aa5e92c7b4386c14a2855ad5ee722740d7b21f53fc0e2d076c0889f91f
+        checksum/cmd-params: 527bbe816627d08563ef41bec19ae37dcf4735368c24639fba84c19373d476d7
       labels:
         helm.sh/chart: argo-cd-10.10.5
         app.kubernetes.io/name: argocd-applicationset-controller
@@ -32556,7 +32557,7 @@ spec:
   template:
     metadata:
       annotations:
-        checksum/cmd-params: 53cfc3aa5e92c7b4386c14a2855ad5ee722740d7b21f53fc0e2d076c0889f91f
+        checksum/cmd-params: 527bbe816627d08563ef41bec19ae37dcf4735368c24639fba84c19373d476d7
       labels:
         helm.sh/chart: argo-cd-10.10.5
         app.kubernetes.io/name: argocd-notifications-controller
@@ -32690,7 +32691,7 @@ spec:
   template:
     metadata:
       annotations:
-        checksum/cmd-params: 53cfc3aa5e92c7b4386c14a2855ad5ee722740d7b21f53fc0e2d076c0889f91f
+        checksum/cmd-params: 527bbe816627d08563ef41bec19ae37dcf4735368c24639fba84c19373d476d7
         checksum/cm: e9897e106ce2cce9e25a3c012e3b8075c99d5cb597c9c3a356c1c343d7589ed6
       labels:
         helm.sh/chart: argo-cd-10.10.5
@@ -33124,7 +33125,7 @@ spec:
   template:
     metadata:
       annotations:
-        checksum/cmd-params: 53cfc3aa5e92c7b4386c14a2855ad5ee722740d7b21f53fc0e2d076c0889f91f
+        checksum/cmd-params: 527bbe816627d08563ef41bec19ae37dcf4735368c24639fba84c19373d476d7
         checksum/cm: e9897e106ce2cce9e25a3c012e3b8075c99d5cb597c9c3a356c1c343d7589ed6
       labels:
         helm.sh/chart: argo-cd-10.10.5
@@ -33683,7 +33684,7 @@ spec:
   template:
     metadata:
       annotations:
-        checksum/cmd-params: 53cfc3aa5e92c7b4386c14a2855ad5ee722740d7b21f53fc0e2d076c0889f91f
+        checksum/cmd-params: 527bbe816627d08563ef41bec19ae37dcf4735368c24639fba84c19373d476d7
         checksum/cm: e9897e106ce2cce9e25a3c012e3b8075c99d5cb597c9c3a356c1c343d7589ed6
       labels:
         helm.sh/chart: argo-cd-10.10.5

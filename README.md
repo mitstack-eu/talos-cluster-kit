@@ -872,9 +872,9 @@ change `report/scripts/report.sh`.
 | `nodes` | Each node with its Talos version, allocatable resources, `topology.kubernetes.io/zone` and `topology.kubernetes.io/region` labels, and, as `zoneLabelManagers`, each field manager that wrote its zone label | `kubectl get nodes --show-managed-fields` |
 | `etcd` | Each etcd member, `healthy` only when its node answered `talosctl etcd status` with an empty `ERRORS` cell, the `leader`, and a `statusError` naming a status read that failed | `talosctl etcd members` and `talosctl etcd status` |
 | `systemVolumes` | How each node's `STATE` and `EPHEMERAL` volumes are encrypted | `talosctl get volumestatus` |
-| `argocd` | Each Application's health, sync and applied objects, the answer each of 17 routes gives a caller with no session, and the `argocd` namespace's Services and Ingresses | The Applications, `ARGOCD_URL` and the Ingress read |
+| `argocd` | Each Application's health, sync and applied objects, each object with Argo CD's health of it as [the section below](#how-the-report-shows-each-objects-health-and-each-containers-state) describes, the answer each of 17 routes gives a caller with no session, and the `argocd` namespace's Services and Ingresses | The Applications, `ARGOCD_URL` and the Ingress read |
 | `kubernetes.argocdPods` | Each pod in `argocd` with its containers' images | The pod read |
-| `pods` | Every pod's namespace, name, node or `null`, and phase | `kubectl get pods -A` |
+| `pods` | Every pod's namespace, name, node or `null`, phase, and `containers`, each init and app container with its state and reason, as [the section below](#how-the-report-shows-each-objects-health-and-each-containers-state) describes | `kubectl get pods -A` |
 | `images` | Each image reference a pod or the pod template of a Deployment, StatefulSet, DaemonSet, Job or CronJob names, once, as `image` with the `digest` it names or that a pod's status reports it runs by, and otherwise `null`. A failed read leaves `{exitStatus, stderr}` with `read` naming `pods` or `workloads`, in place of a partial list | The pod read and `kubectl get deployments,statefulsets,daemonsets,jobs,cronjobs -A` |
 | `cloudNativePG` | Each Cluster with its phase, instance counts and `currentPrimary`, and each Database and DatabaseRole with whether it applied | CloudNativePG's objects |
 | `openbao` | Each member's `initialized`, `sealed` and `active`, and the active member's name as `leader` | `sys/seal-status` and `sys/leader` on each member in `OPENBAO_MEMBERS`, verified against `OPENBAO_CA_FILE` |
@@ -899,6 +899,49 @@ as the finding.
 The 17 routes are listed in `argocd_routes` in `report.sh`. Each request
 sends no credential, cookie or body. The report keeps each answer's status and
 size, and for userinfo whether it says a caller is signed in.
+
+### How the report shows each object's health and each container's state
+
+A failed deploy needs the object that failed and the reason, which an
+Application's own health cannot give. So each object an Application applied
+carries Argo CD's `health` of it. An object with any health but `Healthy` also
+carries Argo CD's `message`, cut to 256 characters. A kind Argo CD runs no
+health check for, such as a ServiceAccount, reads `"health": null`.
+
+Argo CD 3 keeps an object's health on its Application only while
+`controller.resource.health.persist` is `"true"` in `argocd-cmd-params-cm`.
+Otherwise it keeps the health only in its resource tree, which the report
+does not read. talos-cluster-kit sets the value in
+`components/render/argocd-values.yaml`, which adds one health entry per
+object to each Application's status, about 30 bytes for a Healthy object. An
+Application that reads `"resourceHealthSource": "appTree"`, as on a cluster
+still running an earlier release, gives its objects no `health` member at
+all. A reader then sees that the report could not read the health, rather
+than reading `null` as no health check.
+
+Each pod lists its init and app containers under `containers`, each with its
+`state` and the `reason` Kubernetes gives. A waiting container also carries
+its `message`, cut to 256 characters. A terminated container carries its
+reason alone, since its message is whatever the app wrote to its termination
+log. One Application and one pod read like this:
+
+```json
+{
+  "argocd": {"applications": [{"name": "cluster-root", "health": "Degraded", "sync": "Synced", "resources": [
+    {"group": "external-secrets.io", "kind": "ExternalSecret", "namespace": "app-shop", "name": "shop-db", "sync": "Synced",
+      "health": "Degraded", "message": "could not get secret data from provider: ..."},
+    {"group": "", "kind": "ServiceAccount", "namespace": "app-shop", "name": "shop-runtime", "sync": "Synced", "health": null}
+  ]}]},
+  "pods": [{"namespace": "app-pg", "name": "shared-1", "node": "poc-talos4-cp2", "phase": "Pending", "containers": [
+    {"name": "bootstrap-controller", "state": "terminated", "reason": "Completed"},
+    {"name": "postgres", "state": "waiting", "reason": "ImagePullBackOff", "message": "Back-off pulling image ..."}
+  ]}]
+}
+```
+
+`applied` and `container` in `report/scripts/report.sh` build these entries.
+The report's ClusterRole grants no new right for them, since both come from the
+Application and pod reads the report already makes.
 
 ### How the report tries each admission rule
 

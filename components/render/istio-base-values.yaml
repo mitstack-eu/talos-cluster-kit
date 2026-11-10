@@ -1,1 +1,4 @@
 profile: ambient
+base:
+  # A tool that renders with helm template and applies server-side must set this, since istiod rewrites it to Fail once ready.
+  validationFailurePolicy: Fail

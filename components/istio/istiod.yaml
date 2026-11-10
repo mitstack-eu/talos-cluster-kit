@@ -40,21 +40,27 @@ metadata:
 data:
   original-values: |-
     {
+      "autoscaleEnabled": false,
+      "base": {
+        "validationFailurePolicy": "Fail"
+      },
       "global": {
         "omitSidecarInjectorConfigMap": true
       },
       "image": "docker.io/istio/pilot:1.30.7-distroless@sha256:337c5423c9b235855aadca8762f1ac3f0ce584833e49c50176382382099ff201",
-      "profile": "ambient"
+      "profile": "ambient",
+      "replicaCount": 1
     }
   merged-values: |-
     {
       "affinity": {},
       "autoscaleBehavior": {},
-      "autoscaleEnabled": true,
+      "autoscaleEnabled": false,
       "autoscaleMax": 5,
       "autoscaleMin": 1,
       "base": {
-        "enableIstioConfigCRDs": true
+        "enableIstioConfigCRDs": true,
+        "validationFailurePolicy": "Fail"
       },
       "cni": {
         "ambient": {
@@ -762,6 +768,7 @@ metadata:
     app.kubernetes.io/version: "1.30.7"
     helm.sh/chart: istiod-1.30.7
 spec:
+  replicas: 1
   strategy:
     rollingUpdate:
       maxSurge: 100%
@@ -940,37 +947,6 @@ spec:
 ---
 # Source: istiod/templates/autoscale.yaml
 # Not created if istiod is running remotely
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: istiod
-  namespace: istio-system
-  labels:
-    app: istiod
-    release: istiod
-    istio.io/rev: "default"
-    install.operator.istio.io/owning-resource: unknown
-    operator.istio.io/component: "Pilot"
-    app.kubernetes.io/name: "istiod"
-    app.kubernetes.io/managed-by: "Helm"
-    app.kubernetes.io/instance: "istiod"
-    app.kubernetes.io/part-of: "istio"
-    app.kubernetes.io/version: "1.30.7"
-    helm.sh/chart: istiod-1.30.7
-spec:
-  maxReplicas: 5
-  minReplicas: 1
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: istiod
-  metrics:
-  - type: Resource
-    resource:
-      name: cpu
-      target:
-        type: Utilization
-        averageUtilization: 80
 ---
 # Source: istiod/templates/configmap-jwks.yaml
 # Not created if istiod is running remotely
@@ -1178,10 +1154,7 @@ webhooks:
           - "*"
         resources:
           - "*"
-    # Fail open until the validation webhook is ready. The webhook controller
-    # will update this to `Fail` and patch in the `caBundle` when the webhook
-    # endpoint is ready.
-    failurePolicy: Ignore
+    failurePolicy: Fail
     sideEffects: None
     admissionReviewVersions: ["v1"]
     objectSelector:

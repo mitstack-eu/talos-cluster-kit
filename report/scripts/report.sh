@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Posts the node report: nodes with their zone and region labels, etcd members with their health and the leader, each
-# node's STATE and EPHEMERAL encryption, Argo CD's health with each Application's applied objects, what each Argo CD
+# node's STATE and EPHEMERAL encryption, Argo CD's health of each Application and each object it applied, what each Argo CD
 # route answers a caller without a session, Argo CD's Services, Ingresses and pod images, CloudNativePG's objects with
-# each cluster's primary, every pod's node and phase, each image reference the pods and the workloads' pod templates
+# each cluster's primary, every pod's node, phase and container states, each image reference the pods and the workloads' pod templates
 # name, each OpenBao member's seal state and the active one, each claim and the default storage classes, every Service's type, each default-deny NetworkPolicy, the objects labelled
 # mitstack.dev/subscription, the API server's key set, the mesh probe's results, the outside probe's reading of
 # each gateway's mirror, whether a TLS connection to Let's Encrypt's ACME API opens through the network's default route,
@@ -339,6 +339,8 @@ body() {
     --from-file /dev/stdin <<'JQ'
     def talos_version: (.status.nodeInfo.osImage // "") | (try capture("^Talos \\((?<v>[^)]+)\\)").v catch null);
     def ready: [.status.conditions[]? | select(.type == "Ready") | .status == "True"] | any;
+    # Each message the report carries from a controller is cut to 256 characters, so its size has a bound.
+    def at_most_256: if type == "string" then .[0:256] else . end;
     def cloudnative_pg: {
       namespace: .metadata.namespace, kind: .kind, name: .metadata.name,
       subscription: (.metadata.labels["mitstack.dev/subscription"] // null)
@@ -346,7 +348,7 @@ body() {
       {phase: .status.phase, instances: .status.instances, readyInstances: .status.readyInstances,
         currentPrimary: (.status.currentPrimary // null)}
     else
-      {applied: .status.applied, message: (.status.message // null | if . then .[0:256] else . end)}
+      {applied: .status.applied, message: (.status.message // null | at_most_256)}
     end;
     # zone_label_managers are the field managers whose entry in managedFields holds the zone label.
     def zone_label_managers: [.metadata.managedFields[]?
@@ -360,7 +362,15 @@ body() {
       defaultStorageClasses: [.items[] | select(.kind == "StorageClass")
         | select(.metadata.annotations["storageclass.kubernetes.io/is-default-class"] == "true") | .metadata.name]
     };
-    def pod: {namespace: .metadata.namespace, name: .metadata.name, node: (.spec.nodeName // null), phase: (.status.phase // null)};
+    # A container carries its state with the reason Kubernetes gives, and the message only while it waits, since a
+    # terminated container's message is whatever the app wrote.
+    def container: (.state // {}) as $s | {name: .name}
+      + if $s.waiting then {state: "waiting", reason: ($s.waiting.reason // null), message: ($s.waiting.message // null | at_most_256)}
+        elif $s.terminated then {state: "terminated", reason: ($s.terminated.reason // null)}
+        elif $s.running then {state: "running"}
+        else {state: null} end;
+    def pod: {namespace: .metadata.namespace, name: .metadata.name, node: (.spec.nodeName // null), phase: (.status.phase // null),
+      containers: [(.status.initContainerStatuses // []) + (.status.containerStatuses // []) | .[] | container]};
     def etcd_status_rows: [$etcd_status | split("\n") | .[1:][] | sub("\\s+$"; "") | select(test("\\S"))
       | [splits("\\s{2,}")] | {member: .[1], leader: .[4], errors: (.[11] // "")}];
     # etcd is each member with whether its node answered with no error, the leader the answers name, and the status
@@ -409,8 +419,14 @@ body() {
       | if ($ran | type) != "array" then $ran + {read: "pods"}
         elif ($templated | type) != "array" then $templated + {read: "workloads"}
         else images($ran + $templated) end;
-    # An applied object carries no field but these five, so the list holds no Secret's contents.
-    def applied: {group: (.group // ""), kind: .kind, namespace: (.namespace // null), name: .name, sync: (.status // "Unknown")};
+    # An applied object carries its identity, its sync status and Argo CD's health of it, so the list holds no Secret's
+    # contents. Its health is null for a kind Argo CD runs no health check for, and left out when Argo CD keeps
+    # health off the Application, so a reader never takes an unread health for none.
+    def applied($health_inline):
+      {group: (.group // ""), kind: .kind, namespace: (.namespace // null), name: .name, sync: (.status // "Unknown")}
+      + if $health_inline | not then {}
+        elif .health.status == null or .health.status == "Healthy" then {health: (.health.status // null)}
+        else {health: .health.status, message: (.health.message // null | at_most_256)} end;
     # A kind is listed whole or not at all, and 1000 objects keep the body inside the platform's 256 KiB.
     def subscription_resources:
       reduce $kinds[] as $read ({objects: [], kinds: []};
@@ -546,11 +562,11 @@ body() {
         $volumes | fromjson | [.[] | select(.metadata.id == "STATE" or .metadata.id == "EPHEMERAL") | system_volume]
           | if . == [] then error("no STATE or EPHEMERAL") else . end),
       argocd: {
-        applications: [$applications[0].items[] | {
+        applications: [$applications[0].items[] | ((.status.resourceHealthSource // "") == "") as $health_inline | {
           name: .metadata.name,
           health: (.status.health.status // "Unknown"),
           sync: (.status.sync.status // "Unknown"),
-          resources: [.status.resources[]? | applied]
+          resources: [.status.resources[]? | applied($health_inline)]
         }],
         routes: $routes,
         services: beside($storage_status; $storage_err;

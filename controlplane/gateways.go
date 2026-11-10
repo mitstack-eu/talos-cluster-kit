@@ -492,16 +492,31 @@ func (p Plane) waitingOn(ctx context.Context, r replacement, network Network) (S
 	return Server{}, GatewayReading{}, false, nil
 }
 
+// gatewaysByList sorts each location's gateway by this release's list, and reports false for a cluster with no network
+// or one built with a single gateway, which carries no list to sort by.
+func (p Plane) gatewaysByList(st State) (replacement, Network, bool, error) {
+	network, ok := st.Network()
+	if !ok || st.SingleGateway() {
+		return replacement{}, Network{}, false, nil
+	}
+	r, err := p.replacement(st, network)
+	return r, network, err == nil, err
+}
+
+// GatewaysAwaitRelease is whether the cluster has yet to take this release's list: a location's gateway is built from
+// an earlier list, or the cluster has no network or was built with a single gateway. A location that lost its gateway
+// awaits nothing, since the plane builds its next gateway from this release's list.
+func (p Plane) GatewaysAwaitRelease(st State) (bool, error) {
+	r, _, sorted, err := p.gatewaysByList(st)
+	return err == nil && (!sorted || len(r.stale) > 0), err
+}
+
 // GatewaysServeRelease is whether every location's gateway is built from this release's list, runs at its address and
 // is read serving since its creation, so every image of the release is mirrored and a manifest naming one may reach the
 // cluster.
 func (p Plane) GatewaysServeRelease(ctx context.Context, st State) (bool, error) {
-	network, ok := st.Network()
-	if !ok || st.SingleGateway() {
-		return false, nil
-	}
-	r, err := p.replacement(st, network)
-	if err != nil || len(r.stale) > 0 || len(r.current) != len(Locations) {
+	r, network, sorted, err := p.gatewaysByList(st)
+	if err != nil || !sorted || len(r.stale) > 0 || len(r.current) != len(Locations) {
 		return false, err
 	}
 	_, _, waiting, err := p.waitingOn(ctx, r, network)

@@ -1,0 +1,80 @@
+{
+  "an Application with one Degraded object carries Argo CD's health of it and its message, cut to 256 characters": {
+    "member": "argocd.applications.0.resources.2",
+    "want": {
+      "group": "external-secrets.io",
+      "kind": "ExternalSecret",
+      "namespace": "app-shop",
+      "name": "shop-db",
+      "sync": "Synced",
+      "health": "Degraded",
+      "message": "could not get secret data from provider: cannot read secret data from Vault: Error making API request. URL: GET https://openbao.openbao.svc:8200/v1/kv/data/app-shop/db Code: 403. Errors: * permission denied: the policy app-shop-reader grants read on kv/dat"
+    }
+  },
+  "a Healthy object carries its health and no message": {
+    "member": "argocd.applications.0.resources.3",
+    "want": {
+      "group": "postgresql.cnpg.io",
+      "kind": "Cluster",
+      "namespace": "app-pg",
+      "name": "shared",
+      "sync": "Synced",
+      "health": "Healthy"
+    }
+  },
+  "an object of a kind Argo CD runs no health check for carries a null health": {
+    "member": "argocd.applications.0.resources.4",
+    "want": {
+      "group": "",
+      "kind": "ServiceAccount",
+      "namespace": "app-shop",
+      "name": "shop-runtime",
+      "sync": "Synced",
+      "health": null
+    }
+  },
+  "an Application whose Argo CD keeps object health off it carries no health for its objects": {
+    "member": "argocd.applications.1.resources",
+    "want": [
+      {
+        "group": "",
+        "kind": "Secret",
+        "namespace": "app-shop",
+        "name": "app-repository-shop",
+        "sync": "Synced"
+      },
+      {
+        "group": "rbac.authorization.k8s.io",
+        "kind": "Role",
+        "namespace": "app-shop",
+        "name": "app-repository-shop",
+        "sync": "OutOfSync"
+      }
+    ]
+  },
+  "a container waiting on ImagePullBackOff carries its reason and message, cut to 256 characters": {
+    "member": "pods.4.containers",
+    "want": [
+      {
+        "name": "shop",
+        "state": "waiting",
+        "reason": "ImagePullBackOff",
+        "message": "Back-off pulling image \"ghcr.io/acme/shop:v3\": ErrImagePull: failed to pull and unpack image \"ghcr.io/acme/shop:v3\": failed to resolve reference \"ghcr.io/acme/shop:v3\": failed to authorize: failed to fetch anonymous token: unexpected status from GET reques"
+      }
+    ]
+  },
+  "a container that ended with a termination message carries its reason alone": {
+    "member": "pods.1.containers",
+    "want": [
+      {
+        "name": "bootstrap-controller",
+        "state": "terminated",
+        "reason": "Completed"
+      },
+      {
+        "name": "postgres",
+        "state": "running"
+      }
+    ]
+  }
+}

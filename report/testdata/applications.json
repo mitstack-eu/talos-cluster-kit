@@ -5,11 +5,14 @@
     {
       "metadata": {"name": "cluster-root", "namespace": "argocd"},
       "status": {
-        "health": {"status": "Healthy"},
+        "health": {"status": "Degraded"},
         "sync": {"status": "Synced"},
         "resources": [
           {"version": "v1", "kind": "Namespace", "name": "app-shop", "status": "Synced", "health": {"status": "Healthy"}},
-          {"group": "argoproj.io", "version": "v1alpha1", "kind": "Application", "namespace": "argocd", "name": "app-shop", "status": "Synced", "health": {"status": "Degraded"}}
+          {"group": "argoproj.io", "version": "v1alpha1", "kind": "Application", "namespace": "argocd", "name": "app-shop", "status": "Synced", "health": {"status": "Progressing"}},
+          {"group": "external-secrets.io", "version": "v1", "kind": "ExternalSecret", "namespace": "app-shop", "name": "shop-db", "status": "Synced", "health": {"status": "Degraded", "message": "could not get secret data from provider: cannot read secret data from Vault: Error making API request. URL: GET https://openbao.openbao.svc:8200/v1/kv/data/app-shop/db Code: 403. Errors: * permission denied: the policy app-shop-reader grants read on kv/data/app-shop/* to the role app-shop alone, and this request came from app-shop-legacy"}},
+          {"group": "postgresql.cnpg.io", "version": "v1", "kind": "Cluster", "namespace": "app-pg", "name": "shared", "status": "Synced", "health": {"status": "Healthy", "message": "Cluster is Ready"}},
+          {"version": "v1", "kind": "ServiceAccount", "namespace": "app-shop", "name": "shop-runtime", "status": "Synced"}
         ]
       }
     },
@@ -18,6 +21,7 @@
       "status": {
         "health": {"status": "Healthy"},
         "sync": {"status": "OutOfSync"},
+        "resourceHealthSource": "appTree",
         "resources": [
           {"version": "v1", "kind": "Secret", "namespace": "app-shop", "name": "app-repository-shop", "status": "Synced", "requiresPruning": false},
           {"group": "rbac.authorization.k8s.io", "version": "v1", "kind": "Role", "namespace": "app-shop", "name": "app-repository-shop", "status": "OutOfSync", "hook": false, "syncWave": 1}

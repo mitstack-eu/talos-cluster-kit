@@ -129,9 +129,12 @@ func (p Plane) rollBackInstall(ctx context.Context, cause error) error {
 	return errors.Join(errs...)
 }
 
+// mintSecrets mints a cluster's keys, which a test swaps, since generating each RSA key takes seconds under the race detector.
+var mintSecrets = nodeconfig.NewSecrets
+
 // render mints the cluster's keys, gateway CA, enrolment token and issuer bucket, and renders every server's user data.
 func (p Plane) render(ctx context.Context, apiAddr, ingressAddr netip.Addr, now time.Time) (installation, error) {
-	secrets, err := nodeconfig.NewSecrets(now)
+	secrets, err := mintSecrets(now)
 	if err != nil {
 		return installation{}, err
 	}

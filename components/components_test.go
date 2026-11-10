@@ -1,6 +1,7 @@
 package components_test
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -110,4 +111,60 @@ func TestLogCollector_RefusesAnEndpointWithoutAPort(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `"otlp.mitstack.dev" is not host:port`)
+}
+
+func TestImages_ScansAManifestOnceAndAnswersTheSameImagesTwice(t *testing.T) {
+	const digest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	set := components.Set{Inline: []components.Manifest{{Name: "repeat", Bytes: []byte("spec:\n  image: quay.io/cilium/cilium:v1.19.9@" + digest + "\n")}}}
+
+	first, err := set.Images()
+	require.NoError(t, err)
+	second, err := set.Images()
+
+	require.NoError(t, err)
+	assert.Equal(t, first, second)
+}
+
+func TestImages_DoesNotRememberAScanThatFailed(t *testing.T) {
+	bad := components.Manifest{Name: "refused", Bytes: []byte("spec:\n  image: quay.io/cilium/cilium:v1.19.9\n")}
+	before := components.ManifestImageSlots()
+
+	for range 2 {
+		_, err := components.Set{Inline: []components.Manifest{bad}}.Images()
+		require.Error(t, err)
+	}
+
+	assert.Equal(t, before, components.ManifestImageSlots())
+}
+
+func TestImages_RescansAManifestWhoseBytesChangedUnderTheSameName(t *testing.T) {
+	const digest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	read := func(tag string) []components.Image {
+		set := components.Set{Inline: []components.Manifest{{Name: "changing", Bytes: []byte("spec:\n  image: quay.io/cilium/cilium:" + tag + "@" + digest + "\n")}}}
+		images, err := set.Images()
+		require.NoError(t, err)
+		return images
+	}
+
+	old, current := read("v1.19.8"), read("v1.19.9")
+
+	assert.NotEqual(t, old, current)
+	assert.Equal(t, old, read("v1.19.8"))
+}
+
+func TestImages_KeepsOneSlotForAManifestWhateverBytesItHasHad(t *testing.T) {
+	const digest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	scan := func(token string) {
+		set := components.Set{Inline: []components.Manifest{{Name: "tokens", Bytes: []byte("data:\n  token: " + token + "\nspec:\n  image: quay.io/cilium/cilium:v1.19.9@" + digest + "\n")}}}
+		_, err := set.Images()
+		require.NoError(t, err)
+	}
+	scan("first")
+	before := components.ManifestImageSlots()
+
+	for i := range 50 {
+		scan(fmt.Sprintf("install-%d", i))
+	}
+
+	assert.Equal(t, before, components.ManifestImageSlots())
 }

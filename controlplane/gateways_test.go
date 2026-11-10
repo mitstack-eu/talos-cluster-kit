@@ -617,6 +617,48 @@ func (h *harness) servesRelease() bool {
 	return ok
 }
 
+func (h *harness) awaitsRelease() bool {
+	h.t.Helper()
+	ok, err := h.plane.GatewaysAwaitRelease(h.read())
+	require.NoError(h.t, err)
+	return ok
+}
+
+func TestPlane_GatewaysAwaitTheReleaseWhileAGatewayOfAnEarlierListStandsAndServeItOnlyOnceEveryLocationsGatewayOfItsListServes(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		arrange        func(*harness)
+		awaits, serves bool
+	}{
+		{"every location's gateway is built from this release's list and serves", (*harness).built, false, true},
+		{"every location's gateway is built from this release's list and the one in fsn1 fails its probe", func(h *harness) {
+			h.built()
+			h.failing = []string{controlplane.GatewayAddress}
+		}, false, false},
+		{"the gateway in hel1 is built from an earlier list", func(h *harness) {
+			h.built()
+			hel1 := h.gatewayIn("hel1")
+			labels := maps.Clone(hel1.Labels)
+			labels[controlplane.KeyGatewayList] = "an-earlier-list"
+			require.NoError(h.t, h.cloud.SetServerLabels(context.Background(), hel1.ID, labels))
+		}, true, false},
+		{"the gateway in hel1 is lost and the others are built from this release's list", func(h *harness) {
+			h.built()
+			require.NoError(h.t, h.cloud.DeleteServer(context.Background(), h.gatewayIn("hel1").ID))
+		}, false, false},
+		{"the cluster has no network", func(*harness) {}, true, false},
+		{"the cluster was built with one gateway", singleGateway, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, withReports)
+			tc.arrange(h)
+
+			assert.Equal(t, tc.awaits, h.awaitsRelease(), "whether the gateways await the release")
+			assert.Equal(t, tc.serves, h.servesRelease(), "whether they serve it")
+		})
+	}
+}
+
 func gatewayLabel(gw controlplane.Server) string {
 	return fmt.Sprintf("gateway %d in %s from %s, %s", gw.ID, gw.Location, gw.Labels[controlplane.KeyGatewayList], gw.Status)
 }

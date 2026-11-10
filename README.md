@@ -908,11 +908,16 @@ carries Argo CD's `health` of it. An object with any health but `Healthy` also
 carries Argo CD's `message`, cut to 256 characters. A kind Argo CD runs no
 health check for, such as a ServiceAccount, reads `"health": null`.
 
-Argo CD keeps an object's health on its Application only while
-`controller.resource.health.persist` is `true` in `argocd-cmd-params-cm`.
-Otherwise the Application reads `"resourceHealthSource": "appTree"`, and its
-objects carry no `health` member at all. A reader then sees that the report
-could not read the health, rather than reading `null` as no health check.
+Argo CD 3 keeps an object's health on its Application only while
+`controller.resource.health.persist` is `"true"` in `argocd-cmd-params-cm`.
+Otherwise it keeps the health only in its resource tree, which the report
+does not read. talos-cluster-kit sets the value in
+`components/render/argocd-values.yaml`, which adds one health entry per
+object to each Application's status, about 30 bytes for a Healthy object. An
+Application that reads `"resourceHealthSource": "appTree"`, as on a cluster
+still running an earlier release, gives its objects no `health` member at
+all. A reader then sees that the report could not read the health, rather
+than reading `null` as no health check.
 
 Each pod lists its init and app containers under `containers`, each with its
 `state` and the `reason` Kubernetes gives. A waiting container also carries

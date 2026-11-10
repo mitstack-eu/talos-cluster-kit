@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 )
 
 type Versions struct {
@@ -92,16 +93,35 @@ func defaultManifest(name, file string) Manifest {
 // imageLineRe matches an image field, an operator's *_IMAGE_NAME default or an --*-image= flag, its reference in group 1.
 var imageLineRe = regexp.MustCompile(`(?m)^[ \t]*(?:- )?(?:(?:image|[A-Z][A-Z_]*_IMAGE_NAME):[ \t]*|--[a-z0-9-]+-image=)"?([^"\s]+)"?[ \t]*$`)
 
+// manifestImages keeps the images of each manifest by the hash of its bytes, since scanning a manifest takes
+// the better part of a second under the race detector and a cluster set differs from the last in few of its manifests.
+var manifestImages sync.Map
+
+func (m Manifest) images() ([]Image, error) {
+	key := sha256.Sum256(m.Bytes)
+	if cached, ok := manifestImages.Load(key); ok {
+		return cached.([]Image), nil
+	}
+	var images []Image
+	for _, match := range imageLineRe.FindAllSubmatch(m.Bytes, -1) {
+		image, err := ParseImage(string(match[1]))
+		if err != nil {
+			return nil, fmt.Errorf("manifest %s: %w", m.Name, err)
+		}
+		images = append(images, image)
+	}
+	manifestImages.Store(key, images)
+	return images, nil
+}
+
 func (s Set) Images() ([]Image, error) {
 	images := append(slices.Clone(s.TalosImages), logCollectorImage)
 	for _, m := range slices.Concat(s.Served, s.Inline) {
-		for _, match := range imageLineRe.FindAllSubmatch(m.Bytes, -1) {
-			image, err := ParseImage(string(match[1]))
-			if err != nil {
-				return nil, fmt.Errorf("manifest %s: %w", m.Name, err)
-			}
-			images = append(images, image)
+		found, err := m.images()
+		if err != nil {
+			return nil, err
 		}
+		images = append(images, found...)
 	}
 	slices.SortFunc(images, func(a, b Image) int { return strings.Compare(a.Ref(), b.Ref()) })
 	return slices.Compact(images), nil

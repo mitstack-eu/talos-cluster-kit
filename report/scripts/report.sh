@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # Posts the node report: nodes with their zone and region labels, etcd members with their health and the leader, each
-# node's STATE and EPHEMERAL encryption, Argo CD's health of each Application and each object it applied, what each Argo CD
-# route answers a caller without a session, Argo CD's Services, Ingresses and pod images, CloudNativePG's objects with
-# each cluster's primary, every pod's node, phase and container states, each image reference the pods and the workloads' pod templates
-# name, each OpenBao member's seal state and the active one, each claim and the default storage classes, every Service's type, each default-deny NetworkPolicy, the objects labelled
-# mitstack.dev/subscription, the API server's key set, the mesh probe's results, the outside probe's reading of
-# each gateway's mirror, whether a TLS connection to Let's Encrypt's ACME API opens through the network's default route,
-# each repository credential Argo CD's SealedSecrets declare with each AppProject's source repositories, the API server's
-# answer to a dry run of each admission fixture, the security scan's last runs and kept summaries,
-# and a checks member naming each check of the platform's verdict, signed with a token the API server mints for the body through block-kit's
+# node's STATE and EPHEMERAL encryption, Argo CD's health of each Application and each object it applied, what each
+# Argo CD route answers a caller without a session, Argo CD's Services, Ingresses and pod images, CloudNativePG's
+# objects with each cluster's primary, every pod's node, phase and container states, each image reference the pods and
+# the workloads' pod templates name, each OpenBao member's seal state and the active one, each claim and the default
+# storage classes, every Service's type, each default-deny NetworkPolicy, the objects labelled
+# mitstack.dev/subscription, the API server's key set, the mesh probe's results, the outside probe's reading of each
+# gateway's mirror, whether a TLS connection to Let's Encrypt's ACME API opens through the network's default route, each
+# repository credential Argo CD's SealedSecrets declare with each AppProject's source repositories, the API server's
+# answer to a dry run of each admission fixture, the security scan's last runs and kept summaries, and a checks member
+# naming each check of the platform's verdict, signed with a token the API server mints for the body through block-kit's
 # token-request.sh in REPORT_PROOF_SCRIPT.
 # When a read, the body or the token request fails or times out, it posts an unsigned report whose error names it
 # instead, then exits non-zero.
@@ -365,12 +366,15 @@ body() {
     # A container carries its state with the reason Kubernetes gives, and the message only while it waits, since a
     # terminated container's message is whatever the app wrote.
     def container: (.state // {}) as $s | {name: .name}
-      + if $s.waiting then {state: "waiting", reason: ($s.waiting.reason // null), message: ($s.waiting.message // null | at_most_256)}
+      + if $s.waiting then
+          {state: "waiting", reason: ($s.waiting.reason // null), message: ($s.waiting.message // null | at_most_256)}
         elif $s.terminated then {state: "terminated", reason: ($s.terminated.reason // null)}
         elif $s.running then {state: "running"}
         else {state: null} end;
-    def pod: {namespace: .metadata.namespace, name: .metadata.name, node: (.spec.nodeName // null), phase: (.status.phase // null),
-      containers: [(.status.initContainerStatuses // []) + (.status.containerStatuses // []) | .[] | container]};
+    def pod: {
+      namespace: .metadata.namespace, name: .metadata.name, node: (.spec.nodeName // null), phase: (.status.phase // null),
+      containers: [(.status.initContainerStatuses // []) + (.status.containerStatuses // []) | .[] | container]
+    };
     def etcd_status_rows: [$etcd_status | split("\n") | .[1:][] | sub("\\s+$"; "") | select(test("\\S"))
       | [splits("\\s{2,}")] | {member: .[1], leader: .[4], errors: (.[11] // "")}];
     # etcd is each member with whether its node answered with no error, the leader the answers name, and the status
@@ -419,9 +423,8 @@ body() {
       | if ($ran | type) != "array" then $ran + {read: "pods"}
         elif ($templated | type) != "array" then $templated + {read: "workloads"}
         else images($ran + $templated) end;
-    # An applied object carries its identity, its sync status and Argo CD's health of it, so the list holds no Secret's
-    # contents. Its health is null for a kind Argo CD runs no health check for, and left out when Argo CD keeps
-    # health off the Application, so a reader never takes an unread health for none.
+    # Only identity, sync and health leave the cluster, so no Secret's contents do. Health is left out when Argo CD
+    # keeps it off the Application, so a reader never takes an unread health for none.
     def applied($health_inline):
       {group: (.group // ""), kind: .kind, namespace: (.namespace // null), name: .name, sync: (.status // "Unknown")}
       + if $health_inline | not then {}

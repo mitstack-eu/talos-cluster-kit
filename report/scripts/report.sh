@@ -569,6 +569,7 @@ body() {
           name: .metadata.name,
           health: (.status.health.status // "Unknown"),
           sync: (.status.sync.status // "Unknown"),
+          revision: .status.sync.revision,
           resources: [.status.resources[]? | applied($health_inline)]
         }],
         routes: $routes,

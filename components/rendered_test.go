@@ -27,7 +27,10 @@ func renderedDocuments(t *testing.T) map[string][]map[string]any {
 
 func objectName(doc map[string]any) string {
 	metadata, _ := doc["metadata"].(map[string]any)
-	return fmt.Sprintf("%v %v/%v", doc["kind"], metadata["namespace"], metadata["name"])
+	if namespace, ok := metadata["namespace"]; ok {
+		return fmt.Sprintf("%v %v/%v", doc["kind"], namespace, metadata["name"])
+	}
+	return fmt.Sprintf("%v %v", doc["kind"], metadata["name"])
 }
 
 func TestComponentSet_RendersNoWebhookConfigurationThatFailsOpen(t *testing.T) {

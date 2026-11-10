@@ -1719,8 +1719,8 @@ manifests therefore say what the cluster ends up holding, and the kit adds no
   drops each one from every chart, as `drop_empty_metadata_maps` in
   `scripts/lib/empty-maps.sh` does. A `labels` key anywhere deeper, such as in
   a CustomResourceDefinition's schema or a pod template, is left as it is.
-  Eleven Kyverno definitions and two of ztunnel's objects carried such maps
-  before.
+  The Kyverno policy definitions and ztunnel's objects are the charts that
+  emit such maps today.
 
 `components/rendered_test.go` checks the first two rules and the third over
 every manifest of the default and hosting sets, and the render's own step

@@ -1,0 +1,19 @@
+# Argo CD applies the hosting policies from hosting/, changing each one a release changes and pruning each one it
+# drops. It carries no finalizer, so deleting the Application leaves the policies standing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: mitstack-hosting
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/acme/shop-cluster.git"
+    targetRevision: HEAD
+    path: hosting
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

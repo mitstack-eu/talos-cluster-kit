@@ -7,6 +7,9 @@ root.
 
 Back to [the README](../README.md).
 
+A block, a board and the other workspace terms this page uses are defined in
+[the workspace glossary](https://github.com/mitstack-eu/mitstack-workspace/blob/main/docs/glossary.md).
+
 ## Where the component set comes from
 
 The component set is the manifests every Talos cluster starts with.
@@ -86,11 +89,11 @@ fails it.
 
 Talos applies each manifest of the set once, creating every object that does
 not exist yet and leaving an existing one as it is. A change to a component or
-a policy therefore reaches only a cluster built from the release that carries
-it. The one exception is the hosting policies that
-`components.HostingPolicies` returns, which a running cluster takes through the
-`rollout` package, as
-[the README's rollout section](../README.md#how-a-running-cluster-takes-a-releases-policies)
+a policy therefore reaches a running cluster only through the files the
+`rollout` package renders. A block commits those files to the cluster
+repository at each upgrade, the block's operation that moves a running cluster
+to a newer kit release, and Argo CD applies them, as
+[the README's section on how a running cluster takes a release's components](../README.md#how-a-running-cluster-takes-a-releases-components)
 explains. On a new cluster, the first pass skips each object whose CRD is not yet
 registered, such as the Kyverno policies, and Talos applies it on a later pass.
 
@@ -335,10 +338,10 @@ TOOLS_IMAGE=talos-tools:ci go test -tags toolsimage -count=1 -run '^TestToolsIma
 | `TestPlane_MovesTheDefaultRouteOffAGatewayThatStoppedServing` | A routed gateway that is off, or that a node report reads failing, loses the default route to a gateway that serves | The same fake and a stand-in for the node report |
 | `TestPlane_AddsTheDefaultRouteOnTheNextCallWhenItsAddFailsAfterItsDelete` | A move whose add fails after its delete fails that call, naming the missing route, and the next call adds it first | The same fake |
 | `TestPlane_PowersAStoppedGatewayBackOnOnceAnOutageAndReadsItUnhealthyWhenItStaysDown` | A stopped gateway is powered on once with an event naming why it was off, and one that stops again before a report reads it serving stays off and reads unhealthy | The same fake and a stand-in for the node report |
-| `TestPlane_UpgradeReplacesOneLocationsGatewayAtATimeAtItsAddressAndNoNode` | An upgrade replaces each gateway built from an earlier list, one location at a time, at the same address, with the route never on a missing gateway and no node replaced | The same fake and a stand-in for the node report |
+| `TestPlane_UpgradeReplacesOneLocationsGatewayAtATimeAtItsAddressAndNoNodeAndServesTheReleaseOnlyOnceEachIsReplaced` | An upgrade replaces each gateway built from an earlier list, one location at a time, at the same address, with the route never on a missing gateway and no node replaced, and `GatewaysServeRelease` holds only once every location's gateway is built from this release's list and running | The same fake and a stand-in for the node report |
 | `TestPlane_AnUpgradeWhoseReplacementsServeOnlyInTheLastReportBeforeTheirDeadlineEndsWithinGatewayUpgradeBound` | An upgrade whose every replacement a report first reads serving in the last interval before its deadline replaces all three gateways within `GatewayUpgradeBound` | The same fake |
 | `TestCluster_RunsTheNodeReportAndTheOutsideProbeOnceEveryReportInterval` | The cluster's node report and outside probe CronJobs both run every `report.Interval`, the interval `GatewayUpgradeBound` counts in | The rendered component set |
-| `TestPlane_UpgradeWaitsOnAReplacementNoReportReadsServingAndNeverReplacesTheNext` | A replacement no report reads serving holds the upgrade, and `Problems` names it with the newest report's reading | The same fake and a stand-in for the node report |
+| `TestPlane_UpgradeWaitsOnAReplacementNoReportReadsServingAndNeitherReplacesTheNextNorServesTheRelease` | A replacement no report reads serving holds the upgrade, `GatewaysServeRelease` never holds meanwhile, and `Problems` names it with the newest report's reading | The same fake and a stand-in for the node report |
 | `TestPlane_NamesAReplacementRunningPastItsDeadlineUnhealthyAndKeepsWaitingWithoutDeletingAGateway` | A replacement past its 77-minute deadline is named with the deadline in the step's wait and as `CauseGatewayOverdue` in `Unhealthy`, no gateway is deleted before a node report from after its replacement began, and once read serving it keeps its place while the upgrade moves on | The same fake and a stand-in for the node report |
 | `TestPlane_NamesNoDeadlineForAReplacementThatHasNotReachedIt` | A replacement before its deadline is waited on with no deadline named and reads no cause | The same fake and a stand-in for the node report |
 | `TestPlane_ReplacesAFailedGatewayOfThisReleasesListAtItsAddressFromTheSameListOnceAFreshReportReadsTheOthersServing` | A gateway of this release's list running past its deadline without serving, or down after its one power-on, loses the route, is deleted on readings from after its replacement began, and its successor at the same address carries the same list and the failed gateway's id | The same fake, the node report stand-in and `internal/redundanttest` |
@@ -407,9 +410,9 @@ and a manual run. Every job runs on the runner the repository variable
 | `test` | `go vet ./...` and `go test -race ./...` pass on Go 1.26.10, and the `mirror check` step copies trust-manager's index through the gateway's skopeo into its registry |
 | `components` | Each rendered component matches a fresh render, and shellcheck passes on every script |
 | `tools image` | The tools image builds from the repository root, each of its commands runs, and it holds the report's, its outside probe's and the labeller's scripts byte for byte as the repository does. The outside probe and the security scan then write their ConfigMaps through a real API server, and a gateway's preparation copies talosctl, kubectl and every served manifest out of it with their pins, as [the section on the tests](#how-the-tests-run-the-scripts) describes |
-| `pr key gate` | A pull request's title or commits name a board key |
-| `release` | On a push to `main` with a new version in `.github/version`, pushes and signs the tools image, pulls it with no login, and tags a commit on top that pins it in `tools.Image` |
-| `record delivery` | On a push to `main`, records the push's board keys on Plain |
+| `pr key gate` | The pull request's title and at least one of its commits each name a board key, the `MIT-` number of an issue on Plain, mitstack's board. A key counts when it opens the subject followed by a colon, as in `MIT-123: fix the thing`, which delivers the issue, or when it closes the subject as `(refs MIT-123)`, which only names the issue and is the form the kit's commits and titles use. A change with no issue has no key to name, so the job fails it, and the issue is filed on the board first |
+| `release` | On a push to `main` with a new version in `.github/version`, and only after `test`, `components` and `tools image` pass, it pushes and signs the tools image and pulls it with no login. It then tags a commit on top that pins the image in `tools.Image`, as [the README](../README.md#how-a-release-is-versioned) describes |
+| `record delivery` | On a push to `main`, records on Plain each issue a commit of the push delivers, which means a subject that opens with `MIT-123:`. A subject that only ends with `(refs MIT-123)` records nothing |
 
 ## What the kit leaves to its blocks
 

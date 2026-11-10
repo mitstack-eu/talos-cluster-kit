@@ -129,9 +129,12 @@ func (p Plane) rollBackInstall(ctx context.Context, cause error) error {
 	return errors.Join(errs...)
 }
 
+// mintSecrets mints a cluster's keys, which a test swaps, since generating each RSA key takes seconds under the race detector.
+var mintSecrets = nodeconfig.NewSecrets
+
 // render mints the cluster's keys, gateway CA, enrolment token and issuer bucket, and renders every server's user data.
 func (p Plane) render(ctx context.Context, apiAddr, ingressAddr netip.Addr, now time.Time) (installation, error) {
-	secrets, err := nodeconfig.NewSecrets(now)
+	secrets, err := mintSecrets(now)
 	if err != nil {
 		return installation{}, err
 	}
@@ -159,17 +162,23 @@ func (p Plane) render(ctx context.Context, apiAddr, ingressAddr netip.Addr, now 
 	return inst, nil
 }
 
+// buildSet is the component set an install applies, and the base set it renders it from: the default set, or a hosting
+// cluster's with its keys.
+func (p Plane) buildSet(ctx context.Context, now time.Time, token string) (set, base components.Set, err error) {
+	base = components.Default()
+	if p.Hosting != nil {
+		if base, err = p.hostingSet(ctx, now); err != nil {
+			return components.Set{}, components.Set{}, err
+		}
+	}
+	set, err = p.clusterComponents(base, token)
+	return set, base, err
+}
+
 // renderNodes renders the cluster under the plane's gateway CA, and the user data of the builder, the worker builder and
 // a hosting cluster's serving server.
 func (p Plane) renderNodes(ctx context.Context, apiAddr netip.Addr, now time.Time, secrets *nodeconfig.Secrets, token, bucket string) (installation, components.Set, error) {
-	base := components.Default()
-	if p.Hosting != nil {
-		var err error
-		if base, err = p.hostingSet(ctx, now); err != nil {
-			return installation{}, components.Set{}, err
-		}
-	}
-	set, err := p.clusterComponents(base, token)
+	set, base, err := p.buildSet(ctx, now, token)
 	if err != nil {
 		return installation{}, components.Set{}, err
 	}

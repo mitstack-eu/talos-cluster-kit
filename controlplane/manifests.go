@@ -40,19 +40,38 @@ const (
 )
 
 // clusterComponents carries the node report, the topology labeller, the enrolment and the Argo CD application inline, so the
-// gateway mirrors their image. The report reads each gateway's mirror under p.GatewayCA, so the plane must hold one.
+// gateway mirrors their image.
 func (p Plane) clusterComponents(set components.Set, enrolmentToken string) (components.Set, error) {
+	own, data, err := p.ownComponents(enrolmentToken)
+	if err != nil {
+		return components.Set{}, err
+	}
+	application, err := execute(clusterApplication, data)
+	if err != nil {
+		return components.Set{}, err
+	}
+	set.Inline = append(slices.Clone(set.Inline), own...)
+	set.Inline = append(set.Inline, components.Manifest{Name: clusterApplicationManifest, Path: manifestDir + "cluster-application.yaml", Bytes: application})
+	return set, nil
+}
+
+// clusterApplicationManifest names the cluster's own Application, through which every later release reaches it.
+const clusterApplicationManifest = "mitstack-cluster-application"
+
+// ownComponents renders the node report, the topology labeller and the cluster's credentials, with the data the cluster's
+// own Application renders from. The report reads each gateway's mirror under p.GatewayCA, so the plane must hold one.
+func (p Plane) ownComponents(enrolmentToken string) ([]components.Manifest, map[string]any, error) {
 	if p.GatewayCA == nil {
-		return components.Set{}, errors.New("the node report reads each gateway's mirror under the gateway CA, and the plane holds none")
+		return nil, nil, errors.New("the node report reads each gateway's mirror under the gateway CA, and the plane holds none")
 	}
 	reportManifests, err := report.Manifests(report.Inputs{URL: p.PlatformURL + clusterReportsPath, SubscriptionID: p.Subscription,
 		ToolsImage: toolsImage(), ProofScript: p.ReportProofScript, Gateways: gatewayAddrs(), GatewayCA: p.GatewayCA.Cert})
 	if err != nil {
-		return components.Set{}, err
+		return nil, nil, err
 	}
 	labeller, err := p.topologyManifests()
 	if err != nil {
-		return components.Set{}, err
+		return nil, nil, err
 	}
 	data := map[string]any{
 		"Namespace":            nodeconfig.TalosAPINamespace,
@@ -70,19 +89,13 @@ func (p Plane) clusterComponents(set components.Set, enrolmentToken string) (com
 	}
 	tokens, err := execute(clusterTokens, data)
 	if err != nil {
-		return components.Set{}, err
+		return nil, nil, err
 	}
-	application, err := execute(clusterApplication, data)
-	if err != nil {
-		return components.Set{}, err
-	}
-	set.Inline = append(slices.Clone(set.Inline),
-		components.Manifest{Name: "mitstack-node-report", Path: "report/report.yaml", Bytes: reportManifests},
-		components.Manifest{Name: "mitstack-node-topology", Path: "topology/topology.yaml", Bytes: labeller},
-		components.Manifest{Name: "mitstack-cluster-tokens", Path: manifestDir + "cluster-tokens.yaml", Bytes: tokens},
-		components.Manifest{Name: "mitstack-cluster-application", Path: manifestDir + "cluster-application.yaml", Bytes: application},
-	)
-	return set, nil
+	return []components.Manifest{
+		{Name: "mitstack-node-report", Path: "report/report.yaml", Bytes: reportManifests},
+		{Name: "mitstack-node-topology", Path: "topology/topology.yaml", Bytes: labeller},
+		{Name: "mitstack-cluster-tokens", Path: manifestDir + "cluster-tokens.yaml", Bytes: tokens},
+	}, data, nil
 }
 
 func execute(t *template.Template, data map[string]any) ([]byte, error) {

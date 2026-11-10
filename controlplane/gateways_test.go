@@ -281,16 +281,26 @@ func (h *harness) upgrade(check func()) {
 	h.t.Fatal("the upgrade did not finish within 400 calls")
 }
 
-func TestPlane_UpgradeReplacesOneLocationsGatewayAtATimeAtItsAddressAndNoNode(t *testing.T) {
+func TestPlane_UpgradeReplacesOneLocationsGatewayAtATimeAtItsAddressAndNoNodeAndServesTheReleaseOnlyOnceEachIsReplaced(t *testing.T) {
 	h := newHarness(t, withReports)
 	h.built()
 	current := h.gatewayIn(controlplane.GatewayLocation).Labels[controlplane.KeyGatewayList]
 	nodes := controlplane.IDs(h.byRole(controlplane.RoleNode), controlplane.ServerID)
 	old := controlplane.IDs(h.byRole(controlplane.RoleGateway), controlplane.ServerID)
+	built := h.servesRelease()
 	h.relabelGateways("an-earlier-list")
+	stale := h.servesRelease()
 	installEvents := len(h.events)
+	var heldEarly []string
 
 	h.upgrade(func() {
+		if h.servesRelease() {
+			for _, gw := range h.byRole(controlplane.RoleGateway) {
+				if gw.Labels[controlplane.KeyGatewayList] != current || gw.Status != controlplane.ServerRunning {
+					heldEarly = append(heldEarly, gatewayLabel(gw))
+				}
+			}
+		}
 		network := h.network()
 		var down []string
 		for _, loc := range controlplane.Locations {
@@ -321,6 +331,10 @@ func TestPlane_UpgradeReplacesOneLocationsGatewayAtATimeAtItsAddressAndNoNode(t 
 	issued := slices.DeleteFunc(slices.Clone(h.events[installEvents:]), func(e string) bool { return !strings.HasPrefix(e, "issued the certificate") })
 	assert.Len(t, issued, len(controlplane.Locations), "certificate events of the replacements")
 	assert.NotContains(t, h.network().Labels, controlplane.KeyGatewayUpgrade, "the network's labels once the upgrade is done")
+	assert.True(t, built, "whether the gateways of a cluster just built serve its release")
+	assert.False(t, stale, "whether gateways built from an earlier list serve the release")
+	assert.Empty(t, heldEarly, "gateways not yet built from this release's list or not running when the predicate held")
+	assert.True(t, h.servesRelease(), "whether the gateways serve the release once the upgrade is done")
 }
 
 func TestPlane_AnUpgradeWhoseReplacementsServeOnlyInTheLastReportBeforeTheirDeadlineEndsWithinGatewayUpgradeBound(t *testing.T) {
@@ -364,22 +378,27 @@ func locationOf(address string) string {
 	return ""
 }
 
-func TestPlane_UpgradeWaitsOnAReplacementNoReportReadsServingAndNeverReplacesTheNext(t *testing.T) {
+func TestPlane_UpgradeWaitsOnAReplacementNoReportReadsServingAndNeitherReplacesTheNextNorServesTheRelease(t *testing.T) {
 	h := newHarness(t, withReports)
 	h.built()
 	nbg1, hel1 := h.gatewayIn("nbg1").ID, h.gatewayIn("hel1").ID
 	h.relabelGateways("an-earlier-list")
 	h.failing = []string{controlplane.GatewayAddress}
+	var served []string
 
 	h.plane.Upgrading = true
 	require.NoError(t, h.ensure())
 	h.plane.Upgrading = false
 	for range 105 {
 		require.NoError(t, h.converge())
+		if h.servesRelease() {
+			served = append(served, h.now.Format(time.RFC3339))
+		}
 		h.now = h.now.Add(time.Minute)
 		h.cloud.Advance(h.buildTakes, h.imageTakes)
 	}
 
+	assert.Empty(t, served, "the times the predicate held while fsn1's replacement was never read serving")
 	assert.Equal(t, nbg1, h.gatewayIn("nbg1").ID, "the gateway in nbg1")
 	assert.Equal(t, hel1, h.gatewayIn("hel1").ID, "the gateway in hel1")
 	replacement := h.gatewayIn(controlplane.GatewayLocation)
@@ -589,6 +608,17 @@ func TestPlane_AnUpgradeWithNoGatewayToReplaceChangesNothingThoughNoReportNamesA
 
 	assert.Equal(t, before, h.cloud.Writes(), "what the upgrade changed")
 	assert.Empty(t, h.plane.Problems(context.Background(), h.read()), "problems")
+}
+
+func (h *harness) servesRelease() bool {
+	h.t.Helper()
+	ok, err := h.plane.GatewaysServeRelease(context.Background(), h.read())
+	require.NoError(h.t, err)
+	return ok
+}
+
+func gatewayLabel(gw controlplane.Server) string {
+	return fmt.Sprintf("gateway %d in %s from %s, %s", gw.ID, gw.Location, gw.Labels[controlplane.KeyGatewayList], gw.Status)
 }
 
 func TestPlane_RefusesToRebuildALostGatewayWithoutTheGatewayCA(t *testing.T) {

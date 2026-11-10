@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 )
 
 type Versions struct {
@@ -92,16 +93,42 @@ func defaultManifest(name, file string) Manifest {
 // imageLineRe matches an image field, an operator's *_IMAGE_NAME default or an --*-image= flag, its reference in group 1.
 var imageLineRe = regexp.MustCompile(`(?m)^[ \t]*(?:- )?(?:(?:image|[A-Z][A-Z_]*_IMAGE_NAME):[ \t]*|--[a-z0-9-]+-image=)"?([^"\s]+)"?[ \t]*$`)
 
+// manifestImages keeps the images of each manifest under its name with the hash of the bytes they were read from, so it
+// holds one slot per manifest name however many contents a name has had, such as an install's enrolment token. Scanning a
+// manifest takes the better part of a second under the race detector and a cluster set differs from the last in few of its
+// manifests.
+var manifestImages sync.Map
+
+type scanned struct {
+	hash   [sha256.Size]byte
+	images []Image
+}
+
+func (m Manifest) images() ([]Image, error) {
+	hash := sha256.Sum256(m.Bytes)
+	if cached, ok := manifestImages.Load(m.Name); ok && cached.(scanned).hash == hash {
+		return cached.(scanned).images, nil
+	}
+	var images []Image
+	for _, match := range imageLineRe.FindAllSubmatch(m.Bytes, -1) {
+		image, err := ParseImage(string(match[1]))
+		if err != nil {
+			return nil, fmt.Errorf("manifest %s: %w", m.Name, err)
+		}
+		images = append(images, image)
+	}
+	manifestImages.Store(m.Name, scanned{hash: hash, images: images})
+	return images, nil
+}
+
 func (s Set) Images() ([]Image, error) {
 	images := append(slices.Clone(s.TalosImages), logCollectorImage)
 	for _, m := range slices.Concat(s.Served, s.Inline) {
-		for _, match := range imageLineRe.FindAllSubmatch(m.Bytes, -1) {
-			image, err := ParseImage(string(match[1]))
-			if err != nil {
-				return nil, fmt.Errorf("manifest %s: %w", m.Name, err)
-			}
-			images = append(images, image)
+		found, err := m.images()
+		if err != nil {
+			return nil, err
 		}
+		images = append(images, found...)
 	}
 	slices.SortFunc(images, func(a, b Image) int { return strings.Compare(a.Ref(), b.Ref()) })
 	return slices.Compact(images), nil

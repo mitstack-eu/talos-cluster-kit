@@ -872,7 +872,7 @@ change `report/scripts/report.sh`.
 | `nodes` | Each node with its Talos version, allocatable resources, `topology.kubernetes.io/zone` and `topology.kubernetes.io/region` labels, and, as `zoneLabelManagers`, each field manager that wrote its zone label | `kubectl get nodes --show-managed-fields` |
 | `etcd` | Each etcd member, `healthy` only when its node answered `talosctl etcd status` with an empty `ERRORS` cell, the `leader`, and a `statusError` naming a status read that failed | `talosctl etcd members` and `talosctl etcd status` |
 | `systemVolumes` | How each node's `STATE` and `EPHEMERAL` volumes are encrypted | `talosctl get volumestatus` |
-| `argocd` | Each Application's health, sync and applied objects, each object with Argo CD's health of it as [the section below](#how-the-report-shows-each-objects-health-and-each-containers-state) describes, the answer each of 17 routes gives a caller with no session, and the `argocd` namespace's Services and Ingresses | The Applications, `ARGOCD_URL` and the Ingress read |
+| `argocd` | Each Application's health, sync, `revision` and applied objects, each object with Argo CD's health of it, as [the section on the revision](#how-the-report-names-the-revision-each-application-was-compared-against) and [the section on object health](#how-the-report-shows-each-objects-health-and-each-containers-state) describe, the answer each of 17 routes gives a caller with no session, and the `argocd` namespace's Services and Ingresses | The Applications, `ARGOCD_URL` and the Ingress read |
 | `kubernetes.argocdPods` | Each pod in `argocd` with its containers' images | The pod read |
 | `pods` | Every pod's namespace, name, node or `null`, phase, and `containers`, each init and app container with its state and reason, as [the section below](#how-the-report-shows-each-objects-health-and-each-containers-state) describes | `kubectl get pods -A` |
 | `images` | Each image reference a pod or the pod template of a Deployment, StatefulSet, DaemonSet, Job or CronJob names, once, as `image` with the `digest` it names or that a pod's status reports it runs by, and otherwise `null`. A failed read leaves `{exitStatus, stderr}` with `read` naming `pods` or `workloads`, in place of a partial list | The pod read and `kubectl get deployments,statefulsets,daemonsets,jobs,cronjobs -A` |
@@ -899,6 +899,31 @@ as the finding.
 The 17 routes are listed in `argocd_routes` in `report.sh`. Each request
 sends no credential, cookie or body. The report keeps each answer's status and
 size, and for userinfo whether it says a caller is signed in.
+
+### How the report names the revision each Application was compared against
+
+A block that deploys through Argo CD commits to the repository Argo CD reads,
+and can then read its Application's health from the node report to judge the
+deploy. Health alone does not say which commit Argo CD judged, so a Healthy
+Application read before Argo CD saw the block's commit looks the same as one
+read after it. Each Application therefore carries `revision`, the commit Argo
+CD last compared it against, from the Application's `status.sync.revision`. A
+reader can then tell whether the health belongs to its own commit.
+
+The `revision` reads `null` in two cases, and a reader takes either as no
+revision to judge. Argo CD writes no revision until it has compared the
+Application once. An Application with several sources keeps one revision per
+source in `status.sync.revisions`, which the report does not read. The
+revision stays when the report leaves out the applied objects to keep the body
+within the platform's 256 KiB. Two Applications of such a report read like
+this, where Argo CD wrote a revision for `cluster-root` and none for `shop`:
+
+```json
+{"argocd": {"applications": [
+  {"name": "cluster-root", "health": "Degraded", "sync": "Synced", "revision": "9b2c4e7a1f3d5c8e0a6b4d2f9e7c5a3b1d8f6e4c"},
+  {"name": "shop", "health": "Degraded", "sync": "OutOfSync", "revision": null}
+]}}
+```
 
 ### How the report shows each object's health and each container's state
 
@@ -927,7 +952,7 @@ log. One Application and one pod read like this:
 
 ```json
 {
-  "argocd": {"applications": [{"name": "cluster-root", "health": "Degraded", "sync": "Synced", "resources": [
+  "argocd": {"applications": [{"name": "cluster-root", "health": "Degraded", "sync": "Synced", "revision": "9b2c4e7a1f3d5c8e0a6b4d2f9e7c5a3b1d8f6e4c", "resources": [
     {"group": "external-secrets.io", "kind": "ExternalSecret", "namespace": "app-shop", "name": "shop-db", "sync": "Synced",
       "health": "Degraded", "message": "could not get secret data from provider: ..."},
     {"group": "", "kind": "ServiceAccount", "namespace": "app-shop", "name": "shop-runtime", "sync": "Synced", "health": null}
@@ -1004,9 +1029,10 @@ or times out, the script posts a report holding only an `error` that names it,
 and exits non-zero.
 
 No Application carries its applied objects when they would take the body past
-the platform's 256 KiB. Nothing trims `storage`, `services`, `pods` or
-`images`, since a partial list would read as a whole one. In the report's
-tests, 1,000 pods naming 300 distinct images make a body of 151,968 bytes.
+the platform's 256 KiB, and each still carries its name, health, sync and
+revision. Nothing trims `storage`, `services`, `pods` or `images`, since a
+partial list would read as a whole one. In the report's tests, 1,000 pods
+naming 300 distinct images make a body of 151,968 bytes.
 
 ### How a report is signed
 

@@ -70,12 +70,13 @@ differs from a fresh render.
 The script also drops an empty `labels` or `annotations` map from the top-level
 `metadata` of every document it renders, with `drop_empty_metadata_maps` in
 `scripts/lib/empty-maps.sh`. The API server stores no empty map, so a document
-that declares one never matches its live object and Argo CD reads it
-OutOfSync. The step names no chart and no kind, and leaves a map anywhere
-below the top-level `metadata` as it is. `components/rendered_test.go` runs
-the step on a document that holds both and checks every rendered manifest for
-a webhook that fails open, an autoscaler without a metrics API and an empty
-map, as [the README](../README.md#what-the-rendered-components-must-look-like-for-argo-cd-to-read-them-synced)
+that declares one never matches its live object, and Argo CD reads its
+Application as OutOfSync, which means the cluster differs from the repository.
+The step names no chart and no kind, and leaves a map anywhere
+below the top-level `metadata` as it is. `rendered_set_test.go` runs
+the step on documents that hold each kind of map and checks every rendered
+manifest for a webhook that fails open, an autoscaler without a metrics API and
+an empty map, as [the README](../README.md#what-the-rendered-components-must-look-like-for-argo-cd-to-read-them-synced)
 describes.
 
 Talos trims the blank space at both ends of each document of a manifest before

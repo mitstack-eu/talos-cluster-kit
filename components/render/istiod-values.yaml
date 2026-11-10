@@ -1,7 +1,7 @@
 profile: ambient
 image: docker.io/istio/pilot:1.30.7-distroless@sha256:337c5423c9b235855aadca8762f1ac3f0ce584833e49c50176382382099ff201
 base:
-  # A tool that renders with helm template and applies server-side must set this, since istiod rewrites it to Fail once ready.
+  # Fail, as in istio-base-values.yaml, since this chart renders the second validation webhook.
   validationFailurePolicy: Fail
 # No cluster the kit builds serves the metrics API an autoscaler reads.
 autoscaleEnabled: false

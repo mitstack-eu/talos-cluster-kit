@@ -1696,11 +1696,13 @@ objects when the Application carrying the finalizer goes.
 
 ### What the rendered components must look like for Argo CD to read them Synced
 
-Argo CD compares each rendered document with the live object, and with
-`selfHeal` on it applies the document again whenever they differ. A document
-that the cluster changes after it applies, or that the API server stores
-differently from how it is written, never matches, so its Application reads
-OutOfSync or Degraded and the read-back above never completes. The committed
+Argo CD compares each rendered document with the live object. With
+`selfHeal` on, which makes Argo CD apply the document again whenever they
+differ, a document that the cluster changes after it applies, or that the API
+server stores differently from how it is written, never matches. Its
+Application then reads OutOfSync, meaning the cluster differs from the
+repository, or Degraded, meaning an object does not run, and the read-back of
+a release, described in the previous section, never completes. The committed
 manifests therefore say what the cluster ends up holding, and the kit adds no
 `ignoreDifferences` entry. Three rules keep them so:
 
@@ -1722,9 +1724,9 @@ manifests therefore say what the cluster ends up holding, and the kit adds no
   The Kyverno policy definitions and ztunnel's objects are the charts that
   emit such maps today.
 
-`components/rendered_test.go` checks the first two rules and the third over
-every manifest of the default and hosting sets, and the render's own step
-against a document that holds both kinds of map.
+`rendered_set_test.go` checks the three rules over every manifest the kit
+renders, and the render's own step against documents that hold each kind of
+map.
 
 ### How OpenBao is initialised
 

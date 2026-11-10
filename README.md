@@ -41,7 +41,7 @@ the order a block uses them.
 
 | Package | What it does | Main entry points |
 |---|---|---|
-| `components` | Holds the pinned component set: Cilium, the custom resource definition (CRD) of Cilium's cluster-wide policy, Argo CD, the policy that keeps pods from Hetzner's metadata service at `169.254.169.254`, Istio's ambient mesh with its mesh-wide mutual TLS policy and the mesh probe's target, Kyverno with its four admission policies, the CloudNativePG operator with the database-slice policy, the local path provisioner behind the default StorageClass, and the node-local OpenTelemetry Collector. It also holds the boot set of a cluster that hosts the platform | `Default`, `Hosting`, `Set.Images`, `LogCollector`, `ParseImage` |
+| `components` | Holds the pinned component set: Cilium, the custom resource definition (CRD) of Cilium's cluster-wide policy, Argo CD, the policy that keeps pods from Hetzner's metadata service at `169.254.169.254`, Istio's ambient mesh with its mesh-wide mutual TLS policy and the mesh probe's target, Kyverno with its four admission policies, the CloudNativePG operator with the database-slice policy, the local path provisioner behind the default StorageClass, and the node-local OpenTelemetry Collector. It also holds the boot set of a cluster that hosts the platform | `Default`, `Hosting`, `HostingServed`, `Manifest` (whose `Name` is a component's name), `Set.Images`, `LogCollector`, `ParseImage` |
 | `nodeconfig` | Renders a control-plane node's or a worker node's machine configuration with Talos's own `machinery` module and validates it against Talos's schema | `Render`, `RenderWorker`, `Cluster`, `Node`, `NewSecrets`, `ParseSecrets`, `Secrets.AdminTalosconfig` |
 | `image` | Runs imager, Sidero Labs' open-source image builder, with the `hcloud` or the `metal` profile, and discards its output | `Run`, `Build` |
 | `mirror` | Lists every image the nodes pull, each by digest | `List`, `Render` |
@@ -50,7 +50,7 @@ the order a block uses them.
 | `report` | Renders the node report, a CronJob that reads the cluster and posts what it read to the platform, signed for its exact body. [What the node report carries](#what-the-node-report-carries) lists its members, the nine checks it names and what happens when a read fails. It also renders the outside probe, a CronJob in `kube-system` that calls the mesh probe's target with no workload identity and reads each gateway's mirror from outside the mesh, the admission probe namespace and the daily security scan. The report holds no right on Secrets | `Manifests`, `Interval` |
 | `topology` | Renders the topology labeller, a CronJob that labels each Cloud node with its zone and region, and holds the two label names | `Manifests`, `Labels`, `ZoneLabel`, `RegionLabel`, `FieldManager` |
 | `openbaoinit` | Renders OpenBao's init Job, which the hosting set carries: it initialises a hosting cluster's OpenBao once, commits the root token and recovery key to the cluster repository as PGP messages, then writes the policy each slice's External Secrets reads with | `Manifests`, `Inputs`, `InitFile` |
-| `rollout` | Gives a running cluster a release's component set: the files a block commits to the cluster repository, where one Argo CD Application per component applies, changes and prunes it, the files an earlier release committed that this one retires, and the read-back of each component from the node report | `Release.Files`, `Release.Retired`, `Release.ReadBack`, `LegacyFiles` |
+| `rollout` | Gives a running cluster a release's component set, the manifests one kit release carries; [How a running cluster takes a release's components](#how-a-running-cluster-takes-a-releases-components) defines each term. A block commits the set's files to the cluster repository, where Argo CD applies each component through an Application of its own, which is Argo CD's record of one repository directory it keeps applied to the cluster. Files that an earlier release committed and this release no longer states are retired, which means deleted. The read-back then checks from the node report that the cluster runs each component as the release states it | `Release.Files`, `Release.Retired`, `Release.ReadBack`, `LegacyFiles` |
 | `controlplane` | Builds and deletes a Talos control plane on Hetzner Cloud: a network, a firewall, a gateway in each of `fsn1`, `nbg1` and `hel1`, a builder that makes the cluster's own snapshot, a node in each of `fsn1`, `nbg1` and `hel1`, and an API and an ingress load balancer. Each call reads the resources by their labels and takes the one change still missing. A refusal is a `*Refusal` with a `Class` and a `Message`, which the block answers as its own framework's refusal | `Plane`, `Plane.Read`, `Plane.EnsureNetwork`, `Plane.NextStep`, `Plane.Problems`, `Plane.Unhealthy`, `Plane.Outputs`, `Plane.Release`, `Plane.GatewaysServeRelease`, `Plane.Delete`, `NewAPI`, `Refusal`, `TopologyLabels`, `GatewayUpgradeBound` |
 | `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image carries and the gateway copies out of it, and `tools/jq.env`, which pins the tools image's jq. It names the tools image a release published and the directory in that image that holds the node report's, its outside probe's and the labeller's scripts, and where in that image each served manifest sits | `Env`, `Pin`, `Image`, `ScriptDir`, `ManifestPath` |
 | `redundant` | Carries a removal's redundant set, each member with its reading, to the guard the block passes, block-kit's `redundancy.Set.AllowRemoval`, which this module does not import | `Set`, `Guard`, `Held` |
@@ -1457,8 +1457,10 @@ block holds no credential for the cluster's API.
 The `rollout` package takes that other way through the cluster repository.
 The build installs one Argo CD Application of the cluster's own, named
 `cluster`, which applies every manifest in the repository's `cluster/`
-directory. The carriage is what this section describes: a block's commit of a
-release's components to that repository, for the cluster's Argo CD to apply.
+directory. This section calls the `rollout` package's work the carriage: a block's commit of a release's components to that repository, for the cluster's Argo CD to apply.
+A block runs the carriage at each upgrade of a running cluster, the block's
+operation that moves it to a newer kit release. It builds the release, waits
+until `Plane.GatewaysServeRelease` reports that every gateway, the cluster's image mirror, holds the release's images, so that no component names an image the cluster cannot pull, and then commits.
 
 Two things are called a release here. A kit release is one tagged version of
 this module, such as v0.47.0. A `rollout.Release` is the Go value that lists
@@ -1467,15 +1469,13 @@ form, and "release" alone means the kit release.
 
 A component is one named manifest of the set: a `components.Manifest`, whose
 `Name` is the label `components.Default` and `components.HostingServed` give
-it where they build the set, such as `cilium`, `argocd` or `kyverno`. A
-component's name, prefixed with `component-`, must be a valid Kubernetes
-name of at most 63 characters, lowercase letters, digits and hyphens that
+it where they build the set, such as `cilium`, `argocd` or `kyverno`. A component's name becomes part of its Application's name, so `component-` followed by it must be a valid Kubernetes name of at most 63 characters, lowercase letters, digits and hyphens that
 start and end with a letter or digit, since it names that component's
 Application, and `Release.Files` refuses a name that is not.
 
 A block builds a `rollout.Release` with `Plane.Release` in `controlplane` from
 the same plane it builds the cluster with. It holds every manifest the build
-applies, with two exceptions. The hosting set's inline manifests stay out,
+applies, with two exceptions. The `rollout.Release` leaves out the hosting set's inline manifests stay out,
 since only an install's keys render them. The `cluster` Application stays out
 too, since the carriage runs through it. The block then commits the files
 `Release.Files` returns in one commit, and reads the result back with
@@ -1488,14 +1488,15 @@ retired, err := release.Retired(heldPaths)       // take each of these out in th
 reading, err := release.ReadBack(reportBody)     // what the newest node report says of the release
 ```
 
-In the example, `heldPaths` is every file path the cluster repository holds at
+In the example, `"acme/shop-cluster"` is the cluster repository as GitHub
+names it, `owner/name`: `Release.Files` builds each Application's source URL
+from it and refuses any other form. `heldPaths` is every file path the cluster repository holds at
 the commit the block builds on, as the block lists them from its checkout, and
 `reportBody` is the JSON body of the newest node report the platform received
-from the cluster.
+from the cluster. `ReadBack` returns a `rollout.Reading`, which the end of this
+section describes.
 
-`Release.Files` returns two files per component, each component's manifest
-before any Application, so Argo CD never syncs an Application whose
-directory is empty:
+`Release.Files` returns two files per component, with every manifest file ahead of every Application file in the list, so Argo CD never syncs an Application whose directory is empty:
 
 | File | What it holds |
 |---|---|
@@ -1559,10 +1560,14 @@ name passes the Application-name rule above, and the two files `LegacyFiles`
 lists. Any other file, such as an app's own manifest under `components/`,
 stays.
 
-`LegacyFiles` are `hosting/policies.yaml` and `cluster/mitstack-hosting.yaml`,
-which carried the hosting policies alone on a cluster built by kit release
-v0.46.0 or earlier. The commit that adds `component-mitstack-hosting-flows` takes both
-out. The `cluster` Application then prunes the Application
+`LegacyFiles` are `hosting/policies.yaml` and `cluster/mitstack-hosting.yaml`.
+Kit release v0.32.0 gave a running cluster no way to change its hosting
+policies, because Talos alone applied them at the build. Kit release v0.33.0
+added the `rollout` package, and releases through v0.46.0 committed those two
+files: `hosting/policies.yaml` held every hosting policy and a marker, and
+`cluster/mitstack-hosting.yaml` was the Application that applied it. Kit release v0.47.0 adds
+`component-mitstack-hosting-flows`, and the commit that lands it takes both
+legacy files out. The `cluster` Application then prunes the Application
 `mitstack-hosting`, which carries no finalizer, so the policies stay running.
 `component-mitstack-hosting-flows` applies the same policies and tracks them
 from then on, so the cluster keeps one copy of each, applied by one
@@ -1570,16 +1575,17 @@ Application.
 
 The read-back comes from the node report, which lists each Argo CD
 Application with the objects it applied. `Release.ReadBack` reads the release
-back only when each component's Application reads Synced and Healthy and
+back only when each component's Application reads Synced, which means the cluster matches the repository, and Healthy, which means its objects run, and
 lists exactly the objects the release states for it, each Synced. Until
 Argo CD compares the new release, its Application still lists the marker of
 the release before, so the report reads nothing back. A report that would
 reach 256 KiB leaves out every Application's objects, and reads nothing back
 either.
 
-A reading's `Problem` says why a report does not read the release back, and
-is empty once it does. Its `Applied` then names each object read back, as its
-kind and its namespace and name, for example:
+`Release.ReadBack` returns a `rollout.Reading`. Its `Problem` says why a report
+does not read the release back, and is empty once it does. Its `Applied` then
+names each object read back, as its kind and its namespace and name, for
+example:
 
 ```text
 CiliumClusterwideNetworkPolicy mitstack-hosting-flows
@@ -1587,8 +1593,7 @@ ConfigMap argocd/component-mitstack-hosting-flows-3f9a1c0d2b7e
 ```
 
 The tests in `rollout/rollout_test.go` build a cluster from kit release
-v0.32.0's flows and one from kit release v0.46.0's committed files, as Talos and Argo CD would, and run
-it through two upgrades. The cluster in `testutil/argocd.go` stands in for
+v0.32.0's flows and one from kit release v0.46.0's committed files, as Talos and Argo CD would, and run them through upgrades to the release under test. In the first, "flows" are the hosting network policies. The cluster in `testutil/argocd.go` stands in for
 the cluster's API and for Argo CD. It applies each Application's directory,
 prunes what the directory no longer holds, and deletes an Application's
 objects when the Application carrying the finalizer goes.
@@ -1875,8 +1880,9 @@ A block takes a change only by requiring a newer tag of this module in its
 file `.github/version` names the next release. Once a pull request merges and
 every CI job passes on `main`, the `release` job tags that commit `v` followed
 by the version, unless the tag exists already. The `record delivery` job then
-records the push's board keys, the `MIT-` issue keys its commits name, on
-Plain, mitstack's board.
+records the push's board keys on Plain, mitstack's board: the issues its
+commits deliver, whose subject opens `MIT-123:`, and none that a subject only
+references with a closing `(refs MIT-123)`.
 
 A release also publishes the tools image, which the kit's Jobs and CronJobs
 run in. The image carries the report's, its outside probe's and the

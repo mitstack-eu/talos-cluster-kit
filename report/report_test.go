@@ -312,7 +312,7 @@ func openBao(t *testing.T, members ...openBaoMember) string {
 	return strings.Join(named, " ")
 }
 
-func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipAndEachApplicationsHealthAndAppliedObjectsSignedForItsExactBody(t *testing.T) {
+func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipAndEachApplicationsHealthComparedRevisionAndAppliedObjectsSignedForItsExactBody(t *testing.T) {
 	tools, posted, out, err := runReport(t, map[string]string{"date": reportAt})
 
 	require.NoError(t, err, out)
@@ -330,7 +330,7 @@ func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipA
 			"allocatable": map[string]any{"cpu": "1950m", "memory": "3615Mi", "pods": "110"}, "zone": nil, "region": nil,
 			"zoneLabelManagers": []any{}},
 	}, posted.body["nodes"], "each node's zone and region labels, and every manager of its zone label")
-	assert.Equal(t, readJSON(t, "testdata", "golden", "argocd.json"), posted.body["argocd"], "a Secret is among the applied objects, each with its identity, sync and health alone")
+	assert.Equal(t, readJSON(t, "testdata", "golden", "argocd.json"), posted.body["argocd"], "each Application names the revision Argo CD compared it against or null, and a Secret is among the applied objects, each with its identity, sync and health alone")
 	wantCalls := []string{
 		"kubectl " + nodesRead,
 		"kubectl get applications.argoproj.io -n argocd -o json",
@@ -505,7 +505,7 @@ func TestReport_LeavesOutEveryApplicationsAppliedObjectsWhenCarryingThemWouldPas
 
 			require.NoError(t, err, out)
 			assert.LessOrEqual(t, len(posted.raw), 256<<10, "the body fits the platform's limit")
-			assert.Equal(t, readJSON(t, "testdata", "golden", "argocd-without-applied.json"), posted.body["argocd"], "no Application carries a list, so no observer reads a left-out object absent")
+			assert.Equal(t, readJSON(t, "testdata", "golden", "argocd-without-applied.json"), posted.body["argocd"], "each Application keeps its revision and carries no list, so no observer reads a left-out object absent")
 			assert.Len(t, posted.body["nodes"], 3, "the rest of the report stays whole")
 			assert.ElementsMatch(t, tc.kinds, posted.body["subscriptionResourceKinds"], "a kind whose objects would pass 1000 is left out whole")
 			assert.Len(t, posted.body["subscriptionResources"], tc.objects, "each kind listed is listed whole")

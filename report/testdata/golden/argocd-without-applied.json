@@ -3,17 +3,20 @@
     {
       "name": "cluster-root",
       "health": "Degraded",
-      "sync": "Synced"
+      "sync": "Synced",
+      "revision": "9b2c4e7a1f3d5c8e0a6b4d2f9e7c5a3b1d8f6e4c"
     },
     {
       "name": "repository-credentials",
       "health": "Healthy",
-      "sync": "OutOfSync"
+      "sync": "OutOfSync",
+      "revision": "4e1d7a0c3b6f9e2d5a8c1b4e7f0a3d6c9b2e5f8a"
     },
     {
       "name": "shop",
       "health": "Degraded",
-      "sync": "OutOfSync"
+      "sync": "OutOfSync",
+      "revision": null
     }
   ],
   "routes": [

@@ -7,6 +7,9 @@ root.
 
 Back to [the README](../README.md).
 
+A block, a board and the other workspace terms this page uses are defined in
+[the workspace glossary](https://github.com/mitstack-eu/mitstack-workspace/blob/main/docs/glossary.md).
+
 ## Where the component set comes from
 
 The component set is the manifests every Talos cluster starts with.
@@ -88,7 +91,8 @@ Talos applies each manifest of the set once, creating every object that does
 not exist yet and leaving an existing one as it is. A change to a component or
 a policy therefore reaches a running cluster only through the files the
 `rollout` package renders, which a block commits to the cluster repository at
-each upgrade for Argo CD to apply, as
+each upgrade, the block's operation that moves a running cluster to a newer kit
+release, for Argo CD to apply, as
 [the README's rollout section](../README.md#how-a-running-cluster-takes-a-releases-components)
 explains. On a new cluster, the first pass skips each object whose CRD is not yet
 registered, such as the Kyverno policies, and Talos applies it on a later pass.
@@ -406,9 +410,9 @@ and a manual run. Every job runs on the runner the repository variable
 | `test` | `go vet ./...` and `go test -race ./...` pass on Go 1.26.10, and the `mirror check` step copies trust-manager's index through the gateway's skopeo into its registry |
 | `components` | Each rendered component matches a fresh render, and shellcheck passes on every script |
 | `tools image` | The tools image builds from the repository root, each of its commands runs, and it holds the report's, its outside probe's and the labeller's scripts byte for byte as the repository does. The outside probe and the security scan then write their ConfigMaps through a real API server, and a gateway's preparation copies talosctl, kubectl and every served manifest out of it with their pins, as [the section on the tests](#how-the-tests-run-the-scripts) describes |
-| `pr key gate` | A pull request's title or commits name a board key |
+| `pr key gate` | A pull request's title or commits name a board key, the `MIT-` number of the issue on the workspace's board that the change belongs to |
 | `release` | On a push to `main` with a new version in `.github/version`, pushes and signs the tools image, pulls it with no login, and tags a commit on top that pins it in `tools.Image` |
-| `record delivery` | On a push to `main`, records the push's board keys on Plain |
+| `record delivery` | On a push to `main`, records the push's board keys on Plain, the board that tracks the work |
 
 ## What the kit leaves to its blocks
 

@@ -1460,9 +1460,21 @@ The build installs one Argo CD Application of the cluster's own, named
 directory. The carriage is what this section describes: a block's commit of a
 release's components to that repository, for the cluster's Argo CD to apply.
 
-A `rollout.Release` is the list of component manifests one kit release
-carries. A block builds it with `Plane.Release` in `controlplane` from the
-same plane it builds the cluster with. It holds every manifest the build
+Two things are called a release here. A kit release is one tagged version of
+this module, such as v0.47.0. A `rollout.Release` is the Go value that lists
+the component manifests one kit release carries; the text writes it in code
+form, and "release" alone means the kit release.
+
+A component is one named manifest of the set: a `components.Manifest`, whose
+`Name` is the label `components.Default` and `components.HostingServed` give
+it where they build the set, such as `cilium`, `argocd` or `kyverno`. A
+component's name, prefixed with `component-`, must be a valid Kubernetes
+name of at most 63 characters, lowercase letters, digits and hyphens that
+start and end with a letter or digit, since it names that component's
+Application, and `Release.Files` refuses a name that is not.
+
+A block builds a `rollout.Release` with `Plane.Release` in `controlplane` from
+the same plane it builds the cluster with. It holds every manifest the build
 applies, with two exceptions. The hosting set's inline manifests stay out,
 since only an install's keys render them. The `cluster` Application stays out
 too, since the carriage runs through it. The block then commits the files
@@ -1473,8 +1485,13 @@ too, since the carriage runs through it. The block then commits the files
 release, err := plane.Release()
 files, err := release.Files("acme/shop-cluster") // commit each file's Bytes at its Path, in one commit
 retired, err := release.Retired(heldPaths)       // take each of these out in that same commit
-reading, err := release.ReadBack(reportBody)     // the body of the newest node report
+reading, err := release.ReadBack(reportBody)     // what the newest node report says of the release
 ```
+
+In the example, `heldPaths` is every file path the cluster repository holds at
+the commit the block builds on, as the block lists them from its checkout, and
+`reportBody` is the JSON body of the newest node report the platform received
+from the cluster.
 
 `Release.Files` returns two files per component, each component's manifest
 before any Application, so Argo CD never syncs an Application whose
@@ -1488,16 +1505,24 @@ directory is empty:
 The marker ConfigMap is how the read-back tells which release Argo CD
 compared. Argo CD's list of what an Application applied names objects and no
 Git revision. The marker's name carries the digest of the component's
-documents, so it changes whenever the component does.
+documents: the first 12 hexadecimal characters of the SHA-256 of the bytes
+that precede the marker in `manifest.yaml`. The name therefore changes
+whenever the component does.
 
 Some documents stay with the build and never reach the repository. A Secret
 holding data stays, since the repository must never hold a key. A batch Job
 stays, since it runs once and no later sync could change its pod template. A
 Helm or Argo CD hook stays, since Argo CD would run it again on every sync. A
 component whose every document stays with the build gets no files at all.
+A document that stays is created once by Talos at the cluster's first build,
+as the start of this section says, and no later release changes it on a
+running cluster: a Secret or Job a release changes reaches only a cluster
+built from that release.
 
-Each component has an Application of its own because Argo CD's repo server
-reads at most 10 MB of manifests from one directory by default, the
+Each component has an Application of its own because Argo CD's repo server,
+the Argo CD service that reads a repository and renders the manifests an
+Application applies, reads at most 10 MB of manifests from one directory by
+default, the
 `reposerver.max.combined.directory.manifests.size` setting. The hosting set's
 33 manifests come to 14,088,023 bytes, and its largest, Kyverno's, to
 5,858,501.
@@ -1505,7 +1530,14 @@ reads at most 10 MB of manifests from one directory by default, the
 The `cluster` Application creates each `component-` Application, and each of
 those applies its directory. Every one syncs by server-side apply with
 `prune` and `selfHeal` on, unlimited retries, and Argo CD's resources
-finalizer:
+finalizer. In Argo CD's terms, `prune` deletes a live object once the
+repository no longer holds it, and `selfHeal` puts back an object someone
+changed in the cluster by hand. Server-side apply has the Kubernetes API
+server merge each object's fields, where the default client-side apply
+rewrites a last-applied annotation. A finalizer is a marker that makes
+Kubernetes hold an object's deletion until its controller has cleaned up;
+Argo CD's resources finalizer has it delete every object the Application
+applied before the Application itself goes. The effects:
 
 - Server-side apply writes no last-applied annotation, which a resource
   definition past Kubernetes's 262,144 bytes of annotations would overflow.
@@ -1522,13 +1554,14 @@ drops an object leads Argo CD to delete it.
 
 `Release.Retired` takes a list of the paths the repository holds and names
 each one the carriage wrote for an earlier release that this one no longer
-states. It names only paths of the two shapes in the table, for a name that
-can name an Application, and the two files `LegacyFiles` lists. Any other
-file, such as an app's own manifest under `components/`, stays.
+states. It names only paths of the two shapes in the table whose component
+name passes the Application-name rule above, and the two files `LegacyFiles`
+lists. Any other file, such as an app's own manifest under `components/`,
+stays.
 
 `LegacyFiles` are `hosting/policies.yaml` and `cluster/mitstack-hosting.yaml`,
-which carried the hosting policies alone on a cluster built by v0.46.0 or
-earlier. The commit that adds `component-mitstack-hosting-flows` takes both
+which carried the hosting policies alone on a cluster built by kit release
+v0.46.0 or earlier. The commit that adds `component-mitstack-hosting-flows` takes both
 out. The `cluster` Application then prunes the Application
 `mitstack-hosting`, which carries no finalizer, so the policies stay running.
 `component-mitstack-hosting-flows` applies the same policies and tracks them
@@ -1553,8 +1586,8 @@ CiliumClusterwideNetworkPolicy mitstack-hosting-flows
 ConfigMap argocd/component-mitstack-hosting-flows-3f9a1c0d2b7e
 ```
 
-The tests in `rollout/rollout_test.go` build a cluster from v0.32.0's flows
-and one from v0.46.0's committed files, as Talos and Argo CD would, and run
+The tests in `rollout/rollout_test.go` build a cluster from kit release
+v0.32.0's flows and one from kit release v0.46.0's committed files, as Talos and Argo CD would, and run
 it through two upgrades. The cluster in `testutil/argocd.go` stands in for
 the cluster's API and for Argo CD. It applies each Application's directory,
 prunes what the directory no longer holds, and deletes an Application's

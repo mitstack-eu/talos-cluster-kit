@@ -19,7 +19,6 @@ const (
 	pullRequestBase  = "${{ github.event.pull_request.base.sha }}"
 )
 
-// firstKitWithPollingCheck is the first block-kit release that holds cmd/checkpolls.
 var firstKitWithPollingCheck = []int{0, 49, 1}
 
 type ciStep struct {
@@ -32,7 +31,6 @@ type ciStep struct {
 	ContinueOnError  any               `yaml:"continue-on-error"`
 }
 
-// A pull request that adds a fixed sleep or a polling interval fails the required test job, judged against its base commit.
 func TestCI_TestJobFailsAPullRequestThatAddsAFixedSleepOrAPollingIntervalAgainstItsBaseCommit(t *testing.T) {
 	raw, err := os.ReadFile(".github/workflows/ci.yml")
 	require.NoError(t, err)

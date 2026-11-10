@@ -103,7 +103,6 @@ fi`,
 	}
 }
 
-// tmpfsTargets are the directories the build mounted a tmpfs on.
 func (r scriptRun) tmpfsTargets(t *testing.T) []string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(r.tools.Dir, "tmpfs"))
@@ -247,7 +246,6 @@ func (r scriptRun) loaderRuns(t *testing.T) []loaderRun {
 	return runs
 }
 
-// tmpfsAtFreeze are the files in the build tmpfs when the root filesystem froze.
 func (r scriptRun) tmpfsAtFreeze(t *testing.T) []string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(r.tools.Dir, "tmpfs-at-freeze"))
@@ -255,7 +253,6 @@ func (r scriptRun) tmpfsAtFreeze(t *testing.T) []string {
 	return strings.Fields(string(data))
 }
 
-// recorded is what the fakes wrote to the named record, or nothing when none wrote to it.
 func (r scriptRun) recorded(name string) string {
 	data, _ := os.ReadFile(filepath.Join(r.tools.Dir, name))
 	return string(data)
@@ -655,7 +652,6 @@ esac`})
 	return scriptRun{out: out, err: err, tools: tools, dir: dir}
 }
 
-// createdSecrets names each Secret the run created, as "<name> in <namespace>".
 func createdSecrets(t *testing.T, run scriptRun) []string {
 	t.Helper()
 	var created []string

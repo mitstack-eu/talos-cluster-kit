@@ -1,5 +1,11 @@
 profile: ambient
 image: docker.io/istio/pilot:1.30.7-distroless@sha256:337c5423c9b235855aadca8762f1ac3f0ce584833e49c50176382382099ff201
+base:
+  # Fail, as in istio-base-values.yaml, since this chart renders the second validation webhook.
+  validationFailurePolicy: Fail
+# No cluster the kit builds serves the metrics API an autoscaler reads.
+autoscaleEnabled: false
+replicaCount: 1
 global:
   # Without the injector's templates istiod injects no sidecar, so every pod's identity comes from ztunnel alone.
   omitSidecarInjectorConfigMap: true

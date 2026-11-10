@@ -67,6 +67,18 @@ scripts/render-components.sh
 CI then runs the same script with `--check`, which fails when a committed file
 differs from a fresh render.
 
+The script also drops an empty `labels` or `annotations` map from the top-level
+`metadata` of every document it renders, with `drop_empty_metadata_maps` in
+`scripts/lib/empty-maps.sh`. The API server stores no empty map, so a document
+that declares one never matches its live object, and Argo CD reads its
+Application as OutOfSync, which means the cluster differs from the repository.
+The step names no chart and no kind, and leaves a map anywhere
+below the top-level `metadata` as it is. `rendered_set_test.go` runs
+the step on documents that hold each kind of map and checks every rendered
+manifest for a webhook that fails open, an autoscaler without a metrics API and
+an empty map, as [the README](../README.md#what-the-rendered-components-must-look-like-for-argo-cd-to-read-them-synced)
+describes.
+
 Talos trims the blank space at both ends of each document of a manifest before
 it decodes it, in `SetYAML` in Talos v1.14.4, so a document whose last value is
 a block scalar loses that value's final line break. A block scalar is a value
@@ -140,7 +152,7 @@ the builder's user data has no room for them inside a node's configuration.
 | `controlplane/scripts/build-image.sh` | A Cloud control plane's builder server, from its user data | Builds the cluster's Talos disk image with imager, writes it over the builder's own disk from a tmpfs and powers the builder off, so the block can snapshot that disk | `controlplane/scripts_test.go` |
 | `controlplane/scripts/bootstrap-first-node.sh` | The install's first gateway, in `fsn1`, once at first boot | Finds the first node among the addresses the gateway has seen, proves it is the cluster's by its Talos API's certificate, bootstraps etcd on it and deletes the admin talosconfig | `controlplane/scripts_test.go` |
 | `controlplane/scripts/cluster-tokens.sh` | A Job and a CronJob in the Cloud control plane's cluster | Spends the enrolment token for the report token, Argo CD's notification token with the platform's URL and the cluster repository's token, refusing an answer missing one before it writes any, and renews the repository tokens with each app slice's | `controlplane/scripts_test.go` |
-| `scripts/render-components.sh` | A workstation and CI | Renders the component set, and ends each document whose last value is a block scalar with a comment line | The `components` CI job |
+| `scripts/render-components.sh` | A workstation and CI | Renders the component set, drops an empty `labels` or `annotations` map from each document's metadata, and ends each document whose last value is a block scalar with a comment line | The `components` CI job |
 
 The member removal Job, the node report and its outside probe, the topology
 labeller and OpenBao's init Job run in the tools image that `tools/Dockerfile`

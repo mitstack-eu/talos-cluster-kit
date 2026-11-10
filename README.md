@@ -1694,6 +1694,40 @@ the cluster's API and for Argo CD. It applies each Application's directory,
 prunes what the directory no longer holds, and deletes an Application's
 objects when the Application carrying the finalizer goes.
 
+### What the rendered components must look like for Argo CD to read them Synced
+
+Argo CD compares each rendered document with the live object. With
+`selfHeal` on, which makes Argo CD apply the document again whenever they
+differ, a document that the cluster changes after it applies, or that the API
+server stores differently from how it is written, never matches. Its
+Application then reads OutOfSync, meaning the cluster differs from the
+repository, or Degraded, meaning an object does not run, and the read-back of
+a release, described in the previous section, never completes. The committed
+manifests therefore say what the cluster ends up holding, and the kit adds no
+`ignoreDifferences` entry. Three rules keep them so:
+
+- Both of Istio's validation webhooks, `istiod-default-validator` and
+  `istio-validator-istio-system`, render `failurePolicy: Fail`, set by
+  `base.validationFailurePolicy` in `components/render/istio-base-values.yaml`
+  and `istiod-values.yaml`. Istio's install guide requires this of any tool
+  that renders with `helm template` and applies server-side, because istiod
+  rewrites the field to Fail once it is ready.
+- istiod renders no HorizontalPodAutoscaler and runs one replica, set by
+  `autoscaleEnabled: false` and `replicaCount: 1` in
+  `components/render/istiod-values.yaml`. No cluster the kit builds serves the
+  metrics API an autoscaler reads, so the autoscaler would read Degraded.
+- No document declares an empty `labels` or `annotations` map under its
+  top-level `metadata`. The API server stores no empty map, and the render
+  drops each one from every chart, as `drop_empty_metadata_maps` in
+  `scripts/lib/empty-maps.sh` does. A `labels` key anywhere deeper, such as in
+  a CustomResourceDefinition's schema or a pod template, is left as it is.
+  The Kyverno policy definitions and ztunnel's objects are the charts that
+  emit such maps today.
+
+`rendered_set_test.go` checks the three rules over every manifest the kit
+renders, and the render's own step against documents that hold each kind of
+map.
+
 ### How OpenBao is initialised
 
 OpenBao starts uninitialised. Its first init returns the root token, which

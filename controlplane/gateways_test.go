@@ -258,8 +258,6 @@ func TestPlane_PowersAStoppedGatewayBackOnOnceAnOutageAndReadsItUnhealthyWhenItS
 	assert.Empty(t, h.plane.Problems(context.Background(), h.read()), "problems, with the route on another gateway")
 }
 
-// upgrade marks the replacement on an upgrade's call, then re-drives the plane until it has no problem, calling check
-// after each call.
 func (h *harness) upgrade(check func()) {
 	h.t.Helper()
 	h.plane.Upgrading = true
@@ -428,7 +426,6 @@ func TestPlane_UpgradeWaitsOnAReplacementNoReportNamesAndNamesTheReportThatMisse
 		replacement.ID, replacement.Created.Format(time.RFC3339), h.now.Truncate(reportEvery).Format(time.RFC3339), controlplane.GatewayAddress))
 }
 
-// deletedGateways is each event since from that records a gateway's deletion.
 func (h *harness) deletedGateways(from int) []string {
 	return slices.DeleteFunc(slices.Clone(h.events[from:]), func(e string) bool { return !strings.HasPrefix(e, "deleted gateway") })
 }
@@ -555,7 +552,6 @@ func TestPlane_UpgradeBeginsAGatewaysReplacementAgainWhenAnEarlierOneBeganForAno
 	}
 }
 
-// stampsAfter is each time an event names right after marker.
 func stampsAfter(t *testing.T, event, marker string) []time.Time {
 	t.Helper()
 	var out []time.Time
@@ -824,14 +820,12 @@ func (h *harness) gatewayIDs() []int64 {
 	return controlplane.IDs(h.byRole(controlplane.RoleGateway), controlplane.ServerID)
 }
 
-// runsInPlaceOf reports whether a gateway other than failed runs at failed's address.
 func (h *harness) runsInPlaceOf(failed controlplane.Server) bool {
 	gateways := controlplane.ServersIn(h.byRole(controlplane.RoleGateway), failed.Location)
 	return len(gateways) == 1 && gateways[0].ID != failed.ID && gateways[0].Status == controlplane.ServerRunning &&
 		gateways[0].PrivateIPs[h.network().ID] == controlplane.GatewayAddresses[failed.Location]
 }
 
-// servesInPlaceOf reports whether a gateway other than failed runs at its address and a node report reads it serving.
 func (h *harness) servesInPlaceOf(failed controlplane.Server) bool {
 	h.t.Helper()
 	if !h.runsInPlaceOf(failed) {
@@ -882,7 +876,6 @@ func TestPlane_ReplacesAFailedGatewayOfThisReleasesListAtItsAddressFromTheSameLi
 	}
 }
 
-// requireRouteOnARunningGateway fails unless the network's one route goes to a gateway that runs.
 func (h *harness) requireRouteOnARunningGateway() {
 	h.t.Helper()
 	network := h.network()

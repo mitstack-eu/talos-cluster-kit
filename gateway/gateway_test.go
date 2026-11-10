@@ -308,7 +308,6 @@ func parseCA(t *testing.T, ca gateway.CA) (*x509.Certificate, crypto.Signer) {
 	return cert, key
 }
 
-// refusingCurl refuses every URL, so a preparation that needs anything from outside the image registries fails.
 const refusingCurl = `echo "curl: (7) Failed to connect: the test refuses $*" >&2; exit 7`
 
 // toolsImageDocker copies a file out of the tools container as tools/Dockerfile builds the image: a manifest from the
@@ -447,7 +446,6 @@ func TestRender_ServesNoMirrorRequestBeforePrepareHasFinished(t *testing.T) {
 	assert.Greater(t, serve, start, "the TLS server's start is not watched once Caddy starts: %v", runcmd)
 }
 
-// keyValues reads a systemd unit or tools.env written to path as its key=value lines.
 func keyValues(t *testing.T, path string) map[string]string {
 	t.Helper()
 	keys := map[string]string{}
@@ -463,7 +461,6 @@ func unit(t *testing.T, name string) map[string]string {
 	return keyValues(t, "/etc/systemd/system/"+name)
 }
 
-// bound reads a positive whole number of seconds.
 func bound(t *testing.T, seconds string) time.Duration {
 	t.Helper()
 	n, err := strconv.Atoi(seconds)
@@ -504,7 +501,6 @@ func stopPost(t *testing.T, name, result, dir string, replace ...string) (consol
 	return read("tty1"), read("issue")
 }
 
-// unfolded is a console message with the line breaks its folding added taken out again.
 func unfolded(message string) string { return strings.ReplaceAll(message, "\n", "") }
 
 // assertOnOneScreen fails a console message that does not lead with what failed, or would not fit one 80 by 25 screen

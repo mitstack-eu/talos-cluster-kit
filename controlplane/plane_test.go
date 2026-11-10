@@ -108,7 +108,6 @@ func (h *harness) read() controlplane.State {
 	return st
 }
 
-// ensure takes the one change the plane lacks, as a block's Ensure does.
 func (h *harness) ensure() error {
 	ctx := context.Background()
 	before := h.cloud.Waits()
@@ -134,7 +133,6 @@ func (h *harness) ensure() error {
 	return step.Take(ctx, testBlock, testSub)
 }
 
-// converge calls ensure until one changes nothing, as the engine's re-drives would, and returns the first error.
 func (h *harness) converge() error {
 	h.t.Helper()
 	for range 50 {
@@ -147,8 +145,6 @@ func (h *harness) converge() error {
 	return nil
 }
 
-// settle converges, then lets a minute pass for Hetzner and the builder, until the plane has no problem, stop reads
-// true, a call fails, or the settle budget runs out.
 func (h *harness) settle(stop func() bool) error {
 	h.t.Helper()
 	return h.advance(settleBudget, func() bool {
@@ -173,20 +169,17 @@ func (h *harness) advance(budget time.Duration, done func() bool) error {
 	return errors.New("the plane did not settle within the budget")
 }
 
-// built settles the plane and requires it to stand with no problem.
 func (h *harness) built() {
 	h.t.Helper()
 	require.NoError(h.t, h.settle(nil))
 	require.Empty(h.t, h.plane.Problems(context.Background(), h.read()), "the plane's problems once settled")
 }
 
-// building reports whether the builder runs its build.
 func (h *harness) building() bool {
 	builders := h.byRole(controlplane.RoleBuilder)
 	return len(builders) == 1 && builders[0].Status == controlplane.ServerRunning
 }
 
-// buildingBuilder settles the plane until its builder runs a build that never ends.
 func (h *harness) buildingBuilder() {
 	h.t.Helper()
 	h.buildTakes = 0

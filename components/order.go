@@ -11,12 +11,12 @@ var (
 	componentsAndPolicies = []string{
 		"argocd", "cert-manager", "cloudnative-pg", "cloudnative-pg-namespace", "kyverno", "local-path-provisioner",
 		"local-path-provisioner-namespace", "mitstack-ambient-probes", "mitstack-cluster-application",
-		"mitstack-cluster-repository", "mitstack-database-slices", "mitstack-generate-default-deny", "mitstack-hosting-flows",
+		"mitstack-cluster-repository", "mitstack-database-slices", "mitstack-disallow-host-path", "mitstack-generate-default-deny", "mitstack-hosting-flows",
 		"mitstack-hosting-mesh", "mitstack-local-path-flows", "mitstack-mesh-argocd", "mitstack-mesh-cloudnative-pg",
 		"mitstack-mesh-probe", "mitstack-metadata-block", "mitstack-openbao-deploy-key", "mitstack-openbao-init",
 		"mitstack-openbao-seal-key",
-		"mitstack-openbao-storage", "mitstack-require-app-label", "mitstack-require-mesh", "mitstack-require-strict-mtls",
-		"mitstack-sealed-secrets-key", "mitstack-strict-mtls", "openbao", "sealed-secrets", "traefik",
+		"mitstack-openbao-storage", "mitstack-require-app-label", "mitstack-require-mesh", "mitstack-require-resource-limits",
+		"mitstack-require-strict-mtls", "mitstack-restrict-image-registries", "mitstack-sealed-secrets-key", "mitstack-strict-mtls", "openbao", "sealed-secrets", "traefik",
 	}
 	webhookValidated = []string{"external-secrets", "trust-manager", "mitstack-hosting-tls"}
 	// nodeLabelling comes last, the one place a new manifest changes no other manifest's TalosName.

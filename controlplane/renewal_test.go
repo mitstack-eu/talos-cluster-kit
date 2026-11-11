@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
+	"github.com/mitstack-eu/talos-cluster-kit/report"
 )
 
 // renewalPoint is when the plane renews the certificate gw serves, read from the certificate itself.
@@ -37,7 +38,12 @@ func (h *harness) reachRenewal() {
 
 func (h *harness) renewed() bool {
 	h.t.Helper()
-	for _, loc := range controlplane.Locations {
+	return h.renewedIn(controlplane.Locations...)
+}
+
+func (h *harness) renewedIn(locations ...string) bool {
+	h.t.Helper()
+	for _, loc := range locations {
 		gateways := controlplane.ServersIn(h.byRole(controlplane.RoleGateway), loc)
 		if len(gateways) != 1 || !h.renewalPoint(gateways[0]).After(h.now) {
 			return false
@@ -78,21 +84,24 @@ func TestPlane_ReplacesEachGatewayPastItsRenewalPointAtItsAddressWithACertificat
 	for _, tc := range []struct {
 		name    string
 		arrange func(h *harness)
+		lapses  string
 	}{
-		{"each gateway's label names when its certificate lapses", func(*harness) {}},
-		{"each gateway was built before the label, so its certificate is judged from its creation", (*harness).dropExpiryLabels},
+		{"each gateway's label names when its certificate lapses", func(*harness) {}, "whose certificate lapses at %s, so"},
+		{"each gateway was built before the label, so its certificate is judged from its creation", (*harness).dropExpiryLabels,
+			"whose certificate lapses by %s as judged from its creation, so"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t, withReports)
 			h.built()
 			tc.arrange(h)
 			old := h.gatewaysByLocation()
-			serials := map[string]string{}
+			serials, lapsed := map[string]string{}, map[string]string{}
 			for loc, gw := range old {
-				serials[loc] = h.gatewayLeaf(gw).SerialNumber.Text(16)
+				leaf := h.gatewayLeaf(gw)
+				serials[loc], lapsed[loc] = leaf.SerialNumber.Text(16), leaf.NotAfter.UTC().Format(time.RFC3339)
 			}
 			h.reachRenewal()
-			reached := h.now
+			reached, from := h.now, len(h.events)
 
 			h.renew(func() {})
 
@@ -111,6 +120,11 @@ func TestPlane_ReplacesEachGatewayPastItsRenewalPointAtItsAddressWithACertificat
 					loc, leaf.NotBefore, reached)
 				assert.Equal(t, strconv.FormatInt(leaf.NotAfter.Unix(), 10), gw.Labels[controlplane.KeyGatewayCertExpires],
 					"the replacement in %s's label naming when its certificate lapses", loc)
+			}
+			deleted := h.deletedGateways(from)
+			require.Len(t, deleted, len(controlplane.Locations), "gateways deleted")
+			for i, loc := range controlplane.Locations {
+				assert.Contains(t, deleted[i], fmt.Sprintf("deleted gateway %d in %s, "+tc.lapses, old[loc].ID, loc, lapsed[loc]), "the deletion in %s", loc)
 			}
 			assert.Len(t, h.installed, 1, "installs, each of which mints a gateway CA")
 		})
@@ -277,4 +291,78 @@ func TestPlane_NamesAnExpiryLabelThatNamesNoTimeAsAProblemAndJudgesThatGatewaysC
 		first.ID, controlplane.KeyGatewayCertExpires, "next-year")}, problems, "problems")
 	began := h.gatewayIn(controlplane.GatewayLocation).Labels[controlplane.KeyRemovalBegan]
 	assert.Equal(t, strconv.FormatInt(renewal.Unix(), 10), began, "when the replacement of the gateway in fsn1 began, at the renewal point %s its creation gives", renewal)
+}
+
+func TestPlane_RenewsTheOtherLocationsGatewaysWhileOneLocationCanOrderNoSuccessor(t *testing.T) {
+	h := newHarness(t, withReports)
+	h.built()
+	old := h.gatewaysByLocation()
+	h.reachRenewal()
+	h.cloud.SoldOutIn = map[string][]string{controlplane.GatewayLocation: controlplane.GatewayServerTypes}
+	from := len(h.events)
+
+	h.drive("the renewal in nbg1 and hel1", func() bool { return h.renewedIn("nbg1", "hel1") }, func() {})
+
+	assert.Equal(t, old[controlplane.GatewayLocation].ID, h.gatewayIn(controlplane.GatewayLocation).ID, "the gateway in fsn1, which Hetzner could not replace")
+	assert.NotEqual(t, old["nbg1"].ID, h.gatewayIn("nbg1").ID, "the gateway in nbg1 was not replaced")
+	assert.NotEqual(t, old["hel1"].ID, h.gatewayIn("hel1").ID, "the gateway in hel1 was not replaced")
+	assert.Contains(t, strings.Join(h.events[from:], "\n"), fmt.Sprintf("the renewal keeps gateway %d in fsn1, ", old[controlplane.GatewayLocation].ID))
+}
+
+func TestPlane_LeavesAFailedGatewayPastItsRenewalPointToTheReplacementOfAFailedGatewayAndSettles(t *testing.T) {
+	h := newHarness(t, withReports)
+	h.built()
+	list := h.gatewayIn(controlplane.GatewayLocation).Labels[controlplane.KeyGatewayList]
+	h.reachRenewal()
+	h.failing = []string{controlplane.GatewayAddress, controlplane.GatewayAddresses["hel1"]}
+
+	require.NoError(t, h.converge())
+	settled := h.cloud.Writes()
+	require.NoError(t, h.ensure())
+
+	assert.Equal(t, settled, h.cloud.Writes(), "what a call changed once the plane had settled")
+	assert.Equal(t, list, h.gatewayIn(controlplane.GatewayLocation).Labels[controlplane.KeyRemovalFor],
+		"the plan the replacement of the failed gateway in fsn1 began for")
+}
+
+func TestPlane_RenewsFirstAGatewayPastItsRenewalPointThatDoesNotServeAndThePlaneLeftInPlace(t *testing.T) {
+	h := newHarness(t, withReports)
+	h.built()
+	left := h.gatewayIn("hel1")
+	labels := maps.Clone(left.Labels)
+	labels[controlplane.KeyGatewayReplaces] = "999"
+	require.NoError(t, h.cloud.SetServerLabels(context.Background(), left.ID, labels))
+	h.reachRenewal()
+	h.failing = []string{controlplane.GatewayAddresses["hel1"]}
+	from := len(h.events)
+
+	h.renew(func() {
+		if !slices.Contains(h.gatewayIDs(), left.ID) {
+			h.failing = nil
+		}
+	})
+
+	deleted := h.deletedGateways(from)
+	require.Len(t, deleted, len(controlplane.Locations), "gateways deleted")
+	first := fmt.Sprintf("deleted gateway %d in hel1, whose certificate lapses at ", left.ID)
+	assert.True(t, strings.HasPrefix(deleted[0], first), "the first deletion is %q, want it to open with %q", deleted[0], first)
+}
+
+func TestPlane_RenewsAGatewayOfAnEarlierListWithoutAnUpgradeFromThisReleasesListKeepingTheImagesTheNodeReportNames(t *testing.T) {
+	h := newHarness(t, withReports)
+	h.built()
+	current := h.gatewayIn(controlplane.GatewayLocation).Labels[controlplane.KeyGatewayList]
+	release := h.mirrored(h.gatewayIn(controlplane.GatewayLocation))
+	h.relabelGateways("an-earlier-list")
+	h.images = []report.ImageRef{earlierTools}
+	h.reachRenewal()
+
+	h.renew(func() {})
+
+	for _, loc := range controlplane.Locations {
+		gw := h.gatewayIn(loc)
+		assert.Equal(t, current, gw.Labels[controlplane.KeyGatewayList], "the list of the replacement in %s", loc)
+		assert.ElementsMatch(t, append(slices.Clone(release), earlierTools.Image), h.mirrored(gw),
+			"the replacement in %s mirrors this release's list and the image of the release before that the report names", loc)
+	}
 }

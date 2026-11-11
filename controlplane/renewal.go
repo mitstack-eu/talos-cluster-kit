@@ -14,7 +14,7 @@ import (
 )
 
 // GatewayCertRenewBefore is how long before a gateway's serving certificate lapses the plane begins replacing the
-// gateway, which leaves a month of calls for the three locations to take their turn.
+// gateway, which leaves a month of calls for the locations to take their turn.
 const GatewayCertRenewBefore = 30 * 24 * time.Hour
 
 // KeyGatewayCertExpires on a gateway is when its serving certificate lapses, in Unix seconds, since the plane keeps no
@@ -30,8 +30,7 @@ type issuedCertificate struct {
 	expires time.Time
 }
 
-// issued reads a certificate's serial, validity and renewal time before its gateway is created, so no failure to read
-// it comes after the CA exists.
+// issued reads the certificate while its gateway is rendered, so a failure to read it comes before any server is created.
 func issued(loc string, tls gateway.TLS) (issuedCertificate, error) {
 	leaf, err := tls.Leaf()
 	if err != nil {
@@ -47,8 +46,8 @@ func (c issuedCertificate) expiresLabel() string { return strconv.FormatInt(c.ex
 
 func renewalPoint(expires time.Time) time.Time { return expires.Add(-GatewayCertRenewBefore) }
 
-// certificateExpiry is when gw's serving certificate lapses, as its label names it. A gateway built before the label is
-// judged from its creation, seconds after its certificate was issued for gatewayCertValidity.
+// certificateExpiry is when gw's serving certificate lapses, as its label names it, and a gateway built before the
+// label is judged from its creation, seconds after its certificate was issued for gatewayCertValidity.
 func certificateExpiry(gw Server) time.Time {
 	unix, err := strconv.ParseInt(gw.Labels[KeyGatewayCertExpires], 10, 64)
 	if err != nil {
@@ -57,7 +56,6 @@ func certificateExpiry(gw Server) time.Time {
 	return time.Unix(unix, 0).UTC()
 }
 
-// dueForRenewal is the first gateway, in location order, whose certificate has reached its renewal point.
 func (p Plane) dueForRenewal(st State) (Server, bool) {
 	for _, loc := range Locations {
 		gw, ok := st.GatewayIn(loc)
@@ -68,8 +66,7 @@ func (p Plane) dueForRenewal(st State) (Server, bool) {
 	return Server{}, false
 }
 
-// renewStep replaces the first gateway whose certificate reached its renewal point, as an upgrade replaces one built
-// from an earlier list, so the location's next gateway takes its address with a certificate the kept CA signs. It waits
+// renewStep hands a gateway whose certificate reached its renewal point to the replacement an upgrade runs, and waits
 // out an upgrade, whose own replacements each carry a new certificate.
 func (p Plane) renewStep(ctx context.Context, st State, s site) (Step, bool, error) {
 	upgrade, err := p.replacement(st, s.network)
@@ -107,9 +104,9 @@ func (p Plane) renewalHeldBy(ctx context.Context, gw Server) (string, error) {
 		return "its replacement keeps the images the cluster still runs and " + why, nil
 	}
 	_, err := (&OrderableTypes{API: p.API}).First(ctx, string(RoleGateway), GatewayServerTypes, gw.Location)
-	var soldOut *Refusal
-	if errors.As(err, &soldOut) {
-		return soldOut.Message, nil
+	var unorderable *Refusal
+	if errors.As(err, &unorderable) {
+		return unorderable.Message, nil
 	}
 	return "", err
 }

@@ -32,7 +32,8 @@ type installation struct {
 	enrolmentDigest, issuerBucket, listDigest               string
 }
 
-// renderedGateway is one location's gateway as the plane renders it: its user data, and the certificate it serves.
+// renderedGateway keeps the issued certificate beside the user data, which holds it only as PEM, so the gateway's label
+// and event can name it.
 type renderedGateway struct {
 	userData    string
 	certificate issuedCertificate

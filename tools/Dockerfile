@@ -3,10 +3,10 @@
 # replaces busybox's timeout, which exits 143 on a timeout where the node report reads GNU timeout's 124. ssh refuses to
 # run for a uid with no passwd entry, so the image names the uid every Job runs as. The image carries the node report's,
 # its outside mesh probe's, the topology labeller's and the cluster tokens' scripts, since a node's machine
-# configuration has no room for them inside the builder's user data. The security scan's kube-bench with its own cis-1.10 config, kubescape and the
-# NSA framework with its default inputs are checked against scan.env. The image carries every manifest a gateway serves
-# at its repository path under the scripts' directory, since a gateway copies talosctl, kubectl and those manifests out
-# of it. It builds from the repository's root: docker build -f tools/Dockerfile .
+# configuration has no room for them inside the builder's user data. The security scan's kube-bench with its own
+# cis-1.10 config, kubescape and the NSA framework with its default inputs are checked against scan.env. The image
+# carries every manifest a gateway serves at its repository path under the scripts' directory, since a gateway copies
+# talosctl, kubectl and those manifests out of it. It builds from the repository's root: docker build -f tools/Dockerfile .
 FROM docker.io/library/alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
 
 COPY tools/tools.env tools/jq.env tools/scan.env /tmp/

@@ -106,7 +106,7 @@ jobs:
       - name: Build the tools image
         run: docker build -t talos-tools:ci -f tools/Dockerfile .
 
-      - name: Check it carries each CronJob's script as the repository holds it
+      - name: Check it carries each Job's and CronJob's script as the repository holds it
         run: |
           set -euo pipefail
           docker run --rm talos-tools:ci cat /usr/local/lib/mitstack/report.sh | cmp - report/scripts/report.sh

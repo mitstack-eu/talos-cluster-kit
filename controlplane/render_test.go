@@ -13,6 +13,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	mathrand "math/rand/v2"
 	"mime"
 	"mime/multipart"
 	"net/mail"
@@ -29,6 +30,7 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane/cloudtest"
 	"github.com/mitstack-eu/talos-cluster-kit/image"
 	"github.com/mitstack-eu/talos-cluster-kit/nodeconfig"
+	"github.com/mitstack-eu/talos-cluster-kit/report"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 	"github.com/mitstack-eu/talos-cluster-kit/tools"
 	"github.com/stretchr/testify/assert"
@@ -639,6 +641,40 @@ func TestBuilder_UserDataOverHetznersLimitFailsTheRender(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "over Hetzner's 32768")
+}
+
+// userDataReserve is the room each server of an install keeps under Hetzner's limit, for the names and URLs a block
+// passes and the minted keys' varying size, which no test holds at their largest.
+const userDataReserve = 1024
+
+// longestProofScript gives the plane a proof script at the report's limit, of text gzip cannot shorten.
+func longestProofScript(h *harness) {
+	raw := make([]byte, report.ProofScriptLimit)
+	_, _ = mathrand.NewChaCha8([32]byte{}).Read(raw)
+	h.plane.ReportProofScript = base64.StdEncoding.EncodeToString(raw)[:report.ProofScriptLimit]
+}
+
+func TestPlane_EveryServerOfAnInstallKeepsTheUserDataReserveWithEachOptionOfThePlaneAtItsLargest(t *testing.T) {
+	for name, opts := range map[string][]func(*harness){
+		"a cluster":                           {},
+		"a cluster whose apps run on workers": {appsOnWorkers},
+		"a cluster that hosts the platform":   {hosting},
+		"a cluster that hosts the platform and runs its apps on workers": {hosting, appsOnWorkers},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, append(opts, longestProofScript)...)
+
+			require.NoError(t, h.converge())
+
+			require.NotEmpty(t, h.cloud.ServerSpecs, "the servers the install created")
+			for _, spec := range h.cloud.ServerSpecs {
+				t.Logf("the user data of %s is %d bytes", spec.Name, len(spec.UserData))
+				assert.LessOrEqual(t, len(spec.UserData), cloudtest.UserDataLimit-userDataReserve,
+					"the user data of %s is %d bytes, which keeps %d of Hetzner's %d free; want %d", spec.Name, len(spec.UserData),
+					cloudtest.UserDataLimit-len(spec.UserData), cloudtest.UserDataLimit, userDataReserve)
+			}
+		})
+	}
 }
 
 // recordedToolsImage stands in for tools.Image, which every kit release pins anew.

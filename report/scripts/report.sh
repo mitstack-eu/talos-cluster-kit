@@ -416,8 +416,7 @@ body() {
       if $status != 0 then {exitStatus: $status, stderr: $stderr[-1024:]}
       else try read catch {exitStatus: 0, stderr: $refusal}
       end;
-    # An Ingress carries the class that serves it, by its field or the annotation before it, and of its status only each
-    # address, so its size has a bound and a reader sees whether its controller gave it one.
+    # Of an Ingress's status only each address leaves the cluster, and its class is cut, so its size has a bound.
     def ingress: {
       namespace: .metadata.namespace, name: .metadata.name,
       class: (.spec.ingressClassName // .metadata.annotations["kubernetes.io/ingress.class"] // null | at_most_256),

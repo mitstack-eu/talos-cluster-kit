@@ -940,7 +940,7 @@ change `report/scripts/report.sh`.
 | `cloudNativePG` | Each Cluster with its phase, instance counts and `currentPrimary`, and each Database and DatabaseRole with whether it applied | CloudNativePG's objects |
 | `openbao` | Each member's `initialized`, `sealed` and `active`, and the active member's name as `leader` | `sys/seal-status` and `sys/leader` on each member in `OPENBAO_MEMBERS`, verified against `OPENBAO_CA_FILE` |
 | `storage` and `services` | Each claim with its storage class, phase, `requestedSize` (what it asks for) and `capacity` (what is bound, `null` while it is Pending), the default storage classes, and every Service with its type | One read of claims, StorageClasses and Services |
-| `ingresses` | Every Ingress in every namespace with its `namespace`, `name` and `class`, and under `status.loadBalancer.ingress` each address its controller wrote, as an `ip` or a `hostname`. The class is the Ingress's `ingressClassName`, or else its `kubernetes.io/ingress.class` annotation, or `null`. An Ingress no controller serves carries an empty list, which is how Argo CD reads it as still starting | `kubectl get ingresses -A`, the read `argocd` takes its own Ingresses from |
+| `ingresses` | Every Ingress in every namespace with its `namespace`, `name` and `class`, and under `status.loadBalancer.ingress` each address its controller wrote, as an `ip` or a `hostname`. The class is the Ingress's `ingressClassName`, or else its `kubernetes.io/ingress.class` annotation cut to 256 characters, or `null`. An Ingress no controller serves carries an empty list, which is how Argo CD reads it as still starting | `kubectl get ingresses -A`, the read `argocd` takes its own Ingresses from |
 | `defaultDenyPolicies` | Each NetworkPolicy named `mitstack-default-deny`, with its pod selector, policy types, rule counts and `managedBy` label | The NetworkPolicy read |
 | `subscriptionResources` and `subscriptionResourceKinds` | The objects a block labels `mitstack.dev/subscription`, and the object types the report read whole | One read per object type in `subscription_kinds` in `report.sh` |
 | `jwks` | The key set the API server signs service-account tokens with | `/openid/v1/jwks` |
@@ -1713,8 +1713,8 @@ names the location and the value the state holds, for example:
 the release's Traefik has no ingress address to publish: the state holds "" as the public address of the ingress load balancer in fsn1
 ```
 
-A block that gets this error commits nothing and takes the plane's next step,
-which builds the load balancer. A cluster that hosts no platform runs no
+A block that gets this error commits nothing. Where the load balancer is
+missing, the plane's next step builds it. A cluster that hosts no platform runs no
 Traefik, so its release needs no address.
 
 `Release.Files` returns two files per component, with every manifest file ahead of every Application file in the list, so Argo CD never syncs an Application whose directory is empty:

@@ -153,8 +153,7 @@ func HostingServed() Set {
 
 const (
 	traefikName = "traefik"
-	// publishedServiceArg is the chart's argument, under which Traefik writes each node's ExternalIP into the status of an
-	// Ingress, and a node of the kit holds none.
+	// Under the chart's argument Traefik publishes each node's ExternalIP, and a node of the kit holds none.
 	publishedServiceArg = "--providers.kubernetesingress.ingressendpoint.publishedservice=traefik/traefik"
 	publishedAddressArg = "--providers.kubernetesingress.ingressendpoint.ip="
 )

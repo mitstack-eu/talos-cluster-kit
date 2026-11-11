@@ -242,18 +242,24 @@ func (st State) EnrolmentDigest() (digest, gap string) {
 	return gw.Labels[KeyEnrolmentSHA256], ""
 }
 
+// IngressAddresses is the public address of the ingress load balancer in each location that has one, empty while it
+// holds none. The plane outputs it as publicIpByLocation, and the release's Traefik publishes it on every Ingress.
+func (st State) IngressAddresses() map[string]string {
+	ingress, _ := st.LoadBalancerIn(RoleIngress, GatewayLocation)
+	return map[string]string{GatewayLocation: ingress.PublicIPv4}
+}
+
 // Outputs are what a present plane gives its block's provided type, with the detail that says what stands.
 func (p Plane) Outputs(st State) (map[string]string, string) {
 	network, _ := st.Network()
 	gw, _ := st.SharedGateway()
 	endpoint, _ := st.LoadBalancerIn(RoleAPI, GatewayLocation)
-	ingress, _ := st.LoadBalancerIn(RoleIngress, GatewayLocation)
 	var nodes []string
 	for _, loc := range Locations {
 		node, _ := st.NodeIn(loc)
 		nodes = append(nodes, fmt.Sprintf("%d in %s at %s", node.ID, loc, node.PrivateIPs[network.ID]))
 	}
-	byLocation, _ := json.Marshal(map[string]string{GatewayLocation: ingress.PublicIPv4})
+	byLocation, _ := json.Marshal(st.IngressAddresses())
 	outputs := map[string]string{
 		"enrolmentTokenSha256": gw.Labels[KeyEnrolmentSHA256],
 		"privateEndpoint":      "https://" + endpoint.PrivateIPs[network.ID] + ":" + strconv.Itoa(APIServerPort),

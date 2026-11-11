@@ -603,7 +603,6 @@ const (
 	publishedAddressArg = "--providers.kubernetesingress.ingressendpoint.ip="
 )
 
-// withoutIngressEndpoint is every document of a Traefik manifest, its containers holding no ingress endpoint argument.
 func withoutIngressEndpoint(t *testing.T, traefik components.Manifest) []map[string]any {
 	t.Helper()
 	docs := testutil.Documents(t, traefik.Bytes)

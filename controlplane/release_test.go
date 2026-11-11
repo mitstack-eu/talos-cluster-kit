@@ -47,10 +47,8 @@ func (h *harness) withLoadBalancers() {
 	require.Len(h.t, h.cloud.LBSpecs, 2, "the load balancers the plane created")
 }
 
-// publishedAddressArg is the argument under which Traefik writes one address into the status of every Ingress it serves.
 const publishedAddressArg = "--providers.kubernetesingress.ingressendpoint.ip="
 
-// releaseOf is the release a hosting plane that keeps its gateway CA renders from what Hetzner holds now.
 func (h *harness) releaseOf(plane controlplane.Plane) rollout.Release {
 	h.t.Helper()
 	release, err := plane.Release(h.read())
@@ -69,9 +67,7 @@ func traefikArgs(t *testing.T, release rollout.Release) []string {
 	return args
 }
 
-// A fresh cluster's first release and every later one publish the address the plane outputs, so an app slice's Ingress
-// holds it on its first sync, in whatever namespace kube-app-deploy puts it, and a replaced load balancer's Ingresses
-// take the new address.
+// A fresh cluster's first release and a replaced load balancer's next one name the address for an Ingress in any namespace.
 func TestRelease_TraefikPublishesTheAddressThePlaneOutputsOnEveryIngressAndTheNewOneOnceTheLoadBalancerIsReplaced(t *testing.T) {
 	const replacement = "198.51.100.251"
 	h := newHarness(t, hosting)
@@ -126,7 +122,7 @@ func TestRelease_CarriesNoTraefikWithoutAnAddressAndNamesTheIngressLoadBalancerT
 			release, err := plane.Release(tc.state(h))
 
 			require.ErrorIs(t, err, controlplane.ErrNoIngressAddress)
-			assert.ErrorContains(t, err, "no ingress load balancer in "+controlplane.GatewayLocation+" holds a public address", "the load balancer the refusal names")
+			assert.ErrorContains(t, err, `holds "" as the public address of the ingress load balancer in `+controlplane.GatewayLocation, "the load balancer and the value the refusal names")
 			assert.Empty(t, release.Components, "the components a block could commit")
 		})
 	}

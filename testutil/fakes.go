@@ -145,8 +145,6 @@ func Manifest(t *testing.T, name string, lists ...[]components.Manifest) compone
 	return manifests[i]
 }
 
-// IngressEndpointArgs are the arguments of the Traefik manifest's DaemonSet that say what Traefik writes into the status
-// of an Ingress it serves.
 func IngressEndpointArgs(t *testing.T, traefik components.Manifest) []string {
 	t.Helper()
 	var args []string

@@ -50,8 +50,8 @@ func (c issuedCertificate) expiresLabel() string { return strconv.FormatInt(c.ex
 
 func renewalPoint(expires time.Time) time.Time { return expires.Add(-GatewayCertRenewBefore) }
 
-// certificateExpiry is when gw's serving certificate lapses, as its label names it; unlabelled, it is the latest that can
-// be, the creation of a gateway built before the label plus the validity its certificate was issued for just before.
+// certificateExpiry is when gw's serving certificate lapses as its label names it, else the latest it can lapse, since
+// a gateway built before the label was created just after its certificate was issued.
 func certificateExpiry(gw Server) (expires time.Time, labelled bool) {
 	unix, err := strconv.ParseInt(gw.Labels[KeyGatewayCertExpires], 10, 64)
 	if err != nil {
@@ -90,7 +90,7 @@ func (p Plane) dueForRenewal(ctx context.Context, st State, network Network) ([]
 	var due []Server
 	for _, loc := range Locations {
 		gw, ok := st.GatewayIn(loc)
-		if expires, _ := certificateExpiry(gw); !ok || p.now().Before(renewalPoint(expires)) {
+		if !ok || !p.reachedRenewal(gw) {
 			continue
 		}
 		failed, err := p.replacedAsFailed(ctx, gw, network, list.Digest())
@@ -102,6 +102,11 @@ func (p Plane) dueForRenewal(ctx context.Context, st State, network Network) ([]
 		}
 	}
 	return due, nil
+}
+
+func (p Plane) reachedRenewal(gw Server) bool {
+	expires, _ := certificateExpiry(gw)
+	return !p.now().Before(renewalPoint(expires))
 }
 
 // renewStep hands a gateway whose certificate reached its renewal point to the replacement an upgrade runs, and waits
@@ -120,7 +125,7 @@ func (p Plane) renewStep(ctx context.Context, st State, s site) (Step, bool, err
 		return Step{}, false, err
 	}
 	if held != "" {
-		p.keep(ctx, renewalOf(due[0]), held)
+		p.notifyKept(ctx, renewalOf(due[0]), held)
 		return Step{}, false, nil
 	}
 	ordered, err := p.notServingFirst(ctx, due, s.network)
@@ -134,12 +139,12 @@ func (p Plane) renewStep(ctx context.Context, st State, s site) (Step, bool, err
 			return step, ok, err
 		}
 		// A refusal would fail every call of a cluster that serves, and another location may still order its successor.
-		p.keep(ctx, renewalOf(gw), refused.Message)
+		p.notifyKept(ctx, renewalOf(gw), refused.Message)
 	}
 	return Step{}, false, nil
 }
 
-func (p Plane) keep(ctx context.Context, r removal, why string) {
+func (p Plane) notifyKept(ctx context.Context, r removal, why string) {
 	p.notify(ctx, "%s keeps gateway %d in %s, %s, since %s", r.keeper, r.gw.ID, r.gw.Location, r.why, why)
 }
 

@@ -730,10 +730,13 @@ do the same for envoy, Cilium's proxy on each node.
 
 The chart's one privileged container is `mount-bpf-fs`, an init container that
 mounts the BPF filesystem, where Cilium keeps its kernel maps. Talos mounts
-that filesystem at `/sys/fs/bpf` on every node at boot, in `PseudoSub` in
-[its mount helpers at v1.14.4](https://github.com/siderolabs/talos/blob/v1.14.4/internal/pkg/mount/v3/helpers.go#L381-L389),
-and its guide says to keep Cilium from mounting it. The values therefore set
-`bpf.autoMount.enabled: false`, and the chart renders no `mount-bpf-fs`.
+that filesystem at `/sys/fs/bpf` on every node at boot. `run` in
+[its init at v1.14.4](https://github.com/siderolabs/talos/blob/v1.14.4/internal/app/init/main.go#L43-L53)
+calls `PseudoSub` in
+[its mount helpers](https://github.com/siderolabs/talos/blob/v1.14.4/internal/pkg/mount/v3/helpers.go#L381-L389),
+which mounts it on every start. Talos's guide says to keep Cilium from
+mounting it, so the values set `bpf.autoMount.enabled: false`, and the chart
+renders no `mount-bpf-fs`.
 
 With that setting the chart also drops envoy's own mount of `/sys/fs/bpf`.
 The agent hands envoy that path as its BPF root, as `BpfRoot` in

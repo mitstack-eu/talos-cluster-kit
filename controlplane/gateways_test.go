@@ -130,15 +130,21 @@ func TestPlane_BuildsAGatewayInEachLocationAtItsOwnAddressUnderOneCA(t *testing.
 	assert.Equal(t, controlplane.GatewayAddrs(), h.installed[0].Gateways, "the gateways every node pulls through")
 }
 
-func TestPlane_RecordsEachGatewayCertificatesSerialAndValidity(t *testing.T) {
+func TestPlane_RecordsEachGatewayCertificatesSerialValidityAndRenewalTimeAndLabelsTheGatewayWithWhenItLapses(t *testing.T) {
 	h := newHarness(t)
 
 	h.built()
 
 	for _, loc := range controlplane.Locations {
-		leaf := h.gatewayLeaf(h.gatewayIn(loc))
-		assert.Contains(t, h.events, fmt.Sprintf("issued the certificate of the gateway in %s at %s: serial %s, valid from %s until %s",
-			loc, controlplane.GatewayAddresses[loc], leaf.SerialNumber.Text(16), leaf.NotBefore.UTC().Format(time.RFC3339), leaf.NotAfter.UTC().Format(time.RFC3339)))
+		gw := h.gatewayIn(loc)
+		leaf := h.gatewayLeaf(gw)
+		renewal := leaf.NotAfter.Add(-controlplane.GatewayCertRenewBefore)
+		assert.Contains(t, h.events, fmt.Sprintf("issued the certificate of the gateway in %s at %s: serial %s, valid from %s until %s, renewed by replacing the gateway from %s",
+			loc, controlplane.GatewayAddresses[loc], leaf.SerialNumber.Text(16), leaf.NotBefore.UTC().Format(time.RFC3339),
+			leaf.NotAfter.UTC().Format(time.RFC3339), renewal.UTC().Format(time.RFC3339)))
+		assert.Equal(t, strconv.FormatInt(leaf.NotAfter.Unix(), 10), gw.Labels[controlplane.KeyGatewayCertExpires],
+			"the gateway in %s's label naming when its certificate lapses", loc)
+		assert.True(t, renewal.After(leaf.NotBefore), "the certificate of the gateway in %s is renewed at %s, by its issue at %s", loc, renewal, leaf.NotBefore)
 	}
 }
 
@@ -258,11 +264,10 @@ func TestPlane_PowersAStoppedGatewayBackOnOnceAnOutageAndReadsItUnhealthyWhenItS
 	assert.Empty(t, h.plane.Problems(context.Background(), h.read()), "problems, with the route on another gateway")
 }
 
-func (h *harness) upgrade(check func()) {
+// drive calls the plane, running check after each call and letting a minute pass after one that changed nothing, until
+// done reads true after such a call.
+func (h *harness) drive(what string, done func() bool, check func()) {
 	h.t.Helper()
-	h.plane.Upgrading = true
-	require.NoError(h.t, h.ensure())
-	h.plane.Upgrading = false
 	for range 400 {
 		before := h.cloud.Writes()
 		require.NoError(h.t, h.ensure())
@@ -270,13 +275,39 @@ func (h *harness) upgrade(check func()) {
 		if h.cloud.Writes() > before {
 			continue
 		}
-		if len(h.plane.Problems(context.Background(), h.read())) == 0 {
+		if done() {
 			return
 		}
 		h.now = h.now.Add(time.Minute)
 		h.cloud.Advance(h.buildTakes, h.imageTakes)
 	}
-	h.t.Fatal("the upgrade did not finish within 400 calls")
+	h.t.Fatalf("%s did not finish within 400 calls", what)
+}
+
+func (h *harness) upgrade(check func()) {
+	h.t.Helper()
+	h.plane.Upgrading = true
+	require.NoError(h.t, h.ensure())
+	h.plane.Upgrading = false
+	h.drive("the upgrade", func() bool { return len(h.plane.Problems(context.Background(), h.read())) == 0 }, check)
+}
+
+// requireOneLocationWithoutItsGatewayAtMost fails once two locations lack a running gateway at their address, the
+// network's one route goes to a location that lacks one, or the nodes are other than nodes.
+func (h *harness) requireOneLocationWithoutItsGatewayAtMost(nodes []int64) {
+	h.t.Helper()
+	network := h.network()
+	var down []string
+	for _, loc := range controlplane.Locations {
+		gateways := controlplane.ServersIn(h.byRole(controlplane.RoleGateway), loc)
+		if len(gateways) != 1 || gateways[0].Status != controlplane.ServerRunning || gateways[0].PrivateIPs[network.ID] != controlplane.GatewayAddresses[loc] {
+			down = append(down, loc)
+		}
+	}
+	require.LessOrEqual(h.t, len(down), 1, "locations without their running gateway at once: %v", down)
+	require.Len(h.t, network.Routes, 1, "the network's routes")
+	require.NotContains(h.t, down, locationOf(network.Routes[0].Gateway), "the route goes to a location without its gateway")
+	require.Equal(h.t, nodes, controlplane.IDs(h.byRole(controlplane.RoleNode), controlplane.ServerID), "the nodes")
 }
 
 func TestPlane_UpgradeReplacesOneLocationsGatewayAtATimeAtItsAddressAndNoNodeAndServesTheReleaseOnlyOnceEachIsReplaced(t *testing.T) {
@@ -299,18 +330,7 @@ func TestPlane_UpgradeReplacesOneLocationsGatewayAtATimeAtItsAddressAndNoNodeAnd
 				}
 			}
 		}
-		network := h.network()
-		var down []string
-		for _, loc := range controlplane.Locations {
-			gateways := controlplane.ServersIn(h.byRole(controlplane.RoleGateway), loc)
-			if len(gateways) != 1 || gateways[0].Status != controlplane.ServerRunning || gateways[0].PrivateIPs[network.ID] != controlplane.GatewayAddresses[loc] {
-				down = append(down, loc)
-			}
-		}
-		require.LessOrEqual(t, len(down), 1, "locations without their running gateway at once: %v", down)
-		require.Len(t, network.Routes, 1, "the network's routes")
-		require.NotContains(t, down, locationOf(network.Routes[0].Gateway), "the route goes to a location without its gateway")
-		require.Equal(t, nodes, controlplane.IDs(h.byRole(controlplane.RoleNode), controlplane.ServerID), "the nodes")
+		h.requireOneLocationWithoutItsGatewayAtMost(nodes)
 	})
 
 	var deleted []string

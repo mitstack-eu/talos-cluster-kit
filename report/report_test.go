@@ -259,8 +259,7 @@ var argoCDRoutes = []string{"/api/v1/session/userinfo", "/api/v1/account", "/api
 	"/api/v1/repositories", "/api/v1/settings", "/api/v1/settings/plugins", "/api/v1/write-repocreds",
 	"/api/v1/write-repositories"}
 
-// argoCD plays an Argo CD that answers userinfo with 200, settings with the status and body given, and every other route
-// as it answers a caller without a session.
+// argoCD fakes the two routes Argo CD answers without a session, userinfo and settings, and refuses every other route.
 func argoCD(t *testing.T, userinfo string, settingsStatus int, settings string) string {
 	t.Helper()
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -704,6 +703,7 @@ func TestReport_AsksEachArgoCDRouteWithoutASessionAndKeepsItsStatusItsSizeAndOne
 		"the settings name no userLoginsDisabled":         {signedOut, 200, `{"url":"https://argocd.example","oidcConfig":null}`, false, nil},
 		"the settings give userLoginsDisabled as text":    {signedOut, 200, `{"url":"https://argocd.example","userLoginsDisabled":"true"}`, false, nil},
 		"the settings answer no JSON":                     {signedOut, 200, noJSON, false, nil},
+		"the settings answer is empty":                    {signedOut, 200, "", false, nil},
 		"the settings route answers another status":       {signedOut, 502, loginsOff, false, nil},
 		"Argo CD does not answer":                         {},
 	}

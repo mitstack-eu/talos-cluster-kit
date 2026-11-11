@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -109,4 +110,120 @@ func TestDropEmptyMetadataMaps(t *testing.T) {
 			assert.Equal(t, tc.want, got)
 		})
 	}
+}
+
+var podRefusingPolicies = []string{"mitstack-disallow-host-path", "mitstack-require-resource-limits", "mitstack-restrict-image-registries"}
+
+// renderedPod is a pod spec the kit renders in a document, or in a pod template a ConfigMap of the kit holds, with the namespace it starts in.
+type renderedPod struct {
+	where     string
+	namespace string
+	spec      map[string]any
+}
+
+func renderedPods(t *testing.T) []renderedPod {
+	t.Helper()
+	var pods []renderedPod
+	add := func(source string, doc map[string]any, namespace string) {
+		found := map[string]map[string]any{}
+		podSpecs(doc, "", found)
+		for path, spec := range found {
+			if _, ok := spec["containers"].([]any); !ok {
+				continue
+			}
+			pods = append(pods, renderedPod{where: fmt.Sprintf("%s: %v %v%s", source, doc["kind"], testutil.Field(t, doc, "metadata", "name"), path), namespace: namespace, spec: spec})
+		}
+	}
+	for _, d := range renderedDocs(t) {
+		if d.doc["kind"] == "CustomResourceDefinition" {
+			continue
+		}
+		namespace, _ := testutil.Field(t, d.doc, "metadata", "namespace").(string)
+		add(d.source, d.doc, namespace)
+		if data, ok := d.doc["data"].(map[string]any); ok {
+			for key, value := range data {
+				if text, ok := value.(string); ok && strings.Contains(text, "containers:") {
+					for _, embedded := range testutil.Documents(t, []byte(text)) {
+						embedded["metadata"] = map[string]any{"name": d.source + " " + key}
+						add(d.source, embedded, namespace)
+					}
+				}
+			}
+		}
+	}
+	return pods
+}
+
+func podPolicy(t *testing.T, name string) map[string]any {
+	t.Helper()
+	return testutil.Documents(t, testutil.Manifest(t, name, components.Default().Inline).Bytes)[0]
+}
+
+func policySkips(t *testing.T, policy map[string]any) []string {
+	t.Helper()
+	var skipped []string
+	for _, v := range testutil.Field(t, policy, "spec", "matchConstraints", "namespaceSelector", "matchExpressions", "0", "values").([]any) {
+		skipped = append(skipped, v.(string))
+	}
+	return skipped
+}
+
+func refusals(t *testing.T, pod renderedPod) []string {
+	t.Helper()
+	var refused []string
+	for _, name := range podRefusingPolicies {
+		if !testutil.Admits(t, podPolicy(t, name), map[string]any{"spec": pod.spec}, map[string]any{"metadata": map[string]any{"name": pod.namespace}}) {
+			refused = append(refused, name)
+		}
+	}
+	return refused
+}
+
+func TestManifests_NoPodOutsideTheSkippedNamespacesIsRefusedByTheHostPathLimitsOrRegistryPolicies(t *testing.T) {
+	skipped := policySkips(t, podPolicy(t, podRefusingPolicies[0]))
+	var refused []string
+
+	for _, pod := range renderedPods(t) {
+		if slices.Contains(skipped, pod.namespace) {
+			continue
+		}
+		for _, policy := range refusals(t, pod) {
+			refused = append(refused, fmt.Sprintf("%s in %q is refused by %s", pod.where, pod.namespace, policy))
+		}
+	}
+
+	slices.Sort(refused)
+	assert.Empty(t, refused, "a pod the kit renders would stop at its next restart")
+}
+
+func TestManifests_EveryNamespaceTheNewPolicySkipsBeyondTheLabelPolicysHoldsAPodTheyWouldRefuse(t *testing.T) {
+	label := policySkips(t, podPolicy(t, "mitstack-require-app-label"))
+	refusedIn := map[string][]string{}
+	for _, pod := range renderedPods(t) {
+		if refused := refusals(t, pod); len(refused) > 0 {
+			refusedIn[pod.namespace] = append(refusedIn[pod.namespace], pod.where)
+		}
+	}
+
+	for _, namespace := range policySkips(t, podPolicy(t, podRefusingPolicies[0])) {
+		if slices.Contains(label, namespace) {
+			continue
+		}
+		assert.NotEmpty(t, refusedIn[namespace], "the policies skip %s, but no pod the kit renders there would be refused", namespace)
+	}
+}
+
+func TestManifests_TheSecurityScanRunsInKubeSystemWhichEveryPodPolicySkips(t *testing.T) {
+	var scan []renderedPod
+	for _, pod := range renderedPods(t) {
+		if strings.HasPrefix(pod.where, "report: CronJob mitstack-security-scan.") {
+			scan = append(scan, pod)
+		}
+	}
+	require.Len(t, scan, 1, "the security scan's pod spec")
+
+	for _, name := range podRefusingPolicies {
+		assert.Contains(t, policySkips(t, podPolicy(t, name)), scan[0].namespace, "%s judges the security scan's pod in %s", name, scan[0].namespace)
+	}
+	assert.Equal(t, "kube-system", scan[0].namespace)
 }

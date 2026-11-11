@@ -1,0 +1,53 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: kube-app-deploy
+policies:
+- ../../policies/mitstack-disallow-host-path.yaml
+- ../../policies/mitstack-require-resource-limits.yaml
+- ../../policies/mitstack-restrict-image-registries.yaml
+resources:
+- deployments.yaml
+results:
+- isValidatingPolicy: true
+  policy: mitstack-disallow-host-path
+  kind: Deployment
+  resources:
+  - control-plane-slice
+  - builder-app-from-docker-hub
+  - builder-app-without-limits
+  result: pass
+- isValidatingPolicy: true
+  policy: mitstack-disallow-host-path
+  kind: Deployment
+  resources:
+  - builder-app-with-host-path
+  result: fail
+- isValidatingPolicy: true
+  policy: mitstack-require-resource-limits
+  kind: Deployment
+  resources:
+  - control-plane-slice
+  - builder-app-from-docker-hub
+  - builder-app-with-host-path
+  result: pass
+- isValidatingPolicy: true
+  policy: mitstack-require-resource-limits
+  kind: Deployment
+  resources:
+  - builder-app-without-limits
+  result: fail
+- isValidatingPolicy: true
+  policy: mitstack-restrict-image-registries
+  kind: Deployment
+  resources:
+  - control-plane-slice
+  - builder-app-without-limits
+  - builder-app-with-host-path
+  result: pass
+- isValidatingPolicy: true
+  policy: mitstack-restrict-image-registries
+  kind: Deployment
+  resources:
+  - builder-app-from-docker-hub
+  result: fail

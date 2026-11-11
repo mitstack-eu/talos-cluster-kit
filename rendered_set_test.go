@@ -269,7 +269,6 @@ func TestManifests_ThePodPoliciesSkipTheSameNamespacesAndNoneThatHoldsAnApp(t *t
 	}
 }
 
-// readmeTable returns the cells of each row of the README table whose header row opens with header.
 func readmeTable(t *testing.T, header string) [][]string {
 	t.Helper()
 	readme, err := os.ReadFile("README.md")
@@ -307,7 +306,6 @@ func TestManifests_TheReadmeNamesEachSkippedNamespaceWithWhatRunsThereAndWhy(t *
 	assert.ElementsMatch(t, skipped, documented, "the README's table of skipped namespaces differs from the policies' list")
 }
 
-// podContainers returns each init container and container of a pod under "<workload>/<container>".
 func podContainers(t *testing.T, pod renderedPod) map[string]map[string]any {
 	t.Helper()
 	containers := map[string]map[string]any{}
@@ -319,8 +317,6 @@ func podContainers(t *testing.T, pod renderedPod) map[string]map[string]any {
 	return containers
 }
 
-// containerFaults says where a container runs privileged, keeps the container runtime's default capabilities, or adds
-// other capabilities than want.
 func containerFaults(name string, container map[string]any, want []string) []string {
 	context, _ := container["securityContext"].(map[string]any)
 	capabilities, _ := context["capabilities"].(map[string]any)

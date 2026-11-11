@@ -150,7 +150,8 @@
     {
       "path": "/api/v1/settings",
       "status": 200,
-      "bytes": 50
+      "bytes": 76,
+      "userLoginsDisabled": true
     },
     {
       "path": "/api/v1/settings/plugins",

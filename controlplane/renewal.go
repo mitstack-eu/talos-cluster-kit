@@ -24,6 +24,10 @@ const KeyGatewayCertExpires = "mitstack.dev/gateway-cert-expires"
 // renewalPlan is the plan a gateway replaced for a new certificate carries as KeyRemovalFor.
 const renewalPlan = "certificate-renewal"
 
+// unlabelledCertValidity is the validity every release issued a certificate for before gateways carried
+// KeyGatewayCertExpires, which a change of gatewayCertValidity must not move.
+const unlabelledCertValidity = 365 * 24 * time.Hour
+
 // issuedCertificate is what the plane records of a serving certificate it issued.
 type issuedCertificate struct {
 	event   string
@@ -47,13 +51,23 @@ func (c issuedCertificate) expiresLabel() string { return strconv.FormatInt(c.ex
 func renewalPoint(expires time.Time) time.Time { return expires.Add(-GatewayCertRenewBefore) }
 
 // certificateExpiry is when gw's serving certificate lapses, as its label names it, and a gateway built before the
-// label is judged from its creation, seconds after its certificate was issued for gatewayCertValidity.
+// label is judged from its creation, seconds after its certificate was issued.
 func certificateExpiry(gw Server) time.Time {
 	unix, err := strconv.ParseInt(gw.Labels[KeyGatewayCertExpires], 10, 64)
 	if err != nil {
-		return gw.Created.Add(gatewayCertValidity)
+		return gw.Created.Add(unlabelledCertValidity)
 	}
 	return time.Unix(unix, 0).UTC()
+}
+
+// expiryLabelProblem names a label that holds no time, which certificateExpiry reads as a gateway built before the label.
+func expiryLabelProblem(gw Server) string {
+	label, labelled := gw.Labels[KeyGatewayCertExpires]
+	if _, err := strconv.ParseInt(label, 10, 64); !labelled || err == nil {
+		return ""
+	}
+	return fmt.Sprintf("gateway %d's %s label is %q, which names no time in Unix seconds, so its certificate is judged from its creation",
+		gw.ID, KeyGatewayCertExpires, label)
 }
 
 func (p Plane) dueForRenewal(st State) (Server, bool) {
@@ -77,36 +91,37 @@ func (p Plane) renewStep(ctx context.Context, st State, s site) (Step, bool, err
 	if !due {
 		return Step{}, false, nil
 	}
-	lapses := "whose certificate lapses at " + stampOf(certificateExpiry(gw))
-	held, err := p.renewalHeldBy(ctx, gw)
+	renewal := removal{gw: gw, plan: renewalPlan, why: "whose certificate lapses at " + stampOf(certificateExpiry(gw)), keeper: "the renewal"}
+	held, err := p.renewalHeldBy(ctx)
 	if err != nil {
 		return Step{}, false, err
 	}
 	if held != "" {
-		p.notify(ctx, "the renewal keeps gateway %d in %s, %s, since %s", gw.ID, gw.Location, lapses, held)
-		return Step{}, false, nil
+		return p.keepGateway(ctx, renewal, held)
 	}
-	return p.replaceGateway(ctx, st, s, removal{gw: gw, plan: renewalPlan, why: lapses, keeper: "the renewal"})
+	step, ok, err := p.replaceGateway(ctx, st, s, renewal)
+	// A refusal would fail every call of a cluster that serves, so the renewal waits for a later call instead.
+	var refused *Refusal
+	if errors.As(err, &refused) {
+		return p.keepGateway(ctx, renewal, refused.Message)
+	}
+	return step, ok, err
 }
 
-// renewalHeldBy names what would keep gw from being removed, or its successor from being built, once its replacement
-// began, "" when nothing would.
-func (p Plane) renewalHeldBy(ctx context.Context, gw Server) (string, error) {
+// keepGateway records why the renewal keeps a gateway, and takes no step.
+func (p Plane) keepGateway(ctx context.Context, r removal, why string) (Step, bool, error) {
+	p.notify(ctx, "%s keeps gateway %d in %s, %s, since %s", r.keeper, r.gw.ID, r.gw.Location, r.why, why)
+	return Step{}, false, nil
+}
+
+// renewalHeldBy names what a renewal alone waits on, "" when nothing: an upgrade and a failed gateway's replacement
+// refuse or fail on each of these, which a cluster that serves must not.
+func (p Plane) renewalHeldBy(ctx context.Context) (string, error) {
 	switch {
 	case p.GatewayCA == nil:
 		return "the block holds no gateway CA to sign a new one's certificate with", nil
 	case p.Guard == nil:
 		return "the block passes no redundancy guard, so no gateway is removed", nil
 	}
-	if _, why, err := p.newestImages(ctx, time.Time{}); err != nil {
-		return "", err
-	} else if why != "" {
-		return "its replacement keeps the images the cluster still runs and " + why, nil
-	}
-	_, err := (&OrderableTypes{API: p.API}).First(ctx, string(RoleGateway), GatewayServerTypes, gw.Location)
-	var unorderable *Refusal
-	if errors.As(err, &unorderable) {
-		return unorderable.Message, nil
-	}
-	return "", err
+	return p.keptImagesUnread(ctx)
 }

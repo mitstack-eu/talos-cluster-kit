@@ -210,12 +210,21 @@ func (p Plane) keptListStep(ctx context.Context, st State, s site) (Step, bool, 
 	if err != nil || !r.active || len(r.stale) == 0 {
 		return Step{}, false, err
 	}
-	_, why, err := p.newestImages(ctx, time.Time{})
-	if err != nil || why == "" {
+	unread, err := p.keptImagesUnread(ctx)
+	if err != nil || unread == "" {
 		return Step{}, false, err
 	}
-	return Step{}, false, refuse(ClassGatewayImagesUnread,
-		"the upgrade replaces no gateway, since each replacement keeps the images the cluster still runs and %s; retry the upgrade once the node report lists them", why)
+	return Step{}, false, refuse(ClassGatewayImagesUnread, "the upgrade replaces no gateway, since %s; retry the upgrade once the node report lists them", unread)
+}
+
+// keptImagesUnread names why a replacement gateway could keep no image the cluster runs, "" when the newest node
+// report lists them.
+func (p Plane) keptImagesUnread(ctx context.Context) (string, error) {
+	_, why, err := p.newestImages(ctx, time.Time{})
+	if err != nil || why == "" {
+		return "", err
+	}
+	return "each replacement keeps the images the cluster still runs and " + why, nil
 }
 
 func (st State) lacksGateway() bool {

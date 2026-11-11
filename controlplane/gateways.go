@@ -597,9 +597,13 @@ type removal struct {
 	record    func(ctx context.Context) error
 }
 
-// replaceGateway moves the route off a gateway, then deletes it once the guard reads the others serving since it began.
+// replaceGateway moves the route off a gateway, then deletes it once the guard reads the others serving since it began,
+// and refuses on every call until then while Hetzner can order no successor, since the location would stay without one.
 func (p Plane) replaceGateway(ctx context.Context, st State, s site, r removal) (Step, bool, error) {
 	old := r.gw
+	if _, err := (&OrderableTypes{API: p.API}).First(ctx, string(RoleGateway), GatewayServerTypes, old.Location); err != nil {
+		return Step{}, false, err
+	}
 	if route, ok := defaultRouteOf(s.network); ok && route.Gateway == gatewayAddressOf(old) {
 		target, ok, err := p.routeTarget(ctx, st, s.network, route.Gateway)
 		if err != nil {

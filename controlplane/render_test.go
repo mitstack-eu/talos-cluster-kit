@@ -233,6 +233,19 @@ func TestBuilder_TheApplicationSyncsTheClusterRepositoryTheEnrolmentNamesThePlat
 	assert.Equal(t, proofScript, testutil.ContainerEnv(t, cronJobs["mitstack-node-report"])["REPORT_PROOF_SCRIPT"], "the script that signs each report")
 }
 
+func TestBuilder_TheEnrolmentAndTheRenewalRunTheClusterTokensScriptTheToolsImageCarries(t *testing.T) {
+	tokens := inlineManifests(t, builderConfiguration(t, installedOnce(t)))["mitstack-cluster-tokens"]
+	jobs, cronJobs := testutil.Kind(tokens, "Job"), testutil.Kind(tokens, "CronJob")
+	require.Len(t, jobs, 1, "enrolment Jobs")
+	require.Len(t, cronJobs, 1, "renewal CronJobs")
+
+	enrol := testutil.Field(t, jobs[0], "spec", "template", "spec", "containers", "0", "command")
+	renew := testutil.Field(t, cronJobs[0], "spec", "jobTemplate", "spec", "template", "spec", "containers", "0", "command")
+
+	assert.Equal(t, []any{"bash", tools.ScriptDir + "/cluster-tokens.sh", "enrol"}, enrol, "the enrolment's command")
+	assert.Equal(t, []any{"bash", tools.ScriptDir + "/cluster-tokens.sh", "renew"}, renew, "the renewal's command")
+}
+
 func TestCluster_ArgoCDsComponentAloneConfiguresItsNotificationsAndTheEnrolmentAloneWritesTheirSecret(t *testing.T) {
 	h := newHarness(t)
 
@@ -647,14 +660,18 @@ func TestBuilder_UserDataOverHetznersLimitFailsTheRender(t *testing.T) {
 // passes and the minted keys' varying size, which no test holds at their largest.
 const userDataReserve = 1024
 
-// longestProofScript gives the plane a proof script at the report's limit, of text gzip cannot shorten.
+// longestProofScript gives the plane a proof script at the report's limit, of random printable text, which gzip shortens
+// by about a sixth.
 func longestProofScript(h *harness) {
-	raw := make([]byte, report.ProofScriptLimit)
-	_, _ = mathrand.NewChaCha8([32]byte{}).Read(raw)
-	h.plane.ReportProofScript = base64.StdEncoding.EncodeToString(raw)[:report.ProofScriptLimit]
+	random := mathrand.New(mathrand.NewChaCha8([32]byte{}))
+	script := make([]byte, report.ProofScriptLimit)
+	for i := range script {
+		script[i] = byte('!' + random.IntN('~'-'!'+1))
+	}
+	h.plane.ReportProofScript = string(script)
 }
 
-func TestPlane_EveryServerOfAnInstallKeepsTheUserDataReserveWithEachOptionOfThePlaneAtItsLargest(t *testing.T) {
+func TestPlane_EveryServerOfAnInstallKeepsTheUserDataReserveWithTheLongestProofScriptUnderEachOptionOfThePlane(t *testing.T) {
 	for name, opts := range map[string][]func(*harness){
 		"a cluster":                           {},
 		"a cluster whose apps run on workers": {appsOnWorkers},

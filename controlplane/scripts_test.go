@@ -23,7 +23,6 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/gateway"
 	"github.com/mitstack-eu/talos-cluster-kit/serve"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
-	"github.com/mitstack-eu/talos-cluster-kit/tools"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -675,19 +674,6 @@ func secretKeys(t *testing.T, run scriptRun) []string {
 	}
 	require.NoError(t, err)
 	return strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
-}
-
-func TestClusterTokens_TheEnrolmentAndTheRenewalRunTheScriptTheToolsImageCarries(t *testing.T) {
-	tokens := inlineManifests(t, builderConfiguration(t, installedOnce(t)))["mitstack-cluster-tokens"]
-	jobs, cronJobs := testutil.Kind(tokens, "Job"), testutil.Kind(tokens, "CronJob")
-	require.Len(t, jobs, 1, "enrolment Jobs")
-	require.Len(t, cronJobs, 1, "renewal CronJobs")
-
-	enrol := testutil.Field(t, jobs[0], "spec", "template", "spec", "containers", "0", "command")
-	renew := testutil.Field(t, cronJobs[0], "spec", "jobTemplate", "spec", "template", "spec", "containers", "0", "command")
-
-	assert.Equal(t, []any{"bash", tools.ScriptDir + "/cluster-tokens.sh", "enrol"}, enrol, "the enrolment's command")
-	assert.Equal(t, []any{"bash", tools.ScriptDir + "/cluster-tokens.sh", "renew"}, renew, "the renewal's command")
 }
 
 func TestClusterTokens_EnrolSpendsTheEnrolmentTokenAndWritesEachSecret(t *testing.T) {

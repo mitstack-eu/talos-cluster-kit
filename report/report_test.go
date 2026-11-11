@@ -852,3 +852,12 @@ func TestManifests_RefusesInputsWithoutAProofScript(t *testing.T) {
 
 	require.ErrorContains(t, err, "proof script")
 }
+
+func TestManifests_RefusesAProofScriptOneByteOverItsLimit(t *testing.T) {
+	in := inputs("https://api.mitstack.dev/v1/cluster-reports")
+	in.ProofScript = strings.Repeat("x", report.ProofScriptLimit+1)
+
+	_, err := report.Manifests(in)
+
+	require.ErrorContains(t, err, fmt.Sprintf("the proof script is %d bytes, over the %d a report takes", len(in.ProofScript), report.ProofScriptLimit))
+}

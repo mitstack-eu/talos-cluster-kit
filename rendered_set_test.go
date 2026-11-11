@@ -306,7 +306,22 @@ func TestManifests_EveryRefusalOpensWithTheNameOfTheRuleThePlatformLooksFor(t *t
 	}
 }
 
-func TestManifests_RestrictImageRegistriesNamesExactlyTheImagesTheKitsOperatorsStart(t *testing.T) {
+// pinnedBusybox is the one busybox reference the local path provisioner and the mesh probe both pin.
+func pinnedBusybox(t *testing.T) string {
+	t.Helper()
+	set := components.Default()
+	var refs []string
+	for _, name := range []string{"local-path-provisioner", "mitstack-mesh-probe"} {
+		found := regexp.MustCompile(`docker\.io/library/busybox[^"\s]*`).FindAllString(string(testutil.Manifest(t, name, set.Served, set.Inline).Bytes), -1)
+		require.NotEmpty(t, found, "the %s manifest pins no busybox image", name)
+		refs = append(refs, found...)
+	}
+	distinct := slices.Compact(slices.Sorted(slices.Values(refs)))
+	require.Len(t, distinct, 1, "the kit's manifests pin more than one busybox reference")
+	return distinct[0]
+}
+
+func TestManifests_RestrictImageRegistriesNamesExactlyTheImagesTheKitPinsForPodsInAnAppNamespace(t *testing.T) {
 	cnpg := string(testutil.Manifest(t, "cloudnative-pg", components.Default().Served, components.Default().Inline).Bytes)
 	hosting, err := components.Hosting(testutil.HostingInputs(t))
 	require.NoError(t, err)
@@ -323,11 +338,11 @@ func TestManifests_RestrictImageRegistriesNamesExactlyTheImagesTheKitsOperatorsS
 	}
 	solver := regexp.MustCompile(`--acme-http01-solver-image=(\S+)`).FindStringSubmatch(certManager)
 	require.NotNil(t, solver, "cert-manager sets no solver image")
-	want = append(want, solver[1])
+	want = append(want, solver[1], pinnedBusybox(t))
 
 	got := quoted(t, podPolicy(t, "mitstack-restrict-image-registries"), "pinnedImages")
 
-	assert.ElementsMatch(t, want, got, "the images an operator starts in an app namespace differ from the policy's exact list")
+	assert.ElementsMatch(t, want, got, "the images the kit pins for pods in an app namespace differ from the policy's exact list")
 }
 
 func TestManifests_PodPoliciesJudgeWhatAPodMountsSetsAndPulls(t *testing.T) {
@@ -338,6 +353,8 @@ func TestManifests_PodPoliciesJudgeWhatAPodMountsSetsAndPulls(t *testing.T) {
 	)
 	pinned := quoted(t, podPolicy(t, "mitstack-restrict-image-registries"), "pinnedImages")
 	postgres := pinned[slices.IndexFunc(pinned, func(s string) bool { return strings.Contains(s, "postgresql:") })]
+	busybox := pinnedBusybox(t)
+	busyboxTag, busyboxDigest, _ := strings.Cut(busybox, "@")
 	limits := map[string]any{"limits": map[string]any{"cpu": "100m", "memory": "64Mi"}}
 	container := func(image string, resources map[string]any) map[string]any {
 		return map[string]any{"name": "c", "image": image, "resources": resources}
@@ -373,6 +390,12 @@ func TestManifests_PodPoliciesJudgeWhatAPodMountsSetsAndPulls(t *testing.T) {
 		{"an ephemeral container from another registry is refused", "mitstack-restrict-image-registries", with(pod(container(mitstack, limits)), "ephemeralContainers", []any{container("quay.io/x/y:1", limits)}), false},
 		{"the Postgres image CloudNativePG starts, by its pinned digest, is admitted", "mitstack-restrict-image-registries", pod(container(postgres, limits)), true},
 		{"the same Postgres image by tag alone is refused", "mitstack-restrict-image-registries", pod(container("ghcr.io/cloudnative-pg/postgresql:16.15-system-trixie", limits)), false},
+		{"the busybox image the kit pins, by its tag and digest, is admitted", "mitstack-restrict-image-registries", pod(container(busybox, limits)), true},
+		{"the same busybox image by tag alone is refused", "mitstack-restrict-image-registries", pod(container(busyboxTag, limits)), false},
+		{"the same busybox tag at another digest is refused", "mitstack-restrict-image-registries", pod(container(busyboxTag+zero, limits)), false},
+		{"the same busybox digest under another tag is refused", "mitstack-restrict-image-registries", pod(container("docker.io/library/busybox:1.36.1@"+busyboxDigest, limits)), false},
+		{"another Docker Hub image at the busybox digest is refused", "mitstack-restrict-image-registries", pod(container("docker.io/library/alpine:3.22.0@"+busyboxDigest, limits)), false},
+		{"the pinned busybox image in an init container is admitted", "mitstack-restrict-image-registries", with(pod(container(mitstack, limits)), "initContainers", []any{container(busybox, limits)}), true},
 		{"the same Postgres image at another digest is refused", "mitstack-restrict-image-registries", pod(container("ghcr.io/cloudnative-pg/postgresql:16.15-system-trixie"+zero, limits)), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

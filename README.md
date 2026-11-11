@@ -1060,7 +1060,7 @@ A scan that never succeeds leaves no summary, so the report says why itself.
 `runner.job` is the CronJob's newest Job with its active, succeeded and failed
 counts and its conditions, and `runner.events` holds the newest 20 events of
 that Job and of the pods it created, newest first. A Job that cannot create
-its pod, because admission refuses it, shows the refusal in an event and
+its pod, for example because an admission webhook refuses it, shows the refusal in an event and
 nowhere else. The report's Role in `kube-system` lets it list that
 namespace's events and no other namespace's, and it keeps only those of the
 Job. When the Job or event read fails, that member holds `{exitStatus, stderr}`

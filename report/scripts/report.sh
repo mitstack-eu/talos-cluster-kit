@@ -28,7 +28,7 @@ mesh_probe_max_age=900
 probe_namespace=mitstack-admission-probe
 scans_configmap=kube-system/mitstack-security-scans
 scan_cronjob=mitstack-security-scan
-# A cluster keeps an event for an hour, so twenty cover the newest scan Job and its pods.
+# The report keeps the newest twenty events of the newest scan Job and its pods, since a failing Job repeats an event.
 scan_events_kept=20
 # Kinds as kubectl --show-kind names them, as blocks name their objects; never secret, as the report holds no Secret right.
 subscription_kinds=(namespace serviceaccount service resourcequota limitrange deployment.apps

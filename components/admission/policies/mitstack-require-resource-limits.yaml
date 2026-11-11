@@ -19,7 +19,7 @@ spec:
       matchExpressions:
       - key: kubernetes.io/metadata.name
         operator: NotIn
-        values: [kube-system, kube-public, kube-node-lease, argocd, kyverno, cnpg-system, mitstack-node, istio-system, traefik, cert-manager, openbao, external-secrets, local-path-storage, mitstack-mesh-probe]
+        values: [kube-system, kube-public, kube-node-lease, argocd, kyverno, cnpg-system, mitstack-node, istio-system, traefik, cert-manager, openbao, external-secrets, local-path-storage]
   variables:
   - name: containers
     expression: "object.spec.containers + object.spec.?initContainers.orValue([])"

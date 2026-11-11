@@ -99,13 +99,7 @@ spec:
       containers:
         - name: enrol
           image: {{ .Image }}
-          command:
-            - bash
-            - -c
-            - |
-{{ indent 14 .Script }}
-            - cluster-tokens
-            - enrol
+          command: [bash, {{ .Script }}, enrol]
           env:
             - name: PLATFORM_URL
               value: {{ printf "%q" .PlatformURL }}
@@ -163,13 +157,7 @@ spec:
           containers:
             - name: renew
               image: {{ .Image }}
-              command:
-                - bash
-                - -c
-                - |
-{{ indent 18 .Script }}
-                - cluster-tokens
-                - renew
+              command: [bash, {{ .Script }}, renew]
               env:
                 - name: PLATFORM_URL
                   value: {{ printf "%q" .PlatformURL }}

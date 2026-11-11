@@ -113,6 +113,7 @@ jobs:
           docker run --rm talos-tools:ci cat /usr/local/lib/mitstack/label-nodes.sh | cmp - topology/scripts/label-nodes.sh
           docker run --rm talos-tools:ci cat /usr/local/lib/mitstack/mesh-probe.sh | cmp - report/scripts/mesh-probe.sh
           docker run --rm talos-tools:ci cat /usr/local/lib/mitstack/security-scan.sh | cmp - report/scripts/security-scan.sh
+          docker run --rm talos-tools:ci cat /usr/local/lib/mitstack/cluster-tokens.sh | cmp - controlplane/scripts/cluster-tokens.sh
 
       - name: Run each of its commands
         run: |

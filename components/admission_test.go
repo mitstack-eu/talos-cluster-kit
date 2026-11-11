@@ -221,7 +221,7 @@ func TestAdmission_RestrictImageRegistriesNamesExactlyTheImagesTheKitsOperatorsS
 	for _, re := range []*regexp.Regexp{
 		regexp.MustCompile(`(?m)^\s*POSTGRES_IMAGE_NAME: (\S+)$`),
 		regexp.MustCompile(`(?m)^\s*PGBOUNCER_IMAGE_NAME: (\S+)$`),
-		regexp.MustCompile(`(?m)^\s*- name: OPERATOR_IMAGE_NAME\n\s+value: (\S+)$`),
+		regexp.MustCompile(`(?m)^\s*- name: OPERATOR_IMAGE_NAME\n\s+value: "?([^"\s]+)"?$`),
 	} {
 		found := re.FindStringSubmatch(cnpg)
 		require.NotNil(t, found, "the CloudNativePG manifest sets no image for %s", re)

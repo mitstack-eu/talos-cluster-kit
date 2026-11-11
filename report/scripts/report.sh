@@ -3,12 +3,12 @@
 # node's STATE and EPHEMERAL encryption, Argo CD's health of each Application and each object it applied, what each
 # Argo CD route answers a caller without a session, Argo CD's Services, Ingresses and pod images, CloudNativePG's
 # objects with each cluster's primary, every pod's node, phase and container states, each image reference the pods and
-# the workloads' pod templates name, each OpenBao member's seal state and the active one, each claim and the default
+# the workloads' pod templates name, each OpenBao member's seal state and the active one, each claim with its size and the default
 # storage classes, every Service's type, each default-deny NetworkPolicy, the objects labelled
 # mitstack.dev/subscription, the API server's key set, the mesh probe's results, the outside probe's reading of each
 # gateway's mirror, whether a TLS connection to Let's Encrypt's ACME API opens through the network's default route, each
 # repository credential Argo CD's SealedSecrets declare with each AppProject's source repositories, the API server's
-# answer to a dry run of each admission fixture, the security scan's last runs and kept summaries, and a checks member
+# answer to a dry run of each admission fixture, the security scan's last runs, newest Job with its events and kept summaries, and a checks member
 # naming each check of the platform's verdict, signed with a token the API server mints for the body through block-kit's
 # token-request.sh in REPORT_PROOF_SCRIPT.
 # When a read, the body or the token request fails or times out, it posts an unsigned report whose error names it
@@ -27,6 +27,9 @@ mesh_probe_max_age=900
 # The report dry-runs the admission fixtures in the probe namespace, and reads what the security scan last kept.
 probe_namespace=mitstack-admission-probe
 scans_configmap=kube-system/mitstack-security-scans
+scan_cronjob=mitstack-security-scan
+# The report keeps the newest twenty events of the newest scan Job and its pods, since a failing Job repeats an event.
+scan_events_kept=20
 # Kinds as kubectl --show-kind names them, as blocks name their objects; never secret, as the report holds no Secret right.
 subscription_kinds=(namespace serviceaccount service resourcequota limitrange deployment.apps
   ingress.networking.k8s.io networkpolicy.networking.k8s.io role.rbac.authorization.k8s.io
@@ -92,7 +95,8 @@ read_cluster() {
   read_beside sealed-secrets kubectl get sealedsecrets.bitnami.com -n argocd -o json &
   read_beside app-projects kubectl get appprojects.argoproj.io -n argocd -o json &
   read_beside security-scans kubectl get configmap "${scans_configmap#*/}" -n "${scans_configmap%%/*}" -o json &
-  read_beside security-scan-cronjob kubectl get cronjob.batch mitstack-security-scan -n "${scans_configmap%%/*}" -o json &
+  read_beside security-scan-cronjob kubectl get cronjob.batch "$scan_cronjob" -n "${scans_configmap%%/*}" -o json &
+  read_beside security-scan-events kubectl get events -n "${scans_configmap%%/*}" -o json &
   read_admission &
   mkdir "$work/openbao"
   for member in $OPENBAO_MEMBERS; do
@@ -337,6 +341,11 @@ body() {
     --rawfile scan_job "$work/security-scan-cronjob.out" \
     --rawfile scan_job_err "$work/security-scan-cronjob.err" \
     --argjson scan_job_status "$(cat "$work/security-scan-cronjob.status")" \
+    --arg scan_cronjob "$scan_cronjob" \
+    --argjson scan_events_kept "$scan_events_kept" \
+    --rawfile scan_events "$work/security-scan-events.out" \
+    --rawfile scan_events_err "$work/security-scan-events.err" \
+    --argjson scan_events_status "$(cat "$work/security-scan-events.status")" \
     --from-file /dev/stdin <<'JQ'
     def talos_version: (.status.nodeInfo.osImage // "") | (try capture("^Talos \\((?<v>[^)]+)\\)").v catch null);
     def ready: [.status.conditions[]? | select(.type == "Ready") | .status == "True"] | any;
@@ -358,7 +367,8 @@ body() {
     def storage: {
       claims: [.items[] | select(.kind == "PersistentVolumeClaim") | {
         namespace: .metadata.namespace, name: .metadata.name,
-        storageClass: (.spec.storageClassName // null), phase: (.status.phase // null)
+        storageClass: (.spec.storageClassName // null), phase: (.status.phase // null),
+        requestedSize: (.spec.resources.requests.storage // null), capacity: (.status.capacity.storage // null)
       }],
       defaultStorageClasses: [.items[] | select(.kind == "StorageClass")
         | select(.metadata.annotations["storageclass.kubernetes.io/is-default-class"] == "true") | .metadata.name]
@@ -491,14 +501,31 @@ body() {
     def repository_credential: (.spec.template // {}) as $t | ($t.metadata.labels["argocd.argoproj.io/secret-type"] // null) as $type
       | select($type != null)
       | {name: ($t.metadata.name // .metadata.name), secretType: $type, project: ($t.data.project // ""), url: ($t.data.url // "")};
+    # newest_scan_job is the scan CronJob's newest Job with its counts and conditions, or null while it owns none.
+    def newest_scan_job:
+      beside($workloads_status; $workloads_err; "kubectl exited 0, and its output is not the workloads this report reads";
+        [$workloads | fromjson | .items[] | select(.kind == "Job" and any(.metadata.ownerReferences[]?; .kind == "CronJob" and .name == $scan_cronjob))]
+        | sort_by(.metadata.creationTimestamp) | last
+        | if . == null then null else {name: .metadata.name, createdAt: .metadata.creationTimestamp, startedAt: (.status.startTime // null),
+            active: (.status.active // 0), succeeded: (.status.succeeded // 0), failed: (.status.failed // 0),
+            conditions: [.status.conditions[]? | {type, status, reason: (.reason // null), message: (.message // null | at_most_256)}]} end);
+    # scan_job_events are the newest events of that Job and of its pods, whose names start with the Job's, since a Job that
+    # creates no pod says why only in an event.
+    def scan_job_events($job):
+      beside($scan_events_status; $scan_events_err; "kubectl exited 0, and its output is not the events this report reads";
+        [$scan_events | fromjson | .items[] | select($job.name != null and (.involvedObject.name as $n | $n == $job.name or ($n | startswith("\($job.name)-"))))
+          | {kind: .involvedObject.kind, name: .involvedObject.name, type, reason, message: (.message // null | at_most_256), count: (.count // null),
+            lastSeenAt: (.series.lastObservedTime // .lastTimestamp // .eventTime // .metadata.creationTimestamp)}]
+        | sort_by(.lastSeenAt | sub("\\.[0-9]+Z$"; "Z")) | reverse | .[0:$scan_events_kept]);
     # runner is when the scan CronJob last started a scan and when one last succeeded, or why the report could not read it.
     def runner:
       if $scan_job_status != 0 then {exitStatus: $scan_job_status, output: $scan_job_err[-512:]}
       else (try ($scan_job | fromjson | .status // {}) catch null) as $s
         | if ($s | type) != "object" then {exitStatus: 0, output: "kubectl exited 0, and its output is not the scan CronJob"}
-          else {exitStatus: 0, output: ("the CronJob \($scans_configmap | split("/")[0])/mitstack-security-scan "
+          else newest_scan_job as $job | {exitStatus: 0, output: ("the CronJob \($scans_configmap | split("/")[0])/\($scan_cronjob) "
             + (if $s.lastScheduleTime then "last started a scan at \($s.lastScheduleTime)" else "has started no scan yet" end)
-            + (if $s.lastSuccessfulTime then ", and one last succeeded at \($s.lastSuccessfulTime)" else ", and none has succeeded yet" end))}
+            + (if $s.lastSuccessfulTime then ", and one last succeeded at \($s.lastSuccessfulTime)" else ", and none has succeeded yet" end)),
+            job: $job, events: scan_job_events($job)}
           end
       end;
     # kept is one summary the scan kept, while it is one JSON object within the 16 KiB the report carries of it.

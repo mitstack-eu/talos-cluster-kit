@@ -1,0 +1,84 @@
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "apiVersion": "batch/v1",
+      "kind": "Job",
+      "metadata": {
+        "name": "mitstack-security-scan-29909337",
+        "namespace": "kube-system",
+        "creationTimestamp": "2026-11-10T03:17:00Z",
+        "ownerReferences": [
+          {
+            "apiVersion": "batch/v1",
+            "kind": "CronJob",
+            "name": "mitstack-security-scan",
+            "controller": true
+          }
+        ]
+      },
+      "status": {
+        "succeeded": 1,
+        "startTime": "2026-11-10T03:17:00Z",
+        "conditions": [
+          {
+            "type": "Complete",
+            "status": "True",
+            "lastTransitionTime": "2026-11-10T03:19:06Z"
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "batch/v1",
+      "kind": "Job",
+      "metadata": {
+        "name": "mitstack-security-scan-29910777",
+        "namespace": "kube-system",
+        "creationTimestamp": "2026-11-11T03:17:00Z",
+        "ownerReferences": [
+          {
+            "apiVersion": "batch/v1",
+            "kind": "CronJob",
+            "name": "mitstack-security-scan",
+            "controller": true
+          }
+        ]
+      },
+      "status": {
+        "failed": 1,
+        "startTime": "2026-11-11T03:17:00Z",
+        "conditions": [
+          {
+            "type": "Failed",
+            "status": "True",
+            "reason": "DeadlineExceeded",
+            "message": "Job was active longer than specified deadline xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "batch/v1",
+      "kind": "Job",
+      "metadata": {
+        "name": "mitstack-mesh-probe-29910900",
+        "namespace": "kube-system",
+        "creationTimestamp": "2026-11-11T05:00:00Z",
+        "ownerReferences": [
+          {
+            "apiVersion": "batch/v1",
+            "kind": "CronJob",
+            "name": "mitstack-mesh-probe",
+            "controller": true
+          }
+        ]
+      },
+      "status": {
+        "active": 1,
+        "startTime": "2026-11-11T05:00:00Z"
+      }
+    }
+  ]
+}

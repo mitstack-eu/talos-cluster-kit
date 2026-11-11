@@ -2,8 +2,9 @@
 # runs kube-bench against its control-plane node and kubescape against the cluster's objects once a day, and patches a
 # summary of each into one ConfigMap. kube-bench reads each component's flags from its process and its config from the
 # host, read-only. The scan may read the cluster's objects but never a Secret, and read and patch that ConfigMap alone;
-# the report may only read the ConfigMap and the CronJob. kube-bench runs first, as root with the host's files and no
-# token, and kubescape after it as a non-root user with the token and no host file, so neither tool holds both.
+# the report may only read the ConfigMap and the CronJob, and list the namespace's events. kube-bench runs first, as root
+# with the host's files and no token, and kubescape after it as a non-root user with the token and no host file, so
+# neither tool holds both.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -97,6 +98,10 @@ rules:
     resources: [cronjobs]
     resourceNames: [mitstack-security-scan]
     verbs: [get]
+  - apiGroups: [""]
+    resources: [events]
+    # A list cannot be limited to a name, so the report keeps from the namespace's events only those of the newest scan Job.
+    verbs: [list]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

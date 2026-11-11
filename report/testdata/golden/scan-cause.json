@@ -1,0 +1,200 @@
+{
+  "job": {
+    "name": "mitstack-security-scan-29910777",
+    "createdAt": "2026-11-11T03:17:00Z",
+    "startedAt": "2026-11-11T03:17:00Z",
+    "active": 0,
+    "succeeded": 0,
+    "failed": 1,
+    "conditions": [
+      {
+        "type": "Failed",
+        "status": "True",
+        "reason": "DeadlineExceeded",
+        "message": "Job was active longer than specified deadline xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      }
+    ]
+  },
+  "events": [
+    {
+      "kind": "Pod",
+      "name": "mitstack-security-scan-29910777-x7k2p",
+      "type": "Warning",
+      "reason": "FailedScheduling",
+      "message": "0/3 nodes are available: yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+      "count": null,
+      "lastSeenAt": "2026-11-11T03:18:00.000000Z"
+    },
+    {
+      "kind": "Job",
+      "name": "mitstack-security-scan-29910777",
+      "type": "Warning",
+      "reason": "DeadlineExceeded",
+      "message": "Job was active longer than specified deadline",
+      "count": null,
+      "lastSeenAt": "2026-11-11T03:17:30.000000Z"
+    },
+    {
+      "kind": "Job",
+      "name": "mitstack-security-scan-29910777",
+      "type": "Warning",
+      "reason": "FailedCreate",
+      "message": "Error creating: pods \"mitstack-security-scan-29910777-\" is forbidden: example denial 20",
+      "count": 20,
+      "lastSeenAt": "2026-11-11T03:17:20Z"
+    },
+    {
+      "kind": "Job",
+      "name": "mitstack-security-scan-29910777",
+      "type": "Warning",
+      "reason": "FailedCreate",
+      "message": "Error creating: pods \"mitstack-security-scan-29910777-\" is forbidden: example denial 19",
+      "count": 19,
+      "lastSeenAt": "2026-11-11T03:17:19Z"
+    },
+    {
+      "kind": "Job",
+      "name": "mitstack-security-scan-29910777",
+      "type": "Warning",
+      "reason": "FailedCreate",
+      "message": "Error creating: pods \"mitstack-security-scan-29910777-\" is forbidden: example denial 18",
+      "count": 18,
+      "lastSeenAt": "2026-11-11T03:17:18Z"
+    },
+    {
+      "kind": "Job",
+      "name": "mitstack-security-scan-29910777",
+      "type": "Warning",
+      "reason": "FailedCreate",
+      "message": "Error creating: pods \"mitstack-security-scan-29910777-\" is forbidden: example denial 17",
+      "count": 17,
+      "lastSeenAt": "2026-11-11T03:17:17Z"
+    },
+    {
+      "kind": "Job",
+      "name": "mitstack-security-scan-29910777",
+      "type": "Warning",
+      "reason": "FailedCreate",
+      "message": "Error creating: pods \"mitstack-security-scan-29910777-\" is forbidden: example denial 16",
+      "count": 16,
+      "lastSeenAt": "2026-11-11T03:17:16Z"
+    },
+    {
+      "kind": "Job",
+      "name": "mitstack-security-scan-29910777",
+      "type": "Warning",
+      "reason": "FailedCreate",
+      "message": "Error creating: pods \"mitstack-security-scan-29910777-\" is forbidden: example denial 15",
+      "count": 15,
+      "lastSeenAt": "2026-11-11T03:17:15Z"
+    },
+    {
+      "kind": "Job",
+      "name": "mitstack-security-scan-29910777",
+      "type": "Warning",
+      "reason": "FailedCreate",
+      "message": "Error creating: pods \"mitstack-security-scan-29910777-\" is forbidden: example denial 14",
+      "count": 14,
+      "lastSeenAt": "2026-11-11T03:17:14Z"
+    },
+    {
+      "kind": "Job",
+      "name": "mitstack-security-scan-29910777",
+      "type": "Warning",
+      "reason": "FailedCreate",
+      "message": "Error creating: pods \"mitstack-security-scan-29910777-\" is forbidden: example denial 13",
+      "count": 13,
+      "lastSeenAt": "2026-11-11T03:17:13Z"
+    },
+    {
+      "kind": "Job",
+      "name": "mitstack-security-scan-29910777",
+      "type": "Warning",
+      "reason": "FailedCreate",
+      "message": "Error creating: pods \"mitstack-security-scan-29910777-\" is forbidden: example denial 12",
+      "count": 12,
+      "lastSeenAt": "2026-11-11T03:17:12Z"
+    },
+    {
+      "kind": "Job",
+      "name": "mitstack-security-scan-29910777",
+      "type": "Warning",
+      "reason": "FailedCreate",
+      "message": "Error creating: pods \"mitstack-security-scan-29910777-\" is forbidden: example denial 11",
+      "count": 11,
+      "lastSeenAt": "2026-11-11T03:17:11Z"
+    },
+    {
+      "kind": "Job",
+      "name": "mitstack-security-scan-29910777",
+      "type": "Warning",
+      "reason": "FailedCreate",
+      "message": "Error creating: pods \"mitstack-security-scan-29910777-\" is forbidden: example denial 10",
+      "count": 10,
+      "lastSeenAt": "2026-11-11T03:17:10Z"
+    },
+    {
+      "kind": "Job",
+      "name": "mitstack-security-scan-29910777",
+      "type": "Warning",
+      "reason": "FailedCreate",
+      "message": "Error creating: pods \"mitstack-security-scan-29910777-\" is forbidden: example denial 9",
+      "count": 9,
+      "lastSeenAt": "2026-11-11T03:17:09Z"
+    },
+    {
+      "kind": "Job",
+      "name": "mitstack-security-scan-29910777",
+      "type": "Warning",
+      "reason": "FailedCreate",
+      "message": "Error creating: pods \"mitstack-security-scan-29910777-\" is forbidden: example denial 8",
+      "count": 8,
+      "lastSeenAt": "2026-11-11T03:17:08Z"
+    },
+    {
+      "kind": "Job",
+      "name": "mitstack-security-scan-29910777",
+      "type": "Warning",
+      "reason": "FailedCreate",
+      "message": "Error creating: pods \"mitstack-security-scan-29910777-\" is forbidden: example denial 7",
+      "count": 7,
+      "lastSeenAt": "2026-11-11T03:17:07Z"
+    },
+    {
+      "kind": "Job",
+      "name": "mitstack-security-scan-29910777",
+      "type": "Warning",
+      "reason": "FailedCreate",
+      "message": "Error creating: pods \"mitstack-security-scan-29910777-\" is forbidden: example denial 6",
+      "count": 6,
+      "lastSeenAt": "2026-11-11T03:17:06Z"
+    },
+    {
+      "kind": "Job",
+      "name": "mitstack-security-scan-29910777",
+      "type": "Warning",
+      "reason": "FailedCreate",
+      "message": "Error creating: pods \"mitstack-security-scan-29910777-\" is forbidden: example denial 5",
+      "count": 5,
+      "lastSeenAt": "2026-11-11T03:17:05Z"
+    },
+    {
+      "kind": "Job",
+      "name": "mitstack-security-scan-29910777",
+      "type": "Warning",
+      "reason": "FailedCreate",
+      "message": "Error creating: pods \"mitstack-security-scan-29910777-\" is forbidden: example denial 4",
+      "count": 4,
+      "lastSeenAt": "2026-11-11T03:17:04Z"
+    },
+    {
+      "kind": "Job",
+      "name": "mitstack-security-scan-29910777",
+      "type": "Warning",
+      "reason": "FailedCreate",
+      "message": "Error creating: pods \"mitstack-security-scan-29910777-\" is forbidden: example denial 3",
+      "count": 3,
+      "lastSeenAt": "2026-11-11T03:17:03Z"
+    }
+  ]
+}

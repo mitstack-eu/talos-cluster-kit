@@ -48,6 +48,7 @@ const (
 	dryRun            = "create --dry-run=server -n mitstack-admission-probe -f "
 	scansRead         = "get configmap mitstack-security-scans -n kube-system -o json"
 	scanCronJobRead   = "get cronjob.batch mitstack-security-scan -n kube-system -o json"
+	scanEventsRead    = "get events -n kube-system -o json"
 	// dryRunAnswer refuses the app-label and Pod Security fixtures as Kyverno and the API server word it, and admits the rest.
 	dryRunAnswer = `case "$(cat "${@: -1}")" in
 *refused-require-app-label*)
@@ -104,7 +105,7 @@ func kubectlAnswering(overrides map[string]string) string {
 		ingressesRead: `echo '{"apiVersion": "v1", "kind": "List", "items": []}'`, defaultDenyRead: "cat testdata/default-deny.json",
 		sealedSecretsRead: "cat testdata/sealed-secrets.json", appProjectsRead: "cat testdata/app-projects.json",
 		fixturesRead: "cat testdata/admission-fixtures.json", dryRun: dryRunAnswer, scansRead: "cat testdata/security-scans.json",
-		scanCronJobRead: "cat testdata/security-scan-cronjob.json"}
+		scanCronJobRead: "cat testdata/security-scan-cronjob.json", scanEventsRead: `echo '{"items": []}'`}
 	for _, kind := range subscriptionKinds {
 		answers[subscriptionRead(kind)] = "cat testdata/subscription-resources/" + kind + ".json"
 	}
@@ -347,7 +348,7 @@ func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipA
 	require.NotEmpty(t, calls)
 	beside := []string{"kubectl " + meshProbeRead, "kubectl " + podsRead, "kubectl " + workloadsRead, "kubectl " + ingressesRead, "kubectl " + defaultDenyRead,
 		"talosctl " + etcdStatusRead, "kubectl " + sealedSecretsRead, "kubectl " + appProjectsRead, "kubectl " + fixturesRead,
-		"kubectl " + scansRead, "kubectl " + scanCronJobRead}
+		"kubectl " + scansRead, "kubectl " + scanCronJobRead, "kubectl " + scanEventsRead}
 	for _, read := range beside {
 		assert.Contains(t, calls[:len(calls)-1], read, "a read beside the others ends before the proof")
 	}
@@ -585,10 +586,10 @@ func TestReport_PostsEachMemberItReadsFromAHealthyCluster(t *testing.T) {
 				"applied": true, "message": nil},
 			map[string]any{"namespace": "app-pg", "kind": "DatabaseRole", "name": "shop", "subscription": nil,
 				"applied": false, "message": `role "shop" cannot be created: the cluster is not ready`}}},
-		"each claim with its storage class and phase, and the default storage classes": {"storage", "", map[string]any{
+		"each claim with its storage class, phase, requested size and bound capacity, and the default storage classes": {"storage", "", map[string]any{
 			"claims": []any{
-				map[string]any{"namespace": "app-shop", "name": "data-shop-db-1", "storageClass": "local-path", "phase": "Bound"},
-				map[string]any{"namespace": "app-shop", "name": "scratch", "storageClass": nil, "phase": "Pending"},
+				map[string]any{"namespace": "app-shop", "name": "data-shop-db-1", "storageClass": "local-path", "phase": "Bound", "requestedSize": "10Gi", "capacity": "10Gi"},
+				map[string]any{"namespace": "app-shop", "name": "scratch", "storageClass": nil, "phase": "Pending", "requestedSize": "1Gi", "capacity": nil},
 			},
 			"defaultStorageClasses": []any{"local-path"},
 		}},
@@ -634,7 +635,7 @@ func TestReport_PostsEachMemberItReadsFromAHealthyCluster(t *testing.T) {
 					"violates PodSecurity \"restricted:latest\": privileged\n"}}},
 		"the scan CronJob's last runs and each kept summary": {"securityScans", "", map[string]any{
 			"runner": map[string]any{"exitStatus": float64(0),
-				"output": "the CronJob kube-system/mitstack-security-scan last started a scan at 2026-11-07T03:17:00Z, and one last succeeded at 2026-11-07T03:19:06Z"},
+				"output": "the CronJob kube-system/mitstack-security-scan last started a scan at 2026-11-07T03:17:00Z, and one last succeeded at 2026-11-07T03:19:06Z", "job": nil, "events": []any{}},
 			"lastRun": map[string]any{"finishedAt": "2026-11-07T03:19:05Z", "exitStatus": float64(0), "output": "kube-bench: ran; kubescape: ran"},
 			"kubeBench": map[string]any{"tool": "kube-bench", "version": "v0.16.0", "startedAt": "2026-11-07T03:17:02Z", "profile": "cis-1.10",
 				"totals": map[string]any{"pass": float64(69), "fail": float64(1), "warn": float64(46), "info": float64(14)},

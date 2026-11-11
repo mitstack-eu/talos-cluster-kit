@@ -22,8 +22,8 @@ var jqEnv string
 //go:embed scan.env
 var scanEnv string
 
-// ScriptDir is where the tools image carries the scripts the kit's CronJobs run, so a node's machine configuration, which
-// the builder's user data caps, carries none of them.
+// ScriptDir is where the tools image carries the scripts the kit's Jobs and CronJobs run, so a node's machine
+// configuration, which the builder's user data caps, carries none of them.
 const ScriptDir = "/usr/local/lib/mitstack"
 
 // ManifestPath is where the tools image carries the manifest the repository holds at path, which a gateway copies out.

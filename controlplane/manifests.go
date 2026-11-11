@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"text/template"
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
@@ -20,23 +19,21 @@ var (
 	clusterTokensTemplate string
 	//go:embed manifests/cluster-application.yaml
 	clusterApplicationTemplate string
-	//go:embed scripts/cluster-tokens.sh
-	clusterTokensScript string
 )
 
 // toolsImage is a variable so a test can stand in a fixed image, since every kit release pins tools.Image anew.
 var toolsImage = func() string { return tools.Image }
 
-var templateFuncs = template.FuncMap{"indent": indent}
-
 var (
-	clusterTokens      = template.Must(template.New("cluster-tokens").Funcs(templateFuncs).Parse(clusterTokensTemplate))
-	clusterApplication = template.Must(template.New("cluster-application").Funcs(templateFuncs).Parse(clusterApplicationTemplate))
+	clusterTokens      = template.Must(template.New("cluster-tokens").Parse(clusterTokensTemplate))
+	clusterApplication = template.Must(template.New("cluster-application").Parse(clusterApplicationTemplate))
 )
 
 const (
 	clusterReportsPath = "/v1/cluster-reports"
 	manifestDir        = "manifests/"
+	// clusterTokensScript is where the tools image carries the cluster's credentials script, which the builder's user data has no room for.
+	clusterTokensScript = tools.ScriptDir + "/cluster-tokens.sh"
 )
 
 // clusterComponents carries the node report, the topology labeller, the enrolment and the Argo CD application inline, so the
@@ -104,15 +101,4 @@ func execute(t *template.Template, data map[string]any) ([]byte, error) {
 		return nil, fmt.Errorf("rendering %s: %w", t.Name(), err)
 	}
 	return out.Bytes(), nil
-}
-
-func indent(n int, s string) string {
-	pad := strings.Repeat(" ", n)
-	lines := strings.Split(strings.TrimSuffix(s, "\n"), "\n")
-	for i, line := range lines {
-		if line != "" {
-			lines[i] = pad + line
-		}
-	}
-	return strings.Join(lines, "\n")
 }

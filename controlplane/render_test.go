@@ -13,6 +13,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	mathrand "math/rand/v2"
 	"mime"
 	"mime/multipart"
 	"net/mail"
@@ -29,6 +30,7 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane/cloudtest"
 	"github.com/mitstack-eu/talos-cluster-kit/image"
 	"github.com/mitstack-eu/talos-cluster-kit/nodeconfig"
+	"github.com/mitstack-eu/talos-cluster-kit/report"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 	"github.com/mitstack-eu/talos-cluster-kit/tools"
 	"github.com/stretchr/testify/assert"
@@ -229,6 +231,19 @@ func TestBuilder_TheApplicationSyncsTheClusterRepositoryTheEnrolmentNamesThePlat
 		assert.Equal(t, tools.Image, testutil.Field(t, container, "image"), "the image %s runs", name)
 	}
 	assert.Equal(t, proofScript, testutil.ContainerEnv(t, cronJobs["mitstack-node-report"])["REPORT_PROOF_SCRIPT"], "the script that signs each report")
+}
+
+func TestBuilder_TheEnrolmentAndTheRenewalRunTheClusterTokensScriptTheToolsImageCarries(t *testing.T) {
+	tokens := inlineManifests(t, builderConfiguration(t, installedOnce(t)))["mitstack-cluster-tokens"]
+	jobs, cronJobs := testutil.Kind(tokens, "Job"), testutil.Kind(tokens, "CronJob")
+	require.Len(t, jobs, 1, "enrolment Jobs")
+	require.Len(t, cronJobs, 1, "renewal CronJobs")
+
+	enrol := testutil.Field(t, jobs[0], "spec", "template", "spec", "containers", "0", "command")
+	renew := testutil.Field(t, cronJobs[0], "spec", "jobTemplate", "spec", "template", "spec", "containers", "0", "command")
+
+	assert.Equal(t, []any{"bash", tools.ScriptDir + "/cluster-tokens.sh", "enrol"}, enrol, "the enrolment's command")
+	assert.Equal(t, []any{"bash", tools.ScriptDir + "/cluster-tokens.sh", "renew"}, renew, "the renewal's command")
 }
 
 func TestCluster_ArgoCDsComponentAloneConfiguresItsNotificationsAndTheEnrolmentAloneWritesTheirSecret(t *testing.T) {
@@ -639,6 +654,44 @@ func TestBuilder_UserDataOverHetznersLimitFailsTheRender(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "over Hetzner's 32768")
+}
+
+// userDataReserve is the room each server of an install keeps under Hetzner's limit, for the names and URLs a block
+// passes and the minted keys' varying size, which no test holds at their largest.
+const userDataReserve = 1024
+
+// longestProofScript gives the plane a proof script at the report's limit, of random printable text, which gzip shortens
+// by about a sixth.
+func longestProofScript(h *harness) {
+	random := mathrand.New(mathrand.NewChaCha8([32]byte{}))
+	script := make([]byte, report.ProofScriptLimit)
+	for i := range script {
+		script[i] = byte('!' + random.IntN('~'-'!'+1))
+	}
+	h.plane.ReportProofScript = string(script)
+}
+
+func TestPlane_EveryServerOfAnInstallKeepsTheUserDataReserveWithTheLongestProofScriptUnderEachOptionOfThePlane(t *testing.T) {
+	for name, opts := range map[string][]func(*harness){
+		"a cluster":                           {},
+		"a cluster whose apps run on workers": {appsOnWorkers},
+		"a cluster that hosts the platform":   {hosting},
+		"a cluster that hosts the platform and runs its apps on workers": {hosting, appsOnWorkers},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, append(opts, longestProofScript)...)
+
+			require.NoError(t, h.converge())
+
+			require.NotEmpty(t, h.cloud.ServerSpecs, "the servers the install created")
+			for _, spec := range h.cloud.ServerSpecs {
+				t.Logf("the user data of %s is %d bytes", spec.Name, len(spec.UserData))
+				assert.LessOrEqual(t, len(spec.UserData), cloudtest.UserDataLimit-userDataReserve,
+					"the user data of %s is %d bytes, which keeps %d of Hetzner's %d free; want %d", spec.Name, len(spec.UserData),
+					cloudtest.UserDataLimit-len(spec.UserData), cloudtest.UserDataLimit, userDataReserve)
+			}
+		})
+	}
 }
 
 // recordedToolsImage stands in for tools.Image, which every kit release pins anew.

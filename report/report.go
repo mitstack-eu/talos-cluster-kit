@@ -95,6 +95,10 @@ const (
 	outsideProbeConfigMap = "mitstack-mesh-probe"
 )
 
+// ProofScriptLimit is the longest proof script a report takes, in bytes, since the script travels in the builder's
+// user data, which Hetzner caps.
+const ProofScriptLimit = 2048
+
 // Inputs are what one cluster's report needs.
 type Inputs struct {
 	// URL is the platform endpoint the report posts to, over HTTPS.
@@ -230,6 +234,9 @@ func (in Inputs) validate() error {
 	}
 	if strings.TrimSpace(in.ProofScript) == "" {
 		return errors.New("the report has no proof script to sign it with")
+	}
+	if len(in.ProofScript) > ProofScriptLimit {
+		return fmt.Errorf("the proof script is %d bytes, over the %d a report takes", len(in.ProofScript), ProofScriptLimit)
 	}
 	if len(in.Gateways) == 0 {
 		return nil

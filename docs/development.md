@@ -157,9 +157,10 @@ digests their registries served for Talos v1.14.4 and Kubernetes 1.37.1.
 ## Where the scripts live
 
 Each script is a file you can read and lint as the shell it is. The Go code
-embeds most of them with `go:embed`. The node report's and the labeller's
-scripts are copied into the tools image at `tools.ScriptDir` instead, since
-the builder's user data has no room for them inside a node's configuration.
+embeds most of them with `go:embed`. The node report's, the labeller's and the
+cluster tokens' scripts are copied into the tools image at `tools.ScriptDir`
+instead, since the builder's user data has no room for them inside a node's
+configuration.
 
 | Script | Where it runs | What it does | Test |
 |---|---|---|---|
@@ -172,14 +173,15 @@ the builder's user data has no room for them inside a node's configuration.
 | `openbaoinit/scripts/openbao-init.sh` | OpenBao's init Job, inline in its command | Initialises OpenBao once, commits `openbao-init.asc`, then enables kv and Kubernetes auth and writes each slice's policies and roles, `app-secrets-reader` and `app-secrets-writer` | `openbaoinit/openbaoinit_test.go` |
 | `controlplane/scripts/build-image.sh` | A Cloud control plane's builder server, from its user data | Builds the cluster's Talos disk image with imager, writes it over the builder's own disk from a tmpfs and powers the builder off, so the block can snapshot that disk | `controlplane/scripts_test.go` |
 | `controlplane/scripts/bootstrap-first-node.sh` | The install's first gateway, in `fsn1`, once at first boot | Finds the first node among the addresses the gateway has seen, proves it is the cluster's by its Talos API's certificate, bootstraps etcd on it and deletes the admin talosconfig | `controlplane/scripts_test.go` |
-| `controlplane/scripts/cluster-tokens.sh` | A Job and a CronJob in the Cloud control plane's cluster | Spends the enrolment token for the report token, Argo CD's notification token with the platform's URL and the cluster repository's token, refusing an answer missing one before it writes any, and renews the repository tokens with each app slice's | `controlplane/scripts_test.go` |
+| `controlplane/scripts/cluster-tokens.sh` | A Job and a CronJob in the Cloud control plane's cluster, from the tools image at `/usr/local/lib/mitstack/cluster-tokens.sh` | Spends the enrolment token for the report token, Argo CD's notification token with the platform's URL and the cluster repository's token, refusing an answer missing one before it writes any, and renews the repository tokens with each app slice's | `controlplane/scripts_test.go` |
 | `scripts/render-components.sh` | A workstation and CI | Renders the component set, drops an empty `labels` or `annotations` map from each document's metadata, and ends each document whose last value is a block scalar with a comment line | The `components` CI job |
 
 The member removal Job, the node report and its outside probe, the topology
-labeller and OpenBao's init Job run in the tools image that `tools/Dockerfile`
-builds from the repository root: bash, curl, jq, gpg, openssl, talosctl and
-kubectl on Alpine 3.22, with the report's, the outside probe's and the
-labeller's scripts. The image also carries every manifest a gateway serves, at
+labeller, the cluster tokens' Job and CronJob and OpenBao's init Job run in the
+tools image that `tools/Dockerfile` builds from the repository root: bash,
+curl, jq, gpg, openssl, talosctl and kubectl on Alpine 3.22, with the report's,
+the outside probe's, the labeller's and the cluster tokens' scripts. The image
+also carries every manifest a gateway serves, at
 its repository path under `tools.ScriptDir`, as `tools.ManifestPath` gives it.
 `tools/Dockerfile.dockerignore` keeps every other file out of the build. `tools/tools.env` pins both binaries with
 their sha256. The Dockerfile checks the binaries it installs against it, and
@@ -197,10 +199,10 @@ pins it.
 ## How the tests run the scripts
 
 The script tests run the script a rendered manifest carries, so they test what
-a node would run. The report's and the labeller's tests check that the
-CronJob's command names the script's path in the tools image, then run the
-repository's file. The `tools image` CI job checks that the image holds those
-same bytes. `testutil.NewTools` writes fake `talosctl`, `kubectl`,
+a node would run. The report's, the labeller's and the cluster tokens' tests
+check that each Job's or CronJob's command names the script's path in the tools
+image, then run the repository's file. The `tools image` CI job checks that the
+image holds those same bytes. `testutil.NewTools` writes fake `talosctl`, `kubectl`,
 `curl`, `skopeo`, `docker` and `systemctl` commands that log each call, and
 each test reads that log to check the order of the calls.
 
@@ -286,6 +288,7 @@ TOOLS_IMAGE=talos-tools:ci go test -tags toolsimage -count=1 -run '^TestToolsIma
 | `TestManifests_RunsKubeBenchAsRootOnTheHostsConfigWithNoTokenAndKubescapeAsNonRootWithNoHostPathDailyInKubeSystem` | The scan CronJob runs daily in `kube-system` on a control-plane node and sees the host's processes. Its kube-bench step runs as root with `/etc/kubernetes`, `/var/lib/kubelet` and `/var/lib/etcd` read-only and no token, and its kubescape step runs as user 65532 with the token and no host path. Both drop every capability | The rendered CronJob |
 | `TestManifests_LetsTheScanReadNoSecret` | The scan's ClusterRole only gets and lists objects, never a Secret or `*`, and binds the scan's service account alone | The rendered ClusterRole and its binding |
 | `TestManifests_RefusesInputsWithoutAProofScript` | `report.Manifests` refuses inputs whose `ProofScript` is empty, so no block renders a report that cannot sign | Inputs with an empty `ProofScript` |
+| `TestManifests_RefusesAProofScriptOneByteOverItsLimit` | `report.Manifests` refuses a proof script one byte longer than `report.ProofScriptLimit`, naming both sizes, so no block's script takes more of the builder's user data than the kit keeps free for it | Inputs with a `ProofScript` of 2,049 bytes |
 | `TestOutsideProbe_ReadsAClosedPortAResetConnectionAFailedTLSHandshakeAndAServingMirrorAsSuchFromOutsideTheMesh` | The outside probe names a closed port `closed`, a reset or a closed connection `reset`, plain HTTP on the TLS port and a certificate another CA signed `tls-failure`, a 503 `answered` and a 200 `served`, and the report carries each reading with the time the probe took it | The real `mesh-probe.sh` and curl against local peers |
 | `TestReport_ReadsEveryGatewayFailedWithTheReasonWhenTheOutsideProbesResultCannotBeTrusted` | A stale result, one with no gateway readings, a missing ConfigMap and a reading the report cannot judge each fail every gateway with the reason | Edited copies of `testdata/mesh-probe.json` |
 | `TestManifests_RunsTheOutsideProbeWhereTheMeshLeavesItOutAndLetsItReachEachGatewaysMirrorOn443Alone` | istio-cni leaves the outside probe's namespace out of the mesh, the probe carries the gateways and their CA, the report carries no CA, and the probe's policy reaches each gateway's /32 on 443 and no other address | The rendered manifests |
@@ -406,6 +409,7 @@ TOOLS_IMAGE=talos-tools:ci go test -tags toolsimage -count=1 -run '^TestToolsIma
 | `TestPlane_LeavesOutAnUnresolvedTagAndAnImageOnARegistryTheNodesReachDirectlyAndNamesEachBesideWhatItKeeps` | A tag with no digest and an image outside the mirrored registries stay out, a short name is mirrored under its Docker Hub name, and the event names each image kept and each left out with why | The same |
 | `TestPlane_AnUpgradeReplacesNoGatewayWhileTheNewestNodeReportListsNoImages` | An upgrade whose newest report has no `images` refuses with class `gateway-images-unread` and makes no write | The same |
 | `TestPlane_AGatewayKeeping300ImagesStaysInsideHetznersUserDataLimit` | A gateway keeping 300 images fits in 32,768 bytes, on a default cluster and one that hosts the platform, and the test logs that size and the install's first gateway's | The same |
+| `TestPlane_EveryServerOfAnInstallKeepsTheUserDataReserveWithTheLongestProofScriptUnderEachOptionOfThePlane` | Every server an install creates keeps 1,024 of Hetzner's 32,768 bytes free, on a cluster and on one that hosts the platform, with apps on the control plane and on workers. The plane's proof script is `report.ProofScriptLimit` bytes of random printable text, and the test logs each server's size, as [the README's section on the builder's user data](../README.md#what-fits-in-the-builders-user-data) explains | The same |
 | `TestPlane_AnUpgradeWithNoGatewayToReplaceChangesNothingThoughNoReportNamesAGateway` | An upgrade of a cluster whose gateways all carry the current list makes no write and reads no problem, though no report names a gateway | The same fake |
 | `TestPlane_APinBumpReplacesNoGatewayWithoutAnUpgrade` | Gateways built from an earlier list stay without `Upgrading` | The same fake |
 | `TestPlane_KeepsAClusterBuiltWithOneGatewayAndReadsItUnhealthyWithItsRemedy` | A cluster with one unlabelled gateway keeps it, and `Unhealthy` names the rebuild | The same fake |
@@ -422,6 +426,7 @@ TOOLS_IMAGE=talos-tools:ci go test -tags toolsimage -count=1 -run '^TestToolsIma
 | `TestArgoCD_TheWebhookPostsTheRevisionTheOperationSyncedElseTheComparedOne` | The webhook's body, run with stand-ins for its two template functions, is JSON with the eight fields, the operation's synced revision first and the compared one when there is no operation | The same |
 | `TestClusterTokens_EnrolRefusesAnAnswerMissingATokenBeforeWritingAnySecret` | A 200 answer missing the report, repository or notification token fails the enrolment before it writes any Secret | Fake kubectl and a local HTTPS server playing the platform |
 | `TestClusterTokens_EnrolFailsASpentTokenWhoseNotificationsSecretIsMissing` | A spent enrolment token with no `argocd-notifications-secret` fails the Job on either credential | The same |
+| `TestBuilder_TheEnrolmentAndTheRenewalRunTheClusterTokensScriptTheToolsImageCarries` | The enrolment Job and the renewal CronJob each run `cluster-tokens.sh` from `tools.ScriptDir` in the tools image, with `enrol` or `renew`, so the builder's user data carries no copy of the script | The builder's rendered configuration on the Cloud fake |
 | `TestProgram_ServesTheFileOnceToItsClientOverTLS13AndRemovesTheFileAndTheKey` | The serving program answers its one client once over TLS 1.3, and deletes the file and its key | The program run with python3 on a local port |
 | `TestHetznerAdapter_CouplesTheVSwitchThroughItsSubnetAndExposesTheNetworksRoutesToIt` | `AddVSwitchSubnet` sends a `vswitch` subnet with the vSwitch's id and turns on `expose_routes_to_vswitch` | A local HTTP server playing Hetzner's Cloud API |
 
@@ -447,7 +452,7 @@ and a manual run. Every job runs on the runner the repository variable
 |---|---|
 | `test` | On a pull request, `checkpolls`, the check that block-kit, the shared kit every block builds on, ships for added sleeps and polling intervals, judges every line the change adds against its base commit and fails a `time.Sleep`, a ticker or a shell `sleep`, naming each file and line. It runs as a tool of the `ci` module, a Go module of its own under `ci/`. Its `ci/go.mod` alone names the block-kit release, because a tool in the kit's own `go.mod` would force that release on every block that requires the kit. A human reviewer judges the waits `checkpolls -help` says the check cannot see, such as a timer reset inside a loop or a `time.After` in a select. `go vet ./...` and `go test -race ./...` then pass on Go 1.26.10, and the `mirror check` step copies trust-manager's index through the gateway's skopeo into its registry |
 | `components` | Each rendered component matches a fresh render, and shellcheck passes on every script |
-| `tools image` | The tools image builds from the repository root, each of its commands runs, and it holds the report's, its outside probe's and the labeller's scripts byte for byte as the repository does. The outside probe and the security scan then write their ConfigMaps through a real API server, and a gateway's preparation copies talosctl, kubectl and every served manifest out of it with their pins, as [the section on the tests](#how-the-tests-run-the-scripts) describes |
+| `tools image` | The tools image builds from the repository root, each of its commands runs, and it holds the report's, its outside probe's, the labeller's and the cluster tokens' scripts byte for byte as the repository does. The outside probe and the security scan then write their ConfigMaps through a real API server, and a gateway's preparation copies talosctl, kubectl and every served manifest out of it with their pins, as [the section on the tests](#how-the-tests-run-the-scripts) describes |
 | `pr key gate` | The pull request's title and at least one of its commits each name a board key, the `MIT-` number of an issue on Plain, mitstack's board. A key counts when it opens the subject followed by a colon, as in `MIT-123: fix the thing`, which delivers the issue, or when it closes the subject as `(refs MIT-123)`, which only names the issue and is the form the kit's commits and titles use. A change with no issue has no key to name, so the job fails it, and the issue is filed on the board first |
 | `release` | On a push to `main` with a new version in `.github/version`, and only after `test`, `components` and `tools image` pass, it pushes and signs the tools image and pulls it with no login. It then tags a commit on top that pins the image in `tools.Image`, as [the README](../README.md#how-a-release-is-versioned) describes |
 | `record delivery` | On a push to `main`, records on Plain each issue a commit of the push delivers, which means a subject that opens with `MIT-123:`. A subject that only ends with `(refs MIT-123)` records nothing |

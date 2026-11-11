@@ -629,6 +629,8 @@ func runClusterTokens(t *testing.T, srv *httptest.Server, verb, token string, ex
 	ca := filepath.Join(dir, "ca.crt")
 	require.NoError(t, os.WriteFile(ca, certPEM(srv), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "token"), []byte(token), 0o600))
+	script, err := os.ReadFile(filepath.Join("scripts", "cluster-tokens.sh"))
+	require.NoError(t, err)
 	tools := testutil.NewTools(t, map[string]string{"kubectl": `case $1 in
   apply) cat > /dev/null ;;
   get)
@@ -648,7 +650,7 @@ func runClusterTokens(t *testing.T, srv *httptest.Server, verb, token string, ex
 esac`})
 	env := tools.Env("PLATFORM_URL="+srv.URL, "SUBSCRIPTION_ID="+testSub, "REPO_URL="+testRepoURL, "REPOSITORY_CREDENTIAL=platform-token",
 		"TOKEN_FILE="+filepath.Join(dir, "token"), "CURL_CA_BUNDLE="+ca, "KUBE_API="+srv.URL, "KUBE_ACCOUNT_DIR="+dir, "CALL_ATTEMPTS=1")
-	out, err := testutil.RunBash(t, controlplane.ClusterTokensScript, append(env, extraEnv...), verb)
+	out, err := testutil.RunBash(t, string(script), append(env, extraEnv...), verb)
 	return scriptRun{out: out, err: err, tools: tools, dir: dir}
 }
 

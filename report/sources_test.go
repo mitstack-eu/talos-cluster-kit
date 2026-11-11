@@ -196,3 +196,41 @@ func TestReport_KeepsAScanSummaryOnlyAsOneJSONObjectWithin16KiB(t *testing.T) {
 		})
 	}
 }
+
+func TestReport_NamesTheScanCronJobsNewestJobAndTheTwentyNewestEventsOfThatJobAndItsPodsAndKeepsTheRunnerWhenEitherReadFails(t *testing.T) {
+	cause := readJSON(t, "testdata", "golden", "scan-cause.json").(map[string]any)
+	reads := func(jobs, events string) string {
+		return kubectlAnswering(map[string]string{workloadsRead: jobs, scanEventsRead: events})
+	}
+	refused := func(status float64, stderr string) map[string]any {
+		return map[string]any{"exitStatus": status, "stderr": stderr}
+	}
+	gone, jobs, events := refused(3, "error: the server is gone\n"), "cat testdata/scan-jobs.json", "cat testdata/scan-events.json"
+	cases := map[string]struct {
+		kubectl     string
+		job, events any
+	}{
+		"the newest Job failed, so its conditions and its twenty newest events name the cause": {reads(jobs, events), cause["job"], cause["events"]},
+		"the Jobs read fails":          {reads(sourceFailed, events), gone, []any{}},
+		"the events read fails":        {reads(jobs, sourceFailed), cause["job"], gone},
+		"the events answer is no list": {reads(jobs, "echo '{}'"), cause["job"], refused(0, "kubectl exited 0, and its output is not the events this report reads")},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, posted, out, err := runReport(t, map[string]string{"kubectl": tc.kubectl})
+
+			require.NoError(t, err, out)
+			runner := testutil.Field(t, posted.body, "securityScans", "runner")
+			assert.Equal(t, tc.job, testutil.Field(t, runner, "job"))
+			assert.Equal(t, tc.events, testutil.Field(t, runner, "events"))
+			assert.Contains(t, testutil.Field(t, runner, "output"), "last started a scan at 2026-11-07T03:17:00Z")
+		})
+	}
+}
+
+func TestManifests_LetsTheReportListEventsInKubeSystemAndNowhereElse(t *testing.T) {
+	for namespace, rules := range reportRules(t) {
+		listed := slices.ContainsFunc(rules, func(rule any) bool { return slices.Contains(testutil.Field(t, rule, "resources").([]any), "events") })
+		assert.Equal(t, namespace == "kube-system", listed, "the report lists events in %q", namespace)
+	}
+}

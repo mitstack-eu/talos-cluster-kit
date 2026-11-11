@@ -161,8 +161,9 @@ func TestManifests_LetsTheOutsideProbeAndTheScanReadAndPatchTheirOwnConfigMapAnd
 	assert.Equal(t, map[string]any{"mitstack-mesh-probe": only("get", "patch"), "mitstack-node-report-mesh-probe": only("get"),
 		"mitstack-security-scan": []any{scans("get", "patch")},
 		"mitstack-node-report-security-scan": []any{scans("get"), map[string]any{"apiGroups": []any{"batch"}, "resources": []any{"cronjobs"},
-			"resourceNames": []any{"mitstack-security-scan"}, "verbs": []any{"get"}}},
-	}, granted, "kube-system grants nothing beyond the mesh probe's and the security scan's ConfigMaps by name")
+			"resourceNames": []any{"mitstack-security-scan"}, "verbs": []any{"get"}},
+			map[string]any{"apiGroups": []any{""}, "resources": []any{"events"}, "verbs": []any{"list"}}},
+	}, granted, "kube-system grants nothing beyond the mesh probe's and the security scan's ConfigMaps by name, and the report's list of events")
 	subjects := map[string]any{}
 	for _, binding := range inNamespace(t, testutil.Kind(docs, "RoleBinding"), "kube-system") {
 		subjects[testutil.Field(t, binding, "roleRef", "name").(string)] = testutil.Field(t, binding, "subjects", "0")

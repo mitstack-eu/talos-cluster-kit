@@ -896,6 +896,41 @@ func TestPlane_ReplacesAFailedGatewayOfThisReleasesListAtItsAddressFromTheSameLi
 	}
 }
 
+func TestPlane_RefusesToReplaceAGatewayWhoseLocationCanOrderNoSuccessorBeforeItDeletesIt(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		begin func(h *harness)
+	}{
+		{"an upgrade's gateway of an earlier list", func(h *harness) {
+			h.relabelGateways("an-earlier-list")
+			h.plane.Upgrading = true
+			require.NoError(h.t, h.ensure())
+			h.plane.Upgrading = false
+		}},
+		{"a gateway that failed", func(h *harness) { gatewayFailures[0].fail(h, h.gatewayIn(controlplane.GatewayLocation)) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, withReports)
+			h.built()
+			gateways, from := h.gatewayIDs(), len(h.events)
+			h.cloud.SoldOut = controlplane.GatewayServerTypes
+			tc.begin(h)
+
+			var err error
+			for range 30 {
+				if err = h.converge(); err != nil {
+					break
+				}
+				h.now = h.now.Add(time.Minute)
+			}
+
+			assert.Equal(t, "server-unavailable", refusalClass(t, err))
+			assert.Equal(t, gateways, h.gatewayIDs(), "the gateways")
+			assert.Empty(t, h.deletedGateways(from), "gateways deleted")
+		})
+	}
+}
+
 func (h *harness) requireRouteOnARunningGateway() {
 	h.t.Helper()
 	network := h.network()

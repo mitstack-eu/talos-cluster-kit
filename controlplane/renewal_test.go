@@ -259,3 +259,22 @@ func TestPlane_KeepsAGatewayPastItsRenewalPointWhileItCouldBuildNoReplacementAnd
 		})
 	}
 }
+
+func TestPlane_NamesAnExpiryLabelThatNamesNoTimeAsAProblemAndJudgesThatGatewaysCertificateFromItsCreation(t *testing.T) {
+	h := newHarness(t, withReports)
+	h.built()
+	first := h.gatewayIn(controlplane.GatewayLocation)
+	renewal := h.renewalPoint(first)
+	labels := maps.Clone(first.Labels)
+	labels[controlplane.KeyGatewayCertExpires] = "next-year"
+	require.NoError(t, h.cloud.SetServerLabels(context.Background(), first.ID, labels))
+
+	problems := h.plane.Problems(context.Background(), h.read())
+	h.now = renewal
+	require.NoError(t, h.converge())
+
+	assert.Equal(t, []string{fmt.Sprintf("gateway %d's %s label is %q, which names no time in Unix seconds, so its certificate is judged from its creation",
+		first.ID, controlplane.KeyGatewayCertExpires, "next-year")}, problems, "problems")
+	began := h.gatewayIn(controlplane.GatewayLocation).Labels[controlplane.KeyRemovalBegan]
+	assert.Equal(t, strconv.FormatInt(renewal.Unix(), 10), began, "when the replacement of the gateway in fsn1 began, at the renewal point %s its creation gives", renewal)
+}

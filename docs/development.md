@@ -30,7 +30,7 @@ exceptions for callers with no identity, and a Postgres instance's port 8000.
 | `components/local-path-provisioner/local-path-provisioner.yaml` | The local-path-provisioner 0.0.37 chart with `components/render/local-path-provisioner-values.yaml`, taken from the source archive of the commit the project's v0.0.37 tag names, since the project publishes no chart repository | Rancher's local path provisioner in namespace `local-path-storage`, behind the default StorageClass `local-path`, keeping each claim on the user volume `local-path-provisioner` |
 | `components/istio/istio-base.yaml`, `istiod.yaml`, `istio-cni.yaml`, `ztunnel.yaml` | Istio's base, istiod, cni and ztunnel 1.30.7 charts, each with its values file in `components/render/` | Istio in ambient mode in namespace `istio-system`: its CRDs, istiod with no sidecar injector, the CNI agent that puts every pod outside `kube-system`, `istio-system` and `kyverno` in the mesh, and ztunnel on every node |
 | `components/cloudnative-pg/cloudnative-pg.yaml`, `components/cloudnative-pg/namespace.yaml` | Copied from mitstack-eu/cluster-bases v0.4.0, with the operator's header and `POSTGRES_IMAGE_NAME` changed, and the closing comment line the render script gives a document that ends in a block scalar, which the paragraph below the table shows | The CloudNativePG 1.30.1 operator in namespace `cnpg-system`, with its PgBouncer image and its default Postgres image by digest. The default is Postgres 16.15, the image postgres-db-kube pins, so the gateway mirrors it |
-| `components/admission/policies/` | Written by hand | The Kyverno policies that require the `mitstack.dev/app` label, give each app namespace `mitstack-default-deny`, refuse a pod the mesh leaves out, refuse a PeerAuthentication that takes a call with no workload identity, and refuse a pod outside the system namespaces that mounts a host path, sets no CPU or memory limit or names an image outside mitstack's registries. The three pod policies skip the system namespaces and six more, which [the README's table of skipped namespaces](../README.md#which-namespaces-the-pod-policies-skip) lists |
+| `components/admission/policies/` | Written by hand | The Kyverno policies that require the `mitstack.dev/app` label, give each app namespace `mitstack-default-deny`, refuse a pod the mesh leaves out, refuse a PeerAuthentication that takes a call with no workload identity, and refuse a pod outside the system namespaces that mounts a host path, sets no CPU or memory limit or names an image outside mitstack's registries. The three pod policies skip the system namespaces and five more, which [the README's table of skipped namespaces](../README.md#which-namespaces-the-pod-policies-skip) lists |
 | `components/mesh/strict-mtls.yaml`, `probes.yaml`, `cloudnative-pg.yaml`, `argocd.yaml` | Written by hand | The mesh-wide `STRICT` PeerAuthentication, the Cilium policy that admits the kubelet's probes from `169.254.7.127`, the CloudNativePG operator's webhook exception and the ports a Postgres instance takes, and the network policies that admit the mesh's port 15008 between Argo CD's pods |
 | `components/mesh/probe.yaml` | Written by hand | The mesh probe's target in namespace `mitstack-mesh-probe`, on the local path provisioner's busybox image, and the Cilium policy that admits only the node report and its outside probe in `kube-system` to it, as [the README](../README.md#how-the-node-report-shows-the-mesh-refusing-a-call) explains |
 | `components/network-policies/mitstack-database-slices.yaml` | Written by hand | The Cilium policy that opens a database slice's Postgres instances to each other, the operator and the app slices |
@@ -134,13 +134,13 @@ all six. Two fixtures are refused by none of these policies: the digest
 fixture, whose policy the kit does not hold yet, and `pod-security-restricted`,
 which Pod Security refuses. The
 `kube-app-deploy` case feeds the three pod policies a Deployment shaped like
-the ones the kube-app-deploy block deploys for an app, and the `cloudnative-pg`
-and `acme-http01-solver` cases feed them the pods that CloudNativePG and
-cert-manager start in an app namespace. The `secrets-import` case feeds the
-registry policy a Job shaped like the one kube-app-deploy runs, once with the
-busybox image the kit pins, which it admits, and four times with a variant of
-it, which it refuses: another tag, another digest, the tag with no digest and
-another Docker Hub image.
+the ones the kube-app-deploy block deploys for an app. It also feeds the
+registry policy a `secrets-import` Job shaped like the one that block runs,
+once with the busybox image the kit pins, which the policy admits, and four
+times with a variant of it, which the policy refuses: another tag, another
+digest, the tag with no digest and another Docker Hub image. The
+`cloudnative-pg` and `acme-http01-solver` cases feed the policies the pods that
+CloudNativePG and cert-manager start in an app namespace.
 
 The policy holds each of its five exact images as a literal, since Kyverno reads
 YAML. `TestManifests_RestrictImageRegistriesNamesExactlyTheImagesTheKitPinsForPodsInAnAppNamespace`

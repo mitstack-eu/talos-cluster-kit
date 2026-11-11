@@ -1,0 +1,7 @@
+[
+  {"namespace": "argocd", "name": "argocd-server", "class": "traefik", "status": {"loadBalancer": {"ingress": [{"ip": "198.51.100.7"}]}}},
+  {"namespace": "app-shop", "name": "shop", "class": "traefik", "status": {"loadBalancer": {"ingress": [{"ip": "198.51.100.7"}, {"hostname": "edge.example"}]}}},
+  {"namespace": "app-shop", "name": "annotated", "class": "traefik", "status": {"loadBalancer": {"ingress": []}}},
+  {"namespace": "app-pg", "name": "internal", "class": "nginx", "status": {"loadBalancer": {"ingress": []}}},
+  {"namespace": "app-pg", "name": "classless", "class": null, "status": {"loadBalancer": {"ingress": []}}}
+]

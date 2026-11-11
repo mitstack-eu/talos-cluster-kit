@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Posts the node report: nodes with their zone and region labels, etcd members with their health and the leader, each
-# node's STATE and EPHEMERAL encryption, Argo CD's health of each Application and each object it applied, what each
-# Argo CD route answers a caller without a session, Argo CD's Services, Ingresses and pod images, CloudNativePG's
+# node's addresses with their types and its STATE and EPHEMERAL encryption, Argo CD's health of each Application and each
+# object it applied, what each Argo CD route answers a caller without a session, Argo CD's Services, Ingresses and pod
+# images, every Ingress with its class and the addresses its status holds, CloudNativePG's
 # objects with each cluster's primary, every pod's node, phase and container states, each image reference the pods and
 # the workloads' pod templates name, each OpenBao member's seal state and the active one, each claim with its size and the default
 # storage classes, every Service's type, each default-deny NetworkPolicy, the objects labelled
@@ -145,10 +146,11 @@ read_etcd_status() {
   read_beside etcd-status talosctl -n "$nodes" etcd status
 }
 
-# read_argocd lists Argo CD's Ingresses and asks each of its routes once, all at the same time.
+# read_argocd makes the one Ingress read that argocd.ingresses and ingresses share, and asks each of Argo CD's routes
+# once, all at the same time.
 read_argocd() {
   local i
-  read_beside argocd-ingresses kubectl get ingresses.networking.k8s.io -n argocd -o json &
+  read_beside ingresses kubectl get ingresses.networking.k8s.io -A -o json &
   mkdir "$work/routes"
   for i in "${!argocd_routes[@]}"; do
     argocd_route "$i" &
@@ -293,9 +295,9 @@ body() {
     --rawfile workloads_err "$work/workloads.err" \
     --argjson workloads_status "$(cat "$work/workloads.status")" \
     --slurpfile routes "$work/routes.json" \
-    --rawfile ingresses "$work/argocd-ingresses.out" \
-    --rawfile ingresses_err "$work/argocd-ingresses.err" \
-    --argjson ingresses_status "$(cat "$work/argocd-ingresses.status")" \
+    --rawfile ingresses "$work/ingresses.out" \
+    --rawfile ingresses_err "$work/ingresses.err" \
+    --argjson ingresses_status "$(cat "$work/ingresses.status")" \
     --rawfile default_deny "$work/default-deny.out" \
     --rawfile default_deny_err "$work/default-deny.err" \
     --argjson default_deny_status "$(cat "$work/default-deny.status")" \
@@ -414,6 +416,14 @@ body() {
       if $status != 0 then {exitStatus: $status, stderr: $stderr[-1024:]}
       else try read catch {exitStatus: 0, stderr: $refusal}
       end;
+    # Of an Ingress's status only each address leaves the cluster, and its class is cut, so its size has a bound.
+    def ingress: {
+      namespace: .metadata.namespace, name: .metadata.name,
+      class: (.spec.ingressClassName // .metadata.annotations["kubernetes.io/ingress.class"] // null | at_most_256),
+      status: {loadBalancer: {ingress: [.status.loadBalancer.ingress[]? | {ip, hostname} | with_entries(select(.value != null))]}}
+    };
+    def ingresses(read): beside($ingresses_status; $ingresses_err; "kubectl exited 0, and its output is not the Ingresses this report reads";
+      $ingresses | fromjson | read);
     def named_digest: (capture("@(?<d>sha256:[0-9a-f]{64})$").d // null);
     def containers: (.containers // []) + (.initContainers // []);
     # pod_images names each container's image with its own digest, or else the one the pod's status reports it runs by.
@@ -581,6 +591,7 @@ body() {
         talosVersion: talos_version,
         kubeletVersion: .status.nodeInfo.kubeletVersion,
         internalIP: ([.status.addresses[]? | select(.type == "InternalIP") | .address] | first),
+        addresses: [.status.addresses[]? | {type, address}],
         allocatable: .status.allocatable,
         zone: (.metadata.labels["topology.kubernetes.io/zone"] // null),
         region: (.metadata.labels["topology.kubernetes.io/region"] // null),
@@ -603,8 +614,7 @@ body() {
         services: beside($storage_status; $storage_err;
           "kubectl exited 0, and its output is not the claims, storage classes and Services this report reads";
           $storage | fromjson | [services[] | select(.namespace == "argocd") | {name, type}]),
-        ingresses: beside($ingresses_status; $ingresses_err; "kubectl exited 0, and its output is not Argo CD's Ingresses";
-          $ingresses | fromjson | [.items[] | {name: .metadata.name}])
+        ingresses: ingresses([.items[] | select(.metadata.namespace == "argocd") | {name: .metadata.name}])
       },
       kubernetes: {argocdPods: beside($pods_status; $pods_err; "kubectl exited 0, and its output is not the pods this report reads";
         $pods | fromjson | [.items[] | select(.metadata.namespace == "argocd")
@@ -622,6 +632,7 @@ body() {
       services: beside($storage_status; $storage_err;
         "kubectl exited 0, and its output is not the claims, storage classes and Services this report reads";
         $storage | fromjson | services),
+      ingresses: ingresses([.items[] | ingress]),
       defaultDenyPolicies: beside($default_deny_status; $default_deny_err;
         "kubectl exited 0, and its output is not the default-deny NetworkPolicies this report reads";
         $default_deny | fromjson | [.items[] | default_deny_policy]),

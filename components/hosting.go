@@ -10,8 +10,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"regexp"
 	"slices"
+	"strings"
 	"text/template"
 
 	"go.yaml.in/yaml/v4"
@@ -140,13 +142,72 @@ func HostingServed() Set {
 		Manifest{Name: "trust-manager", Path: "components/trust-manager/trust-manager.yaml", Bytes: trustManagerManifest},
 		Manifest{Name: "external-secrets", Path: "components/external-secrets/external-secrets.yaml", Bytes: externalSecretsManifest},
 		Manifest{Name: "sealed-secrets", Path: "components/sealed-secrets/sealed-secrets.yaml", Bytes: sealedSecretsManifest},
-		Manifest{Name: "traefik", Path: "components/traefik/traefik.yaml", Bytes: traefikManifest},
+		Manifest{Name: traefikName, Path: "components/traefik/traefik.yaml", Bytes: traefikManifest},
 		Manifest{Name: "mitstack-hosting-tls", Path: "components/hosting/tls.yaml", Bytes: hostingTLSManifest},
 	)
 	set.Served = append(set.Served, HostingPolicies()...)
 	set.Served = append(set.Served, Manifest{Name: "mitstack-hosting-mesh", Path: "components/hosting/mesh.yaml", Bytes: hostingMeshManifest})
 	set.UserVolumes = append(slices.Clone(set.UserVolumes), OpenBaoVolume)
 	return set
+}
+
+const (
+	traefikName = "traefik"
+	// Under the chart's argument Traefik publishes each node's ExternalIP, and a node of the kit holds none.
+	publishedServiceArg = "--providers.kubernetesingress.ingressendpoint.publishedservice=traefik/traefik"
+	publishedAddressArg = "--providers.kubernetesingress.ingressendpoint.ip="
+)
+
+// PublishingIngress is the set whose Traefik, where it holds one, writes the cluster's ingress address into the status
+// of every Ingress it serves, since Argo CD reads an Ingress with no address as still starting.
+func (s Set) PublishingIngress(addresses []netip.Addr) (Set, error) {
+	i := s.traefik()
+	if i < 0 {
+		return s, nil
+	}
+	address, err := onePublishable(addresses)
+	if err != nil {
+		return Set{}, err
+	}
+	if n := bytes.Count(s.Served[i].Bytes, []byte(publishedServiceArg)); n != 1 {
+		return Set{}, fmt.Errorf("the Traefik manifest names its published Service %d times, want once, so the address %s has no argument to take", n, address)
+	}
+	traefik := s.Served[i]
+	traefik.Bytes = bytes.Replace(traefik.Bytes, []byte(publishedServiceArg), []byte(publishedAddressArg+address.String()), 1)
+	s.Served = slices.Clone(s.Served)
+	s.Served[i] = traefik
+	return s, nil
+}
+
+// RunsTraefik reports whether the set holds Traefik, and so an address to publish on each Ingress.
+func (s Set) RunsTraefik() bool { return s.traefik() >= 0 }
+
+func (s Set) traefik() int {
+	return slices.IndexFunc(s.Served, func(m Manifest) bool { return m.Name == traefikName })
+}
+
+// onePublishable is the one address Traefik can write, since its ingress endpoint takes a single one.
+func onePublishable(addresses []netip.Addr) (netip.Addr, error) {
+	if len(addresses) == 0 {
+		return netip.Addr{}, errors.New("Traefik publishes the cluster's ingress address on every Ingress, and the set is given no address")
+	}
+	for _, address := range addresses {
+		if !address.IsValid() || address.IsUnspecified() {
+			return netip.Addr{}, fmt.Errorf("Traefik cannot publish %s as an Ingress's address, since it names no host", address)
+		}
+	}
+	if len(addresses) > 1 {
+		return netip.Addr{}, fmt.Errorf("Traefik writes one address into an Ingress's status, %s, and cannot publish %s", addresses[0], joinAddrs(addresses[1:]))
+	}
+	return addresses[0], nil
+}
+
+func joinAddrs(addresses []netip.Addr) string {
+	named := make([]string, len(addresses))
+	for i, address := range addresses {
+		named[i] = address.String()
+	}
+	return strings.Join(named, ", ")
 }
 
 // HostingPolicies are the hosting set's flow policies.

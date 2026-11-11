@@ -41,7 +41,7 @@ the order a block uses them.
 
 | Package | What it does | Main entry points |
 |---|---|---|
-| `components` | Holds the pinned component set: Cilium, the custom resource definition (CRD) of Cilium's cluster-wide policy, Argo CD, the policy that keeps pods from Hetzner's metadata service at `169.254.169.254`, Istio's ambient mesh with its mesh-wide mutual TLS policy and the mesh probe's target, Kyverno with its four admission policies, the CloudNativePG operator with the database-slice policy, the local path provisioner behind the default StorageClass, and the node-local OpenTelemetry Collector. It also holds the boot set of a cluster that hosts the platform | `Default`, `Hosting`, `HostingServed`, `Manifest` (whose `Name` is a component's name), `Set.Images`, `LogCollector`, `ParseImage` |
+| `components` | Holds the pinned component set: Cilium, the custom resource definition (CRD) of Cilium's cluster-wide policy, Argo CD, the policy that keeps pods from Hetzner's metadata service at `169.254.169.254`, Istio's ambient mesh with its mesh-wide mutual TLS policy and the mesh probe's target, Kyverno with its four admission policies, the CloudNativePG operator with the database-slice policy, the local path provisioner behind the default StorageClass, and the node-local OpenTelemetry Collector. It also holds the boot set of a cluster that hosts the platform | `Default`, `Hosting`, `HostingServed`, `Set.PublishingIngress`, `Manifest` (whose `Name` is a component's name), `Set.Images`, `LogCollector`, `ParseImage` |
 | `nodeconfig` | Renders a control-plane node's or a worker node's machine configuration with Talos's own `machinery` module and validates it against Talos's schema | `Render`, `RenderWorker`, `Cluster`, `Node`, `NewSecrets`, `ParseSecrets`, `Secrets.AdminTalosconfig` |
 | `image` | Runs imager, Sidero Labs' open-source image builder, with the `hcloud` or the `metal` profile, and discards its output | `Run`, `Build` |
 | `mirror` | Lists every image the nodes pull, each by digest | `List`, `Render` |
@@ -51,7 +51,7 @@ the order a block uses them.
 | `topology` | Renders the topology labeller, a CronJob that labels each Cloud node with its zone and region, and holds the two label names | `Manifests`, `Labels`, `ZoneLabel`, `RegionLabel`, `FieldManager` |
 | `openbaoinit` | Renders OpenBao's init Job, which the hosting set carries: it initialises a hosting cluster's OpenBao once, commits the root token and recovery key to the cluster repository as PGP messages, then writes the policy each slice's External Secrets reads with | `Manifests`, `Inputs`, `InitFile` |
 | `rollout` | Gives a running cluster a release's component set, the manifests one kit release carries; [How a running cluster takes a release's components](#how-a-running-cluster-takes-a-releases-components) defines each term. A block commits the set's files to the cluster repository, where Argo CD applies each component through an Application of its own, which is Argo CD's record of one repository directory it keeps applied to the cluster. Files that an earlier release committed and this release no longer states are retired, which means deleted. The read-back then checks from the node report that the cluster runs each component as the release states it | `Release.Files`, `Release.Retired`, `Release.ReadBack`, `LegacyFiles` |
-| `controlplane` | Builds and deletes a Talos control plane on Hetzner Cloud: a network, a firewall, a gateway in each of `fsn1`, `nbg1` and `hel1`, a builder that makes the cluster's own snapshot, a node in each of `fsn1`, `nbg1` and `hel1`, and an API and an ingress load balancer. Each call reads the resources by their labels and takes the one change still missing. A refusal is a `*Refusal` with a `Class` and a `Message`, which the block answers as its own framework's refusal | `Plane`, `Plane.Read`, `Plane.EnsureNetwork`, `Plane.NextStep`, `Plane.Problems`, `Plane.Unhealthy`, `Plane.Outputs`, `Plane.Release`, `Plane.GatewaysAwaitRelease`, `Plane.GatewaysServeRelease`, `Plane.Delete`, `NewAPI`, `Refusal`, `TopologyLabels`, `GatewayUpgradeBound` |
+| `controlplane` | Builds and deletes a Talos control plane on Hetzner Cloud: a network, a firewall, a gateway in each of `fsn1`, `nbg1` and `hel1`, a builder that makes the cluster's own snapshot, a node in each of `fsn1`, `nbg1` and `hel1`, and an API and an ingress load balancer. Each call reads the resources by their labels and takes the one change still missing. A refusal is a `*Refusal` with a `Class` and a `Message`, which the block answers as its own framework's refusal | `Plane`, `Plane.Read`, `Plane.EnsureNetwork`, `Plane.NextStep`, `Plane.Problems`, `Plane.Unhealthy`, `Plane.Outputs`, `State.IngressAddresses`, `Plane.Release`, `ErrNoIngressAddress`, `Plane.GatewaysAwaitRelease`, `Plane.GatewaysServeRelease`, `Plane.Delete`, `NewAPI`, `Refusal`, `TopologyLabels`, `GatewayUpgradeBound` |
 | `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image carries and the gateway copies out of it, and `tools/jq.env`, which pins the tools image's jq. It names the tools image a release published and the directory in that image that holds the node report's, its outside probe's, the labeller's and the cluster tokens' scripts, and where in that image each served manifest sits | `Env`, `Pin`, `Image`, `ScriptDir`, `ManifestPath` |
 | `redundant` | Carries a removal's redundant set, each member with its reading, to the guard the block passes, block-kit's `redundancy.Set.AllowRemoval`, which this module does not import | `Set`, `Guard`, `Held` |
 | `testutil` | Holds the fixtures, fakes and decoders this module's tests and a block's tests share | `NewCluster`, `NewTools`, `Golden` |
@@ -415,6 +415,25 @@ for HTTPS. On both ports it sends a PROXY protocol header, which carries the
 client's address. Traefik sees the load balancer's private address as the
 sender, so each entry point reads that header from the cluster network,
 `10.0.0.0/16`, and from no other address.
+
+Traefik writes the ingress load balancer's public address into the status of
+every Ingress it serves. Argo CD v3.5.5 reads an Ingress whose status holds no
+address as Progressing, which means still starting, so without that address
+no app behind an Ingress ever reads Healthy. The chart's own setting copies
+each node's `ExternalIP` address there, and a node of the kit holds none, since
+only a gateway has a public address. `Set.PublishingIngress` in `components`
+therefore replaces that setting with Traefik's `ingressEndpoint.ip` argument,
+which names one address. It refuses a second address, naming it, and it
+refuses to render with no address at all.
+
+The address has one source. `State.IngressAddresses` in `controlplane` reads
+it from the ingress load balancer Hetzner holds. `Plane.Outputs` gives it to
+the block as `publicIpByLocation`, and `Plane.Release` gives it to Traefik, as
+[the section on how a running cluster takes a release](#how-a-running-cluster-takes-a-releases-components)
+describes. The gateways serve Traefik's manifest without an address, since one
+tools image is built for every cluster. A new cluster's Traefik therefore
+takes the address from the first commit a block makes to the cluster
+repository.
 
 An app's Ingress asks for its certificate from the ClusterIssuer
 `letsencrypt-production`, which the hosting set carries in
@@ -911,7 +930,7 @@ change `report/scripts/report.sh`.
 
 | Member | What it holds | Where it comes from |
 |---|---|---|
-| `nodes` | Each node with its Talos version, allocatable resources, `topology.kubernetes.io/zone` and `topology.kubernetes.io/region` labels, and, as `zoneLabelManagers`, each field manager that wrote its zone label | `kubectl get nodes --show-managed-fields` |
+| `nodes` | Each node with its Talos version, allocatable resources, every address it holds with that address's type as `addresses`, `topology.kubernetes.io/zone` and `topology.kubernetes.io/region` labels, and, as `zoneLabelManagers`, each field manager that wrote its zone label | `kubectl get nodes --show-managed-fields` |
 | `etcd` | Each etcd member, `healthy` only when its node answered `talosctl etcd status` with an empty `ERRORS` cell, the `leader`, and a `statusError` naming a status read that failed | `talosctl etcd members` and `talosctl etcd status` |
 | `systemVolumes` | How each node's `STATE` and `EPHEMERAL` volumes are encrypted | `talosctl get volumestatus` |
 | `argocd` | Each Application's health, sync, `revision` and applied objects, each object with Argo CD's health of it, as [the section on the revision](#how-the-report-names-the-revision-each-application-was-compared-against) and [the section on object health](#how-the-report-shows-each-objects-health-and-each-containers-state) describe, the answer each of 17 routes gives a caller with no session, and the `argocd` namespace's Services and Ingresses | The Applications, `ARGOCD_URL` and the Ingress read |
@@ -921,6 +940,7 @@ change `report/scripts/report.sh`.
 | `cloudNativePG` | Each Cluster with its phase, instance counts and `currentPrimary`, and each Database and DatabaseRole with whether it applied | CloudNativePG's objects |
 | `openbao` | Each member's `initialized`, `sealed` and `active`, and the active member's name as `leader` | `sys/seal-status` and `sys/leader` on each member in `OPENBAO_MEMBERS`, verified against `OPENBAO_CA_FILE` |
 | `storage` and `services` | Each claim with its storage class, phase, `requestedSize` (what it asks for) and `capacity` (what is bound, `null` while it is Pending), the default storage classes, and every Service with its type | One read of claims, StorageClasses and Services |
+| `ingresses` | Every Ingress in every namespace with its `namespace`, `name` and `class`, and under `status.loadBalancer.ingress` each address its controller wrote, as an `ip` or a `hostname`. The class is the Ingress's `ingressClassName`, or else its `kubernetes.io/ingress.class` annotation cut to 256 characters, or `null`. An Ingress no controller serves carries an empty list, which is how Argo CD reads it as still starting | `kubectl get ingresses -A`, the read `argocd` takes its own Ingresses from |
 | `defaultDenyPolicies` | Each NetworkPolicy named `mitstack-default-deny`, with its pod selector, policy types, rule counts and `managedBy` label | The NetworkPolicy read |
 | `subscriptionResources` and `subscriptionResourceKinds` | The objects a block labels `mitstack.dev/subscription`, and the object types the report read whole | One read per object type in `subscription_kinds` in `report.sh` |
 | `jwks` | The key set the API server signs service-account tokens with | `/openid/v1/jwks` |
@@ -1240,7 +1260,7 @@ every Docker Hub image goes on the list under its full name.
 | trust-manager v0.25.0 | Copies each authority's certificate from `mitstack-trust` into a ConfigMap of the authority's name, under `ca.crt`, in every namespace | `components/render/trust-manager-values.yaml` |
 | External Secrets v2.11.0 | Copies values from OpenBao into Kubernetes Secrets | `components/render/external-secrets-values.yaml` |
 | Sealed Secrets 0.40.0 | Opens a `SealedSecret` with the block's key pair, and never mints or renews a key | `components/render/sealed-secrets-values.yaml` |
-| Traefik v3.7.13 | Serves web traffic on NodePorts 30080 and 30081, with one pod on every node that takes apps | `components/render/traefik-values.yaml` |
+| Traefik v3.7.13 | Serves web traffic on NodePorts 30080 and 30081, with one pod on every node that takes apps, and writes the ingress load balancer's address into each Ingress's status | `components/render/traefik-values.yaml` |
 
 The two authorities that the next section describes, and the certificates
 they sign, sit in `components/hosting/tls.yaml`. A
@@ -1657,7 +1677,8 @@ lowercase letters, digits and hyphens, and starting and ending with a letter
 or digit. `Release.Files` refuses a name that is not.
 
 A block builds a `rollout.Release` with `Plane.Release` in `controlplane` from
-the same plane it builds the cluster with. It holds every manifest the build
+the same plane it builds the cluster with, and from the state `Plane.Read`
+returns. It holds every manifest the build
 applies, with two exceptions. It leaves out the hosting set's inline
 manifests, since only an install's keys render them, and it leaves out the
 `cluster` Application, since the carriage runs through that Application. The block then commits the files
@@ -1665,7 +1686,8 @@ manifests, since only an install's keys render them, and it leaves out the
 `Release.ReadBack`:
 
 ```go
-release, err := plane.Release()
+state, err := plane.Read(ctx)
+release, err := plane.Release(state)
 files, err := release.Files("acme/shop-cluster") // commit each file's Bytes at its Path, in one commit
 retired, err := release.Retired(heldPaths)       // take each of these out in that same commit
 reading, err := release.ReadBack(reportBody)     // what the newest node report says of the release
@@ -1678,6 +1700,22 @@ the commit the block builds on, as the block lists them from its checkout, and
 `reportBody` is the JSON body of the newest node report the platform received
 from the cluster. `ReadBack` returns a `rollout.Reading`, which the end of this
 section describes.
+
+`Plane.Release` takes the state because a hosting cluster's Traefik publishes
+the ingress load balancer's address, which only Hetzner holds. Each call
+renders Traefik with the address the state gives, so a load balancer that was
+replaced changes Traefik's file, and the block's next commit carries the new
+address. While the state holds no ingress load balancer with a public
+address, `Plane.Release` returns an error that wraps `ErrNoIngressAddress` and
+names the location and the value the state holds, for example:
+
+```text
+the release's Traefik has no ingress address to publish: the state holds "" as the public address of the ingress load balancer in fsn1
+```
+
+A block that gets this error commits nothing. Where the load balancer is
+missing, the plane's next step builds it. A cluster that hosts no platform runs no
+Traefik, so its release needs no address.
 
 `Release.Files` returns two files per component, with every manifest file ahead of every Application file in the list, so Argo CD never syncs an Application whose directory is empty:
 

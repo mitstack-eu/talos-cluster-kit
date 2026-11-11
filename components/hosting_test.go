@@ -598,10 +598,7 @@ func TestHosting_TraefikTrustsTheLoadBalancersProxyProtocolOnWebAndWebsecureFrom
 	}, proxyArgs)
 }
 
-const (
-	publishedServiceArg = "--providers.kubernetesingress.ingressendpoint.publishedservice=traefik/traefik"
-	publishedAddressArg = "--providers.kubernetesingress.ingressendpoint.ip="
-)
+const publishedServiceArg = "--providers.kubernetesingress.ingressendpoint.publishedservice=traefik/traefik"
 
 func withoutIngressEndpoint(t *testing.T, traefik components.Manifest) []map[string]any {
 	t.Helper()
@@ -622,7 +619,7 @@ func TestHosting_TraefikPublishesTheAddressItIsGivenOnEveryIngressInPlaceOfItsNo
 
 	require.NoError(t, err)
 	before, after := testutil.Manifest(t, "traefik", served.Served), testutil.Manifest(t, "traefik", publishing.Served)
-	assert.Equal(t, []string{publishedAddressArg + "198.51.100.7"}, testutil.IngressEndpointArgs(t, after), "what Traefik writes into an Ingress's status")
+	assert.Equal(t, []string{testutil.PublishedAddressArg + "198.51.100.7"}, testutil.IngressEndpointArgs(t, after), "what Traefik writes into an Ingress's status")
 	assert.Equal(t, []string{publishedServiceArg}, testutil.IngressEndpointArgs(t, before), "the set every gateway serves stays the chart's render")
 	assert.Equal(t, withoutIngressEndpoint(t, before), withoutIngressEndpoint(t, after), "every other field of the Traefik manifest")
 	for i, m := range served.Served {
@@ -633,7 +630,7 @@ func TestHosting_TraefikPublishesTheAddressItIsGivenOnEveryIngressInPlaceOfItsNo
 	assert.Equal(t, served.Inline, publishing.Inline, "the inline manifests")
 }
 
-func TestHosting_RefusesToPublishAnIngressAddressItCannotNamingIt(t *testing.T) {
+func TestHosting_RefusesAnIngressAddressTraefikCannotPublishAndNamesIt(t *testing.T) {
 	first, second := netip.MustParseAddr("198.51.100.7"), netip.MustParseAddr("198.51.100.8")
 	for _, tc := range []struct {
 		name      string
@@ -654,6 +651,19 @@ func TestHosting_RefusesToPublishAnIngressAddressItCannotNamingIt(t *testing.T) 
 			}
 			assert.Empty(t, publishing.Served, "the set a refusal hands back")
 		})
+	}
+}
+
+func TestHosting_RefusesATraefikManifestThatDoesNotHoldTheChartsPublishedServiceArgumentOnce(t *testing.T) {
+	for _, times := range []int{0, 2} {
+		set := components.HostingServed()
+		set.Served = slices.Clone(set.Served)
+		i := slices.IndexFunc(set.Served, func(m components.Manifest) bool { return m.Name == "traefik" })
+		set.Served[i].Bytes = bytes.ReplaceAll(set.Served[i].Bytes, []byte(publishedServiceArg), []byte(strings.Repeat(publishedServiceArg+" ", times)))
+
+		_, err := set.PublishingIngress([]netip.Addr{netip.MustParseAddr("198.51.100.7")})
+
+		assert.ErrorContains(t, err, fmt.Sprintf("names its published Service %d times, want once", times))
 	}
 }
 

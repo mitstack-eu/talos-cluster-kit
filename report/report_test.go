@@ -669,6 +669,16 @@ func TestReport_PostsEachMemberItReadsFromAHealthyCluster(t *testing.T) {
 	}
 }
 
+func TestReport_CutsAnIngressClassTakenFromItsAnnotationTo256Characters(t *testing.T) {
+	long := strings.Repeat("c", 300)
+	ingress := `{"items": [{"metadata": {"name": "shop", "namespace": "app-shop", "annotations": {"kubernetes.io/ingress.class": "` + long + `"}}}]}`
+
+	_, posted, out, err := runReport(t, kubectlWith(ingressesRead, "echo '"+ingress+"'"))
+
+	require.NoError(t, err, out)
+	assert.Equal(t, long[:256], testutil.Field(t, posted.body, "ingresses", "0", "class"))
+}
+
 func TestReport_NamesEachAppliedObjectsArgoCDHealthAndEachContainersStateButNoTerminatedContainersMessage(t *testing.T) {
 	_, posted, out, err := runReport(t, nil)
 

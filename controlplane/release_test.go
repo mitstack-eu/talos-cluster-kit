@@ -47,8 +47,6 @@ func (h *harness) withLoadBalancers() {
 	require.Len(h.t, h.cloud.LBSpecs, 2, "the load balancers the plane created")
 }
 
-const publishedAddressArg = "--providers.kubernetesingress.ingressendpoint.ip="
-
 func (h *harness) releaseOf(plane controlplane.Plane) rollout.Release {
 	h.t.Helper()
 	release, err := plane.Release(h.read())
@@ -69,7 +67,7 @@ func traefikArgs(t *testing.T, release rollout.Release) []string {
 
 // A fresh cluster's first release and a replaced load balancer's next one name the address for an Ingress in any namespace.
 func TestRelease_TraefikPublishesTheAddressThePlaneOutputsOnEveryIngressAndTheNewOneOnceTheLoadBalancerIsReplaced(t *testing.T) {
-	const replacement = "198.51.100.251"
+	const replacement = "192.0.2.77"
 	h := newHarness(t, hosting)
 	h.withLoadBalancers()
 	plane, err := h.plane.WithGatewayCA()
@@ -89,10 +87,10 @@ func TestRelease_TraefikPublishesTheAddressThePlaneOutputsOnEveryIngressAndTheNe
 
 	require.NotEqual(t, replacement, built.PublicIPv4, "the address the load balancer was built with")
 	assert.Equal(t, built.PublicIPv4, firstOutput, "the address the plane outputs for the load balancer it built")
-	assert.Equal(t, []string{publishedAddressArg + firstOutput}, testutil.IngressEndpointArgs(t, testutil.Manifest(t, "traefik", first.Components)),
+	assert.Equal(t, []string{testutil.PublishedAddressArg + firstOutput}, testutil.IngressEndpointArgs(t, testutil.Manifest(t, "traefik", first.Components)),
 		"what Traefik writes into an Ingress's status on the cluster's first release")
 	assert.Equal(t, replacement, secondOutput, "the address the plane outputs once the load balancer is replaced")
-	assert.Equal(t, []string{publishedAddressArg + replacement}, testutil.IngressEndpointArgs(t, testutil.Manifest(t, "traefik", second.Components)),
+	assert.Equal(t, []string{testutil.PublishedAddressArg + replacement}, testutil.IngressEndpointArgs(t, testutil.Manifest(t, "traefik", second.Components)),
 		"what Traefik writes into an Ingress's status once the load balancer is replaced")
 	for _, m := range second.Components {
 		assert.NotContains(t, string(m.Bytes), built.PublicIPv4, "the replaced load balancer's address in %s", m.Name)

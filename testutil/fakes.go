@@ -145,6 +145,9 @@ func Manifest(t *testing.T, name string, lists ...[]components.Manifest) compone
 	return manifests[i]
 }
 
+// PublishedAddressArg is the Traefik argument that names the one address it writes into the status of each Ingress.
+const PublishedAddressArg = "--providers.kubernetesingress.ingressendpoint.ip="
+
 func IngressEndpointArgs(t *testing.T, traefik components.Manifest) []string {
 	t.Helper()
 	var args []string

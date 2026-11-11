@@ -1011,10 +1011,10 @@ manifest: |
       - name: registries
         expression: "['ghcr.io/mitstack-eu/', '839001574838.dkr.ecr.eu-central-1.amazonaws.com/']"
       - name: pinnedImages
-        expression: "['quay.io/jetstack/cert-manager-acmesolver:v1.21.2@sha256:699b40d622211ab7accad8a21b04c5fbaa1841ef7a12621e8de492dbe27b2503', 'ghcr.io/cloudnative-pg/cloudnative-pg:1.30.1@sha256:923c267ec29636db3bee20f993d0ec4973fa22998e1adad37da79e4d32b5bc07', 'ghcr.io/cloudnative-pg/pgbouncer:1.25.2@sha256:b15c428057d1ffbc19fb70496911a5f1a47066dcc1315bf794f4e85ade29e2e5', 'ghcr.io/cloudnative-pg/postgresql:16.15-system-trixie@sha256:8ca5699981c25db72e549e9fa69561bac233df15b9b1e3a6282847b0629bb5ea']"
+        expression: "['quay.io/jetstack/cert-manager-acmesolver:v1.21.2@sha256:699b40d622211ab7accad8a21b04c5fbaa1841ef7a12621e8de492dbe27b2503', 'ghcr.io/cloudnative-pg/cloudnative-pg:1.30.1@sha256:923c267ec29636db3bee20f993d0ec4973fa22998e1adad37da79e4d32b5bc07', 'ghcr.io/cloudnative-pg/pgbouncer:1.25.2@sha256:b15c428057d1ffbc19fb70496911a5f1a47066dcc1315bf794f4e85ade29e2e5', 'ghcr.io/cloudnative-pg/postgresql:16.15-system-trixie@sha256:8ca5699981c25db72e549e9fa69561bac233df15b9b1e3a6282847b0629bb5ea', 'docker.io/library/busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e']"
       validations:
       - expression: "variables.containers.all(c, c.image in variables.pinnedImages || variables.registries.exists(r, c.image.startsWith(r)))"
-        message: "mitstack-restrict-image-registries: every container image must come from ghcr.io/mitstack-eu/ or 839001574838.dkr.ecr.eu-central-1.amazonaws.com/, or be one of the exact images the kit pins for pods an operator starts in an app namespace: cert-manager's ACME solver, the CloudNativePG operator, its PgBouncer or its Postgres 16 image"
+        message: "mitstack-restrict-image-registries: every container image must come from ghcr.io/mitstack-eu/ or 839001574838.dkr.ecr.eu-central-1.amazonaws.com/, or be one of the exact images the kit pins for pods an operator starts in an app namespace: cert-manager's ACME solver, the CloudNativePG operator, its PgBouncer or its Postgres 16 image, or the busybox image the kit pins for its helpers and kube-app-deploy's secrets-import Job runs"
 ---
 apiVersion: v1alpha1
 kind: KubeInlineManifestConfig

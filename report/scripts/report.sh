@@ -420,7 +420,7 @@ body() {
     # address, so its size has a bound and a reader sees whether its controller gave it one.
     def ingress: {
       namespace: .metadata.namespace, name: .metadata.name,
-      class: (.spec.ingressClassName // .metadata.annotations["kubernetes.io/ingress.class"] // null),
+      class: (.spec.ingressClassName // .metadata.annotations["kubernetes.io/ingress.class"] // null | at_most_256),
       status: {loadBalancer: {ingress: [.status.loadBalancer.ingress[]? | {ip, hostname} | with_entries(select(.value != null))]}}
     };
     def ingresses(read): beside($ingresses_status; $ingresses_err; "kubectl exited 0, and its output is not the Ingresses this report reads";

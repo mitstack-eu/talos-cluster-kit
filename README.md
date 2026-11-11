@@ -1410,13 +1410,13 @@ less than 1,024 bytes of the limit, and it logs each size.
 The reserve covers what the test does not hold at its largest: a block's names
 and URLs, and the keys an install mints. An app name and a subscription id of
 63 characters, a repository URL of 159 and a platform host of 75 add about 550
-bytes when they compress poorly. The keys move the size by about 50 bytes from
-one run to the next.
+bytes when they compress poorly. The keys move the size by up to 150 bytes
+from one run to the next.
 
-With that proof script the builder takes about 30,400 bytes, or about 30,600
+With that proof script the builder takes about 30,400 bytes, or about 30,500
 on a cluster that hosts the platform. With a one-line proof script, as the
 tests in `controlplane/render_test.go` and `controlplane/hosting_test.go` log
-it, the builder takes about 28,100 and 28,300 bytes.
+it, the builder takes about 28,100 and 28,200 bytes.
 
 ### How Argo CD reads the cluster repository
 

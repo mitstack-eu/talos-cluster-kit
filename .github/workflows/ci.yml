@@ -1,4 +1,3 @@
-# A pull request fails first when it adds a fixed sleep or a polling interval.
 # Every event runs the Go suites, a copy through the gateway's own skopeo
 # into its own registry, the check that each vendored component matches a
 # fresh render of its pinned chart, the Kyverno policy tests, shellcheck over

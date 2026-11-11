@@ -278,8 +278,9 @@ as the cluster needs:
    trust it with no change to their configuration, and the old key goes with
    its server. The renewal waits while an upgrade runs, since each gateway an
    upgrade builds carries a new certificate. The plane keeps the gateway,
-   and records why, while it holds no gateway CA or no node report lists the
-   images a replacement keeps.
+   and its event says why, in four cases: the block holds no gateway CA, it
+   passes no redundancy guard, no node report lists the images a replacement
+   keeps, or Hetzner can order no gateway type in the location.
 
 The plane acts only when a block calls it, so a renewal begins on the block's
 first call at or after the renewal point.

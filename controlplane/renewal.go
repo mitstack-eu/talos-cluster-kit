@@ -5,6 +5,7 @@ package controlplane
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -80,25 +81,35 @@ func (p Plane) renewStep(ctx context.Context, st State, s site) (Step, bool, err
 		return Step{}, false, nil
 	}
 	lapses := "whose certificate lapses at " + stampOf(certificateExpiry(gw))
-	unbuildable, err := p.noReplacementBecause(ctx)
+	held, err := p.renewalHeldBy(ctx, gw)
 	if err != nil {
 		return Step{}, false, err
 	}
-	if unbuildable != "" {
-		p.notify(ctx, "the renewal keeps gateway %d in %s, %s, since %s", gw.ID, gw.Location, lapses, unbuildable)
+	if held != "" {
+		p.notify(ctx, "the renewal keeps gateway %d in %s, %s, since %s", gw.ID, gw.Location, lapses, held)
 		return Step{}, false, nil
 	}
 	return p.replaceGateway(ctx, st, s, removal{gw: gw, plan: renewalPlan, why: lapses, keeper: "the renewal"})
 }
 
-// noReplacementBecause names what would leave a location without a gateway once its own is deleted, "" when nothing would.
-func (p Plane) noReplacementBecause(ctx context.Context) (string, error) {
-	if p.GatewayCA == nil {
+// renewalHeldBy names what would keep gw from being removed, or its successor from being built, once its replacement
+// began, "" when nothing would.
+func (p Plane) renewalHeldBy(ctx context.Context, gw Server) (string, error) {
+	switch {
+	case p.GatewayCA == nil:
 		return "the block holds no gateway CA to sign a new one's certificate with", nil
+	case p.Guard == nil:
+		return "the block passes no redundancy guard, so no gateway is removed", nil
 	}
-	_, why, err := p.newestImages(ctx, time.Time{})
-	if err != nil || why == "" {
+	if _, why, err := p.newestImages(ctx, time.Time{}); err != nil {
 		return "", err
+	} else if why != "" {
+		return "its replacement keeps the images the cluster still runs and " + why, nil
 	}
-	return "its replacement keeps the images the cluster still runs and " + why, nil
+	_, err := (&OrderableTypes{API: p.API}).First(ctx, string(RoleGateway), GatewayServerTypes, gw.Location)
+	var soldOut *Refusal
+	if errors.As(err, &soldOut) {
+		return soldOut.Message, nil
+	}
+	return "", err
 }

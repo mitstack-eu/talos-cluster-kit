@@ -149,7 +149,7 @@ write_files:
       03-istiod.yaml 8c9e515fa230d6e4e25c2cc62b0d94df7545b46d16901836dfc0ddc76f383c98 /usr/local/lib/mitstack/components/istio/istiod.yaml
       04-istio-cni.yaml 4e468eb1ce1722df46f859dd8318c28507127a0a129e0cb51ab8cc8060372526 /usr/local/lib/mitstack/components/istio/istio-cni.yaml
       05-ztunnel.yaml 666fce1650fdae7947acd43cfac46aa42066f174e71e8193cd0508d04aa4ff4b /usr/local/lib/mitstack/components/istio/ztunnel.yaml
-      26-mitstack-mesh-probe.yaml 71cd5ea890bb802ee2d9c9160c3d47c6a09e37070654fc108ba966ffa5ba596d /usr/local/lib/mitstack/components/mesh/probe.yaml
+      27-mitstack-mesh-probe.yaml 71cd5ea890bb802ee2d9c9160c3d47c6a09e37070654fc108ba966ffa5ba596d /usr/local/lib/mitstack/components/mesh/probe.yaml
   - path: /usr/local/bin/mitstack-gateway-prepare
     permissions: "0755"
     content: |

@@ -319,7 +319,7 @@ over the limit. `gateway.Render` refuses a cloud-config over the limit too,
 unless `Inputs.Gzipped` says its caller sends it gzipped and judges its size
 once compressed. Its tests log about 18,000 bytes for the install's first
 gateway and about 29,900 for a gateway keeping 300 images, or about 19,300 and
-31,400 on a cluster that hosts the platform.
+31,300 on a cluster that hosts the platform.
 
 A gateway bounds its own build. Each image copy into its mirror must finish
 within 15 minutes. The tools image's read from the mirror, each file's copy
@@ -1398,22 +1398,25 @@ A script in the tools image costs no server any user data, because the
 gateway mirrors that image whole. A served manifest does cost some. The
 gateway's user data has the same limit, and it names each served manifest with
 its sha256 and its path, about 75 bytes once gzipped. The gateway of a cluster
-that hosts the platform takes about 31,400 bytes when it keeps 300 images.
+that hosts the platform takes about 31,300 bytes when it keeps 300 images.
 
-`TestPlane_EveryServerOfAnInstallKeepsTheUserDataReserveWithEachOptionOfThePlaneAtItsLargest`
+`TestPlane_EveryServerOfAnInstallKeepsTheUserDataReserveWithTheLongestProofScriptUnderEachOptionOfThePlane`
 in `controlplane/render_test.go` keeps room free. It installs a cluster four
 ways: with and without the platform, and with apps on the control plane or on
-workers. Each plane takes a proof script of `report.ProofScriptLimit` bytes
-that gzip cannot shorten. The test fails when any server's user data leaves
-less than 1,024 bytes of the limit, and it logs each size.
+workers. Each plane takes a proof script of `report.ProofScriptLimit` bytes of
+random printable text, which gzip shortens by about a sixth. The test fails
+when any server's user data leaves less than 1,024 bytes of the limit, and it
+logs each size.
 
-The reserve covers what the test does not hold at its largest: a block's names
-and URLs, and the keys an install mints. An app name and a subscription id of
-63 characters, a repository URL of 159 and a platform host of 75 add about 550
-bytes when they compress poorly. The keys move the size by up to 150 bytes
-from one run to the next.
+The reserve covers what the test does not hold at its largest. A block's names
+and URLs come first. An app name and a subscription id of 63 characters, a
+repository URL of 159 and a platform host of 75 add 544 bytes when they
+compress poorly. The builder's size also moves from one test run to the next,
+by up to 224 bytes with the same settings. Inside one run, where every install
+shares one set of minted keys, it moves by 40 at most. The two sum to 768
+bytes, and the reserve is a third more.
 
-With that proof script the builder takes about 30,400 bytes, or about 30,500
+With that proof script the builder takes about 30,700 bytes, or about 30,900
 on a cluster that hosts the platform. With a one-line proof script, as the
 tests in `controlplane/render_test.go` and `controlplane/hosting_test.go` log
 it, the builder takes about 28,100 and 28,200 bytes.
@@ -2110,8 +2113,8 @@ with `(refs MIT-123)` only names the issue, and the job records nothing for it.
 A release also publishes the tools image, which the kit's Jobs and CronJobs
 run in. The image carries the report's, its outside probe's, the labeller's
 and the cluster tokens' scripts as the release's commit holds them, so a
-cluster runs the scripts of the release it was built from. The `release` job pushes it
-to the public package
+cluster runs the scripts of the release it was built from. The `release` job
+pushes it to the public package
 `ghcr.io/mitstack-eu/talos-cluster-kit-tools`, signs its digest keyless as
 this repository's CI on `main`, and refuses to tag unless a client with no
 login can pull it. An image's digest is known only once it is built, so it

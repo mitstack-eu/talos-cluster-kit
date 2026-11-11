@@ -201,8 +201,8 @@ pins it.
 The script tests run the script a rendered manifest carries, so they test what
 a node would run. The report's, the labeller's and the cluster tokens' tests
 check that each Job's or CronJob's command names the script's path in the tools
-image, then run the repository's file. The `tools image` CI job checks that the image holds those
-same bytes. `testutil.NewTools` writes fake `talosctl`, `kubectl`,
+image, then run the repository's file. The `tools image` CI job checks that the
+image holds those same bytes. `testutil.NewTools` writes fake `talosctl`, `kubectl`,
 `curl`, `skopeo`, `docker` and `systemctl` commands that log each call, and
 each test reads that log to check the order of the calls.
 
@@ -409,7 +409,7 @@ TOOLS_IMAGE=talos-tools:ci go test -tags toolsimage -count=1 -run '^TestToolsIma
 | `TestPlane_LeavesOutAnUnresolvedTagAndAnImageOnARegistryTheNodesReachDirectlyAndNamesEachBesideWhatItKeeps` | A tag with no digest and an image outside the mirrored registries stay out, a short name is mirrored under its Docker Hub name, and the event names each image kept and each left out with why | The same |
 | `TestPlane_AnUpgradeReplacesNoGatewayWhileTheNewestNodeReportListsNoImages` | An upgrade whose newest report has no `images` refuses with class `gateway-images-unread` and makes no write | The same |
 | `TestPlane_AGatewayKeeping300ImagesStaysInsideHetznersUserDataLimit` | A gateway keeping 300 images fits in 32,768 bytes, on a default cluster and one that hosts the platform, and the test logs that size and the install's first gateway's | The same |
-| `TestPlane_EveryServerOfAnInstallKeepsTheUserDataReserveWithEachOptionOfThePlaneAtItsLargest` | Every server an install creates keeps 1,024 of Hetzner's 32,768 bytes free, on a cluster and on one that hosts the platform, with apps on the control plane and on workers. The plane's proof script is `report.ProofScriptLimit` bytes of text gzip cannot shorten, and the test logs each server's size, as [the README's section on the builder's user data](../README.md#what-fits-in-the-builders-user-data) explains | The same |
+| `TestPlane_EveryServerOfAnInstallKeepsTheUserDataReserveWithTheLongestProofScriptUnderEachOptionOfThePlane` | Every server an install creates keeps 1,024 of Hetzner's 32,768 bytes free, on a cluster and on one that hosts the platform, with apps on the control plane and on workers. The plane's proof script is `report.ProofScriptLimit` bytes of random printable text, and the test logs each server's size, as [the README's section on the builder's user data](../README.md#what-fits-in-the-builders-user-data) explains | The same |
 | `TestPlane_AnUpgradeWithNoGatewayToReplaceChangesNothingThoughNoReportNamesAGateway` | An upgrade of a cluster whose gateways all carry the current list makes no write and reads no problem, though no report names a gateway | The same fake |
 | `TestPlane_APinBumpReplacesNoGatewayWithoutAnUpgrade` | Gateways built from an earlier list stay without `Upgrading` | The same fake |
 | `TestPlane_KeepsAClusterBuiltWithOneGatewayAndReadsItUnhealthyWithItsRemedy` | A cluster with one unlabelled gateway keeps it, and `Unhealthy` names the rebuild | The same fake |
@@ -426,7 +426,7 @@ TOOLS_IMAGE=talos-tools:ci go test -tags toolsimage -count=1 -run '^TestToolsIma
 | `TestArgoCD_TheWebhookPostsTheRevisionTheOperationSyncedElseTheComparedOne` | The webhook's body, run with stand-ins for its two template functions, is JSON with the eight fields, the operation's synced revision first and the compared one when there is no operation | The same |
 | `TestClusterTokens_EnrolRefusesAnAnswerMissingATokenBeforeWritingAnySecret` | A 200 answer missing the report, repository or notification token fails the enrolment before it writes any Secret | Fake kubectl and a local HTTPS server playing the platform |
 | `TestClusterTokens_EnrolFailsASpentTokenWhoseNotificationsSecretIsMissing` | A spent enrolment token with no `argocd-notifications-secret` fails the Job on either credential | The same |
-| `TestClusterTokens_TheEnrolmentAndTheRenewalRunTheScriptTheToolsImageCarries` | The enrolment Job and the renewal CronJob each run `cluster-tokens.sh` from `tools.ScriptDir` in the tools image, with `enrol` or `renew`, so the builder's user data carries no copy of the script | The builder's rendered configuration on the Cloud fake |
+| `TestBuilder_TheEnrolmentAndTheRenewalRunTheClusterTokensScriptTheToolsImageCarries` | The enrolment Job and the renewal CronJob each run `cluster-tokens.sh` from `tools.ScriptDir` in the tools image, with `enrol` or `renew`, so the builder's user data carries no copy of the script | The builder's rendered configuration on the Cloud fake |
 | `TestProgram_ServesTheFileOnceToItsClientOverTLS13AndRemovesTheFileAndTheKey` | The serving program answers its one client once over TLS 1.3, and deletes the file and its key | The program run with python3 on a local port |
 | `TestHetznerAdapter_CouplesTheVSwitchThroughItsSubnetAndExposesTheNetworksRoutesToIt` | `AddVSwitchSubnet` sends a `vswitch` subnet with the vSwitch's id and turns on `expose_routes_to_vswitch` | A local HTTP server playing Hetzner's Cloud API |
 

@@ -1137,25 +1137,6 @@ spec:
               - SYS_PTRACE
             drop:
               - ALL
-      # Mount the bpf fs if it is not mounted. We will perform this task
-      # from a privileged container because the mount propagation bidirectional
-      # only works from privileged containers.
-      - name: mount-bpf-fs
-        image: "quay.io/cilium/cilium:v1.19.9@sha256:f3014d42121a04272cb4a5f4f96dbe7836c9a7919990f17e9b6838e8fd4aa33a"
-        imagePullPolicy: IfNotPresent
-        args:
-        - 'mount | grep "/sys/fs/bpf type bpf" || mount -t bpf bpf /sys/fs/bpf'
-        command:
-        - /bin/bash
-        - -c
-        - --
-        terminationMessagePolicy: FallbackToLogsOnError
-        securityContext:
-          privileged: true
-        volumeMounts:
-        - name: bpf-maps
-          mountPath: /sys/fs/bpf
-          mountPropagation: Bidirectional
       - name: clean-cilium-state
         image: "quay.io/cilium/cilium:v1.19.9@sha256:f3014d42121a04272cb4a5f4f96dbe7836c9a7919990f17e9b6838e8fd4aa33a"
         imagePullPolicy: IfNotPresent
@@ -1463,10 +1444,11 @@ spec:
         - name: envoy-config
           mountPath: /var/run/cilium/envoy/
           readOnly: true
+        
         - name: bpf-maps
           mountPath: /sys/fs/bpf
+          readOnly: false
           mountPropagation: HostToContainer
-        
       restartPolicy: Always
       priorityClassName: system-node-critical
       serviceAccountName: "cilium-envoy"
@@ -1517,7 +1499,7 @@ spec:
             - key: bootstrap-config.json
               path: bootstrap-config.json
         # To keep state between restarts / upgrades
-        # To keep state between restarts / upgrades for bpf maps
+    
       - name: bpf-maps
         hostPath:
           path: /sys/fs/bpf

@@ -2,6 +2,7 @@ package talosclusterkit
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -115,9 +116,12 @@ func TestDropEmptyMetadataMaps(t *testing.T) {
 
 var podRefusingPolicies = []string{"mitstack-disallow-host-path", "mitstack-require-resource-limits", "mitstack-restrict-image-registries"}
 
-// renderedPod is a pod spec the kit renders in a document, or in a pod template a ConfigMap of the kit holds, with the namespace it starts in.
+// renderedPod is a pod spec the kit renders in a document, or in a pod template a ConfigMap of the kit holds, with the
+// manifest and the object that hold it and the namespace it starts in.
 type renderedPod struct {
 	where     string
+	source    string
+	workload  string
 	namespace string
 	spec      map[string]any
 }
@@ -132,7 +136,8 @@ func renderedPods(t *testing.T) []renderedPod {
 			if _, ok := spec["containers"].([]any); !ok {
 				continue
 			}
-			pods = append(pods, renderedPod{where: fmt.Sprintf("%s: %v %v%s", source, doc["kind"], testutil.Field(t, doc, "metadata", "name"), path), namespace: namespace, spec: spec})
+			name := fmt.Sprint(testutil.Field(t, doc, "metadata", "name"))
+			pods = append(pods, renderedPod{where: fmt.Sprintf("%s: %v %s%s", source, doc["kind"], name, path), source: source, workload: name, namespace: namespace, spec: spec})
 		}
 	}
 	for _, d := range renderedDocs(t) {
@@ -264,26 +269,30 @@ func TestManifests_ThePodPoliciesSkipTheSameNamespacesAndNoneThatHoldsAnApp(t *t
 	}
 }
 
-func TestManifests_TheReadmeNamesEachSkippedNamespaceWithWhatRunsThereAndWhy(t *testing.T) {
+// readmeTable returns the cells of each row of the README table whose header row opens with header.
+func readmeTable(t *testing.T, header string) [][]string {
+	t.Helper()
 	readme, err := os.ReadFile("README.md")
 	require.NoError(t, err)
-	rows := map[string][]string{}
+	var rows [][]string
 	inTable := false
 	for _, line := range strings.Split(string(readme), "\n") {
-		if strings.HasPrefix(line, "| Namespace | What runs there | Why the pod policies skip it |") {
+		switch {
+		case strings.HasPrefix(line, header):
 			inTable = true
-			continue
+		case inTable && !strings.HasPrefix(line, "|"):
+			return rows
+		case inTable && !strings.HasPrefix(line, "|---"):
+			rows = append(rows, strings.Split(strings.Trim(line, "| "), " | "))
 		}
-		if !inTable {
-			continue
-		}
-		if !strings.HasPrefix(line, "|") {
-			break
-		}
-		cells := strings.Split(strings.Trim(line, "| "), " | ")
-		if strings.HasPrefix(cells[0], "`") {
-			rows[strings.Trim(cells[0], "`")] = cells[1:]
-		}
+	}
+	return rows
+}
+
+func TestManifests_TheReadmeNamesEachSkippedNamespaceWithWhatRunsThereAndWhy(t *testing.T) {
+	rows := map[string][]string{}
+	for _, cells := range readmeTable(t, "| Namespace | What runs there | Why the pod policies skip it |") {
+		rows[strings.Trim(cells[0], "`")] = cells[1:]
 	}
 
 	skipped := policySkips(t, podPolicy(t, podRefusingPolicies[0]))
@@ -296,6 +305,79 @@ func TestManifests_TheReadmeNamesEachSkippedNamespaceWithWhatRunsThereAndWhy(t *
 		assert.NotEmpty(t, strings.TrimSpace(cells[1]), "%s: why the policies skip it", namespace)
 	}
 	assert.ElementsMatch(t, skipped, documented, "the README's table of skipped namespaces differs from the policies' list")
+}
+
+// podContainers returns each init container and container of a pod under "<workload>/<container>".
+func podContainers(t *testing.T, pod renderedPod) map[string]map[string]any {
+	t.Helper()
+	containers := map[string]map[string]any{}
+	for _, list := range []string{"initContainers", "containers"} {
+		for _, container := range listOf(pod.spec[list]) {
+			containers[fmt.Sprintf("%s/%v", pod.workload, testutil.Field(t, container, "name"))] = container.(map[string]any)
+		}
+	}
+	return containers
+}
+
+// containerFaults says where a container runs privileged, keeps the container runtime's default capabilities, or adds
+// other capabilities than want.
+func containerFaults(name string, container map[string]any, want []string) []string {
+	context, _ := container["securityContext"].(map[string]any)
+	capabilities, _ := context["capabilities"].(map[string]any)
+	var added, faults []string
+	for _, capability := range listOf(capabilities["add"]) {
+		added = append(added, capability.(string))
+	}
+	slices.Sort(added)
+	if context["privileged"] == true {
+		faults = append(faults, name+" runs privileged")
+	}
+	if !slices.Contains(listOf(capabilities["drop"]), any("ALL")) {
+		faults = append(faults, name+" keeps the container runtime's default capabilities, since it does not drop ALL")
+	}
+	if !slices.Equal(added, want) {
+		faults = append(faults, fmt.Sprintf("%s adds %v, and the README records %v", name, added, want))
+	}
+	return faults
+}
+
+func listOf(v any) []any {
+	l, _ := v.([]any)
+	return l
+}
+
+// A component set that makes a Cilium container privileged fails this test, which names the container, and a cluster
+// built from either set runs Cilium with only the capabilities the README records.
+func TestManifests_NoCiliumContainerRunsPrivilegedOrAddsACapabilityBeyondTheReadmesList(t *testing.T) {
+	documented := map[string][]string{}
+	for _, cells := range readmeTable(t, "| Workload | Container | Capabilities it adds |") {
+		var capabilities []string
+		for _, m := range regexp.MustCompile("`([A-Z_]+)`").FindAllStringSubmatch(cells[2], -1) {
+			capabilities = append(capabilities, m[1])
+		}
+		slices.Sort(capabilities)
+		documented[strings.Trim(cells[0], "`")+"/"+strings.Trim(cells[1], "`")] = capabilities
+	}
+	rendered := map[string][]string{}
+	var faults []string
+
+	for _, pod := range renderedPods(t) {
+		if !strings.HasSuffix(pod.source, "/cilium") {
+			continue
+		}
+		for name, container := range podContainers(t, pod) {
+			rendered[pod.source] = append(rendered[pod.source], name)
+			for _, fault := range containerFaults(name, container, documented[name]) {
+				faults = append(faults, pod.source+": "+fault)
+			}
+		}
+	}
+
+	slices.Sort(faults)
+	assert.Empty(t, strings.Join(faults, "\n"), "Cilium holds more of the node than the README accounts for")
+	for _, source := range []string{"default/cilium", "hosting/cilium"} {
+		assert.ElementsMatch(t, slices.Collect(maps.Keys(documented)), rendered[source], "the README's table lists other Cilium containers than %s renders", source)
+	}
 }
 
 func TestManifests_EveryRefusalOpensWithTheNameOfTheRuleThePlatformLooksFor(t *testing.T) {

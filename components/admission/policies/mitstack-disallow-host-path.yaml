@@ -19,7 +19,7 @@ spec:
       matchExpressions:
       - key: kubernetes.io/metadata.name
         operator: NotIn
-        values: [kube-system, kube-public, kube-node-lease, argocd, kyverno, cnpg-system, mitstack-node, istio-system, traefik, cert-manager, openbao, external-secrets, local-path-storage, mitstack-mesh-probe]
+        values: [kube-system, kube-public, kube-node-lease, argocd, kyverno, cnpg-system, mitstack-node, istio-system, traefik, cert-manager, openbao, external-secrets, local-path-storage]
   validations:
   - expression: "!object.spec.?volumes.orValue([]).exists(v, has(v.hostPath))"
     message: "mitstack-disallow-host-path: no volume may mount a host path, since a host path reaches the node's file system"

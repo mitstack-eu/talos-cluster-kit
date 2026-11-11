@@ -144,9 +144,11 @@ CloudNativePG and cert-manager start in an app namespace.
 
 The policy holds each of its five exact images as a literal, since Kyverno reads
 YAML. `TestManifests_RestrictImageRegistriesNamesExactlyTheImagesTheKitPinsForPodsInAnAppNamespace`
-reads the same five from the manifests that pin them, the busybox image from the
-local path provisioner and the mesh probe, and fails when the policy differs
-from them or when those two pin different busybox references.
+reads the same five from the manifests that pin them, and fails when the policy
+differs from them. It reads the three CloudNativePG images from the operator's
+manifest, the ACME solver image from cert-manager's arguments, and the busybox
+image from the local path provisioner and the mesh probe, which must pin the
+same reference.
 
 The Talos images, such as the kubelet and the API server, are not in any
 manifest. `pinnedTalosImages` in `components/image.go` lists them with the

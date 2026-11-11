@@ -13,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -241,25 +240,17 @@ func runReport(t *testing.T, fakes map[string]string, env ...string) (*testutil.
 		"REPORT_TOKEN_FILE=" + token, "CURL_CA_BUNDLE=" + ca, "MESH_PROBE_URL=" + meshTarget(t),
 		"MESH_PROBE_ANSWER=" + rendered["MESH_PROBE_ANSWER"], "MESH_PROBE_IDENTITY=" + rendered["MESH_PROBE_IDENTITY"],
 		"MESH_PROBE_CONFIGMAP=" + rendered["MESH_PROBE_CONFIGMAP"], "OPENBAO_MEMBERS=" + openBao(t, healthyOpenBao...),
-		"OPENBAO_CA_FILE=" + ca, "ARGOCD_URL=" + argoCD(t, signedOut, loginsOff)}, env...)...))
+		"OPENBAO_CA_FILE=" + ca, "ARGOCD_URL=" + argoCD(t, signedOut, http.StatusOK, loginsOff)}, env...)...))
 	posted.mu.Lock()
 	defer posted.mu.Unlock()
 	return tools, posted, out, err
 }
 
 const (
-	signedOut    = `{"loggedIn":false}`
-	settingsPath = "/api/v1/settings"
-	noSession    = `{"error":"no session information","code":16,"message":"no session information"}`
+	signedOut = `{"loggedIn":false}`
+	loginsOff = `{"url":"https://argocd.example","userLoginsDisabled":true,"oidcConfig":null}`
+	noSession = `{"error":"no session information","code":16,"message":"no session information"}`
 )
-
-// settingsAnswer is how the fake Argo CD answers its settings route.
-type settingsAnswer struct {
-	status int
-	body   string
-}
-
-var loginsOff = settingsAnswer{http.StatusOK, `{"url":"https://argocd.example","userLoginsDisabled":true,"oidcConfig":null}`}
 
 // argoCDRoutes are the routes the report asks Argo CD without a session, in its order.
 var argoCDRoutes = []string{"/api/v1/session/userinfo", "/api/v1/account", "/api/v1/applications", "/api/v1/applicationsets",
@@ -268,7 +259,9 @@ var argoCDRoutes = []string{"/api/v1/session/userinfo", "/api/v1/account", "/api
 	"/api/v1/repositories", "/api/v1/settings", "/api/v1/settings/plugins", "/api/v1/write-repocreds",
 	"/api/v1/write-repositories"}
 
-func argoCD(t *testing.T, userinfo string, settings settingsAnswer) string {
+// argoCD plays an Argo CD that answers userinfo with 200, settings with the status and body given, and every other route
+// as it answers a caller without a session.
+func argoCD(t *testing.T, userinfo string, settingsStatus int, settings string) string {
 	t.Helper()
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") != "" || r.ContentLength > 0 {
@@ -277,9 +270,9 @@ func argoCD(t *testing.T, userinfo string, settings settingsAnswer) string {
 		switch r.URL.Path {
 		case "/api/v1/session/userinfo":
 			_, _ = io.WriteString(w, userinfo)
-		case settingsPath:
-			w.WriteHeader(settings.status)
-			_, _ = io.WriteString(w, settings.body)
+		case "/api/v1/settings":
+			w.WriteHeader(settingsStatus)
+			_, _ = io.WriteString(w, settings)
 		default:
 			w.WriteHeader(http.StatusUnauthorized)
 			_, _ = io.WriteString(w, noSession)
@@ -696,72 +689,48 @@ func TestReport_NamesEachAppliedObjectsArgoCDHealthAndEachContainersStateButNoTe
 	}
 }
 
-func TestReport_AsksEachArgoCDRouteWithoutASessionAndKeepsItsStatusItsSizeAndWhetherUserinfoSaysSignedIn(t *testing.T) {
-	answered := func(userinfo map[string]any) []any {
-		routes := []any{userinfo}
-		for _, path := range argoCDRoutes[1:] {
-			route := map[string]any{"path": path, "status": float64(401), "bytes": float64(len(noSession))}
-			if path == settingsPath {
-				route = map[string]any{"path": path, "status": float64(loginsOff.status), "bytes": float64(len(loginsOff.body)), "userLoginsDisabled": true}
-			}
-			routes = append(routes, route)
-		}
-		return routes
-	}
-	userinfo := func(body string, loggedIn any) map[string]any {
-		return map[string]any{"path": argoCDRoutes[0], "status": float64(200), "bytes": float64(len(body)), "loggedIn": loggedIn}
-	}
-	var unanswered []any
-	for _, path := range argoCDRoutes {
-		unanswered = append(unanswered, map[string]any{"path": path, "status": float64(0), "bytes": float64(0), "error": "curl exit 7"})
-	}
-	signedIn, noJSON := `{"loggedIn":true,"username":"admin","iss":"argocd"}`, "signed out"
+func TestReport_AsksEachArgoCDRouteWithoutASessionAndKeepsItsStatusItsSizeAndOneBooleanOfUserinfoAndOfSettings(t *testing.T) {
+	signedIn, noJSON := `{"loggedIn":true,"username":"admin","iss":"argocd"}`, "signed out at https://argocd.example"
 	cases := map[string]struct {
-		userinfo string
-		want     []any
+		userinfo            string
+		settingsStatus      int
+		settings            string
+		loggedIn, loginsOff any
 	}{
-		"Argo CD refuses each route that needs a session": {signedOut, answered(userinfo(signedOut, false))},
-		"userinfo says a caller is signed in":             {signedIn, answered(userinfo(signedIn, true))},
-		"userinfo answers no JSON":                        {noJSON, answered(userinfo(noJSON, nil))},
-		"Argo CD does not answer":                         {"", unanswered},
+		"Argo CD refuses each route that needs a session": {signedOut, 200, loginsOff, false, true},
+		"userinfo says a caller is signed in":             {signedIn, 200, loginsOff, true, true},
+		"userinfo answers no JSON":                        {noJSON, 200, loginsOff, nil, true},
+		"the settings say a user can log in":              {signedOut, 200, `{"url":"https://argocd.example","userLoginsDisabled":false}`, false, false},
+		"the settings name no userLoginsDisabled":         {signedOut, 200, `{"url":"https://argocd.example","oidcConfig":null}`, false, nil},
+		"the settings give userLoginsDisabled as text":    {signedOut, 200, `{"url":"https://argocd.example","userLoginsDisabled":"true"}`, false, nil},
+		"the settings answer no JSON":                     {signedOut, 200, noJSON, false, nil},
+		"the settings route answers another status":       {signedOut, 502, loginsOff, false, nil},
+		"Argo CD does not answer":                         {},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			url := "https://127.0.0.1:1"
+			url, want := "https://127.0.0.1:1", []any{}
 			if tc.userinfo != "" {
-				url = argoCD(t, tc.userinfo, loginsOff)
+				url = argoCD(t, tc.userinfo, tc.settingsStatus, tc.settings)
 			}
+			for _, path := range argoCDRoutes {
+				route := map[string]any{"path": path, "status": float64(401), "bytes": float64(len(noSession))}
+				switch {
+				case tc.userinfo == "":
+					route = map[string]any{"path": path, "status": float64(0), "bytes": float64(0), "error": "curl exit 7"}
+				case path == argoCDRoutes[0]:
+					route = map[string]any{"path": path, "status": float64(200), "bytes": float64(len(tc.userinfo)), "loggedIn": tc.loggedIn}
+				case path == "/api/v1/settings":
+					route = map[string]any{"path": path, "status": float64(tc.settingsStatus), "bytes": float64(len(tc.settings)), "userLoginsDisabled": tc.loginsOff}
+				}
+				want = append(want, route)
+			}
+
 			_, posted, out, err := runReport(t, nil, "ARGOCD_URL="+url)
 
 			require.NoError(t, err, out)
-			assert.Equal(t, tc.want, testutil.Field(t, posted.body, "argocd", "routes"))
-		})
-	}
-}
-
-func TestReport_KeepsWhetherArgoCDsSettingsSayUserLoginsAreOffAndNoOtherTextOfTheAnswer(t *testing.T) {
-	settingsRoute := strconv.Itoa(slices.Index(argoCDRoutes, settingsPath))
-	cases := map[string]struct {
-		settings settingsAnswer
-		want     any
-	}{
-		"the settings say user logins are off":         {loginsOff, true},
-		"the settings say a user can log in":           {settingsAnswer{http.StatusOK, `{"url":"https://argocd.example","userLoginsDisabled":false}`}, false},
-		"the settings name no userLoginsDisabled":      {settingsAnswer{http.StatusOK, `{"url":"https://argocd.example","oidcConfig":null}`}, nil},
-		"the settings give userLoginsDisabled as text": {settingsAnswer{http.StatusOK, `{"url":"https://argocd.example","userLoginsDisabled":"true"}`}, nil},
-		"the settings answer no JSON":                  {settingsAnswer{http.StatusOK, "https://argocd.example has user logins off"}, nil},
-		"the settings route answers another status":    {settingsAnswer{http.StatusBadGateway, `{"url":"https://argocd.example","userLoginsDisabled":true}`}, nil},
-	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			want := map[string]any{"path": settingsPath, "status": float64(tc.settings.status),
-				"bytes": float64(len(tc.settings.body)), "userLoginsDisabled": tc.want}
-
-			_, posted, out, err := runReport(t, nil, "ARGOCD_URL="+argoCD(t, signedOut, tc.settings))
-
-			require.NoError(t, err, out)
-			assert.Equal(t, want, testutil.Field(t, posted.body, "argocd", "routes", settingsRoute))
-			assert.NotContains(t, string(posted.raw), "argocd.example", "the report keeps one boolean of the settings answer and none of its text")
+			assert.Equal(t, want, testutil.Field(t, posted.body, "argocd", "routes"))
+			assert.NotContains(t, string(posted.raw), "argocd.example", "the report keeps one boolean of each answer and none of its text")
 		})
 	}
 }

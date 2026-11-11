@@ -678,7 +678,7 @@ the API server is asked to create. Seven of its policies apply to every
 namespace outside the system namespaces, which are `kube-system`,
 `kube-public`, `kube-node-lease`, `argocd`, `kyverno`, `cnpg-system`,
 `mitstack-node` and `istio-system`. The three policies that judge a pod's
-volumes, limits and image skip six more namespaces, which
+volumes, limits and image skip five more namespaces, which
 [the table of skipped namespaces](#which-namespaces-the-pod-policies-skip)
 explains.
 
@@ -690,7 +690,7 @@ explains.
 | `mitstack-require-strict-mtls` | Refuses a PeerAuthentication, Istio's policy for which calls a pod takes, that lets a pod or one of its ports take a call with no workload identity. It admits by name only the four exceptions of the hosting set, the extra components a cluster that hosts the platform runs. The CloudNativePG operator's exception sits in `cnpg-system`, which the policy skips | `components/admission/policies/mitstack-require-strict-mtls.yaml` |
 | `mitstack-disallow-host-path` | Refuses a pod, or a Deployment or other controller whose template makes a pod, that mounts a host path, since a host path reaches the node's file system | `components/admission/policies/mitstack-disallow-host-path.yaml` |
 | `mitstack-require-resource-limits` | Refuses a pod, or a controller whose template makes one, with a container or init container that sets no CPU limit or no memory limit. A LimitRange fills limits only into the pod, after the controller has been admitted, so the template must carry them | `components/admission/policies/mitstack-require-resource-limits.yaml` |
-| `mitstack-restrict-image-registries` | Refuses a pod, or a controller whose template makes one, with a container, init container or ephemeral container whose image is outside `ghcr.io/mitstack-eu/` and mitstack's registry in Amazon ECR, `839001574838.dkr.ecr.eu-central-1.amazonaws.com/`. It admits by exact reference only the images talos-cluster-kit pins for pods an operator starts in an app namespace: cert-manager's ACME solver and the CloudNativePG operator, PgBouncer and Postgres 16 images | `components/admission/policies/mitstack-restrict-image-registries.yaml` |
+| `mitstack-restrict-image-registries` | Refuses a pod, or a controller whose template makes one, with a container, init container or ephemeral container whose image is outside `ghcr.io/mitstack-eu/` and mitstack's registry in Amazon ECR, `839001574838.dkr.ecr.eu-central-1.amazonaws.com/`. It admits by exact reference only the five images talos-cluster-kit pins for pods an operator or a block starts in an app namespace: cert-manager's ACME solver, the CloudNativePG operator, PgBouncer and Postgres 16 images, and the busybox image `docker.io/library/busybox:1.37.0@sha256:bdf57e52...` that the local path provisioner and the mesh probe run and the kube-app-deploy block runs in its `secrets-import` Job. Another busybox tag or digest is refused | `components/admission/policies/mitstack-restrict-image-registries.yaml` |
 
 Kyverno's webhooks skip the same system namespaces, so a Kyverno outage
 cannot stop a system pod, such as the node report in `mitstack-node`.
@@ -699,7 +699,7 @@ cannot stop a system pod, such as the node report in `mitstack-node`.
 
 `mitstack-disallow-host-path`, `mitstack-require-resource-limits` and
 `mitstack-restrict-image-registries` skip every namespace the other policies
-skip. They also skip the last six namespaces of the table below, because the
+skip. They also skip the last five namespaces of the table below, because the
 components the kit installs there run from upstream registries, set no limits
 or mount a host path. `traefik`, `cert-manager`, `openbao` and
 `external-secrets` exist only on a cluster that hosts the platform. No
@@ -723,7 +723,6 @@ explains. The policies judge each of them.
 | `openbao` | OpenBao's three members | Its image comes from `quay.io/openbao` and its values set no limits |
 | `external-secrets` | External Secrets | Its images come from `ghcr.io/external-secrets` and its values set no limits |
 | `local-path-storage` | The local path provisioner and its helper pods | The image comes from Docker Hub and a helper pod mounts the directory of a claim's volume on the node as a host path |
-| `mitstack-mesh-probe` | The mesh probe's target | It runs busybox from Docker Hub |
 
 The CloudNativePG operator in `cnpg-system` runs the Postgres clusters an app
 keeps its data in. A namespace labelled `mitstack.dev/database-slice=true` is
@@ -831,9 +830,9 @@ mutual TLS, and `kube-system`, `istio-system` and `kyverno` stay outside it.
 The report calls a target, a busybox `httpd` in namespace
 `mitstack-mesh-probe`. That is an ordinary app namespace, inside the mesh and
 under Kyverno's label, mesh and strict mutual TLS policies and
-`mitstack-default-deny`. The three pod policies skip it, as
-[the table of skipped namespaces](#which-namespaces-the-pod-policies-skip)
-says. The target answers
+`mitstack-default-deny`. The three pod policies judge it like any app, and
+admit its busybox image because the registry policy names that exact reference.
+The target answers
 `mitstack-mesh-probe answered` on port 8080. It runs the busybox image the
 local path provisioner already runs, by the same digest, so it adds no image to
 the gateway's mirror, the registry every node pulls from. Each node fetches the

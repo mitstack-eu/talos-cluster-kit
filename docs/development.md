@@ -136,7 +136,17 @@ which Pod Security refuses. The
 `kube-app-deploy` case feeds the three pod policies a Deployment shaped like
 the ones the kube-app-deploy block deploys for an app, and the `cloudnative-pg`
 and `acme-http01-solver` cases feed them the pods that CloudNativePG and
-cert-manager start in an app namespace.
+cert-manager start in an app namespace. The `secrets-import` case feeds the
+registry policy a Job shaped like the one kube-app-deploy runs, once with the
+busybox image the kit pins, which it admits, and four times with a variant of
+it, which it refuses: another tag, another digest, the tag with no digest and
+another Docker Hub image.
+
+The policy holds each of its five exact images as a literal, since Kyverno reads
+YAML. `TestManifests_RestrictImageRegistriesNamesExactlyTheImagesTheKitPinsForPodsInAnAppNamespace`
+reads the same five from the manifests that pin them, the busybox image from the
+local path provisioner and the mesh probe, and fails when the policy differs
+from them or when those two pin different busybox references.
 
 The Talos images, such as the kubelet and the API server, are not in any
 manifest. `pinnedTalosImages` in `components/image.go` lists them with the

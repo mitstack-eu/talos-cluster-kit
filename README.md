@@ -1416,7 +1416,7 @@ by up to 224 bytes with the same settings. Inside one run, where every install
 shares one set of minted keys, it moves by 40 at most. The two sum to 768
 bytes, and the reserve is a third more.
 
-With that proof script the builder takes about 30,700 bytes, or about 30,900
+With that proof script the builder takes about 30,800 bytes, or about 30,900
 on a cluster that hosts the platform. With a one-line proof script, as the
 tests in `controlplane/render_test.go` and `controlplane/hosting_test.go` log
 it, the builder takes about 28,100 and 28,200 bytes.

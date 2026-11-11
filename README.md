@@ -1707,10 +1707,10 @@ renders Traefik with the address the state gives, so a load balancer that was
 replaced changes Traefik's file, and the block's next commit carries the new
 address. While the state holds no ingress load balancer with a public
 address, `Plane.Release` returns an error that wraps `ErrNoIngressAddress` and
-names the location, for example:
+names the location and the value the state holds, for example:
 
 ```text
-the release's Traefik has no ingress address to publish: no ingress load balancer in fsn1 holds a public address
+the release's Traefik has no ingress address to publish: the state holds "" as the public address of the ingress load balancer in fsn1
 ```
 
 A block that gets this error commits nothing and takes the plane's next step,

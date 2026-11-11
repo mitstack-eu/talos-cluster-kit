@@ -47,7 +47,7 @@ func publishingIngress(set components.Set, st State) (components.Set, error) {
 	for _, loc := range slices.Sorted(maps.Keys(byLocation)) {
 		address, err := netip.ParseAddr(byLocation[loc])
 		if err != nil {
-			return components.Set{}, fmt.Errorf("%w: no ingress load balancer in %s holds a public address", ErrNoIngressAddress, loc)
+			return components.Set{}, fmt.Errorf("%w: the state holds %q as the public address of the ingress load balancer in %s", ErrNoIngressAddress, byLocation[loc], loc)
 		}
 		addresses = append(addresses, address)
 	}

@@ -26,7 +26,6 @@ const (
 var (
 	BuildImageScript         = buildImageScript
 	BootstrapFirstNodeScript = bootstrapFirstNodeScript
-	ClusterTokensScript      = clusterTokensScript
 	ServingFile              = servingFile
 	GatewayAddrs             = gatewayAddrs
 )

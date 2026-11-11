@@ -322,13 +322,13 @@ func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipA
 	assert.Equal(t, "sub_0123456789ab", posted.body["subscriptionId"])
 	assert.Equal(t, []any{
 		map[string]any{"name": "poc-talos4-cp1", "ready": true, "talosVersion": "v1.14.4", "kubeletVersion": "v1.37.1", "internalIP": "10.0.0.5",
-			"addresses": []any{address("InternalIP", "10.0.0.5"), address("Hostname", "poc-talos4-cp1")}, "allocatable": map[string]any{"cpu": "3950m", "memory": "7712Mi", "pods": "110"}, "zone": "fsn1", "region": "eu-central",
+			"addresses": []any{map[string]any{"type": "InternalIP", "address": "10.0.0.5"}, map[string]any{"type": "Hostname", "address": "poc-talos4-cp1"}}, "allocatable": map[string]any{"cpu": "3950m", "memory": "7712Mi", "pods": "110"}, "zone": "fsn1", "region": "eu-central",
 			"zoneLabelManagers": []any{map[string]any{"manager": "mitstack-node-topology", "operation": "Update", "time": "2026-11-04T08:05:00Z"}}},
 		map[string]any{"name": "poc-talos4-cp2", "ready": true, "talosVersion": "v1.14.4", "kubeletVersion": "v1.37.1", "internalIP": "10.0.0.6",
-			"addresses": []any{address("InternalIP", "10.0.0.6")}, "allocatable": map[string]any{"cpu": "4", "memory": "15622080Ki", "pods": "110"}, "zone": "nbg1", "region": nil,
+			"addresses": []any{map[string]any{"type": "InternalIP", "address": "10.0.0.6"}}, "allocatable": map[string]any{"cpu": "4", "memory": "15622080Ki", "pods": "110"}, "zone": "nbg1", "region": nil,
 			"zoneLabelManagers": []any{map[string]any{"manager": "kubectl-label", "operation": "Update", "time": "2026-11-04T08:07:00Z"}}},
 		map[string]any{"name": "poc-talos4-cp3", "ready": false, "talosVersion": "v1.14.3", "kubeletVersion": "v1.37.1", "internalIP": "10.0.0.7",
-			"addresses": []any{address("InternalIP", "10.0.0.7")}, "allocatable": map[string]any{"cpu": "1950m", "memory": "3615Mi", "pods": "110"}, "zone": nil, "region": nil,
+			"addresses": []any{map[string]any{"type": "InternalIP", "address": "10.0.0.7"}}, "allocatable": map[string]any{"cpu": "1950m", "memory": "3615Mi", "pods": "110"}, "zone": nil, "region": nil,
 			"zoneLabelManagers": []any{}},
 	}, posted.body["nodes"], "each node's addresses with their types, its zone and region labels, and every manager of its zone label")
 	assert.Equal(t, []any{}, posted.body["ingresses"], "a cluster with no Ingress reports an empty list")
@@ -358,10 +358,6 @@ func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipA
 	})
 	assert.Equal(t, append(wantCalls, "kubectl "+proofRequest(posted)), calls, "the proof is minted once the body is final")
 	assert.Equal(t, reportProof, posted.proof, "the post carries the proof the block's script printed for its exact body")
-}
-
-func address(kind, value string) map[string]any {
-	return map[string]any{"type": kind, "address": value}
 }
 
 // etcdMember is the etcd member with each member's health in members.txt order, the leader cp1, and no failed read.
@@ -671,9 +667,8 @@ func TestReport_PostsEachMemberItReadsFromAHealthyCluster(t *testing.T) {
 
 func TestReport_CutsAnIngressClassTakenFromItsAnnotationTo256Characters(t *testing.T) {
 	long := strings.Repeat("c", 300)
-	ingress := `{"items": [{"metadata": {"name": "shop", "namespace": "app-shop", "annotations": {"kubernetes.io/ingress.class": "` + long + `"}}}]}`
 
-	_, posted, out, err := runReport(t, kubectlWith(ingressesRead, "echo '"+ingress+"'"))
+	_, posted, out, err := runReport(t, kubectlWith(ingressesRead, `echo '{"items": [{"metadata": {"annotations": {"kubernetes.io/ingress.class": "`+long+`"}}}]}'`))
 
 	require.NoError(t, err, out)
 	assert.Equal(t, long[:256], testutil.Field(t, posted.body, "ingresses", "0", "class"))

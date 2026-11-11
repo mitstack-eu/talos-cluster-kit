@@ -927,7 +927,7 @@ change `report/scripts/report.sh`.
 | `repositorySecrets` | Each repository credential the cluster declares, with its `name`, `secretType`, `project` and `url`. These come from the template of each SealedSecret in `argocd` that carries an `argocd.argoproj.io/secret-type` label, so the report reads no Secret and carries no ciphertext. A credential written straight into a Secret, as the cluster tokens write `cluster-repository` on a cluster that reads its repository with a platform token, is not listed | `kubectl get sealedsecrets.bitnami.com -n argocd` |
 | `appProjects` | Each AppProject with its `sourceRepos`, which the platform holds each app's credential to | `kubectl get appprojects.argoproj.io -n argocd` |
 | `admission` | Each fixture in the `admission-fixtures` ConfigMap of `mitstack-admission-probe` whose key names a rule, with the `rule`, the `fixture` up to 4 KiB, the dry run's `exitStatus` and the API server's `message` up to 2 KiB | `kubectl create --dry-run=server` in the probe namespace, [described below](#how-the-report-tries-each-admission-rule) |
-| `securityScans` | The scan CronJob's last start and success as `runner`, the scan's outcome as `lastRun`, and the summaries it kept as `kubeBench` and `kubescape`. A summary that is not one JSON object within 16 KiB reads `unreadable` | The `mitstack-security-scans` ConfigMap and the `mitstack-security-scan` CronJob in `kube-system`, [described below](#how-the-security-scan-runs) |
+| `securityScans` | The scan CronJob's last start and success as `runner`, with that CronJob's newest Job as `runner.job` (its counts and conditions) and the newest 20 events of that Job and its pods as `runner.events`, so a scan that never succeeds names its cause, the scan's outcome as `lastRun`, and the summaries it kept as `kubeBench` and `kubescape`. A summary that is not one JSON object within 16 KiB reads `unreadable` | The `mitstack-security-scans` ConfigMap and the `mitstack-security-scan` CronJob in `kube-system`, [described below](#how-the-security-scan-runs) |
 | `checks` | Contract `node-report/v1` and the nine checks the report declares | Fixed text in `report.sh` |
 
 The nine checks are `routes`, `exposure`, `credentials`, `version`,
@@ -1055,6 +1055,16 @@ read. Each failed list is cut to fit 16 KiB while the totals stay whole, so the
 platform sees when a list was cut. A tool that fails is kept as its summary's
 `error`, and the Job runs again. `tools/scan.env` pins kube-bench, kubescape
 and the NSA framework by SHA-256.
+
+A scan that never succeeds leaves no summary, so the report says why itself.
+`runner.job` is the CronJob's newest Job with its active, succeeded and failed
+counts and its conditions, and `runner.events` holds the newest 20 events of
+that Job and of the pods it created, newest first. A Job that cannot create
+its pod, because admission refuses it, shows the refusal in an event and
+nowhere else. The report's Role in `kube-system` lets it list that
+namespace's events and no other namespace's, and it keeps only those of the
+Job. When the Job or event read fails, that member holds `{exitStatus, stderr}`
+and `runner.output` still says when the CronJob last started a scan.
 
 ### What happens when a read fails
 

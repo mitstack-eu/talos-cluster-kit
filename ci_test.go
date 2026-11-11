@@ -2,13 +2,86 @@ package talosclusterkit
 
 import (
 	"os"
+	"path/filepath"
 	"regexp"
+	"slices"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v4"
 )
+
+const (
+	pollingCheckRun  = `go tool checkpolls -base "$BASE_SHA"`
+	pollingCheckTool = "github.com/mitstack-eu/block-kit/cmd/checkpolls"
+	pullRequestBase  = "${{ github.event.pull_request.base.sha }}"
+)
+
+var firstKitWithPollingCheck = []int{0, 49, 1}
+
+type ciStep struct {
+	Uses             string            `yaml:"uses"`
+	With             map[string]any    `yaml:"with"`
+	If               string            `yaml:"if"`
+	Run              string            `yaml:"run"`
+	Env              map[string]string `yaml:"env"`
+	WorkingDirectory string            `yaml:"working-directory"`
+	ContinueOnError  any               `yaml:"continue-on-error"`
+}
+
+func TestCI_TestJobFailsAPullRequestThatAddsAFixedSleepOrAPollingIntervalAgainstItsBaseCommit(t *testing.T) {
+	raw, err := os.ReadFile(".github/workflows/ci.yml")
+	require.NoError(t, err)
+	var ci struct {
+		Jobs map[string]struct {
+			Steps []ciStep `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	require.NoError(t, yaml.Unmarshal(raw, &ci))
+	steps := ci.Jobs["test"].Steps
+	require.NotEmpty(t, steps, "the CI workflow has a test job")
+
+	at := slices.IndexFunc(steps, func(s ciStep) bool { return s.Run == pollingCheckRun })
+
+	require.GreaterOrEqual(t, at, 0, "the test job runs `%s`, so a pull request adding a fixed sleep or a polling interval fails", pollingCheckRun)
+	check := steps[at]
+	assert.Equal(t, "github.event_name == 'pull_request'", check.If, "the polling check runs on a pull request alone")
+	assert.Equal(t, pullRequestBase, check.Env["BASE_SHA"], "the polling check compares the tree with the pull request's base commit")
+	assert.Equal(t, "ci", check.WorkingDirectory, "the polling check runs from the ci module, whose go.mod names its block-kit")
+	assert.Nil(t, check.ContinueOnError, "a failed polling check fails the job")
+	assert.EqualValues(t, 0, steps[0].With["fetch-depth"], "the test job checks out the full history, so the base commit is present")
+}
+
+// The ci module's go.mod alone names the check's block-kit release, so no workflow names it and a block requiring this kit inherits none of it.
+func TestCI_ThePollingCheckRunsAtTheReleaseTheCIModuleRequires(t *testing.T) {
+	ciMod, err := os.ReadFile("ci/go.mod")
+	require.NoError(t, err, "the ci module holds the polling check")
+	rootMod, err := os.ReadFile("go.mod")
+	require.NoError(t, err)
+	workflows, err := filepath.Glob(".github/workflows/*.y*ml")
+	require.NoError(t, err)
+	require.NotEmpty(t, workflows)
+
+	toolLine := regexp.MustCompile(`(?m)^\s*(?:tool\s+)?` + regexp.QuoteMeta(pollingCheckTool) + `\s*$`)
+	required := regexp.MustCompile(`(?m)^\s*(?:require\s+)?github\.com/mitstack-eu/block-kit v(\d+)\.(\d+)\.(\d+)\b`).FindSubmatch(ciMod)
+
+	assert.Regexp(t, toolLine, string(ciMod), "ci/go.mod declares checkpolls as a tool")
+	require.NotNil(t, required, "ci/go.mod requires github.com/mitstack-eu/block-kit")
+	version := make([]int, 3)
+	for i := range version {
+		version[i], _ = strconv.Atoi(string(required[i+1]))
+	}
+	assert.GreaterOrEqual(t, slices.Compare(version, firstKitWithPollingCheck), 0,
+		"ci/go.mod requires block-kit v%d.%d.%d, want v0.49.1 or later, the first release that holds checkpolls", version[0], version[1], version[2])
+	assert.NotRegexp(t, toolLine, string(rootMod), "the kit's own go.mod carries no checkpolls tool, so a block requiring the kit inherits no block-kit from it")
+	for _, path := range workflows {
+		body, err := os.ReadFile(path)
+		require.NoError(t, err)
+		assert.NotContains(t, string(body), pollingCheckTool+"@", "%s names no version of checkpolls, which ci/go.mod alone holds", path)
+	}
+}
 
 // The record delivery job runs only on a push to main, so a pin that moved or stopped naming a release fails here first.
 func TestCI_RunsEachBoardCommandFromPlainDeliveryAtAReleaseTag(t *testing.T) {

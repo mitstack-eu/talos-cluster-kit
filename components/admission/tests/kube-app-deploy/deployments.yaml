@@ -1,0 +1,189 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: control-plane-slice
+  namespace: app-mitstack-home
+  labels:
+    mitstack.dev/app: mitstack-home
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      mitstack.dev/app: mitstack-home
+      mitstack.dev/process: control-plane-slice
+  template:
+    metadata:
+      labels:
+        mitstack.dev/app: mitstack-home
+        mitstack.dev/process: control-plane-slice
+    spec:
+      automountServiceAccountToken: false
+      serviceAccountName: app
+      containers:
+      - name: control-plane-slice
+        image: 839001574838.dkr.ecr.eu-central-1.amazonaws.com/mitstack-plain@sha256:1602f9e6f55dc68469e142ae6069499a597e74d0ed5425adea9ab9400e9061ff
+        ports:
+        - containerPort: 8104
+          name: http
+        resources:
+          limits:
+            cpu: 200m
+            memory: 128Mi
+          requests:
+            cpu: 50m
+            memory: 64Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: [ALL]
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - name: data
+          mountPath: /data
+      volumes:
+      - name: data
+        emptyDir: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: builder-app-from-docker-hub
+  namespace: app-mitstack-home
+  labels:
+    mitstack.dev/app: mitstack-home
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      mitstack.dev/app: mitstack-home
+      mitstack.dev/process: builder-app-from-docker-hub
+  template:
+    metadata:
+      labels:
+        mitstack.dev/app: mitstack-home
+        mitstack.dev/process: builder-app-from-docker-hub
+    spec:
+      automountServiceAccountToken: false
+      serviceAccountName: app
+      containers:
+      - name: builder-app-from-docker-hub
+        image: docker.io/library/nginx:1.29
+        ports:
+        - containerPort: 8104
+          name: http
+        resources:
+          limits:
+            cpu: 200m
+            memory: 128Mi
+          requests:
+            cpu: 50m
+            memory: 64Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: [ALL]
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - name: data
+          mountPath: /data
+      volumes:
+      - name: data
+        emptyDir: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: builder-app-without-limits
+  namespace: app-mitstack-home
+  labels:
+    mitstack.dev/app: mitstack-home
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      mitstack.dev/app: mitstack-home
+      mitstack.dev/process: builder-app-without-limits
+  template:
+    metadata:
+      labels:
+        mitstack.dev/app: mitstack-home
+        mitstack.dev/process: builder-app-without-limits
+    spec:
+      automountServiceAccountToken: false
+      serviceAccountName: app
+      containers:
+      - name: builder-app-without-limits
+        image: 839001574838.dkr.ecr.eu-central-1.amazonaws.com/mitstack-plain@sha256:1602f9e6f55dc68469e142ae6069499a597e74d0ed5425adea9ab9400e9061ff
+        ports:
+        - containerPort: 8104
+          name: http
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: [ALL]
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - name: data
+          mountPath: /data
+      volumes:
+      - name: data
+        emptyDir: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: builder-app-with-host-path
+  namespace: app-mitstack-home
+  labels:
+    mitstack.dev/app: mitstack-home
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      mitstack.dev/app: mitstack-home
+      mitstack.dev/process: builder-app-with-host-path
+  template:
+    metadata:
+      labels:
+        mitstack.dev/app: mitstack-home
+        mitstack.dev/process: builder-app-with-host-path
+    spec:
+      automountServiceAccountToken: false
+      serviceAccountName: app
+      containers:
+      - name: builder-app-with-host-path
+        image: 839001574838.dkr.ecr.eu-central-1.amazonaws.com/mitstack-plain@sha256:1602f9e6f55dc68469e142ae6069499a597e74d0ed5425adea9ab9400e9061ff
+        ports:
+        - containerPort: 8104
+          name: http
+        resources:
+          limits:
+            cpu: 200m
+            memory: 128Mi
+          requests:
+            cpu: 50m
+            memory: 64Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: [ALL]
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - name: data
+          mountPath: /data
+      volumes:
+      - name: data
+        hostPath:
+          path: /var/lib/data

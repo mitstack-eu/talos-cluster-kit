@@ -23,6 +23,9 @@ inline mitstack-mesh-cloudnative-pg components/mesh/cloudnative-pg.yaml 99a1e06e
 inline mitstack-mesh-argocd components/mesh/argocd.yaml 94a4cd7a96de7d2dcb6dc46428fc2b6fd6a8fa1d787aed985e12e2af3f6cd939
 inline mitstack-require-mesh components/admission/policies/mitstack-require-mesh.yaml 16664dd61ba89aedaf6b64c82f14d2391f072c7dc1ca0ee24bb1444ff336673a
 inline mitstack-require-strict-mtls components/admission/policies/mitstack-require-strict-mtls.yaml 60c1bd282b2199ffd009549fce3155d575afb9f612bc667a8ab7b6a5b625d07b
+inline mitstack-disallow-host-path components/admission/policies/mitstack-disallow-host-path.yaml 33b6d681f375bfb3e8674a67829ffd43cb91c4317cb9d2b1aeb420f7406ce3cf
+inline mitstack-require-resource-limits components/admission/policies/mitstack-require-resource-limits.yaml 856ef7f7d7a039142314fadd231e0df1dd8e85fa8fd2e07a491a309d94a18291
+inline mitstack-restrict-image-registries components/admission/policies/mitstack-restrict-image-registries.yaml b9d4b140f93d594c0de326b245b026262f07c3903841d9c1ffab674a47ebcc41
 inline mitstack-node-report report/report.yaml unrecorded
 inline mitstack-node-topology topology/topology.yaml 0eeaa559b56712cd5476a6bf7458cfa29d0229b39b32b2b35b1a3afa73a5f9bf
 inline mitstack-cluster-tokens manifests/cluster-tokens.yaml a6e3b09def1db5bcf657dd8c2172c055f2d970f0651acfed55b76ac970e35e58
@@ -109,21 +112,24 @@ document KubeExternalManifestConfig 02-istio-base
 document KubeExternalManifestConfig 03-istiod
 document KubeExternalManifestConfig 04-istio-cni
 document KubeExternalManifestConfig 05-ztunnel
-document KubeExternalManifestConfig 26-mitstack-mesh-probe
-document KubeInlineManifestConfig 27-mitstack-metadata-block
-document KubeInlineManifestConfig 32-mitstack-require-app-label
-document KubeInlineManifestConfig 20-mitstack-generate-default-deny
+document KubeExternalManifestConfig 27-mitstack-mesh-probe
+document KubeInlineManifestConfig 28-mitstack-metadata-block
+document KubeInlineManifestConfig 33-mitstack-require-app-label
+document KubeInlineManifestConfig 21-mitstack-generate-default-deny
 document KubeInlineManifestConfig 12-cloudnative-pg-namespace
 document KubeInlineManifestConfig 19-mitstack-database-slices
 document KubeInlineManifestConfig 15-local-path-provisioner-namespace
-document KubeInlineManifestConfig 23-mitstack-local-path-flows
-document KubeInlineManifestConfig 36-mitstack-strict-mtls
+document KubeInlineManifestConfig 24-mitstack-local-path-flows
+document KubeInlineManifestConfig 39-mitstack-strict-mtls
 document KubeInlineManifestConfig 16-mitstack-ambient-probes
-document KubeInlineManifestConfig 25-mitstack-mesh-cloudnative-pg
-document KubeInlineManifestConfig 24-mitstack-mesh-argocd
-document KubeInlineManifestConfig 33-mitstack-require-mesh
-document KubeInlineManifestConfig 34-mitstack-require-strict-mtls
+document KubeInlineManifestConfig 26-mitstack-mesh-cloudnative-pg
+document KubeInlineManifestConfig 25-mitstack-mesh-argocd
+document KubeInlineManifestConfig 34-mitstack-require-mesh
+document KubeInlineManifestConfig 36-mitstack-require-strict-mtls
+document KubeInlineManifestConfig 20-mitstack-disallow-host-path
+document KubeInlineManifestConfig 35-mitstack-require-resource-limits
+document KubeInlineManifestConfig 37-mitstack-restrict-image-registries
 document KubeInlineManifestConfig 06-mitstack-node-report
-document KubeInlineManifestConfig 43-mitstack-node-topology
+document KubeInlineManifestConfig 46-mitstack-node-topology
 document KubeInlineManifestConfig 07-mitstack-cluster-tokens
 document KubeInlineManifestConfig 17-mitstack-cluster-application

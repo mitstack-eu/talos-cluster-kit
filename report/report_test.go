@@ -585,10 +585,10 @@ func TestReport_PostsEachMemberItReadsFromAHealthyCluster(t *testing.T) {
 				"applied": true, "message": nil},
 			map[string]any{"namespace": "app-pg", "kind": "DatabaseRole", "name": "shop", "subscription": nil,
 				"applied": false, "message": `role "shop" cannot be created: the cluster is not ready`}}},
-		"each claim with its storage class and phase, and the default storage classes": {"storage", "", map[string]any{
+		"each claim with its storage class, phase, requested size and bound capacity, and the default storage classes": {"storage", "", map[string]any{
 			"claims": []any{
-				map[string]any{"namespace": "app-shop", "name": "data-shop-db-1", "storageClass": "local-path", "phase": "Bound"},
-				map[string]any{"namespace": "app-shop", "name": "scratch", "storageClass": nil, "phase": "Pending"},
+				map[string]any{"namespace": "app-shop", "name": "data-shop-db-1", "storageClass": "local-path", "phase": "Bound", "requestedSize": "10Gi", "capacity": "10Gi"},
+				map[string]any{"namespace": "app-shop", "name": "scratch", "storageClass": nil, "phase": "Pending", "requestedSize": "1Gi", "capacity": nil},
 			},
 			"defaultStorageClasses": []any{"local-path"},
 		}},

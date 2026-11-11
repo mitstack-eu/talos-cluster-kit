@@ -242,8 +242,8 @@ func (st State) EnrolmentDigest() (digest, gap string) {
 	return gw.Labels[KeyEnrolmentSHA256], ""
 }
 
-// IngressAddresses is the public address of the ingress load balancer in each location that has one, empty while it
-// holds none. The plane outputs it as publicIpByLocation, and the release's Traefik publishes it on every Ingress.
+// IngressAddresses is the one source of the ingress load balancer's public address, under its location and empty while the
+// state holds none, for the plane's publicIpByLocation output and for the address the release's Traefik publishes.
 func (st State) IngressAddresses() map[string]string {
 	ingress, _ := st.LoadBalancerIn(RoleIngress, GatewayLocation)
 	return map[string]string{GatewayLocation: ingress.PublicIPv4}

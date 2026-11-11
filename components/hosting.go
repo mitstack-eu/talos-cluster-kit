@@ -156,12 +156,11 @@ const (
 	// publishedServiceArg is the chart's argument, under which Traefik writes each node's ExternalIP into the status of an
 	// Ingress, and a node of the kit holds none.
 	publishedServiceArg = "--providers.kubernetesingress.ingressendpoint.publishedservice=traefik/traefik"
-	// publishedAddressArg is Traefik's argument for the one address it writes there instead.
 	publishedAddressArg = "--providers.kubernetesingress.ingressendpoint.ip="
 )
 
-// PublishingIngress is the set whose Traefik writes the cluster's ingress address into the status of every Ingress it
-// serves, since Argo CD reads an Ingress with no address as still starting. A set without Traefik comes back as it is.
+// PublishingIngress is the set whose Traefik, where it holds one, writes the cluster's ingress address into the status
+// of every Ingress it serves, since Argo CD reads an Ingress with no address as still starting.
 func (s Set) PublishingIngress(addresses []netip.Addr) (Set, error) {
 	i := s.traefik()
 	if i < 0 {

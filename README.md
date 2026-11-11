@@ -432,8 +432,8 @@ the block as `publicIpByLocation`, and `Plane.Release` gives it to Traefik, as
 [the section on how a running cluster takes a release](#how-a-running-cluster-takes-a-releases-components)
 describes. The gateways serve Traefik's manifest without an address, since one
 tools image is built for every cluster. A new cluster's Traefik therefore
-takes the address from the first commit the block makes to the cluster
-repository, before the cluster reads present.
+takes the address from the first commit a block makes to the cluster
+repository.
 
 An app's Ingress asks for its certificate from the ClusterIssuer
 `letsencrypt-production`, which the hosting set carries in

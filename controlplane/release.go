@@ -12,7 +12,7 @@ import (
 )
 
 // ErrNoIngressAddress is why a release cannot be rendered yet: Traefik publishes the ingress load balancer's public
-// address, and the state holds none, so a block commits nothing and builds the load balancer first.
+// address, and the state holds none a block could commit.
 var ErrNoIngressAddress = errors.New("the release's Traefik has no ingress address to publish")
 
 // Release is every manifest the build applies but those only an install's keys render and the cluster's own
@@ -36,8 +36,7 @@ func (p Plane) Release(st State) (rollout.Release, error) {
 	return rollout.Release{Components: slices.Concat(set.Served, set.Inline, own)}, nil
 }
 
-// publishingIngress has the set's Traefik publish every address the plane outputs as publicIpByLocation. The gateways
-// serve the set without an address, since a tools image is built once for every cluster.
+// The gateways serve the set without an address, since one tools image is built for every cluster.
 func publishingIngress(set components.Set, st State) (components.Set, error) {
 	if !set.RunsTraefik() {
 		return set, nil

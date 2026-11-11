@@ -146,7 +146,8 @@ read_etcd_status() {
   read_beside etcd-status talosctl -n "$nodes" etcd status
 }
 
-# read_argocd lists every Ingress, Argo CD's among them, and asks each of its routes once, all at the same time.
+# read_argocd makes the one Ingress read that argocd.ingresses and ingresses share, and asks each of Argo CD's routes
+# once, all at the same time.
 read_argocd() {
   local i
   read_beside ingresses kubectl get ingresses.networking.k8s.io -A -o json &

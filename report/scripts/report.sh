@@ -3,7 +3,7 @@
 # node's STATE and EPHEMERAL encryption, Argo CD's health of each Application and each object it applied, what each
 # Argo CD route answers a caller without a session, Argo CD's Services, Ingresses and pod images, CloudNativePG's
 # objects with each cluster's primary, every pod's node, phase and container states, each image reference the pods and
-# the workloads' pod templates name, each OpenBao member's seal state and the active one, each claim and the default
+# the workloads' pod templates name, each OpenBao member's seal state and the active one, each claim with its size and the default
 # storage classes, every Service's type, each default-deny NetworkPolicy, the objects labelled
 # mitstack.dev/subscription, the API server's key set, the mesh probe's results, the outside probe's reading of each
 # gateway's mirror, whether a TLS connection to Let's Encrypt's ACME API opens through the network's default route, each
@@ -358,7 +358,8 @@ body() {
     def storage: {
       claims: [.items[] | select(.kind == "PersistentVolumeClaim") | {
         namespace: .metadata.namespace, name: .metadata.name,
-        storageClass: (.spec.storageClassName // null), phase: (.status.phase // null)
+        storageClass: (.spec.storageClassName // null), phase: (.status.phase // null),
+        requestedSize: (.spec.resources.requests.storage // null), capacity: (.status.capacity.storage // null)
       }],
       defaultStorageClasses: [.items[] | select(.kind == "StorageClass")
         | select(.metadata.annotations["storageclass.kubernetes.io/is-default-class"] == "true") | .metadata.name]

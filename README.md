@@ -1117,7 +1117,9 @@ whose local login is off:
 ```
 
 The member reads `null` when the route answers another status than 200, when
-its answer is not JSON, or when the answer holds no boolean under that name.
+its answer is empty or not JSON, or when the answer holds no boolean under
+that name. A route Argo CD does not answer at all carries an `error` and no
+`userLoginsDisabled`.
 Argo CD v3.5.5 leaves the field out of an answer where it would read `false`.
 A cluster whose local login is on therefore reads `null`, and a reader takes
 only `true` as proof that no password signs in.

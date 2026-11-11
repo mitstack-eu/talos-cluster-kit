@@ -173,7 +173,6 @@ argocd_route() {
   [ -f "$out.body" ] || : > "$out.body"
   jq -c -n --arg path "$path" --argjson status "$((10#${status:-0}))" --argjson ended "$ended" \
     --argjson bytes "$(wc -c < "$out.body")" --rawfile body "$out.body" '
-    # A 200 answer that is a JSON object holding a boolean under $name gives that boolean, and any other answer null.
     def kept_boolean($name):
       if $status != 200 then null
       else try ($body | fromjson | .[$name] | if type == "boolean" then . else null end) catch null end;

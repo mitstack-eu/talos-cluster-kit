@@ -8,6 +8,7 @@ policies:
 - ../../policies/mitstack-restrict-image-registries.yaml
 resources:
 - deployments.yaml
+- secrets-import-jobs.yaml
 results:
 - isValidatingPolicy: true
   policy: mitstack-disallow-host-path
@@ -50,4 +51,19 @@ results:
   kind: Deployment
   resources:
   - builder-app-from-docker-hub
+  result: fail
+- isValidatingPolicy: true
+  policy: mitstack-restrict-image-registries
+  kind: Job
+  resources:
+  - secrets-import-admitted
+  result: pass
+- isValidatingPolicy: true
+  policy: mitstack-restrict-image-registries
+  kind: Job
+  resources:
+  - secrets-import-other-tag
+  - secrets-import-other-digest
+  - secrets-import-tag-only
+  - secrets-import-other-docker-hub-image
   result: fail

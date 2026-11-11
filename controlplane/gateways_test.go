@@ -292,8 +292,8 @@ func (h *harness) upgrade(check func()) {
 	h.drive("the upgrade", func() bool { return len(h.plane.Problems(context.Background(), h.read())) == 0 }, check)
 }
 
-// requireOneLocationWithoutItsGatewayAtMost fails once two locations lack a running gateway at their address, the
-// network's one route goes to a location that lacks one, or the nodes are other than nodes.
+// requireOneLocationWithoutItsGatewayAtMost also holds the network to one route, to a location with its gateway, and
+// the cluster to nodes.
 func (h *harness) requireOneLocationWithoutItsGatewayAtMost(nodes []int64) {
 	h.t.Helper()
 	network := h.network()

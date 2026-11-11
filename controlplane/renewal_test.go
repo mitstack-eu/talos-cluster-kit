@@ -26,7 +26,6 @@ func (h *harness) renewalPoint(gw controlplane.Server) time.Time {
 	return h.gatewayLeaf(gw).NotAfter.Add(-controlplane.GatewayCertRenewBefore)
 }
 
-// reachRenewal moves the clock to the moment every gateway's certificate has reached its renewal point.
 func (h *harness) reachRenewal() {
 	h.t.Helper()
 	for _, gw := range h.byRole(controlplane.RoleGateway) {
@@ -36,7 +35,6 @@ func (h *harness) reachRenewal() {
 	}
 }
 
-// renewed reports whether every location's gateway holds a certificate short of its renewal point and is read serving.
 func (h *harness) renewed() bool {
 	h.t.Helper()
 	for _, loc := range controlplane.Locations {
@@ -233,6 +231,10 @@ func TestPlane_KeepsAGatewayPastItsRenewalPointWhileItCouldBuildNoReplacementAnd
 			"the block holds no gateway CA to sign a new one's certificate with"},
 		{"no node report lists the images its replacement keeps", func(h *harness) { h.noImageList = true },
 			"the report lists no images"},
+		{"Hetzner can order no gateway type in its location", func(h *harness) { h.cloud.SoldOut = controlplane.GatewayServerTypes },
+			"Hetzner can order none of the gateway's server types cx23, cpx22 in fsn1 now"},
+		{"the block passes no redundancy guard", func(h *harness) { h.plane.Guard = nil },
+			"the block passes no redundancy guard"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t, withReports)

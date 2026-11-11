@@ -7,6 +7,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"maps"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"slices"
@@ -595,6 +596,75 @@ func TestHosting_TraefikTrustsTheLoadBalancersProxyProtocolOnWebAndWebsecureFrom
 		"--entryPoints.web.proxyProtocol.trustedIPs=10.0.0.0/16",
 		"--entryPoints.websecure.proxyProtocol.trustedIPs=10.0.0.0/16",
 	}, proxyArgs)
+}
+
+const (
+	publishedServiceArg = "--providers.kubernetesingress.ingressendpoint.publishedservice=traefik/traefik"
+	publishedAddressArg = "--providers.kubernetesingress.ingressendpoint.ip="
+)
+
+// withoutIngressEndpoint is every document of a Traefik manifest, its containers holding no ingress endpoint argument.
+func withoutIngressEndpoint(t *testing.T, traefik components.Manifest) []map[string]any {
+	t.Helper()
+	docs := testutil.Documents(t, traefik.Bytes)
+	for _, daemonSet := range testutil.Kind(docs, "DaemonSet") {
+		for _, container := range testutil.Field(t, daemonSet, "spec", "template", "spec", "containers").([]any) {
+			c := container.(map[string]any)
+			c["args"] = slices.DeleteFunc(listOf(c["args"]), func(arg any) bool { return strings.Contains(arg.(string), ".ingressendpoint.") })
+		}
+	}
+	return docs
+}
+
+func TestHosting_TraefikPublishesTheAddressItIsGivenOnEveryIngressInPlaceOfItsNodesAddressesAndChangesNothingElse(t *testing.T) {
+	served := components.HostingServed()
+
+	publishing, err := served.PublishingIngress([]netip.Addr{netip.MustParseAddr("198.51.100.7")})
+
+	require.NoError(t, err)
+	before, after := testutil.Manifest(t, "traefik", served.Served), testutil.Manifest(t, "traefik", publishing.Served)
+	assert.Equal(t, []string{publishedAddressArg + "198.51.100.7"}, testutil.IngressEndpointArgs(t, after), "what Traefik writes into an Ingress's status")
+	assert.Equal(t, []string{publishedServiceArg}, testutil.IngressEndpointArgs(t, before), "the set every gateway serves stays the chart's render")
+	assert.Equal(t, withoutIngressEndpoint(t, before), withoutIngressEndpoint(t, after), "every other field of the Traefik manifest")
+	for i, m := range served.Served {
+		if m.Name != "traefik" {
+			assert.Equal(t, m, publishing.Served[i], "the served manifest %s", m.Name)
+		}
+	}
+	assert.Equal(t, served.Inline, publishing.Inline, "the inline manifests")
+}
+
+func TestHosting_RefusesToPublishAnIngressAddressItCannotNamingIt(t *testing.T) {
+	first, second := netip.MustParseAddr("198.51.100.7"), netip.MustParseAddr("198.51.100.8")
+	for _, tc := range []struct {
+		name      string
+		addresses []netip.Addr
+		want      []string
+	}{
+		{"an output that maps two locations, since Traefik writes one address", []netip.Addr{first, second}, []string{"198.51.100.7", "cannot publish 198.51.100.8"}},
+		{"no address at all", nil, []string{"no address"}},
+		{"an address that is none", []netip.Addr{{}}, []string{"invalid"}},
+		{"the address that names no host", []netip.Addr{netip.IPv4Unspecified()}, []string{"0.0.0.0"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			publishing, err := components.HostingServed().PublishingIngress(tc.addresses)
+
+			require.Error(t, err)
+			for _, want := range tc.want {
+				assert.ErrorContains(t, err, want)
+			}
+			assert.Empty(t, publishing.Served, "the set a refusal hands back")
+		})
+	}
+}
+
+func TestDefault_ASetWithoutTraefikPublishesNoIngressAddressAndComesBackAsItIs(t *testing.T) {
+	set := components.Default()
+
+	publishing, err := set.PublishingIngress(nil)
+
+	require.NoError(t, err)
+	assert.Equal(t, set, publishing)
 }
 
 func toleratesControlPlane(t *testing.T, template map[string]any) bool {

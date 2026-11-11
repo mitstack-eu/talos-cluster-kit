@@ -145,6 +145,24 @@ func Manifest(t *testing.T, name string, lists ...[]components.Manifest) compone
 	return manifests[i]
 }
 
+// IngressEndpointArgs are the arguments of the Traefik manifest's DaemonSet that say what Traefik writes into the status
+// of an Ingress it serves.
+func IngressEndpointArgs(t *testing.T, traefik components.Manifest) []string {
+	t.Helper()
+	var args []string
+	for _, daemonSet := range Kind(Documents(t, traefik.Bytes), "DaemonSet") {
+		for _, container := range Field(t, daemonSet, "spec", "template", "spec", "containers").([]any) {
+			containerArgs, _ := container.(map[string]any)["args"].([]any)
+			for _, arg := range containerArgs {
+				if strings.Contains(strings.ToLower(arg.(string)), ".ingressendpoint.") {
+					args = append(args, arg.(string))
+				}
+			}
+		}
+	}
+	return args
+}
+
 // Field walks path through nested maps and lists, where a list step is its decimal index.
 func Field(t *testing.T, doc any, path ...string) any {
 	t.Helper()

@@ -36,7 +36,7 @@ const (
 	storageRead       = "get persistentvolumeclaims,storageclasses.storage.k8s.io,services -A -o json"
 	podsRead          = "get pods -A -o json"
 	workloadsRead     = "get deployments.apps,statefulsets.apps,daemonsets.apps,jobs.batch,cronjobs.batch -A -o json"
-	ingressesRead     = "get ingresses.networking.k8s.io -n argocd -o json"
+	ingressesRead     = "get ingresses.networking.k8s.io -A -o json"
 	defaultDenyRead   = "get networkpolicies.networking.k8s.io -A --field-selector metadata.name=mitstack-default-deny -o json"
 	membersRead       = "-n 10.0.0.6 etcd members"
 	etcdStatusRead    = "-n 10.0.0.6,10.0.0.5,10.0.0.7 etcd status"
@@ -322,15 +322,16 @@ func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipA
 	assert.Equal(t, "sub_0123456789ab", posted.body["subscriptionId"])
 	assert.Equal(t, []any{
 		map[string]any{"name": "poc-talos4-cp1", "ready": true, "talosVersion": "v1.14.4", "kubeletVersion": "v1.37.1", "internalIP": "10.0.0.5",
-			"allocatable": map[string]any{"cpu": "3950m", "memory": "7712Mi", "pods": "110"}, "zone": "fsn1", "region": "eu-central",
+			"addresses": []any{address("InternalIP", "10.0.0.5"), address("Hostname", "poc-talos4-cp1")}, "allocatable": map[string]any{"cpu": "3950m", "memory": "7712Mi", "pods": "110"}, "zone": "fsn1", "region": "eu-central",
 			"zoneLabelManagers": []any{map[string]any{"manager": "mitstack-node-topology", "operation": "Update", "time": "2026-11-04T08:05:00Z"}}},
 		map[string]any{"name": "poc-talos4-cp2", "ready": true, "talosVersion": "v1.14.4", "kubeletVersion": "v1.37.1", "internalIP": "10.0.0.6",
-			"allocatable": map[string]any{"cpu": "4", "memory": "15622080Ki", "pods": "110"}, "zone": "nbg1", "region": nil,
+			"addresses": []any{address("InternalIP", "10.0.0.6")}, "allocatable": map[string]any{"cpu": "4", "memory": "15622080Ki", "pods": "110"}, "zone": "nbg1", "region": nil,
 			"zoneLabelManagers": []any{map[string]any{"manager": "kubectl-label", "operation": "Update", "time": "2026-11-04T08:07:00Z"}}},
 		map[string]any{"name": "poc-talos4-cp3", "ready": false, "talosVersion": "v1.14.3", "kubeletVersion": "v1.37.1", "internalIP": "10.0.0.7",
-			"allocatable": map[string]any{"cpu": "1950m", "memory": "3615Mi", "pods": "110"}, "zone": nil, "region": nil,
+			"addresses": []any{address("InternalIP", "10.0.0.7")}, "allocatable": map[string]any{"cpu": "1950m", "memory": "3615Mi", "pods": "110"}, "zone": nil, "region": nil,
 			"zoneLabelManagers": []any{}},
-	}, posted.body["nodes"], "each node's zone and region labels, and every manager of its zone label")
+	}, posted.body["nodes"], "each node's addresses with their types, its zone and region labels, and every manager of its zone label")
+	assert.Equal(t, []any{}, posted.body["ingresses"], "a cluster with no Ingress reports an empty list")
 	assert.Equal(t, readJSON(t, "testdata", "golden", "argocd.json"), posted.body["argocd"], "each Application names the revision Argo CD compared it against or null, and a Secret is among the applied objects, each with its identity, sync and health alone")
 	wantCalls := []string{
 		"kubectl " + nodesRead,
@@ -357,6 +358,10 @@ func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipA
 	})
 	assert.Equal(t, append(wantCalls, "kubectl "+proofRequest(posted)), calls, "the proof is minted once the body is final")
 	assert.Equal(t, reportProof, posted.proof, "the post carries the proof the block's script printed for its exact body")
+}
+
+func address(kind, value string) map[string]any {
+	return map[string]any{"type": kind, "address": value}
 }
 
 // etcdMember is the etcd member with each member's health in members.txt order, the leader cp1, and no failed read.
@@ -565,7 +570,7 @@ var everyCheck = map[string]any{"contract": "node-report/v1", "names": []any{"ro
 	"advisories", "admission", "default-deny", "cis-benchmark", "nsa-scan"}}
 
 func TestReport_PostsEachMemberItReadsFromAHealthyCluster(t *testing.T) {
-	fakes := kubectlWith(ingressesRead, `echo '{"apiVersion": "v1", "kind": "List", "items": [{"metadata": {"name": "argocd-server", "namespace": "argocd"}}]}'`)
+	fakes := kubectlWith(ingressesRead, "cat testdata/ingresses.json")
 	fakes["date"] = reportAt
 	_, posted, out, err := runReport(t, fakes)
 	require.NoError(t, err, out)
@@ -604,6 +609,8 @@ func TestReport_PostsEachMemberItReadsFromAHealthyCluster(t *testing.T) {
 			map[string]any{"name": "argocd-server", "type": "ClusterIP"},
 			map[string]any{"name": "argocd-repo-server", "type": "ClusterIP"}}},
 		"Argo CD's Ingresses": {"argocd.ingresses", "", []any{map[string]any{"name": "argocd-server"}}},
+		"every Ingress in every namespace with its class and the addresses its status holds, and one of a class Traefik does not serve with none": {
+			"ingresses", "", readJSON(t, "testdata", "golden", "ingresses.json")},
 		"Argo CD's pods with their images": {"kubernetes", "", map[string]any{"argocdPods": []any{map[string]any{
 			"name": "argocd-server-5d9c7b8f4-x2x7q", "containers": []any{map[string]any{
 				"image": "quay.io/argoproj/argocd:v3.5.5@sha256:13db7b10db23283b1b36f855046602e18539a8a8204c9f6f0aa4a9a6ff5e4f3c"}}}}}},
@@ -726,6 +733,8 @@ func TestReport_NamesAFailedVolumeCloudNativePGStorageOrServiceReadInlineWithIts
 	podsFailed := failed(1, "error: pods is forbidden\n")
 	notVolumes := failed(0, "talosctl exited 0, and its output is not the volume statuses this report reads")
 	notStorage := failed(0, "kubectl exited 0, and its output is not the claims, storage classes and Services this report reads")
+	ingressesFailed := failed(1, "error: ingresses is forbidden\n")
+	notIngresses := failed(0, "kubectl exited 0, and its output is not the Ingresses this report reads")
 	cases := map[string]struct {
 		fakes map[string]string
 		want  map[string]any
@@ -747,8 +756,10 @@ func TestReport_NamesAFailedVolumeCloudNativePGStorageOrServiceReadInlineWithIts
 		"the pod read exits 1, for every pod and Argo CD's": {kubectlWith(podsRead, `echo 'error: pods is forbidden' >&2; exit 1`),
 			map[string]any{"pods": podsFailed, "kubernetes.argocdPods": podsFailed}},
 		"the pod read times out": {kubectlWith(podsRead, "sleep 10"), map[string]any{"pods": timedOut}},
-		"the Ingress read exits 1": {kubectlWith(ingressesRead, `echo 'error: ingresses is forbidden' >&2; exit 1`),
-			map[string]any{"argocd.ingresses": failed(1, "error: ingresses is forbidden\n")}},
+		"the Ingress read exits 1, for every Ingress and Argo CD's": {kubectlWith(ingressesRead, `echo 'error: ingresses is forbidden' >&2; exit 1`),
+			map[string]any{"ingresses": ingressesFailed, "argocd.ingresses": ingressesFailed}},
+		"the Ingress read prints no JSON": {kubectlWith(ingressesRead, "echo 'not json'"),
+			map[string]any{"ingresses": notIngresses, "argocd.ingresses": notIngresses}},
 		"the default-deny read times out": {kubectlWith(defaultDenyRead, "sleep 10"), map[string]any{"defaultDenyPolicies": timedOut}},
 	}
 	for name, tc := range cases {

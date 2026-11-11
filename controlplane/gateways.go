@@ -427,6 +427,13 @@ func (p Plane) failedStep(ctx context.Context, st State, s site) (Step, bool, er
 	return Step{}, false, nil
 }
 
+// replacedAsFailed reports whether failedStep replaces gw, which Unhealthy then names with the failure's own cause.
+func (p Plane) replacedAsFailed(ctx context.Context, gw Server, network Network, digest string) (bool, error) {
+	f, err := p.failure(ctx, gw, network)
+	cause, _ := f.unhealthy(gw, digest)
+	return cause != "" && cause == f.cause, err
+}
+
 // endReplacementStep ends the replacement of a gateway read serving again, so a later failure is judged afresh.
 func (p Plane) endReplacementStep(ctx context.Context, gw Server, network Network, plan string) (Step, bool, error) {
 	if _, began := RemovalBegan(gw, plan); !began {
@@ -553,16 +560,31 @@ func (p Plane) upgradeMarkStep(_ context.Context, st State, s site) (Step, bool,
 	return p.markStep(s.network, r.digest), true, nil
 }
 
-// nextToReplace is the gateway built from an earlier list that an upgrade replaces next: the first in location order
-// that does not serve, since replacing it takes nothing from the gateways that do, else the first.
+// nextToReplace is the gateway built from an earlier list that an upgrade replaces next.
 func (p Plane) nextToReplace(ctx context.Context, r replacement, network Network) (Server, error) {
-	for _, gw := range r.stale {
-		up, err := p.serving(ctx, gw, network)
-		if err != nil || !up {
-			return gw, err
+	ordered, err := p.notServingFirst(ctx, r.stale, network)
+	if err != nil {
+		return Server{}, err
+	}
+	return ordered[0], nil
+}
+
+// notServingFirst puts the gateways that do not serve before those that do, each in the order given, since replacing
+// one that does not serve takes nothing from the gateways that do.
+func (p Plane) notServingFirst(ctx context.Context, gateways []Server, network Network) ([]Server, error) {
+	var down, up []Server
+	for _, gw := range gateways {
+		serves, err := p.serving(ctx, gw, network)
+		if err != nil {
+			return nil, err
+		}
+		if serves {
+			up = append(up, gw)
+		} else {
+			down = append(down, gw)
 		}
 	}
-	return r.stale[0], nil
+	return append(down, up...), nil
 }
 
 // replaceStep replaces a gateway built from an earlier list once every gateway built from this one serves and the

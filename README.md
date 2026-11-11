@@ -270,24 +270,32 @@ as the cluster needs:
    gateway with the time its certificate lapses,
    `mitstack.dev/gateway-cert-expires`, in Unix seconds. A gateway built
    before that label is judged from its creation, and so is one whose label
-   names no time, which `Problems` names. The plane takes the first
-   such gateway in location order, moves the route off it and labels it as in
-   step 3, with `certificate-renewal` in place of a digest. It deletes it
-   once the guard finds every other gateway read serving by a node report
-   from after that time. The location's next gateway is built at the same
-   address with a new key and a certificate the kept CA signs, so the nodes
-   trust it with no change to their configuration, and the old key goes with
-   its server. The renewal waits while an upgrade runs, since each gateway an
-   upgrade builds carries a new certificate. The plane keeps the gateway,
-   and its event says why, in four cases: the block holds no gateway CA, it
-   passes no redundancy guard, no node report lists the images a replacement
-   keeps, or Hetzner can order no gateway type in the location.
+   names no time, which `Problems` names. The plane leaves a gateway that
+   step 4 replaces to that step. Of the others it takes first one that does
+   not serve, as in step 3, and else the first in location order. It moves
+   the route off it and labels it as in step 3, with `certificate-renewal` in
+   place of a digest. It deletes it once the guard finds every other gateway
+   read serving by a node report from after that time. The location's next
+   gateway is built at the same address with a new key and a certificate the
+   kept CA signs, so the nodes trust it with no change to their
+   configuration, and the old key goes with its server.
+
+A renewal waits while an upgrade runs, since each gateway an upgrade builds
+carries a new certificate. When no upgrade runs, a gateway built from an
+earlier list is renewed like any other. Its successor is built from this
+release's list and keeps each image the node report names, so once every
+location's gateway has been renewed the gateways serve this release.
+
+The plane keeps a gateway past its renewal point, and its event says why, in
+four cases. In three it renews no gateway: the block holds no gateway CA, it
+passes no redundancy guard, or no node report lists the images a replacement
+keeps. In the fourth, Hetzner can order no gateway type in the gateway's
+location, and the plane goes on to the next location's gateway.
 
 No replacement begins, and none deletes a gateway, while Hetzner can order no
 gateway type in that location, since the location would stay without a
 gateway. An upgrade's replacement and a failed gateway's refuse with class
-`server-unavailable`, and a renewal keeps the gateway and waits for a later
-call.
+`server-unavailable`.
 
 The plane acts only when a block calls it, so a renewal begins on the block's
 first call at or after the renewal point.

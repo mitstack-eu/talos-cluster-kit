@@ -23,6 +23,7 @@ readonly filters='
   def tracked: .metadata.annotations[env.HANDOVER_ARGOCD_ANNOTATION] != null;
   def written: objects
     | select(any(.metadata.managedFields[]?; .manager == env.HANDOVER_TALOS_MANAGER and .operation != "Apply"));
+  def resource: "\(.kind | ascii_downcase).\(.apiVersion | split("/") | "\(.[-1]).\(.[:-1] | join(""))")";
   def named: "\(.kind) \(if .metadata.namespace then .metadata.namespace + "/" else "" end)\(.metadata.name)";
   def stub: {apiVersion, kind, metadata: (.metadata | {name} + if .namespace then {namespace} else {} end)};
 '
@@ -50,29 +51,36 @@ names() {
   query "$1" "[$2 | named] | join(\", \")"
 }
 
-# await_argocd <list> waits until each object <list> names exists and Argo CD has annotated it, since the Job runs in
-# the wave of the component's last object and Argo CD's sync creates and applies the rest of that wave beside it.
-# kubectl's wait gives up at once on an object that does not exist, even with --for=create, so a wait that finds its
-# object absent runs again a second later, and every wait spends what is left of the one timeout.
+# await_argocd <list> watches each object <list> names until Argo CD has annotated it, since the Job runs in the wave of
+# the component's last object and Argo CD's sync creates and applies the rest of that wave beside it. kubectl's wait
+# gives up at once on an object that does not exist yet, and its wait for creation polls, so a watch the API server
+# wakes on each change of the object stands in for it. Every watch spends what is left of the one timeout.
 await_argocd() {
-  local path="{.metadata.annotations.${HANDOVER_ARGOCD_ANNOTATION//./\\.}}" deadline=$((SECONDS + budget)) object i=0
-  while IFS= read -r object; do
-    i=$((i + 1))
-    printf '%s' "$object" > "$work/awaited-$i.json"
-    until kubectl wait -f "$work/awaited-$i.json" --for="jsonpath=$path" --timeout="$(remaining "$deadline")s" 2> "$work/wait.err"; do
-      if ! grep -q NotFound "$work/wait.err" || [ "$SECONDS" -ge "$deadline" ]; then
-        cat "$work/wait.err" >&2
-        refuse_pending "$1"
-      fi
-      sleep 1
-    done
-  done < <(query "$1" 'objects | tojson')
+  local deadline=$((SECONDS + budget)) resource name namespace
+  echo "handover: waiting up to $timeout for Argo CD to apply each object the component states"
+  while IFS=$'\t' read -r resource name namespace; do
+    watch_annotation "$resource" "$name" "$namespace" "$deadline" || case $? in
+      1) refuse_pending "$1" ;;
+      *) fail "kubectl's watch of $resource $name ended before Argo CD applied it" ;;
+    esac
+  done < <(query "$1" 'objects | [resource, .metadata.name, .metadata.namespace // ""] | @tsv')
 }
 
-# remaining <deadline> prints the seconds left until <deadline>, and 1 at the least, since kubectl reads 0 as no wait.
-remaining() {
-  local left=$(($1 - SECONDS))
-  echo $((left > 0 ? left : 1))
+# watch_annotation <resource> <name> <namespace> <deadline> reads kubectl's watch of one object until it carries Argo
+# CD's annotation. It returns 1 when <deadline> passes first and 2 when the watch ends first.
+watch_annotation() {
+  local path="{.metadata.annotations.${HANDOVER_ARGOCD_ANNOTATION//./\\.}}" args fd pid line left found=2
+  args=(get "$1" --field-selector="metadata.name=$2" --watch -o "jsonpath=$path{\"\\n\"}")
+  [ -z "$3" ] || args+=(-n "$3")
+  exec {fd}< <(exec kubectl "${args[@]}")
+  pid=$!
+  while left=$(($4 - SECONDS)); [ "$left" -gt 0 ] || { found=1; false; }; do
+    IFS= read -r -t "$left" -u "$fd" line || { [ $? -gt 128 ] && found=1; break; }
+    [ -z "$line" ] || { found=0; break; }
+  done
+  kill "$pid" 2> /dev/null || true
+  exec {fd}<&-
+  return "$found"
 }
 
 # refuse_pending <list> fails naming each object <list> names that does not exist or lacks Argo CD's annotation.

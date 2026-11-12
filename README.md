@@ -2073,10 +2073,11 @@ Argo CD applies. It runs once per sync of a component:
 4. Argo CD creates and applies the rest of the Job's wave in the same pass
    that creates the Job, so the script first waits until each object exists
    and carries the annotation `argocd.argoproj.io/tracking-id` that Argo CD
-   v3.5.5 gives every object it applies. It waits for each object on its own.
-   kubectl's wait gives up at once on an object that does not exist yet, so
-   the script waits again a second later while kubectl finds the object
-   absent. All the waits together take at most 120 seconds.
+   v3.5.5 gives every object it applies. It watches each object on its own
+   with `kubectl get --watch`, which the API server wakes at each change of
+   the object, including its creation. kubectl's own wait gives up at once
+   on an object that does not exist yet, and its wait for creation asks again
+   every half second. All the watches together take at most 120 seconds.
 5. The script reads each object the component states, with its field
    managers. For every object that both `talos` and `argocd-controller`
    applied, it sends one server-side apply under the name `talos` that states

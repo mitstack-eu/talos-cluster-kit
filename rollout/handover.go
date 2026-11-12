@@ -29,7 +29,7 @@ var handoverTemplate string
 
 var handover = tmpl.Must("a component's handover Job", handoverTemplate)
 
-// handoverJob is the Job that hands the component's objects over, as Argo CD names it.
+// handoverJob names the Job that hands the component's objects over.
 func (c carried) handoverJob() object {
 	return object{Group: "batch", Kind: "Job", Namespace: argoCDNamespace, Name: c.app + handoverSuffix}
 }
@@ -40,7 +40,8 @@ func (h documentHead) wave() int {
 	return wave
 }
 
-// handoverWave is the wave after the last one any of heads syncs in, so the handover finds every object applied.
+// handoverWave is the wave after the last one any of heads syncs in, and wave 1 at the earliest, so the handover finds
+// every object applied.
 func handoverWave(heads []documentHead) int {
 	last := 0
 	for _, head := range heads {

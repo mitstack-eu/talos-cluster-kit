@@ -472,6 +472,7 @@ TOOLS_IMAGE=talos-tools:ci go test -tags toolsimage -count=1 -run '^TestToolsIma
 | `TestBuilder_TheEnrolmentAndTheRenewalRunTheClusterTokensScriptTheToolsImageCarries` | The enrolment Job and the renewal CronJob each run `cluster-tokens.sh` from `tools.ScriptDir` in the tools image, with `enrol` or `renew`, so the builder's user data carries no copy of the script | The builder's rendered configuration on the Cloud fake |
 | `TestProgram_ServesTheFileOnceToItsClientOverTLS13AndRemovesTheFileAndTheKey` | The serving program answers its one client once over TLS 1.3, and deletes the file and its key | The program run with python3 on a local port |
 | `TestHetznerAdapter_CouplesTheVSwitchThroughItsSubnetAndExposesTheNetworksRoutesToIt` | `AddVSwitchSubnet` sends a `vswitch` subnet with the vSwitch's id and turns on `expose_routes_to_vswitch` | A local HTTP server playing Hetzner's Cloud API |
+| `TestHetznerAdapter_ReadsTheAddressHetznerAssignedALoadBalancerWhetherOrNotItsPublicInterfaceIsOn` | A load balancer read with its public interface on holds its address in both of the fields [the README's section on a load balancer's public address](../README.md#which-public-address-a-load-balancer-holds) names. One read with its interface off holds it in `AssignedPublicIPv4` alone, and one Hetzner gave no address holds it in neither | A local HTTP server playing Hetzner's Cloud API |
 
 The fixtures in `testutil/testdata/` are throwaway keys made for these tests:
 a Talos secrets bundle, a gateway CA with its certificate and key, and a log

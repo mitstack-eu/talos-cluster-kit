@@ -151,11 +151,14 @@ type LoadBalancer struct {
 	Name, Location  string
 	Labels          map[string]string
 	PublicInterface bool
-	PublicIPv4      string
-	PrivateIPs      map[int64]string
-	Services        []Service
-	TargetSelectors []string
-	TargetIPs       []string
+	// PublicIPv4 is the address the load balancer serves from the internet, empty while its public interface is off.
+	PublicIPv4 string
+	// AssignedPublicIPv4 is the IPv4 address Hetzner assigned the load balancer, whether or not its public interface is on.
+	AssignedPublicIPv4 string
+	PrivateIPs         map[int64]string
+	Services           []Service
+	TargetSelectors    []string
+	TargetIPs          []string
 }
 
 // Service forwards a listen port to a port on each target over TCP.
@@ -773,8 +776,11 @@ func loadBalancerFromHcloud(lb *hcloud.LoadBalancer) LoadBalancer {
 	if lb.Location != nil {
 		out.Location = lb.Location.Name
 	}
-	if lb.PublicNet.Enabled && lb.PublicNet.IPv4.IP != nil {
-		out.PublicIPv4 = lb.PublicNet.IPv4.IP.String()
+	if lb.PublicNet.IPv4.IP != nil {
+		out.AssignedPublicIPv4 = lb.PublicNet.IPv4.IP.String()
+	}
+	if lb.PublicNet.Enabled {
+		out.PublicIPv4 = out.AssignedPublicIPv4
 	}
 	for _, pn := range lb.PrivateNet {
 		if pn.Network != nil && pn.IP != nil {

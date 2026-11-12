@@ -481,8 +481,9 @@ func (f *Fake) CreateLoadBalancer(_ context.Context, spec controlplane.LoadBalan
 	if spec.TargetSelector != "" {
 		lb.TargetSelectors = []string{spec.TargetSelector}
 	}
+	lb.AssignedPublicIPv4 = fmt.Sprintf("198.51.100.%d", lb.ID%250)
 	if spec.PublicInterface {
-		lb.PublicIPv4 = fmt.Sprintf("198.51.100.%d", lb.ID%250)
+		lb.PublicIPv4 = lb.AssignedPublicIPv4
 	}
 	f.LoadBalancers[lb.ID] = lb
 	f.LBSpecs = append(f.LBSpecs, spec)
@@ -521,6 +522,7 @@ func (f *Fake) AttachLoadBalancerToNetwork(_ context.Context, id, networkID int6
 	return nil
 }
 
+// DisableLoadBalancerPublicInterface stops the load balancer serving its public address and keeps the one Hetzner assigned it.
 func (f *Fake) DisableLoadBalancerPublicInterface(_ context.Context, id int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -531,7 +533,7 @@ func (f *Fake) DisableLoadBalancerPublicInterface(_ context.Context, id int64) e
 	if len(lb.PrivateIPs) == 0 {
 		return fmt.Errorf("load_balancer_not_attached_to_network: load balancer %d", id)
 	}
-	lb.PublicInterface = false
+	lb.PublicInterface, lb.PublicIPv4 = false, ""
 	return nil
 }
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Posts the node report: nodes with their zone and region labels, etcd members with their health and the leader, each
-# node's addresses with their types and its STATE and EPHEMERAL encryption, Argo CD's health of each Application and each
+# Posts the node report: nodes with their zone and region labels, taints and unschedulable flag, etcd members with
+# their health and the leader, each node's addresses with their types and its STATE and EPHEMERAL encryption, Argo CD's health of each Application and each
 # object it applied, what each Argo CD route answers a caller without a session, Argo CD's Services, Ingresses and pod
 # images, every Ingress with its class and the addresses its status holds, CloudNativePG's
 # objects with each cluster's primary, archiving and last backup, the plugins it finds and each ObjectStore's recovery
@@ -628,7 +628,9 @@ body() {
         allocatable: .status.allocatable,
         zone: (.metadata.labels["topology.kubernetes.io/zone"] // null),
         region: (.metadata.labels["topology.kubernetes.io/region"] // null),
-        zoneLabelManagers: zone_label_managers
+        zoneLabelManagers: zone_label_managers,
+        taints: [.spec.taints[]? | {key, value: (.value // null), effect}],
+        unschedulable: (.spec.unschedulable // false)
       }],
       etcd: etcd,
       systemVolumes: beside($volumes_status; $volumes_err;

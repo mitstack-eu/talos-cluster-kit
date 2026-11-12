@@ -23,7 +23,7 @@ exceptions for callers with no identity, and a Postgres instance's port 8000.
 
 | File | Source | What it runs |
 |---|---|---|
-| `components/cilium/cilium.yaml` | The cilium 1.19.9 chart with `components/render/cilium-values.yaml` | Cilium as the network plugin and in place of kube-proxy, with Hubble off so the chart mints no key |
+| `components/cilium/cilium.yaml` | The cilium 1.19.9 chart with `components/render/cilium-values.yaml` | Cilium as the network plugin and in place of kube-proxy, with Hubble off so the chart mints no key, and with no privileged container, as [the README](../README.md#what-cilium-holds-of-each-node) explains |
 | `components/cilium/policy-crd.yaml` | Cilium v1.19.9's `CiliumClusterwideNetworkPolicy` CRD | The CRD the metadata policy needs before Cilium's operator starts |
 | `components/argocd/argocd.yaml` | The argo-cd 10.10.5 chart with `components/render/argocd-values.yaml`, Dex off | Argo CD v3.5.5 in namespace `argocd`, which keeps each object's health on its Application, with a health check that reads a CloudNativePG Cluster passing through a switchover, failover, upgrade or configuration change as Progressing |
 | `components/kyverno/kyverno.yaml` | The kyverno 3.9.1 chart with `components/render/kyverno-values.yaml`, its tests and Helm hooks off | Kyverno v1.19.1 in namespace `kyverno`, its images from `ghcr.io` and its webhooks skipping the system namespaces |
@@ -78,6 +78,13 @@ the step on documents that hold each kind of map and checks every rendered
 manifest for a webhook that fails open, an autoscaler without a metrics API and
 an empty map, as [the README](../README.md#what-the-rendered-components-must-look-like-for-argo-cd-to-read-them-synced)
 describes.
+
+The same file checks what Cilium holds of a node.
+`TestManifests_NoCiliumContainerRunsPrivilegedOrAddsACapabilityBeyondTheReadmesList`
+reads [the README's table of Cilium's capabilities](../README.md#what-cilium-holds-of-each-node)
+and compares it with every Cilium container of the default and the hosting
+set. After a change to `components/render/cilium-values.yaml` or to the chart's
+version, render again and bring that table in step with the render.
 
 Talos trims the blank space at both ends of each document of a manifest before
 it decodes it, in `SetYAML` in Talos v1.14.4, so a document whose last value is

@@ -139,7 +139,7 @@ write_files:
       registry.k8s.io/pause:3.10.2@sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4
   - path: /etc/mitstack-gateway/manifests.txt
     content: |
-      00-cilium.yaml aafec70d4cc5115dd5ceb6d982cd1646eae61dbdb5e29a83f2a08f020e87eb59 /usr/local/lib/mitstack/components/cilium/cilium.yaml
+      00-cilium.yaml bc5f252af29a6b320b18210465c7f30649480b811ec165c8a9b9c53423a1054b /usr/local/lib/mitstack/components/cilium/cilium.yaml
       01-cilium-policy-crd.yaml 582273fd2b7d7238563ad2976ba36905ba818834ed71c58cad6e51bb4762088b /usr/local/lib/mitstack/components/cilium/policy-crd.yaml
       09-argocd.yaml eb9cf57bcbe35139942ee3dfabe552b52abd1dc1e1b7cd8a1547658b31e5271d /usr/local/lib/mitstack/components/argocd/argocd.yaml
       13-kyverno.yaml 8a091f0fb66ab28fe3464ee168969d8db575e07e4a26132616b53ca612928030 /usr/local/lib/mitstack/components/kyverno/kyverno.yaml

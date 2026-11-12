@@ -694,6 +694,70 @@ once it is on block-kit v0.12.0 or later, the first release with
 `reportproof`. `report.Manifests` refuses inputs without a proof script, so a
 block that has not passed one finds out when it renders the report.
 
+## What Cilium holds of each node
+
+Cilium is the cluster's network, so its pods change each node's kernel
+networking. This section lists what they hold of the node, for you if you
+judge a security verdict or change `components/render/cilium-values.yaml`.
+The kit renders one Cilium for every Talos cluster, in the default set and in
+the hosting set.
+
+No Cilium container runs privileged, which would give it every power root has
+on the node. Each container first drops every Linux capability, a named part
+of root's powers such as `NET_ADMIN` for changing routes. It then adds only
+the capabilities in its row of the table.
+
+| Workload | Container | Capabilities it adds | Where the list comes from |
+|---|---|---|---|
+| `cilium` | `config` | `NET_ADMIN` | The chart's template |
+| `cilium` | `apply-sysctl-overwrites` | `SYS_ADMIN`, `SYS_CHROOT`, `SYS_PTRACE` | The chart's default |
+| `cilium` | `clean-cilium-state` | `NET_ADMIN`, `SYS_ADMIN`, `SYS_RESOURCE` | Talos's guide |
+| `cilium` | `install-cni-binaries` | None | The chart's template |
+| `cilium` | `cilium-agent` | `CHOWN`, `KILL`, `NET_ADMIN`, `NET_RAW`, `IPC_LOCK`, `SYS_ADMIN`, `SYS_RESOURCE`, `DAC_OVERRIDE`, `FOWNER`, `SETGID`, `SETUID` | Talos's guide |
+| `cilium-envoy` | `cilium-envoy` | `NET_ADMIN`, `SYS_ADMIN` | The chart's default |
+| `cilium-operator` | `cilium-operator` | None | The chart's default |
+
+The lists for `cilium-agent` and `clean-cilium-state` are the ones
+[Talos's guide to deploying Cilium](https://docs.siderolabs.com/kubernetes-guides/cni/deploying-cilium)
+and [Cilium's install page, under Talos Linux](https://docs.cilium.io/en/v1.19/installation/k8s-install-helm/)
+both give. They leave out `SYS_MODULE` of the chart's defaults, since Talos
+lets no Kubernetes workload load a kernel module, and `SYSLOG`, which neither
+page lists. The other lists are the chart's own.
+[The chart's values at v1.19.9](https://github.com/cilium/cilium/blob/v1.19.9/install/kubernetes/cilium/values.yaml#L347-L432)
+say what each capability is for, and
+[its envoy values](https://github.com/cilium/cilium/blob/v1.19.9/install/kubernetes/cilium/values.yaml#L2831-L2850)
+do the same for envoy, Cilium's proxy on each node.
+
+The chart's one privileged container is `mount-bpf-fs`, an init container that
+mounts the BPF filesystem, where Cilium keeps its kernel maps. Talos mounts
+that filesystem at `/sys/fs/bpf` on every node at boot. `run` in
+[its init at v1.14.4](https://github.com/siderolabs/talos/blob/v1.14.4/internal/app/init/main.go#L43-L53)
+calls `PseudoSub` in
+[its mount helpers](https://github.com/siderolabs/talos/blob/v1.14.4/internal/pkg/mount/v3/helpers.go#L381-L389),
+which mounts it on every start. Talos's guide says to keep Cilium from
+mounting it, so the values set `bpf.autoMount.enabled: false`, and the chart
+renders no `mount-bpf-fs`.
+
+With that setting the chart also drops envoy's own mount of `/sys/fs/bpf`.
+The agent hands envoy that path as its BPF root, as `BpfRoot` in
+[its listener configuration at v1.19.9](https://github.com/cilium/cilium/blob/v1.19.9/pkg/envoy/xds_server.go#L1012).
+Envoy opens Cilium's connection-tracking and address maps under it, in
+[`bpf_metadata.cc` of the proxy the chart pins](https://github.com/cilium/proxy/blob/00e749f11f69334c625e53fc1ce2fc6c7f34a51f/cilium/bpf_metadata.cc#L264-L291).
+`envoy.extraHostPathMounts` in the values gives envoy the mount.
+
+Beyond capabilities, all three workloads run on the node's network. The
+chart's templates fix `hostNetwork: true` for the agent and for envoy, and its
+`operator.hostNetwork` value, true by default, sets it for the operator. The
+agent's pod runs with no seccomp and no AppArmor profile, the chart's
+`podSecurityContext` default. The agent and envoy mount the host paths that
+`components/cilium/cilium.yaml` lists under each DaemonSet's `volumes`.
+
+`TestManifests_NoCiliumContainerRunsPrivilegedOrAddsACapabilityBeyondTheReadmesList`
+in `rendered_set_test.go` reads the table above. It fails when a Cilium
+container of either set runs privileged, keeps the container runtime's default
+capabilities, or adds other capabilities than its row names. A chart version
+that changes a list therefore fails until the table records it.
+
 ## How a cluster isolates each app
 
 Every cluster runs Kyverno, an admission controller that checks each object

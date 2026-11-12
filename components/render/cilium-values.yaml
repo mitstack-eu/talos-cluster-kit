@@ -12,6 +12,19 @@ cgroup:
   autoMount:
     enabled: false
   hostRoot: /sys/fs/cgroup
+# Talos mounts the BPF filesystem at boot, so the chart's privileged init container that would mount it is left out.
+bpf:
+  autoMount:
+    enabled: false
+# The chart drops envoy's BPF mount along with the auto-mount, and envoy reads Cilium's connection and address maps there.
+envoy:
+  extraHostPathMounts:
+    - name: bpf-maps
+      mountPath: /sys/fs/bpf
+      hostPath: /sys/fs/bpf
+      hostPathType: DirectoryOrCreate
+      readOnly: false
+      mountPropagation: HostToContainer
 securityContext:
   capabilities:
     ciliumAgent: [CHOWN, KILL, NET_ADMIN, NET_RAW, IPC_LOCK, SYS_ADMIN, SYS_RESOURCE, DAC_OVERRIDE, FOWNER, SETGID, SETUID]

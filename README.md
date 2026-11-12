@@ -50,9 +50,9 @@ the order a block uses them.
 | `report` | Renders the node report, a CronJob that reads the cluster and posts what it read to the platform, signed for its exact body. [What the node report carries](#what-the-node-report-carries) lists its members, the nine checks it names and what happens when a read fails. It also renders the outside probe, a CronJob in `kube-system` that calls the mesh probe's target with no workload identity and reads each gateway's mirror from outside the mesh, the admission probe namespace and the daily security scan. The report holds no right on Secrets | `Manifests`, `Interval` |
 | `topology` | Renders the topology labeller, a CronJob that labels each Cloud node with its zone and region, and holds the two label names | `Manifests`, `Labels`, `ZoneLabel`, `RegionLabel`, `FieldManager` |
 | `openbaoinit` | Renders OpenBao's init Job, which the hosting set carries: it initialises a hosting cluster's OpenBao once, commits the root token and recovery key to the cluster repository as PGP messages, then writes the policy each slice's External Secrets reads with | `Manifests`, `Inputs`, `InitFile` |
-| `rollout` | Gives a running cluster a release's component set, the manifests one kit release carries; [How a running cluster takes a release's components](#how-a-running-cluster-takes-a-releases-components) defines each term. A block commits the set's files to the cluster repository, where Argo CD applies each component through an Application of its own, which is Argo CD's record of one repository directory it keeps applied to the cluster. Files that an earlier release committed and this release no longer states are retired, which means deleted. The read-back then checks from the node report that the cluster runs each component as the release states it | `Release.Files`, `Release.Retired`, `Release.ReadBack`, `LegacyFiles` |
+| `rollout` | Gives a running cluster a release's component set, the manifests one kit release carries; [How a running cluster takes a release's components](#how-a-running-cluster-takes-a-releases-components) defines each term. A block commits the set's files to the cluster repository, where Argo CD applies each component through an Application of its own, which is Argo CD's record of one repository directory it keeps applied to the cluster. Files that an earlier release committed and this release no longer states are retired, which means deleted. Each component's sync ends with a handover Job, which takes Talos's fields off the objects Talos created, so they hold only what the release states. The read-back then checks from the node report that the cluster runs each component as the release states it | `Release.Files`, `Release.Retired`, `Release.ReadBack`, `Release.ToolsImage`, `LegacyFiles` |
 | `controlplane` | Builds and deletes a Talos control plane on Hetzner Cloud: a network, a firewall, a gateway in each of `fsn1`, `nbg1` and `hel1`, a builder that makes the cluster's own snapshot, a node in each of `fsn1`, `nbg1` and `hel1`, and an API and an ingress load balancer. Each call reads the resources by their labels and takes the one change still missing. A refusal is a `*Refusal` with a `Class` and a `Message`, which the block answers as its own framework's refusal | `Plane`, `Plane.Read`, `Plane.EnsureNetwork`, `Plane.NextStep`, `Plane.Problems`, `Plane.Unhealthy`, `Plane.Outputs`, `State.IngressAddresses`, `Plane.Release`, `ErrNoIngressAddress`, `Plane.GatewaysAwaitRelease`, `Plane.GatewaysServeRelease`, `Plane.Delete`, `NewAPI`, `Refusal`, `TopologyLabels`, `GatewayUpgradeBound`, `GatewayCertRenewBefore`, `KeyGatewayCertExpires` |
-| `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image carries and the gateway copies out of it, `tools/jq.env`, which pins the tools image's jq, and `tools/kube-bench-talos.yaml`, the settings kube-bench reads over its own on Talos. It names the tools image a release published and the directory in that image that holds the node report's, its outside probe's, the labeller's and the cluster tokens' scripts, and where in that image each served manifest sits | `Env`, `Pin`, `Image`, `ScriptDir`, `ManifestPath` |
+| `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image carries and the gateway copies out of it, `tools/jq.env`, which pins the tools image's jq, and `tools/kube-bench-talos.yaml`, the settings kube-bench reads over its own on Talos. It names the tools image a release published and the directory in that image that holds the node report's, its outside probe's, the labeller's, the cluster tokens' and the handover's scripts, and where in that image each served manifest sits | `Env`, `Pin`, `Image`, `ScriptDir`, `ManifestPath` |
 | `redundant` | Carries a removal's redundant set, each member with its reading, to the guard the block passes, block-kit's `redundancy.Set.AllowRemoval`, which this module does not import | `Set`, `Guard`, `Held` |
 | `testutil` | Holds the fixtures, fakes and decoders this module's tests and a block's tests share | `NewCluster`, `NewTools`, `Golden` |
 
@@ -1841,8 +1841,9 @@ form, and "release" alone means the kit release.
 
 A component is one named manifest of the set: a `components.Manifest`, whose
 `Name` is the label `components.Default` and `components.HostingServed` give
-it where they build the set, such as `cilium`, `argocd` or `kyverno`. A component's name becomes part of its Application's name, so `component-`
-followed by it must be a valid Kubernetes name: at most 63 characters, made of
+it where they build the set, such as `cilium`, `argocd` or `kyverno`. A component's name becomes part of its Application's name and of its handover
+Job's, which is `component-<name>-handover`. That Job name must be a valid
+Kubernetes name: at most 63 characters, made of
 lowercase letters, digits and hyphens, and starting and ending with a letter
 or digit. `Release.Files` refuses a name that is not.
 
@@ -1871,6 +1872,10 @@ the commit the block builds on, as the block lists them from its checkout, and
 from the cluster. `ReadBack` returns a `rollout.Reading`, which the end of this
 section describes.
 
+`Plane.Release` also sets `Release.ToolsImage` to the tools image the kit
+release published, which each component's handover Job runs. `Release.Files`
+refuses a release whose tools image is not named by digest.
+
 `Plane.Release` takes the state because a hosting cluster's Traefik publishes
 the ingress load balancer's address, which only Hetzner holds. Each call
 renders Traefik with the address the state gives, so a load balancer that was
@@ -1891,20 +1896,24 @@ Traefik, so its release needs no address.
 
 | File | What it holds |
 |---|---|
-| `components/<name>/manifest.yaml` | The component's documents, then a marker ConfigMap in `argocd` named `component-<name>-<digest>` |
+| `components/<name>/manifest.yaml` | The component's documents, then its handover Job, then a marker ConfigMap in `argocd` named `component-<name>-<digest>` |
 | `cluster/component-<name>.yaml` | The Argo CD Application `component-<name>`, which applies `components/<name>/` |
 
 The marker ConfigMap is how the read-back tells which release Argo CD
 compared. Argo CD's list of what an Application applied names objects and no
 Git revision. The marker's name carries the digest of the component's
-documents: the first 12 hexadecimal characters of the SHA-256 of the bytes
-that precede the marker in `manifest.yaml`. The name therefore changes
-whenever the component does.
+documents and its handover Job: the first 12 hexadecimal characters of the
+SHA-256 of the bytes that precede the marker in `manifest.yaml`. The name
+therefore changes whenever the component does. It also changes with every kit
+release, since the Job names the release's tools image, so each Application
+syncs once per release and runs the Job of that release.
 
 Some documents stay with the build and never reach the repository. A Secret
 holding data stays, since the repository must never hold a key. A batch Job
 stays, since it runs once and no later sync could change its pod template. A
-Helm or Argo CD hook stays, since Argo CD would run it again on every sync. A
+Helm or Argo CD hook stays, since Argo CD would run it again on every sync.
+The one Job and the one hook a file holds is the carriage's own handover Job,
+which is meant to run at every sync. A
 component whose every document stays with the build gets no files at all.
 A document that stays is created once by Talos at the cluster's first build,
 as the start of this section says, and no later release changes it on a
@@ -1938,15 +1947,19 @@ applied before the Application itself goes. The effects:
 - The retries wait out a resource definition, again a CRD, that another
   component's Application has yet to apply. A component that uses a custom
   resource fails to sync until its definition exists, and a retry succeeds
-  once it does.
+  once it does. A retry takes the newest commit, which `retry.refresh` sets,
+  so a later release still reaches a component whose sync keeps failing.
 - The finalizer deletes a component's objects once a release drops the
   component. Those objects include its resource definitions, and Kubernetes
   then deletes every custom resource of those definitions too. Deleting a
   `component-` Application by hand does the same.
 
 Argo CD applies over an object Talos created and tracks it from then on. A
-release that changes a component changes the live objects, and a release that
-drops an object leads Argo CD to delete it.
+release that changes a field's value changes the live object, and a release
+that drops an object leads Argo CD to delete it. A field that a release drops
+from an object goes once the component's handover has run, as
+[the section on the handover](#how-an-object-talos-created-comes-to-hold-only-what-a-release-states)
+explains.
 
 `Release.Retired` takes a list of the paths the repository holds and names
 each one the carriage wrote for an earlier release that this one no longer
@@ -1978,7 +1991,9 @@ lists exactly the objects the release states for it, each Synced. Until
 Argo CD compares the new release, its Application still lists the marker of
 the release before, so the report reads nothing back. A report that would
 reach 256 KiB leaves out every Application's objects, and reads nothing back
-either.
+either. Argo CD lists a component's handover Job among the Application's
+objects until the Job succeeds, and `ReadBack` reads nothing back while a
+report lists one, naming the Job in its `Problem`.
 
 `Release.ReadBack` returns a `rollout.Reading`. Its `Problem` says why a report
 does not read the release back, and is empty once it does. Its `Applied` then
@@ -1996,7 +2011,74 @@ v0.32.0 shipped it, as Talos would apply it. The other is built from the
 files kit release v0.46.0 committed, as Talos and Argo CD would. The cluster in `testutil/argocd.go` stands in for
 the cluster's API and for Argo CD. It applies each Application's directory,
 prunes what the directory no longer holds, and deletes an Application's
-objects when the Application carrying the finalizer goes.
+objects when the Application carrying the finalizer goes. It replaces an
+object whole and tracks no field manager, so it shows a cluster as it stands
+once each handover has run. The next section names the test that runs a
+handover through a real API server.
+
+### How an object Talos created comes to hold only what a release states
+
+Kubernetes records, for each field of an object, which field manager set it.
+A field manager is the name a client gives when it writes. Talos v1.14.4
+creates each object of a manifest by server-side apply under the field manager
+`talos`, and never applies that object again, as `ManifestApplyController` in
+Talos's
+[`manifest_apply.go`](https://github.com/siderolabs/talos/blob/v1.14.4/internal/app/machined/pkg/controllers/k8s/manifest_apply.go)
+shows. Argo CD v3.5.5 applies the same object under the field manager
+`argocd-controller`. Both managers then own every field that both wrote.
+
+The API server removes a field from an object only once no field manager owns
+it. A field or a list entry that a later release drops therefore stays on the
+object for as long as Talos owns it. Argo CD still reads the object as Synced,
+because it compares the object with the result its own apply would have, and
+that apply changes nothing. For example, a cluster built on kit release
+v0.53.0 created Cilium's agent with the privileged init container
+`mount-bpf-fs`. A later release states the agent without that container, and
+the agent keeps it until Talos gives the field up.
+
+The handover is the step that has Talos give up its fields on the objects
+Argo CD applies. It runs once per sync of a component:
+
+1. `Release.Files` ends each component's file with a Job named
+   `component-<name>-handover` in namespace `argocd`. The Job is an Argo CD
+   PostSync hook. Argo CD runs such a document once a sync has applied the
+   Application's objects and they read Healthy, and does not keep it applied.
+2. The Job runs `rollout/scripts/handover.sh` from the release's tools image,
+   under the service account of Argo CD's application controller. That account
+   already applies every component, so the cluster gains no other identity
+   that may change these objects.
+3. The script reads each object the component states, with its field
+   managers. For every object that both `talos` and `argocd-controller`
+   applied, it sends one server-side apply under the name `talos` that states
+   no field. Talos then owns nothing on the object, and the API server drops
+   each field that only Talos owned. Every field Argo CD applies stays.
+4. The script reads those objects again and fails when one still names
+   `talos`.
+5. Argo CD deletes a Job that succeeded. A Job that failed fails the sync,
+   which Argo CD retries, and the Application lists the Job until it succeeds.
+
+The script refuses an object that Talos created and Argo CD has not applied,
+since giving up Talos's fields there would take every field away. It then
+changes nothing and fails, naming the object. A document that stays with the
+build, such as a Secret holding data, is never named to the script.
+
+A handover changes a running cluster in two ways. Each object Talos created
+loses the annotation `config.k8s.io/owning-inventory`, which only Talos set.
+Talos decides what to create from its inventory ConfigMap
+`kube-system/talos-bootstrap-manifests-inventory` and never from that
+annotation, so it creates no object again. Each field that a release dropped
+since the cluster's build also goes. Where that field sits in a pod template,
+the workload rolls by its own update strategy. Cilium's agent, for example,
+restarts on two nodes at a time, as its `maxUnavailable: 2` sets.
+
+`TestAPIServer_AnObjectTalosCreatedKeepsAFieldAReleaseDropsUntilItsComponentsHandoverGivesUpTalossFields`
+in `apiserver_handover_test.go` runs these steps through a kube-apiserver at
+the Kubernetes release the kit pins. It creates Cilium from
+`testdata/v0.53.0/cilium.yaml` as Talos does, applies it and then this
+release's Cilium as Argo CD does, and reads `mount-bpf-fs` still in place. It
+then runs the handover Job as Argo CD's application controller and reads the
+container gone. `rollout/rollout_test.go` covers the script's refusals with a
+fake kubectl.
 
 ### What the rendered components must look like for Argo CD to read them Synced
 
@@ -2319,9 +2401,9 @@ with the key and a colon, as in `MIT-123: fix the thing`. A subject that ends
 with `(refs MIT-123)` only names the issue, and the job records nothing for it.
 
 A release also publishes the tools image, which the kit's Jobs and CronJobs
-run in. The image carries the report's, its outside probe's, the labeller's
-and the cluster tokens' scripts as the release's commit holds them, so a
-cluster runs the scripts of the release it was built from. The `release` job
+run in. The image carries the report's, its outside probe's, the labeller's,
+the cluster tokens' and the handover's scripts as the release's commit holds
+them, so a cluster runs the scripts of the release it was built from. The `release` job
 pushes it to the public package
 `ghcr.io/mitstack-eu/talos-cluster-kit-tools`, signs its digest keyless as
 this repository's CI on `main`, and refuses to tag unless a client with no

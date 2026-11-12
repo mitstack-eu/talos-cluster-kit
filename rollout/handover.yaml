@@ -1,0 +1,47 @@
+# Argo CD runs this Job once a sync applied the component's objects and they read Healthy. It gives up Talos's fields
+# on each of them, since Talos created them under its own field manager and a field a release drops stays while that
+# manager owns it. It runs as Argo CD's application controller, the one identity that already applies these objects.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 600
+  template:
+    spec:
+      serviceAccountName: {{ .ServiceAccount }}
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: handover
+          image: {{ .Image }}
+          command: [bash, {{ .Script }}]
+          env:
+            - name: HANDOVER_OBJECTS
+              value: {{ printf "%q" .Objects }}
+            - name: HANDOVER_TALOS_MANAGER
+              value: {{ printf "%q" .TalosManager }}
+            - name: HANDOVER_ARGOCD_MANAGER
+              value: {{ printf "%q" .ArgoCDManager }}
+            - name: HOME
+              value: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

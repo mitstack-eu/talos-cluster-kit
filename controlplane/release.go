@@ -17,7 +17,8 @@ var ErrNoIngressAddress = errors.New("the release's Traefik has no ingress addre
 
 // Release is every manifest the build applies but those only an install's keys render and the cluster's own
 // Application, through which the carriage runs, with the credentials rendered without the enrolment token and with
-// Traefik publishing the address st holds for the ingress load balancer.
+// Traefik publishing the address st holds for the ingress load balancer. Each component's handover Job runs the tools
+// image the kit release published.
 func (p Plane) Release(st State) (rollout.Release, error) {
 	if p.Hosting == nil && p.RepoURL == "" || p.Hosting != nil && p.Hosting.Repository == "" {
 		return rollout.Release{}, errors.New("the cluster's credentials name the cluster repository, and the plane names none")
@@ -33,7 +34,7 @@ func (p Plane) Release(st State) (rollout.Release, error) {
 	if err != nil {
 		return rollout.Release{}, err
 	}
-	return rollout.Release{Components: slices.Concat(set.Served, set.Inline, own)}, nil
+	return rollout.Release{Components: slices.Concat(set.Served, set.Inline, own), ToolsImage: toolsImage()}, nil
 }
 
 // The gateways serve the set without an address, since one tools image is built for every cluster.

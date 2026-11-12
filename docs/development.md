@@ -167,6 +167,8 @@ Each script is a file you can read and lint as the shell it is. The Go code
 embeds most of them with `go:embed`. The node report's, the labeller's and the
 cluster tokens' scripts are copied into the tools image at `tools.ScriptDir`
 instead, since the builder's user data has no room for them inside a node's
+configuration. The handover script sits there too, since the Job that runs it
+reaches a cluster through its repository and never through a node's
 configuration.
 
 | Script | Where it runs | What it does | Test |
@@ -177,6 +179,7 @@ configuration.
 | `report/scripts/report.sh` | The node report's CronJob, from the tools image at `/usr/local/lib/mitstack/report.sh` | Reads the cluster and posts the node report, whose members, checks and failure rules [the README's section on the report](../README.md#what-the-node-report-carries) gives. The reads that every report needs run one after another, each under `REPORT_READ_SECONDS`, 21 by default. The labelled-object reads, one per object type in `subscription_kinds`, share one such limit. The mesh, pod, workload, Argo CD, default-deny, OpenBao, etcd status, gateway and egress reads run beside them. The script runs the proof script under a 5-second limit, and a proof script that prints nothing fails like a read that exits non-zero. A cluster whose claims and Services, at about 60 to 100 bytes each, pods with their containers, at about 90 to 210 bytes each and about 450 for one whose container waits with a long message, and images, at about 130 to 200 bytes each, take the body past 256 KiB gets HTTP 413 from the platform, and the Job fails | `report/report_test.go` |
 | `report/scripts/mesh-probe.sh` | The outside probe's CronJob in `kube-system`, from the tools image at `/usr/local/lib/mitstack/mesh-probe.sh` | Calls the mesh probe's target from outside the mesh, so the node report can show the mesh refusing a call with no workload identity. It makes a plain call to the target and a TLS handshake to its port 15008, and patches both outcomes into `kube-system/mitstack-mesh-probe`, with the certificate's SPIFFE identities, serial and validity | `report/meshprobe_test.go`, and `apiserver_test.go` against a real API server |
 | `topology/scripts/label-nodes.sh` | The topology labeller's CronJob, from the tools image at `/usr/local/lib/mitstack/label-nodes.sh` | Labels each node `TOPOLOGY_NODES` names with its zone and `TOPOLOGY_REGION` under the field manager `mitstack-node-topology`, leaves a node that has not joined to a later run, and fails on a node it cannot read or label | `topology/topology_test.go` |
+| `rollout/scripts/handover.sh` | Each component's handover Job, which Argo CD runs at the end of a sync, from the tools image at `/usr/local/lib/mitstack/handover.sh` | Reads each object `HANDOVER_OBJECTS` names with its field managers. It then applies each one that Talos and Argo CD both applied under Talos's field manager with no field stated, so the API server drops every field Talos alone owned. It refuses an object Argo CD has not applied, and fails when an object still names Talos afterwards. [The README](../README.md#how-an-object-talos-created-comes-to-hold-only-what-a-release-states) explains why | `rollout/rollout_test.go`, and `apiserver_handover_test.go` against a real API server |
 | `openbaoinit/scripts/openbao-init.sh` | OpenBao's init Job, inline in its command | Initialises OpenBao once, commits `openbao-init.asc`, then enables kv and Kubernetes auth and writes each slice's policies and roles, `app-secrets-reader` and `app-secrets-writer` | `openbaoinit/openbaoinit_test.go` |
 | `controlplane/scripts/build-image.sh` | A Cloud control plane's builder server, from its user data | Builds the cluster's Talos disk image with imager, writes it over the builder's own disk from a tmpfs and powers the builder off, so the block can snapshot that disk | `controlplane/scripts_test.go` |
 | `controlplane/scripts/bootstrap-first-node.sh` | The install's first gateway, in `fsn1`, once at first boot | Finds the first node among the addresses the gateway has seen, proves it is the cluster's by its Talos API's certificate, bootstraps etcd on it and deletes the admin talosconfig | `controlplane/scripts_test.go` |
@@ -184,10 +187,11 @@ configuration.
 | `scripts/render-components.sh` | A workstation and CI | Renders the component set, drops an empty `labels` or `annotations` map from each document's metadata, and ends each document whose last value is a block scalar with a comment line | The `components` CI job |
 
 The member removal Job, the node report and its outside probe, the topology
-labeller, the cluster tokens' Job and CronJob and OpenBao's init Job run in the
+labeller, the cluster tokens' Job and CronJob, OpenBao's init Job and each
+component's handover Job run in the
 tools image that `tools/Dockerfile` builds from the repository root: bash,
 curl, jq, gpg, openssl, talosctl and kubectl on Alpine 3.22, with the report's,
-the outside probe's, the labeller's and the cluster tokens' scripts. The image
+the outside probe's, the labeller's, the cluster tokens' and the handover's scripts. The image
 also carries every manifest a gateway serves, at
 its repository path under `tools.ScriptDir`, as `tools.ManifestPath` gives it.
 `tools/Dockerfile.dockerignore` keeps every other file out of the build. `tools/tools.env` pins both binaries with
@@ -206,7 +210,8 @@ pins it.
 ## How the tests run the scripts
 
 The script tests run the script a rendered manifest carries, so they test what
-a node would run. The report's, the labeller's and the cluster tokens' tests
+a node would run. The report's, the labeller's, the cluster tokens' and the
+handover's tests
 check that each Job's or CronJob's command names the script's path in the tools
 image, then run the repository's file. The `tools image` CI job checks that the
 image holds those same bytes. `testutil.NewTools` writes fake `talosctl`, `kubectl`,
@@ -239,8 +244,17 @@ named as each control-plane component, and the step shares its process table
 as `hostPID` shares a node's. `/var/lib/etcd` is a tmpfs with mode 700 and
 user 60, as Talos creates it. An image whose `ps` cannot find a process by
 name, a variable kube-bench takes for a flag, or a lookup inside the etcd
-directory therefore fails here. To run it on a workstation, build the image
-first:
+directory therefore fails here.
+
+`apiserver_handover_test.go` runs a component's handover against the same API
+server, which merges each server-side apply as a cluster's does. It creates
+Cilium as kit release v0.53.0 shipped it, the way Talos does, then applies it
+and this release's Cilium the way Argo CD does. The privileged init container
+that this release drops is still there, and the handover Job then removes it.
+The Job's container runs as Argo CD's application controller, with the
+ClusterRole the kit's own Argo CD manifest gives it.
+
+To run both on a workstation, build the image first:
 
 ```bash
 docker build -t talos-tools:ci -f tools/Dockerfile .
@@ -333,6 +347,9 @@ TOOLS_IMAGE=talos-tools:ci go test -tags toolsimage -count=1 -run '^TestToolsIma
 | `TestMeshProbe_WritesAnAnsweredPlainCallAndAHandshakeThatGaveNoCertificateAsTheyCame` | An answered plain call is written with its answer, and a handshake that gave no certificate is written with a null certificate and its stderr | Fake curl, openssl and kubectl |
 | `TestManifests_LetsTheOutsideProbeAndTheScanReadAndPatchTheirOwnConfigMapAndTheReportOnlyReadItByNameInKubeSystem` | The outside probe may only get and patch `kube-system/mitstack-mesh-probe`, the scan's Role may only get and patch `kube-system/mitstack-security-scans`, and the report may only get each, all by name, and the outside probe runs in `kube-system` | The rendered Roles, RoleBindings and CronJob |
 | `TestAPIServer_TheOutsideProbeAndTheSecurityScanWriteTheirOwnConfigMapAndNoOtherUnderTheRenderedRBAC` | Run as their CronJobs run them, the outside probe writes its result into `mitstack-mesh-probe` and the security scan writes both summaries and its outcome into `mitstack-security-scans`. The scan's kube-bench step, run as its pod runs it with every capability dropped, reads `--profiling=false` off the API server's, the controller manager's and the scheduler's process and mode 700 off an etcd directory another user owns, and its summary reaches the ConfigMap with no error. The API server refuses the probe a list, a read or a patch of another ConfigMap, and refuses either one a patch of the other's ConfigMap or of a third | A kube-apiserver and etcd from the images the kit pins for Talos, the objects `report.Manifests` renders, the built tools image, a container of stand-in processes named as the control plane's whose process table the kube-bench step shares, and a tmpfs with the mode and owner Talos gives `/var/lib/etcd`, under the `apiserver` build tag |
+| `TestAPIServer_AnObjectTalosCreatedKeepsAFieldAReleaseDropsUntilItsComponentsHandoverGivesUpTalossFields` | Cilium's agent, created as Talos creates it from kit release v0.53.0 and then synced to this release as Argo CD syncs it, still runs the privileged `mount-bpf-fs` init container, at generation 1. The component's handover Job, run as Argo CD's application controller, then leaves the agent the init containers the release states and no privileged one, at generation 2, and no object of the component names Talos as a field manager. A handover run before Argo CD applied the component is refused and takes no field away, and a second handover and a second sync change nothing | A kube-apiserver and etcd from the images the kit pins for Talos, `testdata/v0.53.0/cilium.yaml`, the files `rollout.Release.Files` renders and the built tools image, under the `apiserver` build tag |
+| `TestHandover_GivesUpTalossFieldsOnEachObjectTalosAndArgoCDBothAppliedAndOnNoOther` | The handover reads every object its component states, applies under Talos's field manager a list that names only the objects both Talos and Argo CD applied and states none of their fields, then reads those objects again | A fake kubectl that logs each call and keeps the applied file |
+| `TestHandover_FailsNamingWhatItCouldNotHandOver` | The handover fails without applying when an object Talos created has no apply of Argo CD's or when the objects cannot be read, and fails when the API server refuses the apply or an object still names Talos afterwards | The same |
 | `TestMeshProbe_TheTargetAdmitsOnlyTheReportAndTheOutsideProbeWhichLooksUpOnlyItsNameAndReachesOnlyItAndTheAPIServer` | The target's Cilium policy admits the report's and the outside probe's pods, as they are labelled, on 8080 and 15008 and no other pod. The outside probe's own policy lets it look up only the target's name through Cilium's DNS proxy, and reach only the API server and the target on those two ports. The target carries `mitstack.dev/app`, serves the answer, identity and name the report expects, and adds no image to the mirror's list | The component set's target, the rendered CronJobs and Cilium's view of each pod's labels |
 | `TestRender_EncryptsStateAndEphemeralWithLUKS2UnderTheNodeIDKeyWithEphemeralsKeyLockedToState` | For one and three nodes on the `hcloud` and the `metal` profile, `STATE` and `EPHEMERAL` are LUKS2 under a `nodeID` key, `EPHEMERAL`'s locked to `STATE` and mounted secure | The rendered `VolumeConfig` documents |
 | `TestDefault_RunsKyvernoWithBothPoliciesAndCloudNativePGWithTheDatabaseSlicePolicy` | The set carries Kyverno, its app-label and default-deny policies, CloudNativePG and the slice policy, and the mirror holds each of their images by digest | The default set and its mirror list |
@@ -475,7 +492,7 @@ and a manual run. Every job runs on the runner the repository variable
 |---|---|
 | `test` | On a pull request, `checkpolls`, the check that block-kit, the shared kit every block builds on, ships for added sleeps and polling intervals, judges every line the change adds against its base commit and fails a `time.Sleep`, a ticker or a shell `sleep`, naming each file and line. It runs as a tool of the `ci` module, a Go module of its own under `ci/`. Its `ci/go.mod` alone names the block-kit release, because a tool in the kit's own `go.mod` would force that release on every block that requires the kit. A human reviewer judges the waits `checkpolls -help` says the check cannot see, such as a timer reset inside a loop or a `time.After` in a select. `go vet ./...` and `go test -race ./...` then pass on Go 1.26.10, and the `mirror check` step copies trust-manager's index through the gateway's skopeo into its registry |
 | `components` | Each rendered component matches a fresh render, and shellcheck passes on every script |
-| `tools image` | The tools image builds from the repository root, each of its commands runs, and it holds the report's, its outside probe's, the labeller's and the cluster tokens' scripts byte for byte as the repository does. The outside probe and the security scan then write their ConfigMaps through a real API server, the scan's kube-bench step reading a stand-in control plane, and a gateway's preparation copies talosctl, kubectl and every served manifest out of it with their pins, as [the section on the tests](#how-the-tests-run-the-scripts) describes |
+| `tools image` | The tools image builds from the repository root, each of its commands runs, and it holds the report's, its outside probe's, the labeller's, the cluster tokens' and the handover's scripts byte for byte as the repository does. The outside probe and the security scan then write their ConfigMaps through a real API server, the scan's kube-bench step reading a stand-in control plane. A component's handover takes Talos's fields off Cilium's objects through that API server. A gateway's preparation then copies talosctl, kubectl and every served manifest out of it with their pins, as [the section on the tests](#how-the-tests-run-the-scripts) describes |
 | `pr key gate` | The pull request's title and at least one of its commits each name a board key, the `MIT-` number of an issue on Plain, mitstack's board. A key counts when it opens the subject followed by a colon, as in `MIT-123: fix the thing`, which delivers the issue, or when it closes the subject as `(refs MIT-123)`, which only names the issue and is the form the kit's commits and titles use. A change with no issue has no key to name, so the job fails it, and the issue is filed on the board first |
 | `release` | On a push to `main` with a new version in `.github/version`, and only after `test`, `components` and `tools image` pass, it pushes and signs the tools image and pulls it with no login. It then tags a commit on top that pins the image in `tools.Image`, as [the README](../README.md#how-a-release-is-versioned) describes |
 | `record delivery` | On a push to `main`, records on Plain each issue a commit of the push delivers, which means a subject that opens with `MIT-123:`. A subject that only ends with `(refs MIT-123)` records nothing |

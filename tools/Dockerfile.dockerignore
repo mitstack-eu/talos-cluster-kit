@@ -8,6 +8,7 @@
 !report/scripts/security-scan.sh
 !topology/scripts/label-nodes.sh
 !controlplane/scripts/cluster-tokens.sh
+!rollout/scripts/handover.sh
 !components/cilium/cilium.yaml
 !components/cilium/policy-crd.yaml
 !components/argocd/argocd.yaml

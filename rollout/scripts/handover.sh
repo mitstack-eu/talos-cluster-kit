@@ -51,16 +51,21 @@ names() {
 }
 
 # await_argocd <list> waits until each object <list> names exists and Argo CD has annotated it, since the Job runs in
-# the wave of the component's last object and Argo CD's sync creates and applies the rest of that wave beside it. Each
-# object gets a wait of its own, because kubectl's wait for creation gives up at once when two objects of one file are
-# absent, and every wait spends what is left of the one timeout.
+# the wave of the component's last object and Argo CD's sync creates and applies the rest of that wave beside it.
+# kubectl's wait gives up at once on an object that does not exist, even with --for=create, so a wait that finds its
+# object absent runs again a second later, and every wait spends what is left of the one timeout.
 await_argocd() {
   local path="{.metadata.annotations.${HANDOVER_ARGOCD_ANNOTATION//./\\.}}" deadline=$((SECONDS + budget)) object i=0
   while IFS= read -r object; do
     i=$((i + 1))
     printf '%s' "$object" > "$work/awaited-$i.json"
-    kubectl wait -f "$work/awaited-$i.json" --for=create --for="jsonpath=$path" --timeout="$(remaining "$deadline")s" \
-      || refuse_pending "$1"
+    until kubectl wait -f "$work/awaited-$i.json" --for="jsonpath=$path" --timeout="$(remaining "$deadline")s" 2> "$work/wait.err"; do
+      if ! grep -q NotFound "$work/wait.err" || [ "$SECONDS" -ge "$deadline" ]; then
+        cat "$work/wait.err" >&2
+        refuse_pending "$1"
+      fi
+      sleep 1
+    done
   done < <(query "$1" 'objects | tojson')
 }
 

@@ -4,19 +4,28 @@
       "name": "cluster-root",
       "health": "Degraded",
       "sync": "Synced",
-      "revision": "9b2c4e7a1f3d5c8e0a6b4d2f9e7c5a3b1d8f6e4c"
+      "revision": "9b2c4e7a1f3d5c8e0a6b4d2f9e7c5a3b1d8f6e4c",
+      "operation": {
+        "phase": "Succeeded",
+        "message": null
+      }
     },
     {
       "name": "repository-credentials",
       "health": "Healthy",
       "sync": "OutOfSync",
-      "revision": "4e1d7a0c3b6f9e2d5a8c1b4e7f0a3d6c9b2e5f8a"
+      "revision": "4e1d7a0c3b6f9e2d5a8c1b4e7f0a3d6c9b2e5f8a",
+      "operation": {
+        "phase": "Failed",
+        "message": "one or more objects failed to apply, reason: Role.rbac.authorization.k8s.io \"app-repository-shop\" is invalid: rules[0].verbs: Unsupported value: \"impersonate\": supported values: \"get\", \"list\", \"watch\", \"create\", \"update\", \"patch\", \"delete\", \"deletecollecti"
+      }
     },
     {
       "name": "shop",
       "health": "Degraded",
       "sync": "OutOfSync",
-      "revision": null
+      "revision": null,
+      "operation": null
     }
   ],
   "routes": [

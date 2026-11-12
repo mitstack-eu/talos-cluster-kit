@@ -8,9 +8,7 @@ import (
 	_ "embed"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"slices"
 	"strings"
 	"sync"
@@ -27,10 +25,11 @@ const (
 	// ApplicationPrefix starts the name of each component's Application and of the file under cluster/ that holds it.
 	ApplicationPrefix = "component-"
 	// ComponentsDir holds one directory per component, which its Application applies.
-	ComponentsDir   = "components"
-	manifestFile    = "manifest.yaml"
-	clusterDir      = "cluster"
-	markerNamespace = "argocd"
+	ComponentsDir = "components"
+	manifestFile  = "manifest.yaml"
+	clusterDir    = "cluster"
+	// ArgoCDNamespace holds Argo CD, each component's marker and each component's handover Job.
+	ArgoCDNamespace = "argocd"
 	markerDigestLen = 12
 	synced          = "Synced"
 	healthy         = "Healthy"
@@ -48,6 +47,8 @@ var application = tmpl.Must("a component's Application", applicationTemplate)
 // Release is the component set a kit release carries to a running cluster.
 type Release struct {
 	Components []components.Manifest
+	// ToolsImage is the tools image the kit release published, by digest, which each component's handover Job runs.
+	ToolsImage string
 }
 
 // File is one file of the release at its path in the cluster repository.
@@ -56,11 +57,15 @@ type File struct {
 	Bytes []byte
 }
 
-// carried is one component as the repository holds it: the documents it carries, then the ConfigMap named for their
-// digest, since Argo CD's list of what it applied names objects and no revision.
+// carried is one component as the repository holds it: the documents it carries, the Job that hands them over from
+// Talos, then the ConfigMap named for the digest of both, since Argo CD's list of what it applied names objects and no
+// revision. The Job and the ConfigMap sync in the wave of the last document, and the sync succeeds only once the Job
+// did.
 type carried struct {
 	name, app string
 	bytes     []byte
+	// objects are what Argo CD lists once it applied the file: each carried document and the marker.
+	objects []object
 }
 
 func (c carried) dir() string  { return ComponentsDir + "/" + c.name }
@@ -129,71 +134,93 @@ func ownedByCarriage(p string) bool {
 	return inCluster && isYAML && strings.HasPrefix(app, ApplicationPrefix) && check.DNS1123Label(app) == nil
 }
 
-// carriedCache keeps each component's carried bytes by its digest, since splitting the set's documents decodes every
-// one of them and a block reads the set on every call.
+// carriedCache keeps each component as the repository holds it, by its digest and the tools image, since splitting the
+// set's documents decodes every one of them and a block reads the set on every call.
 var carriedCache sync.Map
 
 func (r Release) carried() ([]carried, error) {
+	if err := check.DigestRef(r.ToolsImage); err != nil {
+		return nil, fmt.Errorf("the release's tools image, which each handover Job runs: %w", err)
+	}
 	var set []carried
 	for _, m := range r.Components {
-		if err := check.DNS1123Label(ApplicationPrefix + m.Name); err != nil {
-			return nil, fmt.Errorf("the component %s cannot name an Application: %w", m.Name, err)
-		}
-		docs, err := carriedDocuments(m)
+		c, err := r.carry(m)
 		if err != nil {
 			return nil, err
 		}
-		if len(docs) == 0 {
-			continue
+		if len(c.objects) > 0 {
+			set = append(set, c)
 		}
-		set = append(set, withMarker(m.Name, docs))
 	}
 	return set, nil
 }
 
-func withMarker(name string, docs []byte) carried {
-	c := carried{name: name, app: ApplicationPrefix + name}
-	sum := sha256.Sum256(docs)
-	marker := fmt.Sprintf("# Argo CD lists this ConfigMap only once it compared the documents above, whose digest it is named for.\n"+
-		"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: %s-%s\n  namespace: %s\n",
-		c.app, hex.EncodeToString(sum[:])[:markerDigestLen], markerNamespace)
-	c.bytes = append(slices.Clip(docs), marker...)
+// carry is m as the repository holds it, with no object when each of its documents stays with the build.
+func (r Release) carry(m components.Manifest) (carried, error) {
+	c := carried{name: m.Name, app: ApplicationPrefix + m.Name}
+	if err := check.DNS1123Label(c.handoverJob().Name); err != nil {
+		return carried{}, fmt.Errorf("the component %s cannot name an Application and its handover Job: %w", m.Name, err)
+	}
+	key := m.Name + "\x00" + m.SHA256() + "\x00" + r.ToolsImage
+	if kept, ok := carriedCache.Load(key); ok {
+		return kept.(carried), nil
+	}
+	docs, heads, err := keepCarried(m)
+	if err != nil {
+		return carried{}, err
+	}
+	if len(heads) > 0 {
+		wave := lastWave(heads)
+		job, err := c.renderHandover(heads, wave, r.ToolsImage)
+		if err != nil {
+			return carried{}, err
+		}
+		c = c.withMarker(append(docs, job...), heads, wave)
+	}
+	carriedCache.Store(key, c)
+	return c, nil
+}
+
+// markerFormat takes the marker's name, its namespace and its wave.
+const markerFormat = "# Argo CD lists this ConfigMap once it compared the documents above, whose digest it is named for.\n" +
+	"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: %s\n  namespace: %s\n  annotations:\n    " + syncWaveAnnotation + ": \"%d\"\n"
+
+// withMarker closes stated, the component's documents and its handover Job, with the marker named for their digest,
+// which Argo CD applies in wave.
+func (c carried) withMarker(stated []byte, heads []documentHead, wave int) carried {
+	stated = append(stated, "---\n"...)
+	sum := sha256.Sum256(stated)
+	marker := object{Kind: "ConfigMap", Namespace: ArgoCDNamespace, Name: c.app + "-" + hex.EncodeToString(sum[:])[:markerDigestLen]}
+	c.bytes = fmt.Appendf(stated, markerFormat, marker.Name, marker.Namespace, wave)
+	for _, head := range heads {
+		c.objects = append(c.objects, head.object())
+	}
+	c.objects = append(c.objects, marker)
 	return c
 }
 
-func carriedDocuments(m components.Manifest) ([]byte, error) {
-	key := m.Name + "\x00" + m.SHA256()
-	if docs, ok := carriedCache.Load(key); ok {
-		return docs.([]byte), nil
-	}
-	docs, err := keepCarried(m)
-	if err != nil {
-		return nil, err
-	}
-	carriedCache.Store(key, docs)
-	return docs, nil
-}
-
-// keepCarried keeps each document of m but those that stay with the build: a Secret holding data, which carries a key
-// the repository must never hold; a Job, which runs once and whose pod template no later sync can change; and a Helm
-// or Argo CD hook, which Argo CD would run again on every sync. Each kept document ends with a separator.
-func keepCarried(m components.Manifest) ([]byte, error) {
+// keepCarried keeps each document of m, with its head, but those that stay with the build: a Secret holding data, which
+// carries a key the repository must never hold; a Job, which runs once and whose pod template no later sync can change;
+// and a Helm or Argo CD hook, which Argo CD would run again on every sync. Each kept document ends with a separator.
+func keepCarried(m components.Manifest) ([]byte, []documentHead, error) {
 	var out bytes.Buffer
+	var heads []documentHead
 	for _, doc := range splitDocuments(m.Bytes) {
 		var head documentHead
 		if err := yaml.Unmarshal(doc, &head); err != nil {
-			return nil, fmt.Errorf("the component %s: %w", m.Name, err)
+			return nil, nil, fmt.Errorf("the component %s: %w", m.Name, err)
 		}
 		if head.Kind == "" || head.staysWithBuild() {
 			continue
 		}
+		heads = append(heads, head)
 		out.Write(doc)
 		if !bytes.HasSuffix(doc, []byte("\n")) {
 			out.WriteByte('\n')
 		}
 		out.WriteString("---\n")
 	}
-	return out.Bytes(), nil
+	return out.Bytes(), heads, nil
 }
 
 type documentHead struct {
@@ -209,6 +236,15 @@ type documentHead struct {
 }
 
 var hookAnnotations = []string{"helm.sh/hook", "argocd.argoproj.io/hook"}
+
+// object is the document as Argo CD lists it.
+func (h documentHead) object() object {
+	group, _, versioned := strings.Cut(h.APIVersion, "/")
+	if !versioned {
+		group = ""
+	}
+	return object{Group: group, Kind: h.Kind, Namespace: h.Metadata.Namespace, Name: h.Metadata.Name}
+}
 
 func (h documentHead) staysWithBuild() bool {
 	switch {
@@ -276,13 +312,36 @@ type listedObject struct {
 
 type reportedApplication struct {
 	Name, Sync, Health string
+	// Operation is Argo CD's last sync of the Application, and nil when the report carries none.
+	Operation *lastSync
 	// Resources is nil when the report left out what each Application applied, to stay within the platform's limit.
 	Resources *[]listedObject
 }
 
-// ReadBack reads the release back from a node report: each component's Application reads Synced and Healthy, and lists
-// exactly the objects the release states for it, each Synced, so an object the release changed or dropped stands as
-// stated.
+// lastSync is the outcome of Argo CD's last sync of an Application, which succeeds only once the handover Job did.
+type lastSync struct {
+	Phase   string
+	Message *string
+}
+
+const syncSucceeded = "Succeeded"
+
+// problem says why the sync does not stand for the release, and is empty when it succeeded.
+func (s *lastSync) problem(app string) string {
+	switch {
+	case s == nil:
+		return "it carries no outcome of Argo CD's last sync of " + app
+	case s.Phase == syncSucceeded:
+		return ""
+	case s.Message == nil:
+		return fmt.Sprintf("Argo CD's last sync of %s reads %q", app, s.Phase)
+	}
+	return fmt.Sprintf("Argo CD's last sync of %s reads %q: %s", app, s.Phase, *s.Message)
+}
+
+// ReadBack reads the release back from a node report: each component's Application reads Synced and Healthy, Argo CD's
+// last sync of it succeeded, so its handover Job did, and it lists exactly the objects the release states for it, each
+// Synced, so an object the release changed or dropped stands as stated.
 func (r Release) ReadBack(report []byte) (Reading, error) {
 	set, err := r.carried()
 	if err != nil {
@@ -298,11 +357,7 @@ func (r Release) ReadBack(report []byte) (Reading, error) {
 	}
 	var applied, problems []string
 	for _, c := range set {
-		want, err := stated(c)
-		if err != nil {
-			return Reading{}, err
-		}
-		objects, missing := readApplication(body.ArgoCD.Applications, c.app, want)
+		objects, missing := c.readApplication(body.ArgoCD.Applications)
 		applied, problems = append(applied, objects...), append(problems, missing...)
 	}
 	if len(problems) > 0 {
@@ -316,64 +371,34 @@ func problem(format string, args ...any) Reading {
 	return Reading{Problem: fmt.Sprintf(format, args...)}
 }
 
-// readApplication is each object the report reads back of the Application named app, or why it does not.
-func readApplication(apps []reportedApplication, app string, want []object) (applied, problems []string) {
-	i := slices.IndexFunc(apps, func(a reportedApplication) bool { return a.Name == app })
+// readApplication is each object the report reads back of the component's Application, or why it does not.
+func (c carried) readApplication(apps []reportedApplication) (applied, problems []string) {
+	i := slices.IndexFunc(apps, func(a reportedApplication) bool { return a.Name == c.app })
 	switch {
 	case i < 0:
-		return nil, []string{"it lists no Argo CD Application " + app}
+		return nil, []string{"it lists no Argo CD Application " + c.app}
 	case apps[i].Resources == nil:
-		return nil, []string{"it carries no list of the objects Argo CD's Application " + app + " applied"}
+		return nil, []string{"it carries no list of the objects Argo CD's Application " + c.app + " applied"}
 	case apps[i].Sync != synced || apps[i].Health != healthy:
-		return nil, []string{fmt.Sprintf("Argo CD's Application %s reads sync %q and health %q", app, apps[i].Sync, apps[i].Health)}
+		return nil, []string{fmt.Sprintf("Argo CD's Application %s reads sync %q and health %q", c.app, apps[i].Sync, apps[i].Health)}
+	}
+	if unsettled := apps[i].Operation.problem(c.app); unsettled != "" {
+		return nil, []string{unsettled}
 	}
 	for _, l := range *apps[i].Resources {
 		switch {
-		case !slices.Contains(want, l.object):
-			problems = append(problems, fmt.Sprintf("%s lists %s, which the release does not state", app, l.object))
+		case !slices.Contains(c.objects, l.object):
+			problems = append(problems, fmt.Sprintf("%s lists %s, which the release does not state", c.app, l.object))
 		case l.Sync != synced:
-			problems = append(problems, fmt.Sprintf("%s lists %s %s", app, l.object, l.Sync))
+			problems = append(problems, fmt.Sprintf("%s lists %s %s", c.app, l.object, l.Sync))
 		default:
 			applied = append(applied, l.object.String())
 		}
 	}
-	for _, o := range want {
+	for _, o := range c.objects {
 		if !slices.ContainsFunc(*apps[i].Resources, func(l listedObject) bool { return l.object == o }) {
-			problems = append(problems, fmt.Sprintf("%s does not list %s", app, o))
+			problems = append(problems, fmt.Sprintf("%s does not list %s", c.app, o))
 		}
 	}
 	return applied, problems
-}
-
-// statedCache keeps each component's objects by its carried digest, for the reason carriedCache does.
-var statedCache sync.Map
-
-// stated is each object a component's file states, as Argo CD lists it.
-func stated(c carried) ([]object, error) {
-	sum := sha256.Sum256(c.bytes)
-	key := hex.EncodeToString(sum[:])
-	if objects, ok := statedCache.Load(key); ok {
-		return objects.([]object), nil
-	}
-	var out []object
-	decoder := yaml.NewDecoder(bytes.NewReader(c.bytes))
-	for {
-		var head documentHead
-		err := decoder.Decode(&head)
-		if errors.Is(err, io.EOF) {
-			statedCache.Store(key, out)
-			return out, nil
-		}
-		if err != nil {
-			return nil, fmt.Errorf("the component %s: %w", c.name, err)
-		}
-		if head.Kind == "" {
-			continue
-		}
-		group, _, versioned := strings.Cut(head.APIVersion, "/")
-		if !versioned {
-			group = ""
-		}
-		out = append(out, object{Group: group, Kind: head.Kind, Namespace: head.Metadata.Namespace, Name: head.Metadata.Name})
-	}
 }

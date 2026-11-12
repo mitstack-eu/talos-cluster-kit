@@ -17,6 +17,7 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
 	"github.com/mitstack-eu/talos-cluster-kit/rollout"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
+	"github.com/mitstack-eu/talos-cluster-kit/tools"
 )
 
 // buildOnly are the manifests a build applies and no upgrade carries: the hosting set's keys, sealed keys, the volumes
@@ -166,7 +167,8 @@ func TestRelease_CarriesWhatTheBuildAppliedButTheHostingKeysTheEnrolmentTokenAnd
 			require.NoError(t, err)
 			assert.ElementsMatch(t, manifestNames(carriedAtBuild), manifestNames(release.Components), "the manifests the release carries")
 			assert.Subset(t, manifestNames(release.Components), []string{"mitstack-node-report", "mitstack-cluster-tokens", "mitstack-node-topology"}, "the plane's own manifests")
-			want, err := rollout.Release{Components: carriedAtBuild}.Files(testutil.InitRepository)
+			assert.Equal(t, tools.Image, release.ToolsImage, "the tools image each component's handover Job runs, which this kit release published")
+			want, err := rollout.Release{Components: carriedAtBuild, ToolsImage: release.ToolsImage}.Files(testutil.InitRepository)
 			require.NoError(t, err)
 			got, err := release.Files(testutil.InitRepository)
 			require.NoError(t, err)
@@ -177,7 +179,10 @@ func TestRelease_CarriesWhatTheBuildAppliedButTheHostingKeysTheEnrolmentTokenAnd
 						assert.Nil(t, doc["data"], "the data of Secret %v in %s", doc["metadata"], f.Path)
 						assert.Nil(t, doc["stringData"], "the string data of Secret %v in %s", doc["metadata"], f.Path)
 					}
-					assert.NotEqual(t, "Job", doc["kind"], "a Job %v in %s", doc["metadata"], f.Path)
+					if doc["kind"] == "Job" {
+						assert.Equal(t, "Sync", testutil.Field(t, doc, "metadata", "annotations", "argocd.argoproj.io/hook"),
+							"the one Job %s holds is the carriage's handover, and no Job of the build", f.Path)
+					}
 				}
 			}
 		})

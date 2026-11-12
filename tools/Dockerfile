@@ -3,7 +3,8 @@
 # replaces busybox's timeout, which exits 143 on a timeout where the node report reads GNU timeout's 124. ssh refuses to
 # run for a uid with no passwd entry, so the image names the uid every non-root container runs as. The image carries the
 # node report's, its outside mesh probe's, the security scan's, the topology labeller's and the cluster tokens' scripts,
-# since a node's machine configuration has no room for them inside the builder's user data. The security scan's
+# since a node's machine configuration has no room for them inside the builder's user data, and the script each
+# component's handover Job runs. The security scan's
 # kube-bench with its own cis-1.10 config, kubescape and the NSA framework with its default inputs are checked against
 # scan.env. procps gives kube-bench the ps it finds each component's process with, which busybox's ps refuses. The image
 # carries every manifest a gateway serves at its repository path under the scripts' directory, since a gateway copies
@@ -41,7 +42,7 @@ RUN apk add --no-cache bash ca-certificates coreutils curl git gpg openssh-clien
  && addgroup -g 65532 mitstack \
  && adduser -D -H -h /tmp -s /sbin/nologin -G mitstack -u 65532 mitstack
 
-COPY report/scripts/report.sh report/scripts/mesh-probe.sh report/scripts/security-scan.sh topology/scripts/label-nodes.sh controlplane/scripts/cluster-tokens.sh /usr/local/lib/mitstack/
+COPY report/scripts/report.sh report/scripts/mesh-probe.sh report/scripts/security-scan.sh topology/scripts/label-nodes.sh controlplane/scripts/cluster-tokens.sh rollout/scripts/handover.sh /usr/local/lib/mitstack/
 COPY tools/kube-bench-talos.yaml /usr/local/lib/mitstack/kube-bench/cfg/cis-1.10/config.yaml
 COPY components/ /usr/local/lib/mitstack/components/
 

@@ -1,7 +1,8 @@
 # Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
 # each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
 # 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
-# and the retries wait out a resource definition another component's Application has yet to apply.
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -25,6 +26,7 @@ spec:
       - ServerSideApply=true
     retry:
       limit: -1
+      refresh: true
       backoff:
         duration: 30s
         factor: 2

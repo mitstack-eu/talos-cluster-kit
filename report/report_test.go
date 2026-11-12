@@ -334,7 +334,7 @@ func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipA
 			"zoneLabelManagers": []any{}},
 	}, posted.body["nodes"], "each node's addresses with their types, its zone and region labels, and every manager of its zone label")
 	assert.Equal(t, []any{}, posted.body["ingresses"], "a cluster with no Ingress reports an empty list")
-	assert.Equal(t, readJSON(t, "testdata", "golden", "argocd.json"), posted.body["argocd"], "each Application names the revision Argo CD compared it against or null, and a Secret is among the applied objects, each with its identity, sync and health alone")
+	assert.Equal(t, readJSON(t, "testdata", "golden", "argocd.json"), posted.body["argocd"], "each Application names the revision Argo CD compared it against or null and its last sync's phase with the message cut to 256 characters, and a Secret is among the applied objects, each with its identity, sync and health alone")
 	wantCalls := []string{
 		"kubectl " + nodesRead,
 		"kubectl get applications.argoproj.io -n argocd -o json",

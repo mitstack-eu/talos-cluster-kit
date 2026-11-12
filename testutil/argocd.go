@@ -41,6 +41,7 @@ func refOf(t *testing.T, doc map[string]any) ObjectRef {
 
 // Cluster is a running cluster as far as a cluster repository reaches it: the objects its API serves, the ones Talos
 // created once at the build among them, and Argo CD, whose Applications apply, change and prune what the repository holds.
+// It tracks no field manager, so an object reads as it does once its Application's handover gave up Talos's fields.
 type Cluster struct {
 	t          *testing.T
 	objects    map[ObjectRef]map[string]any
@@ -128,11 +129,24 @@ func (c *Cluster) desired(path string) map[ObjectRef]map[string]any {
 	for file, data := range c.repository {
 		if strings.HasPrefix(file, path+"/") && strings.HasSuffix(file, ".yaml") {
 			for _, doc := range c.parsed(data) {
-				out[refOf(c.t, doc)] = doc
+				if !IsHook(doc) {
+					out[refOf(c.t, doc)] = doc
+				}
 			}
 		}
 	}
 	return out
+}
+
+// hookAnnotation marks a document Argo CD runs during a sync as a hook, which is no object the Application applies.
+const hookAnnotation = "argocd.argoproj.io/hook"
+
+// IsHook is whether Argo CD runs doc during a sync as a hook rather than applying it.
+func IsHook(doc map[string]any) bool {
+	metadata, _ := doc["metadata"].(map[string]any)
+	annotations, _ := metadata["annotations"].(map[string]any)
+	_, hook := annotations[hookAnnotation]
+	return hook
 }
 
 // parsedFiles keeps each file's documents by its digest, since a component set runs to megabytes of YAML and a test
@@ -160,14 +174,15 @@ func (c *Cluster) Report() []byte {
 		Sync      string  `json:"sync"`
 	}
 	type application struct {
-		Name      string     `json:"name"`
-		Health    string     `json:"health"`
-		Sync      string     `json:"sync"`
-		Resources []resource `json:"resources"`
+		Name      string         `json:"name"`
+		Health    string         `json:"health"`
+		Sync      string         `json:"sync"`
+		Operation map[string]any `json:"operation"`
+		Resources []resource     `json:"resources"`
 	}
 	var apps []application
 	for _, name := range slices.Sorted(maps.Keys(c.applied)) {
-		app := application{Name: name, Health: "Healthy", Sync: "Synced", Resources: []resource{}}
+		app := application{Name: name, Health: "Healthy", Sync: "Synced", Operation: map[string]any{"phase": "Succeeded", "message": nil}, Resources: []resource{}}
 		for _, ref := range sortedRefs(c.applied[name]) {
 			r := resource{Group: ref.Group, Kind: ref.Kind, Name: ref.Name, Sync: "Synced"}
 			if ref.Namespace != "" {

@@ -454,6 +454,9 @@ body() {
       + if $health_inline | not then {}
         elif .health.status == null or .health.status == "Healthy" then {health: (.health.status // null)}
         else {health: .health.status, message: (.health.message // null | at_most_256)} end;
+    # The phase of Argo CD's last sync of an Application, with its message unless it succeeded, or null before its first.
+    def last_sync: if . == null then null
+      else {phase, message: (if .phase == "Succeeded" then null else .message // null | at_most_256 end)} end;
     # A kind is listed whole or not at all, and 1000 objects keep the body inside the platform's 256 KiB.
     def subscription_resources:
       reduce $kinds[] as $read ({objects: [], kinds: []};
@@ -612,6 +615,7 @@ body() {
           health: (.status.health.status // "Unknown"),
           sync: (.status.sync.status // "Unknown"),
           revision: .status.sync.revision,
+          operation: (.status.operationState // null | last_sync),
           resources: [.status.resources[]? | applied($health_inline)]
         }],
         routes: $routes,

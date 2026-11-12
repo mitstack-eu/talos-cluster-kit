@@ -44,3 +44,11 @@ func TestArgoCD_KeepsEachObjectsHealthOnItsApplicationWhereTheNodeReportReadsIt(
 
 	assert.Equal(t, "true", testutil.Field(t, cm, "data", "controller.resource.health.persist"), "Argo CD 3 keeps object health off the Application otherwise")
 }
+
+func TestArgoCD_StartsEveryClusterWithItsLocalAdminAccountOff(t *testing.T) {
+	cm := namedDocument(t, manifest(t, "argocd"), "ConfigMap", "argocd-cm")
+
+	enabled := testutil.Field(t, cm, "data", "admin.enabled")
+
+	assert.Equal(t, "false", enabled, "argocd-cm's admin.enabled is %v; the chart turns the local admin account on unless the values set configs.cm.admin.enabled false", enabled)
+}

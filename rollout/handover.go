@@ -15,15 +15,15 @@ import (
 const (
 	handoverSuffix = "-handover"
 	handoverScript = tools.ScriptDir + "/handover.sh"
-	// argoCDController is the account of Argo CD's application controller, which applies every component.
-	argoCDController = "argocd-application-controller"
-	// argoCDManager is the field manager Argo CD's application controller applies under.
-	argoCDManager = "argocd-controller"
+	// ArgoCDController is the account of Argo CD's application controller, which applies every component.
+	ArgoCDController = "argocd-application-controller"
+	// ArgoCDManager is the field manager Argo CD's application controller applies under.
+	ArgoCDManager = "argocd-controller"
 	// syncWaveAnnotation names the wave of a sync Argo CD applies a document in, each wave after the one before it
 	// is applied and reads Healthy.
 	syncWaveAnnotation = "argocd.argoproj.io/sync-wave"
-	// argoCDTrackingAnnotation is the annotation Argo CD gives each object it applies, naming the Application.
-	argoCDTrackingAnnotation = "argocd.argoproj.io/tracking-id"
+	// ArgoCDTrackingAnnotation is the annotation Argo CD gives each object it applies, naming the Application.
+	ArgoCDTrackingAnnotation = "argocd.argoproj.io/tracking-id"
 	// adoptionTimeout bounds the Job's wait for Argo CD to apply each object, which its own sync does within the same
 	// pass that creates the Job.
 	adoptionTimeout = "120s"
@@ -36,7 +36,7 @@ var handover = tmpl.Must("a component's handover Job", handoverTemplate)
 
 // handoverJob names the Job that hands the component's objects over.
 func (c carried) handoverJob() object {
-	return object{Group: "batch", Kind: "Job", Namespace: argoCDNamespace, Name: c.app + handoverSuffix}
+	return object{Group: "batch", Kind: "Job", Namespace: ArgoCDNamespace, Name: c.app + handoverSuffix}
 }
 
 // wave is the wave Argo CD applies the document in, which is zero for one that names none, as Argo CD reads it.
@@ -85,9 +85,9 @@ func (c carried) renderHandover(heads []documentHead, wave int, toolsImage strin
 	}
 	job := c.handoverJob()
 	return tmpl.Execute(handover, map[string]string{
-		"Name": job.Name, "Namespace": job.Namespace, "Wave": strconv.Itoa(wave), "ServiceAccount": argoCDController,
+		"Name": job.Name, "Namespace": job.Namespace, "Wave": strconv.Itoa(wave), "ServiceAccount": ArgoCDController,
 		"Image": toolsImage, "Script": handoverScript, "Objects": string(objects),
-		"TalosManager": constants.KubernetesFieldManagerName, "ArgoCDManager": argoCDManager,
-		"ArgoCDAnnotation": argoCDTrackingAnnotation, "AdoptionTimeout": adoptionTimeout,
+		"TalosManager": constants.KubernetesFieldManagerName, "ArgoCDManager": ArgoCDManager,
+		"ArgoCDAnnotation": ArgoCDTrackingAnnotation, "AdoptionTimeout": adoptionTimeout,
 	})
 }

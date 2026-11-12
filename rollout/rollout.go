@@ -28,8 +28,8 @@ const (
 	ComponentsDir = "components"
 	manifestFile  = "manifest.yaml"
 	clusterDir    = "cluster"
-	// argoCDNamespace holds Argo CD, each component's marker and each component's handover Job.
-	argoCDNamespace = "argocd"
+	// ArgoCDNamespace holds Argo CD, each component's marker and each component's handover Job.
+	ArgoCDNamespace = "argocd"
 	markerDigestLen = 12
 	synced          = "Synced"
 	healthy         = "Healthy"
@@ -190,7 +190,7 @@ const markerFormat = "# Argo CD lists this ConfigMap once it compared the docume
 func (c carried) withMarker(stated []byte, heads []documentHead, wave int) carried {
 	stated = append(stated, "---\n"...)
 	sum := sha256.Sum256(stated)
-	marker := object{Kind: "ConfigMap", Namespace: argoCDNamespace, Name: c.app + "-" + hex.EncodeToString(sum[:])[:markerDigestLen]}
+	marker := object{Kind: "ConfigMap", Namespace: ArgoCDNamespace, Name: c.app + "-" + hex.EncodeToString(sum[:])[:markerDigestLen]}
 	c.bytes = fmt.Appendf(stated, markerFormat, marker.Name, marker.Namespace, wave)
 	for _, head := range heads {
 		c.objects = append(c.objects, head.object())

@@ -634,7 +634,7 @@ node's labels only from its machine configuration.
 
 | Node | Where its labels come from | Why |
 |---|---|---|
-| A Cloud node | The topology labeller, a CronJob in `mitstack-node` that the `topology` package renders | Every Cloud node boots the one configuration the builder embeds in the cluster's snapshot, so that configuration cannot name each node's own location |
+| A Cloud node | The topology labeller, a CronJob in `mitstack-node` that the `topology` package renders | Every Cloud node boots a configuration its image embeds, one for the three control-plane nodes and one for every worker of a Cloud pool, so neither configuration can name a node's own location |
 | A dedicated worker | Its own configuration, from `nodeconfig.Node.Labels`, which a block fills with `controlplane.TopologyLabels` and the worker's location | Each dedicated worker gets a configuration rendered for it alone |
 
 `nodeconfig.Render` refuses `Node.Labels` on a Cloud node, which would land on
@@ -659,6 +659,38 @@ Node's `managedFields`. A label that `kubectl` set by hand names `kubectl-label`
 there instead, until the next run takes it over. The node report carries each
 zone label's managers as `zoneLabelManagers`, so the platform can tell which
 mechanism set it.
+
+The labeller names two sets of Cloud nodes, which `Plane.topologyManifests` in
+`controlplane/topology.go` lists. It names the three control-plane nodes from
+the plane's own names, one for each location, so the labeller a cluster is
+built with names them before their servers exist. It names the workers of a
+Cloud pool from Hetzner's list. `Plane.Release` reads each server with the
+role `cloud-worker` from the state it is given, and names it with the location
+Hetzner records for that server. The workers follow the control-plane nodes in
+name order, so one cluster's labeller renders the same bytes however Hetzner
+orders its servers. For example, a cluster of the app `shop` with one pool
+worker in `fsn1` gives the labeller this list:
+
+```text
+shop-sub-0123-node-fsn1=fsn1 shop-sub-0123-node-nbg1=nbg1 shop-sub-0123-node-hel1=hel1 shop-sub-0123-cloud-worker-fsn1-1=fsn1
+```
+
+A pool worker therefore gets its two labels in three steps. The block creates
+the worker's server. The block's next commit of the release then carries a
+labeller that names the worker, as
+[the section on a running cluster](#how-a-running-cluster-takes-a-releases-components)
+describes. The labeller's first run after Argo CD applied that commit labels
+the node. A cluster that already runs a pool worker when it takes this release
+gets that worker's labels the same way, from the upgrade's commit. Until the
+labels land, the worker's Node carries neither, and the node report shows its
+`zone` and `region` as `null`.
+
+The labels stay with the labeller because no other owner reaches a running
+pool worker. Talos labels a node only from its machine configuration, and a
+pool worker's is the one the worker image embeds, which the block holds the
+keys to render only during the install. A Node that a component stated would
+be Argo CD's to prune, so Argo CD would delete the Node itself once a release
+dropped it.
 
 The labeller's ClusterRole grants `get` and `patch` on the Cloud nodes it
 names, and nothing on any other object. It cannot list nodes, and it cannot
@@ -1923,6 +1955,13 @@ A block that gets this error commits nothing. Where the load balancer is
 missing, the plane's next step builds it. A cluster that hosts no platform runs no
 Traefik, so its release needs no address.
 
+The state also gives the release the Cloud pool's workers, which
+[the topology labeller](#how-each-node-is-labelled-with-its-zone) names beside
+the control-plane nodes. The labeller's file therefore changes when a pool
+worker's server is created or deleted. A block that renders the release from
+the state it has just read, on each call, commits the labeller again after
+such a change.
+
 `Release.Files` returns two files per component, with every manifest file ahead of every Application file in the list, so Argo CD never syncs an Application whose directory is empty:
 
 | File | What it holds |
@@ -2435,6 +2474,13 @@ lists with the subscription's labels and the role `cloud-worker`, and answers a
 
 `CloudPlan.Apply` creates, labels and deletes through the `controlplane` API,
 and no other server of the cluster is touched.
+
+A worker that `Create` lists joins with no zone or region label, since every
+worker boots the one worker image. The topology labeller sets both once the
+block has committed a release rendered from a state that lists the worker's
+server, as
+[How each node is labelled with its zone](#how-each-node-is-labelled-with-its-zone)
+describes.
 
 `Dedicated.RenderWorker` renders a dedicated worker's Talos machine
 configuration from the cluster's secrets. The server boots Talos's image for

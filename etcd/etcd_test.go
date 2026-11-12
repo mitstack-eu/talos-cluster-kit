@@ -204,3 +204,16 @@ func TestBootstrapScript_StartsANewClusterAndDeletesTheTalosconfig(t *testing.T)
 	assert.Equal(t, []string{"talosctl --talosconfig " + talosconfig + " -e 10.0.0.5 -n 10.0.0.5 bootstrap"}, tools.Calls(t))
 	assert.NoFileExists(t, talosconfig, "the admin talosconfig outlives the bootstrap")
 }
+
+func TestRemovalPath_NamesAFileTheClustersOwnApplicationSyncsAndNoOtherFileIsARemoval(t *testing.T) {
+	path := etcd.RemovalPath("shop-node-fsn1")
+
+	assert.Equal(t, "cluster/mitstack-etcd-remove-shop-node-fsn1.yaml", path, `RemovalPath("shop-node-fsn1")`)
+	assert.Equal(t, "mitstack-etcd-remove-shop-node-fsn1", etcd.JobName("shop-node-fsn1"), `JobName("shop-node-fsn1")`)
+	for file, want := range map[string]bool{
+		path: true, "cluster/README.md": false, "cluster/component-cilium.yaml": false,
+		"components/mitstack-etcd-remove-shop-node-fsn1.yaml": false, "cluster/mitstack-etcd-remove-shop-node-fsn1.yaml.bak": false,
+	} {
+		assert.Equal(t, want, etcd.IsRemovalPath(file), "IsRemovalPath(%q)", file)
+	}
+}

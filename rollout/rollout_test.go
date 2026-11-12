@@ -504,6 +504,9 @@ func TestRelease_TheKitsArgoCDGivesItsApplicationControllerEveryRightTheHandover
 
 const fakeKubectl = `case "$1" in
 wait)
+  absent_count=$(cat "$FAKE_DIR/absent" 2> /dev/null || echo 0)
+  echo $((absent_count + 1)) > "$FAKE_DIR/absent"
+  if [ "$absent_count" -lt "${FAKE_ABSENT_WAITS:-0}" ]; then echo 'Error from server (NotFound): configmaps "late" not found' >&2; exit 1; fi
   exit "${FAKE_WAIT_EXIT:-0}"
   ;;
 get)
@@ -554,7 +557,7 @@ func runHandover(t *testing.T, before, after []byte, env ...string) handoverRun 
 	c := handoverContainer(t, handoverJob(t, reportFile(t)))
 	script, err := os.ReadFile(filepath.Join("scripts", "handover.sh"))
 	require.NoError(t, err)
-	fakes := testutil.NewTools(t, map[string]string{"kubectl": fakeKubectl})
+	fakes := testutil.NewTools(t, map[string]string{"kubectl": fakeKubectl, "sleep": ""})
 	require.NoError(t, os.WriteFile(filepath.Join(fakes.Dir, "live.json"), before, 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(fakes.Dir, "after.json"), after, 0o644))
 	vars := []string{"FAKE_DIR=" + fakes.Dir}
@@ -594,8 +597,8 @@ func TestHandover_GivesUpTalossFieldsOnEachObjectTalosAndArgoCDBothAppliedAndOnN
 	require.NoError(t, run.err, run.out)
 	require.Len(t, run.calls, waits+3, "the calls: %v", run.calls)
 	for i, call := range run.calls[:waits] {
-		assert.Regexp(t, `^kubectl wait -f \S+ --for=create --for=jsonpath=\{\.metadata\.annotations\.argocd\\\.argoproj\\\.io/tracking-id\} --timeout=\d+s$`, call,
-			"wait %d of %d, one for each object, first for it to exist and then for Argo CD's annotation on it", i+1, waits)
+		assert.Regexp(t, `^kubectl wait -f \S+ --for=jsonpath=\{\.metadata\.annotations\.argocd\\\.argoproj\\\.io/tracking-id\} --timeout=\d+s$`, call,
+			"wait %d of %d, one for each object, for Argo CD's annotation on it", i+1, waits)
 	}
 	assert.Regexp(t, ` --timeout=120s$`, run.calls[0], "the first wait, which has the whole timeout")
 	assert.Regexp(t, `^kubectl get -f \S+ --show-managed-fields -o json$`, run.calls[waits], "the read of every object the component states")
@@ -608,6 +611,15 @@ func TestHandover_GivesUpTalossFieldsOnEachObjectTalosAndArgoCDBothAppliedAndOnN
 		string(run.applied), "what the apply states: each object's identity and nothing else")
 	assert.Contains(t, run.out, "CronJob mitstack-node/mitstack-node-report", "the report of what it handed over")
 	assert.Contains(t, run.out, "ClusterRole mitstack-node-report", "the report of what it handed over")
+}
+
+func TestHandover_WaitsAgainForAnObjectArgoCDHasNotCreatedYet(t *testing.T) {
+	run := runHandover(t, list(t, argoCDOnly), nil, "FAKE_ABSENT_WAITS=2")
+
+	require.NoError(t, run.err, run.out)
+	assert.Len(t, run.calls, handoverObjectCount(t)+5, "the calls, two waits that found the first object absent, each followed by a sleep, a wait for each object and a read: %v", run.calls)
+	assert.Equal(t, []string{"sleep 1", "sleep 1"}, slices.DeleteFunc(slices.Clone(run.calls), func(call string) bool { return !strings.HasPrefix(call, "sleep") }),
+		"a second's pause before each wait again")
 }
 
 func TestHandover_AppliesNothingWhenNoObjectNamesTalos(t *testing.T) {

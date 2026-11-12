@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"fmt"
 	"net/netip"
+	"strings"
 	"time"
 
 	"github.com/mitstack-eu/talos-cluster-kit/internal/check"
@@ -31,6 +32,23 @@ const (
 	jobNamePrefix  = "mitstack-etcd-remove-"
 	maxLabelLength = 63
 )
+
+// removalDir is the directory of the cluster repository that the cluster's own Application applies and prunes.
+const removalDir = "cluster/"
+
+// JobName is the name of the Job that removes hostname's member, by which Argo CD lists it.
+func JobName(hostname string) string { return jobNamePrefix + hostname }
+
+// RemovalPath is where the cluster repository holds hostname's removal, so the cluster's own Application applies it
+// while main holds the file and prunes its Job once main does not.
+func RemovalPath(hostname string) string { return removalDir + JobName(hostname) + ".yaml" }
+
+// IsRemovalPath reports whether path is one RemovalPath gives, by which a block lists the removals main holds.
+func IsRemovalPath(path string) bool {
+	name, inDir := strings.CutPrefix(path, removalDir+jobNamePrefix)
+	hostname, isYAML := strings.CutSuffix(name, ".yaml")
+	return inDir && isYAML && check.DNS1123Label(hostname) == nil
+}
 
 // RemoveMember names the lost node whose etcd member and Node object go.
 type RemoveMember struct {
@@ -66,7 +84,7 @@ func RemoveMemberJob(r RemoveMember) ([]byte, error) {
 		return nil, err
 	}
 	return tmpl.Execute(removeMemberJob, map[string]string{
-		"Name":      jobNamePrefix + r.Hostname,
+		"Name":      JobName(r.Hostname),
 		"Namespace": nodeconfig.TalosAPINamespace,
 		"Hostname":  r.Hostname,
 		"Image":     r.ToolsImage,

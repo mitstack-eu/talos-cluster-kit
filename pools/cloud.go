@@ -263,7 +263,7 @@ func heldDrain(ctx context.Context, plane controlplane.Plane, members []controlp
 		return "", err
 	}
 	for _, s := range sets {
-		if err := plane.Guard.Allow(s.Set, s.removed, began); redundant.Held(err) {
+		if err := plane.Guard.Allow(s.Set, s.Removed, began); redundant.Held(err) {
 			return err.Error(), nil
 		} else if err != nil {
 			return "", err
@@ -272,16 +272,9 @@ func heldDrain(ctx context.Context, plane controlplane.Plane, members []controlp
 	return "", nil
 }
 
-// removal is a redundant set with the member a drain removes from it.
-type removal struct {
-	redundant.Set
-	removed string
-}
-
 // drainSets are the sets draining leaving removes a member from: the pool's workers, whose minimum keeps every other
-// worker serving unless leaving is the last, and OpenBao's members, a majority of which must stay unsealed, for each
-// member whose pod runs on leaving.
-func drainSets(read report.Read, members []controlplane.Server, leaving controlplane.Server) ([]removal, error) {
+// worker serving unless leaving is the last, and OpenBao's members for each member whose pod runs on leaving.
+func drainSets(read report.Read, members []controlplane.Server, leaving controlplane.Server) ([]report.Removal, error) {
 	names := make([]string, 0, len(members))
 	for _, srv := range members {
 		names = append(names, srv.Name)
@@ -294,17 +287,12 @@ func drainSets(read report.Read, members []controlplane.Server, leaving controlp
 	if len(workers) == 1 {
 		minimum = redundant.NoRedundancy
 	}
-	sets := []removal{{redundant.Set{Name: "Cloud pool's workers", Members: workers, Minimum: minimum}, leaving.Name}}
-	openBao, nodes, err := read.OpenBaoMembers()
+	sets := []report.Removal{{Set: redundant.Set{Name: "Cloud pool's workers", Members: workers, Minimum: minimum}, Removed: leaving.Name}}
+	openBao, err := read.OpenBaoRemovals(leaving.Name)
 	if err != nil {
 		return nil, err
 	}
-	for _, m := range openBao {
-		if nodes[m.Name] == leaving.Name {
-			sets = append(sets, removal{redundant.Set{Name: "OpenBao members", Members: openBao, Minimum: redundant.Majority}, m.Name})
-		}
-	}
-	return sets, nil
+	return append(sets, openBao...), nil
 }
 
 func nextKey(loc string, taken map[string]bool) string {

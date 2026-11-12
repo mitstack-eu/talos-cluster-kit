@@ -69,7 +69,8 @@ type site struct {
 	ingressAddress string
 }
 
-// nodeStep builds the worker image beside the cluster's own, and deletes the worker builder of a cluster refused.
+// nodeStep builds the worker image beside the cluster's own, and deletes the worker builder of a cluster refused. It
+// replaces a node only once neither has a step left, so a replacement it refuses deletes no builder.
 func (p Plane) nodeStep(ctx context.Context, st State, s site) (Step, bool, error) {
 	step, ok, err := p.controlPlaneStep(ctx, st, s)
 	var refused *Refusal
@@ -84,7 +85,10 @@ func (p Plane) nodeStep(ctx context.Context, st State, s site) (Step, bool, erro
 	if err != nil || ok {
 		return step, ok, err
 	}
-	return p.workerImageStep(ctx, st, s)
+	if step, ok, err := p.workerImageStep(ctx, st, s); err != nil || ok {
+		return step, ok, err
+	}
+	return p.replaceNodeStep(ctx, st, s)
 }
 
 // controlPlaneStep builds the image through the first location's gateway, whose mirror the builder fills from, and once
@@ -312,7 +316,7 @@ func (p Plane) missingNodeStep(st State, s site, snap Snapshot) (Step, bool, err
 // createNode boots a node from the cluster's own snapshot, with no user data and no public address, named for its
 // location, of the first of ServerTypes Hetzner can order there now.
 func (p Plane) createNode(ctx context.Context, s site, snap Snapshot, loc string) error {
-	serverType, err := (&OrderableTypes{API: p.API}).First(ctx, "control-plane node", p.ServerTypes, loc)
+	serverType, err := (&OrderableTypes{API: p.API}).First(ctx, nodeWhat, p.ServerTypes, loc)
 	if err != nil {
 		return err
 	}
@@ -327,6 +331,9 @@ func (p Plane) createNode(ctx context.Context, s site, snap Snapshot, loc string
 	})
 	if err != nil {
 		return fmt.Errorf("creating the cluster node in %s from snapshot %d: %w", loc, snap.ID, err)
+	}
+	if passed := p.ServerTypes[:slices.Index(p.ServerTypes, serverType)]; len(passed) > 0 {
+		p.notify(ctx, "created the node in %s as %s, since Hetzner can order no %s there now", loc, serverType, strings.Join(passed, ", "))
 	}
 	return nil
 }

@@ -696,7 +696,7 @@ func TestHosting_RunsOpenBaosMembersOnTheTaintedControlPlaneNodesAndEveryOtherHo
 	members := podTemplates(t, testutil.Manifest(t, "openbao", set.Served))["openbao/openbao"]
 	require.NotNil(t, members, "the openbao manifest has no openbao/openbao workload")
 	assert.True(t, toleratesControlPlane(t, members), "OpenBao's members cannot run on the control-plane nodes their volumes are pinned to")
-	for _, name := range []string{"traefik", "cert-manager", "trust-manager", "external-secrets", "sealed-secrets", "argocd", "mitstack-openbao-init"} {
+	for _, name := range []string{"traefik", "cert-manager", "trust-manager", "external-secrets", "sealed-secrets", "argocd", "mitstack-openbao-init", "plugin-barman-cloud"} {
 		templates := podTemplates(t, testutil.Manifest(t, name, set.Served, set.Inline))
 		assert.NotEmpty(t, templates, "the %s manifest renders no workload", name)
 		for workload, template := range templates {
@@ -799,4 +799,86 @@ func TestHosting_AdmitsTheAPIServerToEveryWebhookPortFromTheControlPlaneNodesAnd
 			assert.Equal(t, "node-role.kubernetes.io/control-plane", testutil.Field(t, config, "data", "node-labels"), "the node label Cilium's identities carry")
 		})
 	}
+}
+
+func barmanCloudPlugin(t *testing.T, set components.Set) components.Manifest {
+	t.Helper()
+	return testutil.Manifest(t, "plugin-barman-cloud", set.Served)
+}
+
+func TestHosting_RunsTheBarmanCloudPluginInTheOperatorsNamespaceBehindTheServiceCloudNativePGFindsItBy(t *testing.T) {
+	set := hostingSet(t, testutil.HostingInputs(t))
+	operator := namedDocument(t, testutil.Manifest(t, "cloudnative-pg", set.Served), "Deployment", "cloudnative-pg")
+
+	plugin := barmanCloudPlugin(t, set)
+
+	service := namedDocument(t, plugin, "Service", "barman-cloud")
+	deployment := namedDocument(t, plugin, "Deployment", "plugin-barman-cloud")
+	assert.Equal(t, testutil.Field(t, operator, "metadata", "namespace"), testutil.Field(t, service, "metadata", "namespace"),
+		"CloudNativePG reads a plugin's Service only in the namespace its operator runs in")
+	assert.Equal(t, "barman-cloud.cloudnative-pg.io", testutil.Field(t, service, "metadata", "labels", "cnpg.io/pluginName"), "the name a Cluster asks for the plugin by")
+	podLabels := testutil.Field(t, deployment, "spec", "template", "metadata", "labels").(map[string]any)
+	for key, value := range testutil.Field(t, service, "spec", "selector").(map[string]any) {
+		assert.Equal(t, value, podLabels[key], "the Service selects %s, which the plugin's pod does not carry", key)
+	}
+	container := testutil.Field(t, deployment, "spec", "template", "spec", "containers", "0")
+	assert.Equal(t, fmt.Sprint(testutil.Field(t, container, "ports", "0", "containerPort")),
+		testutil.Field(t, service, "metadata", "annotations", "cnpg.io/pluginPort"), "the port the operator dials is the one the plugin serves")
+	issued := map[string]map[string]any{}
+	for _, certificate := range testutil.Kind(testutil.Documents(t, plugin.Bytes), "Certificate") {
+		issued[testutil.Field(t, certificate, "spec", "secretName").(string)] = certificate
+	}
+	var mounted []any
+	for _, volume := range testutil.Field(t, deployment, "spec", "template", "spec", "volumes").([]any) {
+		mounted = append(mounted, testutil.Field(t, volume, "secret", "secretName"))
+	}
+	for _, annotation := range []string{"cnpg.io/pluginClientSecret", "cnpg.io/pluginServerSecret"} {
+		secret := testutil.Field(t, service, "metadata", "annotations", annotation).(string)
+		assert.Contains(t, issued, secret, "no Certificate of the manifest issues the Secret %s names", annotation)
+		assert.Contains(t, mounted, any(secret), "the plugin's pod does not mount the Secret %s names", annotation)
+	}
+	server := issued[testutil.Field(t, service, "metadata", "annotations", "cnpg.io/pluginServerSecret").(string)]
+	require.NotNil(t, server, "the plugin's server certificate")
+	assert.Contains(t, testutil.Field(t, server, "spec", "dnsNames"), testutil.Field(t, service, "metadata", "name"), "the operator verifies the plugin's certificate against its Service's name")
+}
+
+func holdsCertManagerObject(t *testing.T, m components.Manifest) bool {
+	t.Helper()
+	return slices.ContainsFunc(testutil.Documents(t, m.Bytes), func(doc map[string]any) bool {
+		apiVersion, _ := doc["apiVersion"].(string)
+		return strings.HasPrefix(apiVersion, "cert-manager.io/")
+	})
+}
+
+func TestHosting_AppliesTheBarmanCloudPluginsCertificatesAfterCertManagerAndAfterEveryManifestThatWaitsOnNoWebhook(t *testing.T) {
+	set := hostingSet(t, testutil.HostingInputs(t))
+
+	plugin := barmanCloudPlugin(t, set)
+
+	require.True(t, holdsCertManagerObject(t, plugin), "the plugin's manifest holds no Certificate or Issuer")
+	assert.Greater(t, plugin.TalosName(), testutil.Manifest(t, "cert-manager", set.Served).TalosName(), "Talos applies a Certificate before cert-manager's webhook, which abandons the pass")
+	for _, m := range slices.Concat(set.Served, set.Inline) {
+		if !holdsCertManagerObject(t, m) {
+			assert.Greater(t, plugin.TalosName(), m.TalosName(), "a webhook that cannot answer yet holds back %s, which waits on none", m.Name)
+		}
+	}
+}
+
+func TestHosting_TheBarmanCloudPluginSetsACPUAndAMemoryLimitAndMeetsTheRestrictedStandardItsNamespaceEnforces(t *testing.T) {
+	set := hostingSet(t, testutil.HostingInputs(t))
+	namespace := testutil.Documents(t, testutil.Manifest(t, "cloudnative-pg-namespace", set.Inline).Bytes)[0]
+	require.Equal(t, "restricted", testutil.Field(t, namespace, "metadata", "labels", "pod-security.kubernetes.io/enforce"))
+
+	pod := podTemplates(t, barmanCloudPlugin(t, set))[testutil.Field(t, namespace, "metadata", "name").(string)+"/plugin-barman-cloud"]
+
+	require.NotNil(t, pod, "the plugin's Deployment in the operator's namespace")
+	assert.Equal(t, true, testutil.Field(t, pod, "spec", "securityContext", "runAsNonRoot"))
+	assert.Equal(t, "RuntimeDefault", testutil.Field(t, pod, "spec", "securityContext", "seccompProfile", "type"))
+	containers := testutil.Field(t, pod, "spec", "containers").([]any)
+	require.Len(t, containers, 1)
+	assert.Equal(t, false, testutil.Field(t, containers[0], "securityContext", "allowPrivilegeEscalation"))
+	assert.Equal(t, []any{"ALL"}, testutil.Field(t, containers[0], "securityContext", "capabilities", "drop"))
+	limits, _ := testutil.Field(t, containers[0], "resources", "limits").(map[string]any)
+	assert.NotEmpty(t, limits["cpu"], "the plugin's container sets no CPU limit")
+	assert.NotEmpty(t, limits["memory"], "the plugin's container sets no memory limit")
 }

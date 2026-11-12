@@ -7,7 +7,12 @@
       "kind": "Cluster",
       "metadata": {"name": "shared", "namespace": "app-pg", "labels": {"mitstack.dev/subscription": "sub_pg0123456789"}},
       "spec": {"instances": 2},
-      "status": {"phase": "Cluster in healthy state", "instances": 2, "readyInstances": 2, "currentPrimary": "shared-1", "targetPrimary": "shared-1"}
+      "status": {"phase": "Cluster in healthy state", "instances": 2, "readyInstances": 2, "currentPrimary": "shared-1", "targetPrimary": "shared-1",
+        "conditions": [
+          {"type": "Ready", "status": "True", "reason": "ClusterIsReady", "message": "Cluster is Ready", "lastTransitionTime": "2026-11-12T01:00:00Z"},
+          {"type": "ContinuousArchiving", "status": "True", "reason": "ContinuousArchivingSuccess", "message": "Continuous archiving is working", "lastTransitionTime": "2026-11-12T01:05:00Z"},
+          {"type": "LastBackupSucceeded", "status": "False", "reason": "LastBackupFailed", "message": "can't execute backup: exit status 4", "lastTransitionTime": "2026-11-12T03:00:00Z"}
+        ]}
     },
     {
       "apiVersion": "postgresql.cnpg.io/v1",

@@ -57,6 +57,31 @@
       "kind": "Service",
       "metadata": {"name": "argocd-repo-server", "namespace": "argocd", "labels": {"app.kubernetes.io/name": "argocd-repo-server"}},
       "spec": {"type": "ClusterIP", "clusterIP": "10.96.2.11", "ports": [{"port": 8081}]}
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {"name": "cnpg-webhook-service", "namespace": "cnpg-system"},
+      "spec": {"type": "ClusterIP", "clusterIP": "10.96.3.10", "ports": [{"port": 443}]}
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {"name": "other-plugin", "namespace": "cnpg-system", "labels": {"cnpg.io/pluginName": "other.example"}},
+      "spec": {"type": "ClusterIP", "clusterIP": "10.96.3.12", "ports": [{"port": 9090}]}
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {"name": "barman-cloud", "namespace": "cnpg-system", "labels": {"cnpg.io/pluginName": "barman-cloud.cloudnative-pg.io"},
+        "annotations": {"cnpg.io/pluginPort": "9090", "cnpg.io/pluginClientSecret": "barman-cloud-client-tls", "cnpg.io/pluginServerSecret": "barman-cloud-server-tls"}},
+      "spec": {"type": "ClusterIP", "clusterIP": "10.96.3.11", "ports": [{"port": 9090}]}
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {"name": "plugin-lookalike", "namespace": "app-shop", "labels": {"cnpg.io/pluginName": "lookalike.example"}},
+      "spec": {"type": "ClusterIP", "clusterIP": "10.96.4.22", "ports": [{"port": 9090}]}
     }
   ]
 }

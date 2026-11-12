@@ -177,6 +177,33 @@ func TestRelease_ASecondUpgradeChangesTheReportAddsAComponentPrunesTheOneItDrops
 	assert.NotContains(t, applications(t, c), "component-local-path-provisioner-namespace", "the Applications once the dropped one is pruned")
 }
 
+func TestRelease_GivesARunningClusterTheBarmanCloudPluginThroughAnApplicationOfItsOwnThatAppliesNoObjectButThePlugins(t *testing.T) {
+	database := []byte("apiVersion: postgresql.cnpg.io/v1\nkind: Cluster\nmetadata:\n  name: shared\n  namespace: app-pg\nspec:\n  instances: 2\n")
+	running := testutil.ObjectRef{Group: "postgresql.cnpg.io", Kind: "Cluster", Namespace: "app-pg", Name: "shared"}
+	c := testutil.BuildCluster(t, database)
+	upgrade(t, c, firstRelease(t))
+	c.Sync()
+	plugin := testutil.Manifest(t, "plugin-barman-cloud", components.HostingServed().Served)
+	next := firstRelease(t)
+	next.Components = append(next.Components, plugin)
+	deployment := testutil.ObjectRef{Group: "apps", Kind: "Deployment", Namespace: "cnpg-system", Name: "plugin-barman-cloud"}
+	service := testutil.ObjectRef{Kind: "Service", Namespace: "cnpg-system", Name: "barman-cloud"}
+	objectStores := testutil.ObjectRef{Group: "apiextensions.k8s.io", Kind: "CustomResourceDefinition", Name: "objectstores.barmancloud.cnpg.io"}
+	serverCertificate := testutil.ObjectRef{Group: "cert-manager.io", Kind: "Certificate", Namespace: "cnpg-system", Name: "barman-cloud-server"}
+
+	upgrade(t, c, next)
+	stale := readBack(t, c, next)
+	c.Sync()
+	reading := readBack(t, c, next)
+
+	assert.Contains(t, stale.Problem, "component-plugin-barman-cloud", "the read-back before Argo CD synced the plugin")
+	assert.Empty(t, reading.Problem, "the read-back after Argo CD synced the plugin")
+	assert.Contains(t, applications(t, c), "component-plugin-barman-cloud", "the Applications once the release is synced")
+	assert.Subset(t, reading.Applied, []string{deployment.String(), service.String(), objectStores.String(), serverCertificate.String()}, "the objects read back")
+	assert.Equal(t, stated(t, plugin.Bytes, deployment), c.Object(deployment), "the plugin's Deployment the cluster's API serves")
+	assert.Equal(t, testutil.Documents(t, database)[0], c.Object(running), "a Cluster that ran before the release, which no Application of the release states")
+}
+
 func TestRelease_ReadsNothingBackBeforeArgoCDComparedAReleaseThatOnlyChangesAComponent(t *testing.T) {
 	c := builtOnV0460(t)
 	upgrade(t, c, firstRelease(t))

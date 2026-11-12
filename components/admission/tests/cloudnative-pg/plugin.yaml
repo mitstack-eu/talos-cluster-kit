@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cloudnative-pg-barman-cloud-plugin
+  namespace: cnpg-system
+  labels:
+    app.kubernetes.io/name: plugin-barman-cloud
+    app.kubernetes.io/instance: plugin-barman-cloud
+    mitstack.dev/app: plugin-barman-cloud
+spec:
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  serviceAccountName: plugin-barman-cloud
+  containers:
+  - name: barman-cloud
+    image: ghcr.io/cloudnative-pg/plugin-barman-cloud:v0.16.0@sha256:6404a416718bd7aad943c67a25a7bb20d0558b43edfeab0bf167f013ca435882
+    args: [operator, --server-cert=/server/tls.crt, --server-key=/server/tls.key, --client-cert=/client/tls.crt, --server-address=:9090, --leader-elect, --log-level=info]
+    ports:
+    - containerPort: 9090
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: [ALL]
+      readOnlyRootFilesystem: true
+    resources:
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    volumeMounts:
+    - name: server
+      mountPath: /server
+    - name: client
+      mountPath: /client
+  volumes:
+  - name: server
+    secret:
+      secretName: barman-cloud-server-tls
+  - name: client
+    secret:
+      secretName: barman-cloud-client-tls

@@ -416,7 +416,9 @@ func TestManifests_RestrictImageRegistriesNamesExactlyTheImagesTheKitPinsForPods
 	}
 	solver := regexp.MustCompile(`--acme-http01-solver-image=(\S+)`).FindStringSubmatch(certManager)
 	require.NotNil(t, solver, "cert-manager sets no solver image")
-	want = append(want, solver[1], pinnedBusybox(t))
+	sidecar := regexp.MustCompile(`(?m)^\s*SIDECAR_IMAGE: "?([^"\s]+)"?$`).FindStringSubmatch(string(testutil.Manifest(t, "plugin-barman-cloud", hosting.Served).Bytes))
+	require.NotNil(t, sidecar, "the Barman Cloud plugin sets no sidecar image")
+	want = append(want, solver[1], sidecar[1], pinnedBusybox(t))
 
 	got := quoted(t, podPolicy(t, "mitstack-restrict-image-registries"), "pinnedImages")
 
@@ -431,6 +433,10 @@ func TestManifests_PodPoliciesJudgeWhatAPodMountsSetsAndPulls(t *testing.T) {
 	)
 	pinned := quoted(t, podPolicy(t, "mitstack-restrict-image-registries"), "pinnedImages")
 	postgres := pinned[slices.IndexFunc(pinned, func(s string) bool { return strings.Contains(s, "postgresql:") })]
+	sidecarAt := slices.IndexFunc(pinned, func(s string) bool { return strings.Contains(s, "plugin-barman-cloud-sidecar:") })
+	require.GreaterOrEqual(t, sidecarAt, 0, "the policy pins no Barman Cloud sidecar image")
+	sidecar := pinned[sidecarAt]
+	sidecarTag, _, _ := strings.Cut(sidecar, "@")
 	busybox := pinnedBusybox(t)
 	busyboxTag, busyboxDigest, _ := strings.Cut(busybox, "@")
 	limits := map[string]any{"limits": map[string]any{"cpu": "100m", "memory": "64Mi"}}
@@ -475,6 +481,11 @@ func TestManifests_PodPoliciesJudgeWhatAPodMountsSetsAndPulls(t *testing.T) {
 		{"another Docker Hub image at the busybox digest is refused", "mitstack-restrict-image-registries", pod(container("docker.io/library/alpine:3.22.0@"+busyboxDigest, limits)), false},
 		{"the pinned busybox image in an init container is admitted", "mitstack-restrict-image-registries", with(pod(container(mitstack, limits)), "initContainers", []any{container(busybox, limits)}), true},
 		{"the same Postgres image at another digest is refused", "mitstack-restrict-image-registries", pod(container("ghcr.io/cloudnative-pg/postgresql:16.15-system-trixie"+zero, limits)), false},
+		{"the Barman Cloud sidecar the plugin adds to a Postgres pod as an init container, by its pinned digest, is admitted", "mitstack-restrict-image-registries", with(pod(container(postgres, limits)), "initContainers", []any{container(sidecar, limits)}), true},
+		{"the same sidecar by tag alone is refused", "mitstack-restrict-image-registries", with(pod(container(postgres, limits)), "initContainers", []any{container(sidecarTag, limits)}), false},
+		{"the same sidecar at another digest is refused", "mitstack-restrict-image-registries", with(pod(container(postgres, limits)), "initContainers", []any{container(sidecarTag+zero, limits)}), false},
+		{"the plugin's own image, which runs only in the operator's namespace, is refused in an app namespace", "mitstack-restrict-image-registries", pod(container(strings.Replace(sidecar, "-sidecar:", ":", 1), limits)), false},
+		{"a Postgres pod whose sidecar sets no limits is refused", "mitstack-require-resource-limits", with(pod(container(postgres, limits)), "initContainers", []any{container(sidecar, map[string]any{})}), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, testutil.Admits(t, podPolicy(t, tc.policy), tc.pod, namespace))

@@ -60,6 +60,15 @@ func TestImages_RefusesAnOperatorsDefaultImageWithoutADigest(t *testing.T) {
 	assert.Contains(t, err.Error(), "ghcr.io/cloudnative-pg/pgbouncer:1.25.2")
 }
 
+func TestImages_RefusesTheSidecarImageAPluginAddsToAPodWithoutADigest(t *testing.T) {
+	set := components.Set{Inline: []components.Manifest{{Name: "plugin", Bytes: []byte("data:\n  SIDECAR_IMAGE: \"ghcr.io/cloudnative-pg/plugin-barman-cloud-sidecar:v0.16.0\"\n")}}}
+
+	_, err := set.Images()
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ghcr.io/cloudnative-pg/plugin-barman-cloud-sidecar:v0.16.0")
+}
+
 func TestDefault_PinsTheReleasesToolsEnvInstalls(t *testing.T) {
 	set := components.Default()
 

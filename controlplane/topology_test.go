@@ -132,7 +132,7 @@ func TestRelease_TheLabellerNamesEachCloudPoolWorkerHetznerListsWithItsServersLo
 }
 
 // The cluster was built, and took an earlier carriage, while its labeller named the control-plane nodes alone.
-func TestRelease_AClusterThatAlreadyRunsACloudWorkerLabelsItWithItsZoneOnceArgoCDAppliesTheRelease(t *testing.T) {
+func TestRelease_TheLabellerOfAClusterThatAlreadyRunsACloudWorkerNamesItWithItsZoneOnceArgoCDAppliesTheRelease(t *testing.T) {
 	h := newHarness(t)
 	h.built()
 	plane, err := h.plane.WithGatewayCA()

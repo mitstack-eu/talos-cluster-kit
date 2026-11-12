@@ -445,8 +445,7 @@ func TestRelease_RunsAHandoverJobThatNamesEveryObjectTheComponentStates(t *testi
 	assert.Equal(t, "List", objects["kind"])
 	assert.Equal(t, want, objects["items"], "the objects the Job reads, which are the component's and never the marker Argo CD alone creates")
 	assert.Equal(t, constants.KubernetesFieldManagerName, env["HANDOVER_TALOS_MANAGER"], "the field manager Talos creates an object under")
-	assert.Equal(t, "argocd-controller", env["HANDOVER_ARGOCD_MANAGER"], "the field manager Argo CD applies under")
-	assert.Equal(t, "argocd.argoproj.io/tracking-id", env["HANDOVER_ARGOCD_ANNOTATION"], "the annotation Argo CD gives each object it applies, which the Job waits for")
+	assert.Equal(t, "argocd-controller", env["HANDOVER_ARGOCD_MANAGER"], "the field manager Argo CD applies under, which the Job waits for on each object")
 	assert.Equal(t, "120s", env["HANDOVER_ADOPTION_TIMEOUT"], "how long the Job waits for Argo CD to apply the objects of its own sync")
 }
 
@@ -504,7 +503,7 @@ func TestRelease_TheKitsArgoCDGivesItsApplicationControllerEveryRightTheHandover
 
 const fakeKubectl = `case "$*" in
 get*--watch*)
-  printf '%b' "${FAKE_WATCH-argocd-tracking-id\\n}"
+  printf '%b' "${FAKE_WATCH-Apply\\n}"
   [ "${FAKE_WATCH_THEN:-0}" != hold ] || exec tail -f /dev/null
   exit "${FAKE_WATCH_THEN:-0}"
   ;;
@@ -596,12 +595,12 @@ func TestHandover_GivesUpTalossFieldsOnEachObjectTalosAndArgoCDBothAppliedAndOnN
 	require.NoError(t, run.err, run.out)
 	require.Len(t, run.calls, waits+3, "the calls: %v", run.calls)
 	for i, call := range run.calls[:waits] {
-		assert.Regexp(t, `^kubectl get [a-z]+\.v[0-9a-z]+\.[0-9a-z.-]* --field-selector=metadata\.name=\S+ --watch -o jsonpath=\{\.metadata\.annotations\.argocd\\\.argoproj\\\.io/tracking-id\}\{"\\n"\}( -n \S+)?$`, call,
-			"watch %d of %d, one for each object, read until Argo CD's annotation shows", i+1, waits)
+		assert.Regexp(t, `^kubectl get [a-z]+\.v[0-9a-z]+\.[0-9a-z.-]* --field-selector=metadata\.name=\S+ --watch -o jsonpath=\{\.metadata\.managedFields\[\?\(@\.manager=="argocd-controller"\)\]\.operation\}\{"\\n"\}( -n \S+)?$`, call,
+			"watch %d of %d, one for each object, read until Argo CD's field manager shows an apply", i+1, waits)
 	}
-	assert.Contains(t, run.calls[:waits], `kubectl get cronjob.v1.batch --field-selector=metadata.name=mitstack-node-report --watch -o jsonpath={.metadata.annotations.argocd\.argoproj\.io/tracking-id}{"\n"} -n mitstack-node`,
+	assert.Contains(t, run.calls[:waits], `kubectl get cronjob.v1.batch --field-selector=metadata.name=mitstack-node-report --watch -o jsonpath={.metadata.managedFields[?(@.manager=="argocd-controller")].operation}{"\n"} -n mitstack-node`,
 		"the watch of a namespaced object, by its kind, version and group")
-	assert.Contains(t, run.calls[:waits], `kubectl get clusterrole.v1.rbac.authorization.k8s.io --field-selector=metadata.name=mitstack-node-report --watch -o jsonpath={.metadata.annotations.argocd\.argoproj\.io/tracking-id}{"\n"}`,
+	assert.Contains(t, run.calls[:waits], `kubectl get clusterrole.v1.rbac.authorization.k8s.io --field-selector=metadata.name=mitstack-node-report --watch -o jsonpath={.metadata.managedFields[?(@.manager=="argocd-controller")].operation}{"\n"}`,
 		"the watch of a cluster-wide object, in no namespace")
 	assert.Contains(t, run.out, "handover: waiting up to 120s for Argo CD to apply each object the component states", "what the handover says as its wait begins")
 	assert.Regexp(t, `^kubectl get -f \S+ --show-managed-fields -o json$`, run.calls[waits], "the read of every object the component states")
@@ -616,14 +615,28 @@ func TestHandover_GivesUpTalossFieldsOnEachObjectTalosAndArgoCDBothAppliedAndOnN
 	assert.Contains(t, run.out, "ClusterRole mitstack-node-report", "the report of what it handed over")
 }
 
-func TestHandover_ReadsEachWatchPastTheObjectsChangesUntilArgoCDHasAnnotatedIt(t *testing.T) {
-	run := runHandover(t, list(t, argoCDOnly), nil, `FAKE_WATCH=\n\nargocd-tracking-id\n`, "FAKE_WATCH_THEN=hold")
+func TestHandover_ReadsEachWatchPastTheObjectsChangesUntilArgoCDHasAppliedIt(t *testing.T) {
+	run := runHandover(t, list(t, argoCDOnly), nil, `FAKE_WATCH=\n\nUpdate\nUpdate Apply\n`, "FAKE_WATCH_THEN=hold")
 
 	require.NoError(t, run.err, run.out)
 	require.Len(t, run.calls, handoverObjectCount(t)+1, "the calls, a watch for each object and a read: %v", run.calls)
 	for _, call := range run.calls[:handoverObjectCount(t)] {
-		assert.Contains(t, call, " --watch ", "each object's watch, which the handover stops once the annotation shows")
+		assert.Contains(t, call, " --watch ", "each object's watch, which the handover stops once Argo CD's apply shows")
 	}
+}
+
+func TestHandover_NamesOnlyTheObjectsArgoCDHasNotAppliedWhenTheWaitEnds(t *testing.T) {
+	createdByTalos := live("v1", "ServiceAccount", "mitstack-node", "mitstack-node-report", "talos")
+
+	run := runHandover(t, list(t, bothApplied, createdByTalos), nil, `FAKE_WATCH=\n`, "FAKE_WATCH_THEN=hold", "HANDOVER_ADOPTION_TIMEOUT=1s")
+
+	require.Error(t, run.err, run.out)
+	require.NotEmpty(t, run.calls)
+	assert.Regexp(t, `^kubectl get -f \S+ --ignore-not-found --show-managed-fields -o json$`, run.calls[len(run.calls)-1],
+		"the read of each object's field managers once the wait ends")
+	assert.Contains(t, run.out, "ServiceAccount mitstack-node/mitstack-node-report", "an object Talos alone applied")
+	assert.Contains(t, run.out, "ClusterRole mitstack-node-report", "an object the component states that does not exist")
+	assert.NotContains(t, run.out, "CronJob mitstack-node/mitstack-node-report", "the object Argo CD applied")
 }
 
 func TestHandover_AppliesNothingWhenNoObjectNamesTalos(t *testing.T) {
@@ -659,7 +672,9 @@ func TestHandover_FailsNamingWhatItCouldNotHandOver(t *testing.T) {
 			list(t, bothApplied, updatedByTalos()), nil, nil, "Namespace mitstack-node", false},
 		{"an object Argo CD does not apply within the wait", list(t, bothApplied), nil,
 			[]string{`FAKE_WATCH=\n`, "FAKE_WATCH_THEN=hold", "HANDOVER_ADOPTION_TIMEOUT=1s"}, "within 1s", false},
-		{"a watch that ends before Argo CD annotates the object", list(t, bothApplied), nil, []string{`FAKE_WATCH=\n`, "FAKE_WATCH_THEN=1"}, "ended before Argo CD applied it", false},
+		{"an object Argo CD wrote within the wait by a plain write, which is no apply", list(t, bothApplied), nil,
+			[]string{`FAKE_WATCH=Update\n`, "FAKE_WATCH_THEN=hold", "HANDOVER_ADOPTION_TIMEOUT=1s"}, "within 1s", false},
+		{"a watch that ends before Argo CD applies the object", list(t, bothApplied), nil, []string{`FAKE_WATCH=\n`, "FAKE_WATCH_THEN=1"}, "ended before Argo CD applied it", false},
 		{"a timeout that is no number of seconds", list(t, bothApplied), nil, []string{"HANDOVER_ADOPTION_TIMEOUT=2m"}, "not a number of seconds", false},
 		{"objects that cannot be read", list(t, bothApplied), nil, []string{"FAKE_GET_EXIT=1"}, "cannot read", false},
 		{"an apply the API server refuses", list(t, bothApplied), nil, []string{"FAKE_APPLY_EXIT=1"}, "refused", true},

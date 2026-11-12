@@ -30,6 +30,9 @@ const (
 	argoCDUser = "system:serviceaccount:" + rollout.ArgoCDNamespace + ":" + rollout.ArgoCDController
 	// talosInventoryAnnotation is the annotation Talos v1.14.4 gives each object it creates, naming its inventory.
 	talosInventoryAnnotation = "config.k8s.io/owning-inventory"
+	// argoCDTrackingAnnotation is the annotation Argo CD v3.5.5 gives each object it applies but a
+	// CustomResourceDefinition, naming the Application.
+	argoCDTrackingAnnotation = "argocd.argoproj.io/tracking-id"
 	// droppedContainer is the privileged init container Cilium's agent ran at kit release v0.53.0.
 	droppedContainer  = "mount-bpf-fs"
 	ciliumApplication = rollout.ApplicationPrefix + "cilium"
@@ -41,6 +44,7 @@ type managedObject struct {
 		Name            string
 		Generation      int
 		ResourceVersion string
+		Annotations     map[string]string
 		ManagedFields   []struct{ Manager, Operation string }
 	}
 	Spec struct {
@@ -161,21 +165,26 @@ func (s *apiServer) talosCreates(t *testing.T, manifest []byte) {
 	s.admin(t, stream(t, docs...), "apply", "--server-side", "--field-manager="+constants.KubernetesFieldManagerName, "-f", "-")
 }
 
-// argoCDSyncs applies each object file states as Argo CD v3.5.5 syncs an Application that sets ServerSideApply=true.
-func (s *apiServer) argoCDSyncs(t *testing.T, file []byte) {
+// argoCDSyncs applies each object file states as Argo CD v3.5.5 syncs the Application app, which sets
+// ServerSideApply=true.
+func (s *apiServer) argoCDSyncs(t *testing.T, app string, file []byte) {
 	t.Helper()
-	out, err := s.argoCDApply(t, statedObjects(t, file)).CombinedOutput()
+	out, err := s.argoCDApply(t, app, statedObjects(t, file)).CombinedOutput()
 	require.NoError(t, err, "Argo CD's apply: %s", out)
 }
 
-// argoCDApply is the command that applies objects as Argo CD v3.5.5 does: a forced server-side apply under Argo CD's
-// field manager, as its application controller, of each object with the annotation Argo CD tracks it by.
-func (s *apiServer) argoCDApply(t *testing.T, objects []map[string]any) *exec.Cmd {
+// argoCDApply is the command that applies objects as Argo CD v3.5.5 does for the Application app: a forced server-side
+// apply under Argo CD's field manager, as its application controller. Each object carries the annotation Argo CD tracks
+// it by but a CustomResourceDefinition, which its repo-server gives none.
+func (s *apiServer) argoCDApply(t *testing.T, app string, objects []map[string]any) *exec.Cmd {
 	t.Helper()
 	for _, doc := range objects {
 		group, _, versioned := strings.Cut(doc["apiVersion"].(string), "/")
 		if !versioned {
 			group = ""
+		}
+		if doc["kind"] == "CustomResourceDefinition" && group == "apiextensions.k8s.io" {
+			continue
 		}
 		metadata := doc["metadata"].(map[string]any)
 		annotations, _ := metadata["annotations"].(map[string]any)
@@ -183,7 +192,7 @@ func (s *apiServer) argoCDApply(t *testing.T, objects []map[string]any) *exec.Cm
 			annotations = map[string]any{}
 		}
 		namespace, _ := metadata["namespace"].(string)
-		annotations[rollout.ArgoCDTrackingAnnotation] = fmt.Sprintf("%s:%s/%s:%s/%s", ciliumApplication, group, doc["kind"], namespace, metadata["name"])
+		annotations[argoCDTrackingAnnotation] = fmt.Sprintf("%s:%s/%s:%s/%s", app, group, doc["kind"], namespace, metadata["name"])
 		metadata["annotations"] = annotations
 	}
 	return s.adminCommand(stream(t, objects...), "apply", "--server-side", "--force-conflicts",
@@ -308,8 +317,8 @@ func TestAPIServer_AnObjectTalosCreatedKeepsAFieldAReleaseDropsUntilItsComponent
 		assert.Contains(t, server.ciliumAgent(t).initContainers(), droppedContainer, "the agent's init containers")
 	})
 
-	server.argoCDSyncs(t, carriedFile(t, before))
-	server.argoCDSyncs(t, release)
+	server.argoCDSyncs(t, ciliumApplication, carriedFile(t, before))
+	server.argoCDSyncs(t, ciliumApplication, release)
 	synced := server.ciliumAgent(t)
 
 	t.Run("Argo CD's sync of the release leaves the container Talos still owns, and the agent's pods never roll", func(t *testing.T) {
@@ -335,7 +344,7 @@ func TestAPIServer_AnObjectTalosCreatedKeepsAFieldAReleaseDropsUntilItsComponent
 		handedOver := server.ciliumAgent(t)
 
 		out, err := server.runHandover(t, release)
-		server.argoCDSyncs(t, release)
+		server.argoCDSyncs(t, ciliumApplication, release)
 
 		require.NoError(t, err, "the handover printed:\n%s", out)
 		assert.Equal(t, handedOver.Metadata.ResourceVersion, server.ciliumAgent(t).Metadata.ResourceVersion, "the agent's resource version")
@@ -345,9 +354,44 @@ func TestAPIServer_AnObjectTalosCreatedKeepsAFieldAReleaseDropsUntilItsComponent
 		late := lateObjects(t, release, "ServiceAccount kube-system/cilium-envoy", "ConfigMap kube-system/cilium-envoy-config")
 		server.admin(t, nil, "delete", "serviceaccount/cilium-envoy", "configmap/cilium-envoy-config", "-n", "kube-system")
 
-		out, err := server.runHandoverApplying(t, release, server.argoCDApply(t, late))
+		out, err := server.runHandoverApplying(t, release, server.argoCDApply(t, ciliumApplication, late))
 
 		require.NoError(t, err, "the handover printed:\n%s", out)
 		assert.Empty(t, namedByTalos(server.live(t, release)), "the component's objects that still name Talos as a field manager")
+	})
+}
+
+func TestAPIServer_AComponentsHandoverGivesUpTalossFieldsOnACustomResourceDefinitionArgoCDAppliesWithoutItsTrackingAnnotation(t *testing.T) {
+	policyCRD := testutil.Manifest(t, "cilium-policy-crd", components.Default().Served)
+	file := carriedFile(t, policyCRD)
+	application := rollout.ApplicationPrefix + policyCRD.Name
+	server := startAPIServer(t)
+	server.admin(t, argoCDIdentity(t), "apply", "-f", "-")
+	server.talosCreates(t, policyCRD.Bytes)
+	definition := func() managedObject {
+		definitions := server.live(t, policyCRD.Bytes)
+		require.Len(t, definitions, 1, "the definitions the component states")
+		require.Equal(t, "CustomResourceDefinition", definitions[0].Kind)
+		return definitions[0]
+	}
+
+	t.Run("a handover that starts before Argo CD applies the definition waits for that apply and leaves Talos no field of it", func(t *testing.T) {
+		out, err := server.runHandoverApplying(t, file, server.argoCDApply(t, application, statedObjects(t, file)))
+
+		require.NoError(t, err, "the handover printed:\n%s", out)
+		handedOver := definition()
+		assert.NotContains(t, handedOver.Metadata.Annotations, argoCDTrackingAnnotation, "the definition's annotations, as Argo CD applied it")
+		assert.True(t, handedOver.appliedBy(rollout.ArgoCDManager) && !handedOver.appliedBy(constants.KubernetesFieldManagerName),
+			"Argo CD alone applies the definition: %v", handedOver.Metadata.ManagedFields)
+		assert.Equal(t, 1, handedOver.Metadata.Generation, "the definition's generation, which a changed spec raises")
+	})
+
+	t.Run("a second handover, of a definition Argo CD applied before it started, changes nothing", func(t *testing.T) {
+		handedOver := definition()
+
+		out, err := server.runHandover(t, file)
+
+		require.NoError(t, err, "the handover printed:\n%s", out)
+		assert.Equal(t, handedOver.Metadata.ResourceVersion, definition().Metadata.ResourceVersion, "the definition's resource version")
 	})
 }

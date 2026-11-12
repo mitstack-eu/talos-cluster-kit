@@ -180,7 +180,7 @@ func TestRelease_CarriesWhatTheBuildAppliedButTheHostingKeysTheEnrolmentTokenAnd
 						assert.Nil(t, doc["stringData"], "the string data of Secret %v in %s", doc["metadata"], f.Path)
 					}
 					if doc["kind"] == "Job" {
-						assert.Equal(t, "PostSync", testutil.Field(t, doc, "metadata", "annotations", "argocd.argoproj.io/hook"),
+						assert.Equal(t, "Sync", testutil.Field(t, doc, "metadata", "annotations", "argocd.argoproj.io/hook"),
 							"the one Job %s holds is the carriage's handover, and no Job of the build", f.Path)
 					}
 				}

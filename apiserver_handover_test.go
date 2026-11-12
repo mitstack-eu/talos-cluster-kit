@@ -7,8 +7,10 @@ package talosclusterkit
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/siderolabs/talos/pkg/machinery/constants"
@@ -29,6 +31,9 @@ const (
 	// droppedContainer is the privileged init container Cilium's agent ran at kit release v0.53.0.
 	droppedContainer = "mount-bpf-fs"
 	argoCDHook       = "argocd.argoproj.io/hook"
+	// argoCDTracking is the annotation Argo CD v3.5.5 gives each object it applies, naming the Application and the object.
+	argoCDTracking    = "argocd.argoproj.io/tracking-id"
+	ciliumApplication = rollout.ApplicationPrefix + "cilium"
 )
 
 type managedObject struct {
@@ -164,10 +169,26 @@ func (s *apiServer) talosCreates(t *testing.T, manifest []byte) {
 }
 
 // argoCDSyncs applies each object file states as Argo CD v3.5.5 syncs an Application that sets ServerSideApply=true: a
-// forced server-side apply under Argo CD's field manager, as its application controller.
+// forced server-side apply under Argo CD's field manager, as its application controller, of the object with the
+// annotation Argo CD tracks it by.
 func (s *apiServer) argoCDSyncs(t *testing.T, file []byte) {
 	t.Helper()
-	s.admin(t, stream(t, statedObjects(t, file)...), "apply", "--server-side", "--force-conflicts",
+	objects := statedObjects(t, file)
+	for _, doc := range objects {
+		group, _, versioned := strings.Cut(doc["apiVersion"].(string), "/")
+		if !versioned {
+			group = ""
+		}
+		metadata := doc["metadata"].(map[string]any)
+		annotations, _ := metadata["annotations"].(map[string]any)
+		if annotations == nil {
+			annotations = map[string]any{}
+		}
+		namespace, _ := metadata["namespace"].(string)
+		annotations[argoCDTracking] = fmt.Sprintf("%s:%s/%s:%s/%s", ciliumApplication, group, doc["kind"], namespace, metadata["name"])
+		metadata["annotations"] = annotations
+	}
+	s.admin(t, stream(t, objects...), "apply", "--server-side", "--force-conflicts",
 		"--field-manager=argocd-controller", "--as="+argoCDUser, "-f", "-")
 }
 

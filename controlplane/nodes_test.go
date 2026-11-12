@@ -276,6 +276,46 @@ func TestPlane_AReplacementStoppedAfterItsNodePoweredOffResumesAtTheMemberRemova
 	assert.Len(t, h.byRole(controlplane.RoleNode), len(controlplane.Locations), "the cluster's nodes")
 }
 
+func TestPlane_PowersTheNodeBackOnAndWithdrawsWhenASecondMemberStopsServingBeforeItsMemberIsRemoved(t *testing.T) {
+	h, c := withCluster(t)
+	old, other := h.nodeIn("fsn1"), h.nodeIn("nbg1")
+	require.NoError(t, h.replace(c, func() bool { return h.cloud.Servers[old.ID].Status == controlplane.ServerOff }, "fsn1"))
+	c.unhealthy = []string{other.Name}
+
+	err := h.replace(c, nil)
+
+	require.Error(t, err, "the replacement once the etcd member of %s read unhealthy with the node in fsn1 off", other.Name)
+	assert.Equal(t, redundant.ClassBelowMinimum, refusalClass(t, err), "the refusal's class")
+	assert.Contains(t, err.Error(), `"`+other.Name+`" read not serving`, "the member the refusal names")
+	assert.Equal(t, controlplane.ServerRunning, h.nodeIn("fsn1").Status, "the node in fsn1 after the refusal")
+	assert.Equal(t, old.ID, h.nodeIn("fsn1").ID, "the node in fsn1 after the refusal")
+	assert.Empty(t, c.commits, "the commits of a replacement refused before its member's removal")
+	assert.False(t, h.replacing(), "the network still carries the refused replacement's mark: %v", h.network().Labels)
+	assert.Len(t, h.eventsNaming("back on"), 1, "the events of the power-on: %v", h.events)
+}
+
+func TestPlane_TakesAHeldRemovalOutBeforeItCreatesASuccessorForANodeWhoseServerWentMeanwhile(t *testing.T) {
+	h, c := withCluster(t)
+	old := h.nodeIn("fsn1")
+	path := etcd.RemovalPath(old.Name)
+	require.NoError(t, h.replace(c, func() bool { return len(c.commits) == 1 }, "fsn1"))
+	require.NoError(t, h.cloud.DeleteServer(context.Background(), old.ID), "deleting the old server behind the plane's back")
+	var heldBesideSuccessor bool
+	watch := func() bool {
+		if _, stands := h.read().NodeIn("fsn1"); stands && c.held[path] != nil {
+			heldBesideSuccessor = true
+		}
+		return false
+	}
+
+	require.NoError(t, h.replace(c, watch))
+
+	assert.False(t, heldBesideSuccessor, "the removal of %s was still held once a successor of that name stood", old.Name)
+	assert.Equal(t, []string{"write " + path, "delete " + path}, c.commits, "the commits to the cluster repository")
+	assert.NotEqual(t, old.ID, h.nodeIn("fsn1").ID, "the node in fsn1 once the replacement ended")
+	assert.False(t, h.replacing(), "the network still carries the replacement's mark: %v", h.network().Labels)
+}
+
 func TestPlane_DeletesAFinishedRemovalJobBeforeItAppliesOne(t *testing.T) {
 	t.Run("a Job that failed and left its member is pruned before it is applied again", func(t *testing.T) {
 		h, c := withCluster(t)
@@ -286,6 +326,7 @@ func TestPlane_DeletesAFinishedRemovalJobBeforeItAppliesOne(t *testing.T) {
 		require.NoError(t, h.replace(c, nil, "fsn1"))
 
 		assert.Equal(t, []string{"write " + path, "delete " + path, "write " + path, "delete " + path}, c.commits, "the commits to the cluster repository")
+		assert.Len(t, h.eventsNaming("whose Job failed"), 1, "the events naming the failed Job: %v", h.events)
 		assert.Empty(t, c.overwrote, "the removals written while Argo CD still held a Job of their name")
 		assert.NotEqual(t, old.ID, h.nodeIn("fsn1").ID, "the node in fsn1 after its replacement")
 	})
@@ -333,6 +374,8 @@ func TestPlane_RefusesANodeReplacementBeforeAnyChangeToTheNode(t *testing.T) {
 		{"its location can order no successor any more once the upgrade's call ended", soldOut, true, "fsn1", "server-unavailable"},
 		{"the upgrade names a location the cluster runs no node in", func(*harness) {}, false, "ash", "node-replacement-unknown"},
 		{"the block passes no cluster repository to write the member removal to", func(h *harness) { h.plane.Removals = nil }, false, "fsn1", "node-removal-unwritable"},
+		{"the block reads no node report to judge the other members by", func(h *harness) { h.plane.ReadReport = nil }, false, "fsn1", "node-replacement-unjudged"},
+		{"the block passes no redundancy guard", func(h *harness) { h.plane.Guard = nil }, false, "fsn1", "node-replacement-unjudged"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, c := withCluster(t)

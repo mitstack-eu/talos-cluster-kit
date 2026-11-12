@@ -26,6 +26,7 @@
 !components/external-secrets/external-secrets.yaml
 !components/sealed-secrets/sealed-secrets.yaml
 !components/traefik/traefik.yaml
+!components/plugin-barman-cloud/plugin-barman-cloud.yaml
 !components/hosting/tls.yaml
 !components/hosting/flows.yaml
 !components/hosting/mesh.yaml

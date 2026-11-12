@@ -92,6 +92,8 @@ var (
 	sealedSecretsManifest []byte
 	//go:embed traefik/traefik.yaml
 	traefikManifest []byte
+	//go:embed plugin-barman-cloud/plugin-barman-cloud.yaml
+	barmanCloudPluginManifest []byte
 	//go:embed hosting/tls.yaml
 	hostingTLSManifest []byte
 	//go:embed hosting/flows.yaml
@@ -144,6 +146,7 @@ func HostingServed() Set {
 		Manifest{Name: "sealed-secrets", Path: "components/sealed-secrets/sealed-secrets.yaml", Bytes: sealedSecretsManifest},
 		Manifest{Name: traefikName, Path: "components/traefik/traefik.yaml", Bytes: traefikManifest},
 		Manifest{Name: "mitstack-hosting-tls", Path: "components/hosting/tls.yaml", Bytes: hostingTLSManifest},
+		Manifest{Name: "plugin-barman-cloud", Path: "components/plugin-barman-cloud/plugin-barman-cloud.yaml", Bytes: barmanCloudPluginManifest},
 	)
 	set.Served = append(set.Served, HostingPolicies()...)
 	set.Served = append(set.Served, Manifest{Name: "mitstack-hosting-mesh", Path: "components/hosting/mesh.yaml", Bytes: hostingMeshManifest})

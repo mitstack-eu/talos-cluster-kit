@@ -127,7 +127,7 @@ func withCluster(t *testing.T, opts ...func(*harness)) (*harness, *cluster) {
 	t.Helper()
 	h := newHarness(t, append([]func(*harness){withReports}, opts...)...)
 	c := &cluster{h: h, held: map[string][]byte{}, members: map[string]bool{}, objects: map[string]bool{}, jobs: map[string]string{}}
-	h.plane.Removals = c
+	h.plane.Removals = &controlplane.Removals{Held: c.Held, Commit: c.Commit}
 	h.plane.ReadReport = func(_ context.Context, since time.Time) (*report.Read, error) {
 		received := h.reportReceived()
 		if !received.After(since) {

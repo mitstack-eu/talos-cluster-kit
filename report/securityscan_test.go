@@ -185,22 +185,18 @@ func TestManifests_RunsKubeBenchAsRootOnTheHostsConfigWithNoTokenAndKubescapeAsN
 	assert.Equal(t, map[string]any{"/tmp": nil, "/results": nil, "/etc/kubernetes": true, "/var/lib/kubelet": true, "/var/lib/etcd": true},
 		mounts(t, bench), "kube-bench alone mounts the host, read-only, and holds no token")
 	assert.Equal(t, map[string]any{"/tmp": nil, "/results": nil, "/var/run/secrets/kubernetes.io/serviceaccount": true}, mounts(t, scan))
-	for _, c := range []any{bench, scan} {
-		assert.Equal(t, testutil.ToolsImage, testutil.Field(t, c, "image"))
-		assert.NotNil(t, testutil.Field(t, c, "resources", "limits", "memory"), "each step sets its memory limit")
-	}
-}
-
-func TestManifests_MountsThreeHostDirectoriesAndTypeChecksOnlyTheTwoTalossKubeletHolds(t *testing.T) {
 	typeChecks := map[any]any{}
-	for _, v := range testutil.Field(t, scanPod(t), "volumes").([]any) {
+	for _, v := range testutil.Field(t, pod, "volumes").([]any) {
 		if hostPath, ok := v.(map[string]any)["hostPath"].(map[string]any); ok {
 			typeChecks[hostPath["path"]] = hostPath["type"]
 		}
 	}
-
 	assert.Equal(t, map[any]any{"/etc/kubernetes": "Directory", "/var/lib/kubelet": "Directory", "/var/lib/etcd": nil}, typeChecks,
-		"nothing else of the host, and Talos's kubelet checks a type inside its own container, which holds no /var/lib/etcd")
+		"nothing else of the host, and no type check on etcd's directory, since Talos's kubelet checks inside its own container, which holds none")
+	for _, c := range []any{bench, scan} {
+		assert.Equal(t, testutil.ToolsImage, testutil.Field(t, c, "image"))
+		assert.NotNil(t, testutil.Field(t, c, "resources", "limits", "memory"), "each step sets its memory limit")
+	}
 }
 
 func TestManifests_LetsTheScanReadNoSecret(t *testing.T) {

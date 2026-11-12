@@ -193,17 +193,6 @@ subscription is still converging, and the platform calls it again later. `Proble
 plane that stands, `Outputs` gives the private API endpoint and the ingress
 address the block provides, and `Delete` removes everything the labels find.
 
-The state `Plane.Read` returns holds each load balancer as a
-`controlplane.LoadBalancer` with two public addresses. `PublicIPv4` is the
-address it serves from the internet, and it is empty while its public
-interface is off, as on the API load balancer. `AssignedPublicIPv4` is the
-IPv4 address Hetzner assigned it, whether or not that interface is on, so a
-block can name every public address its cluster holds. The plane reads both
-from the `public_net` object Hetzner's Cloud API returns: the address from
-`ipv4.ip`, and whether it serves from `enabled`. Whether a load balancer with
-its public interface off answers on its assigned address from the internet is
-untested.
-
 `Installed` runs once, inside the `NextStep` change that creates the gateway
 and the builder, since that change renders the cluster's configuration.
 That call is the only moment the cluster's keys exist outside the snapshot,
@@ -211,6 +200,27 @@ so a block that adds workers renders them there with
 `nodeconfig.RenderWorker`. When `Installed` returns an error, the plane
 deletes the gateways and builders it just created, and a later call starts the
 install again.
+
+### Which public address a load balancer holds
+
+A Hetzner load balancer's public interface is the switch that lets it take
+traffic from the internet. The plane keeps it on for the ingress load balancer
+and turns it off on the API load balancer, which then serves only the private
+network. Hetzner still assigns the API load balancer a public IPv4 address.
+
+The state `Plane.Read` returns holds each load balancer as a
+`controlplane.LoadBalancer` with two fields for that address:
+
+| Field | What it holds | Who reads it |
+|---|---|---|
+| `PublicIPv4` | The address the load balancer serves from the internet, and "" while its public interface is off | `State.IngressAddresses`, and so `publicIpByLocation` and Traefik's published address |
+| `AssignedPublicIPv4` | The IPv4 address Hetzner assigned the load balancer, whether or not its public interface is on | A block that reports every public address its cluster holds, so the platform can scan each one |
+
+The plane reads both from the `public_net` object Hetzner's Cloud API returns.
+The address comes from `ipv4.ip`, and the plane copies it into `PublicIPv4`
+only when `enabled` is true. Whether the API load balancer answers on its
+assigned address from the internet is untested, so a block reports it as a
+public address and leaves the answer to the platform's scan.
 
 ## How the gateways are kept
 

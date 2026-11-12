@@ -27,14 +27,11 @@ import (
 )
 
 const (
-	argoCDController = "argocd-application-controller"
-	argoCDUser       = "system:serviceaccount:argocd:" + argoCDController
+	argoCDUser = "system:serviceaccount:" + rollout.ArgoCDNamespace + ":" + rollout.ArgoCDController
 	// talosInventoryAnnotation is the annotation Talos v1.14.4 gives each object it creates, naming its inventory.
 	talosInventoryAnnotation = "config.k8s.io/owning-inventory"
 	// droppedContainer is the privileged init container Cilium's agent ran at kit release v0.53.0.
-	droppedContainer = "mount-bpf-fs"
-	// argoCDTracking is the annotation Argo CD v3.5.5 gives each object it applies, naming the Application and the object.
-	argoCDTracking    = "argocd.argoproj.io/tracking-id"
+	droppedContainer  = "mount-bpf-fs"
 	ciliumApplication = rollout.ApplicationPrefix + "cilium"
 )
 
@@ -137,7 +134,7 @@ func argoCDIdentity(t *testing.T) []byte {
 		case "Namespace":
 			identity = append(identity, doc)
 		case "ServiceAccount", "ClusterRole", "ClusterRoleBinding":
-			if name == argoCDController {
+			if name == rollout.ArgoCDController {
 				identity = append(identity, doc)
 			}
 		}
@@ -186,11 +183,11 @@ func (s *apiServer) argoCDApply(t *testing.T, objects []map[string]any) *exec.Cm
 			annotations = map[string]any{}
 		}
 		namespace, _ := metadata["namespace"].(string)
-		annotations[argoCDTracking] = fmt.Sprintf("%s:%s/%s:%s/%s", ciliumApplication, group, doc["kind"], namespace, metadata["name"])
+		annotations[rollout.ArgoCDTrackingAnnotation] = fmt.Sprintf("%s:%s/%s:%s/%s", ciliumApplication, group, doc["kind"], namespace, metadata["name"])
 		metadata["annotations"] = annotations
 	}
 	return s.adminCommand(stream(t, objects...), "apply", "--server-side", "--force-conflicts",
-		"--field-manager=argocd-controller", "--as="+argoCDUser, "-f", "-")
+		"--field-manager="+rollout.ArgoCDManager, "--as="+argoCDUser, "-f", "-")
 }
 
 // runHandover runs the handover Job of file as Argo CD's sync does: the API server takes the Job from the application
@@ -205,7 +202,7 @@ func (s *apiServer) runHandover(t *testing.T, file []byte, env ...string) (strin
 	}
 	require.Len(t, hooks, 1, "the hooks a component's file holds")
 	job := hooks[0]
-	s.admin(t, stream(t, job), "apply", "--server-side", "--dry-run=server", "--field-manager=argocd-controller", "--as="+argoCDUser, "-f", "-")
+	s.admin(t, stream(t, job), "apply", "--server-side", "--dry-run=server", "--field-manager="+rollout.ArgoCDManager, "--as="+argoCDUser, "-f", "-")
 	pod := testutil.Field(t, job, "spec", "template", "spec")
 	container := testutil.Field(t, pod, "containers", "0")
 	args := containerArgs(t, job, pod, container, nil)
@@ -310,7 +307,7 @@ func TestAPIServer_AnObjectTalosCreatedKeepsAFieldAReleaseDropsUntilItsComponent
 		assert.Contains(t, synced.initContainers(), droppedContainer, "the agent's init containers after the sync")
 		assert.Equal(t, []string{droppedContainer}, synced.privileged(), "the agent's privileged containers after the sync")
 		assert.Equal(t, 1, synced.Metadata.Generation, "the agent's generation, which a changed pod template raises")
-		assert.True(t, synced.appliedBy(constants.KubernetesFieldManagerName) && synced.appliedBy("argocd-controller"),
+		assert.True(t, synced.appliedBy(constants.KubernetesFieldManagerName) && synced.appliedBy(rollout.ArgoCDManager),
 			"Talos and Argo CD both own fields of the agent: %v", synced.Metadata.ManagedFields)
 	})
 

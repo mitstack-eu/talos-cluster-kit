@@ -620,7 +620,10 @@ func TestHandover_ReadsEachWatchPastTheObjectsChangesUntilArgoCDHasAnnotatedIt(t
 	run := runHandover(t, list(t, argoCDOnly), nil, `FAKE_WATCH=\n\nargocd-tracking-id\n`, "FAKE_WATCH_THEN=hold")
 
 	require.NoError(t, run.err, run.out)
-	assert.Len(t, run.calls, handoverObjectCount(t)+1, "the calls, a watch for each object and a read: %v", run.calls)
+	require.Len(t, run.calls, handoverObjectCount(t)+1, "the calls, a watch for each object and a read: %v", run.calls)
+	for _, call := range run.calls[:handoverObjectCount(t)] {
+		assert.Contains(t, call, " --watch ", "each object's watch, which the handover stops once the annotation shows")
+	}
 }
 
 func TestHandover_AppliesNothingWhenNoObjectNamesTalos(t *testing.T) {

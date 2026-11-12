@@ -664,12 +664,20 @@ The labeller names two sets of Cloud nodes, which `Plane.topologyManifests` in
 `controlplane/topology.go` lists. It names the three control-plane nodes from
 the plane's own names, one for each location, so the labeller a cluster is
 built with names them before their servers exist. It names the workers of a
-Cloud pool from Hetzner's list. `Plane.Release` reads each server with the
-role `cloud-worker` from the state it is given, and names it with the location
-Hetzner records for that server. The workers follow the control-plane nodes in
-name order, so one cluster's labeller renders the same bytes however Hetzner
-orders its servers. For example, a cluster of the app `shop` with one pool
-worker in `fsn1` gives the labeller this list:
+Cloud pool, the Cloud workers a block adds to a running cluster as
+[How a block takes node pools](#how-a-block-takes-node-pools) describes, from
+Hetzner's list. `Plane.Release` takes the state `Plane.Read` returns, which
+holds the cluster's servers as Hetzner lists them. It reads each server
+labelled with the role `cloud-worker` from that state, and names it with the
+location Hetzner records for that server. The workers follow the control-plane
+nodes in name order, so one cluster's labeller renders the same bytes however
+Hetzner orders its servers.
+
+Each entry of the list reads `<node name>=<zone>`. A node's name is its
+server's name, which starts with the app's name and the first characters of
+the subscription's id. A pool worker's name ends in its location and its
+number there. For example, a cluster of the app `shop` with one pool worker in `fsn1` gives the
+labeller this list:
 
 ```text
 shop-sub-0123-node-fsn1=fsn1 shop-sub-0123-node-nbg1=nbg1 shop-sub-0123-node-hel1=hel1 shop-sub-0123-cloud-worker-fsn1-1=fsn1
@@ -688,9 +696,10 @@ labels land, the worker's Node carries neither, and the node report shows its
 The labels stay with the labeller because no other owner reaches a running
 pool worker. Talos labels a node only from its machine configuration, and a
 pool worker's is the one the worker image embeds, which the block holds the
-keys to render only during the install. A Node that a component stated would
-be Argo CD's to prune, so Argo CD would delete the Node itself once a release
-dropped it.
+keys to render only during the install. The other route would be a component,
+one of the sets of manifests a release carries, that states the Node object
+with its labels. Argo CD deletes an object it applied once a release stops
+stating it, so it would delete the Node object of a running node.
 
 The labeller's ClusterRole grants `get` and `patch` on the Cloud nodes it
 names, and nothing on any other object. It cannot list nodes, and it cannot
@@ -1955,12 +1964,14 @@ A block that gets this error commits nothing. Where the load balancer is
 missing, the plane's next step builds it. A cluster that hosts no platform runs no
 Traefik, so its release needs no address.
 
-The state also gives the release the Cloud pool's workers, which
-[the topology labeller](#how-each-node-is-labelled-with-its-zone) names beside
-the control-plane nodes. The labeller's file therefore changes when a pool
-worker's server is created or deleted. A block that renders the release from
-the state it has just read, on each call, commits the labeller again after
-such a change.
+The state also gives the release the workers of the cluster's Cloud pool, the
+Cloud workers [a block adds through node pools](#how-a-block-takes-node-pools).
+[The topology labeller](#how-each-node-is-labelled-with-its-zone) names them
+beside the control-plane nodes. The labeller's manifest file,
+`components/mitstack-node-topology/manifest.yaml` in the table below, therefore
+changes when a pool worker's server is created or deleted. A block that
+renders the release from the state it has just read, on each call, commits
+that file again after such a change.
 
 `Release.Files` returns two files per component, with every manifest file ahead of every Application file in the list, so Argo CD never syncs an Application whose directory is empty:
 
@@ -2478,7 +2489,9 @@ and no other server of the cluster is touched.
 A worker that `Create` lists joins with no zone or region label, since every
 worker boots the one worker image. The topology labeller sets both once the
 block has committed a release rendered from a state that lists the worker's
-server, as
+server, through
+[the carriage of a release's components](#how-a-running-cluster-takes-a-releases-components),
+as
 [How each node is labelled with its zone](#how-each-node-is-labelled-with-its-zone)
 describes.
 

@@ -25,8 +25,7 @@ var (
 	labellerRole = testutil.ObjectRef{Group: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: labellerName}
 )
 
-// poolWorkers creates the servers a Cloud pool of size over locations lacks, as a block's upgrade does, and returns
-// the pool's members.
+// poolWorkers grows a Cloud pool through the plan a block's upgrade applies, so the state holds servers Hetzner named.
 func (h *harness) poolWorkers(size int, locations ...string) []controlplane.Server {
 	h.t.Helper()
 	pool := pools.CloudPool{ServerTypes: []string{controlplane.DefaultServerType}, Locations: locations, Min: size, Max: size}
@@ -36,7 +35,6 @@ func (h *harness) poolWorkers(size int, locations ...string) []controlplane.Serv
 	return h.byRole(pools.RoleCloudWorker)
 }
 
-// controlPlaneNodes are the labeller's entries for the three control-plane nodes, in the order of their locations.
 func (h *harness) controlPlaneNodes() []string {
 	var nodes []string
 	for _, loc := range controlplane.Locations {
@@ -45,14 +43,12 @@ func (h *harness) controlPlaneNodes() []string {
 	return nodes
 }
 
-// labelledNodes are the nodes a labeller's CronJob names, each with its zone.
 func labelledNodes(t *testing.T, cronJob map[string]any) []string {
 	t.Helper()
 	container := testutil.Field(t, cronJob, "spec", "jobTemplate", "spec", "template", "spec", "containers", "0")
 	return strings.Fields(testutil.ContainerEnv(t, container)["TOPOLOGY_NODES"])
 }
 
-// mayPatch are the nodes a labeller's ClusterRole names.
 func mayPatch(t *testing.T, role map[string]any) []string {
 	t.Helper()
 	var names []string
@@ -62,13 +58,11 @@ func mayPatch(t *testing.T, role map[string]any) []string {
 	return names
 }
 
-// releasedLabeller is the labeller's manifest as release carries it to a running cluster.
 func releasedLabeller(t *testing.T, release rollout.Release) components.Manifest {
 	t.Helper()
 	return testutil.Manifest(t, labellerName, release.Components)
 }
 
-// only is the one document of kind the labeller's manifest holds.
 func only(t *testing.T, labeller components.Manifest, kind string) map[string]any {
 	t.Helper()
 	docs := testutil.Kind(testutil.Documents(t, labeller.Bytes), kind)
@@ -131,7 +125,7 @@ func TestRelease_TheLabellerNamesEachCloudPoolWorkerHetznerListsWithItsServersLo
 	assert.Equal(t, named, mayPatch(t, only(t, withTwo, "ClusterRole")), "the nodes the labeller may read and patch, against those it labels")
 }
 
-// The cluster was built, and took an earlier carriage, while its labeller named the control-plane nodes alone.
+// The cluster starts from the labeller a build renders, as a running cluster's does, which names no pool worker.
 func TestRelease_TheLabellerOfAClusterThatAlreadyRunsACloudWorkerNamesItWithItsZoneOnceArgoCDAppliesTheRelease(t *testing.T) {
 	h := newHarness(t)
 	h.built()

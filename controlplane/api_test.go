@@ -302,3 +302,31 @@ func TestHetznerAdapter_TargetsAWorkerByItsAddressRemovesALabelTargetAndReadsBot
 	assert.Equal(t, []string{nodes}, lbs[0].TargetSelectors, "the label targets read")
 	assert.Equal(t, []string{"10.0.1.2"}, lbs[0].TargetIPs, "the address targets read")
 }
+
+func TestHetznerAdapter_ReadsTheAddressHetznerAssignedALoadBalancerWhetherOrNotItsPublicInterfaceIsOn(t *testing.T) {
+	for _, tc := range []struct {
+		name, publicNet          string
+		wantPublic, wantAssigned string
+	}{
+		{"a load balancer whose public interface is on serves its assigned address",
+			`{"enabled": true, "ipv4": {"ip": "203.0.113.9"}}`, "203.0.113.9", "203.0.113.9"},
+		{"a load balancer whose public interface is off keeps its assigned address but serves none",
+			`{"enabled": false, "ipv4": {"ip": "203.0.113.9"}}`, "", "203.0.113.9"},
+		{"a load balancer Hetzner gave no address holds none",
+			`{"enabled": false, "ipv4": {"ip": null}}`, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			api, _ := recordHetzner(t, map[string]string{
+				"GET /load_balancers": `{"load_balancers": [{"id": 9, "name": "api", "public_net": ` + tc.publicNet + `,
+					"private_net": [], "services": [], "targets": []}]}`,
+			})
+
+			lbs, err := api.ListLoadBalancers(context.Background(), "a=b")
+
+			require.NoError(t, err)
+			require.Len(t, lbs, 1)
+			assert.Equal(t, tc.wantPublic, lbs[0].PublicIPv4, "the address read from public_net %s", tc.publicNet)
+			assert.Equal(t, tc.wantAssigned, lbs[0].AssignedPublicIPv4, "the assigned address read from public_net %s", tc.publicNet)
+		})
+	}
+}

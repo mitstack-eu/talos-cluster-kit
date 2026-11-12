@@ -109,6 +109,9 @@ func (p Plane) gatewayProblems(ctx context.Context, st State, network Network, f
 		if gw.Labels[KeyIssuerBucket] == "" {
 			missing = append(missing, fmt.Sprintf("gateway %d has no %s label, so the block cannot read the issuer its nodes sign for", gw.ID, KeyIssuerBucket))
 		}
+		if problem := expiryLabelProblem(gw); problem != "" {
+			missing = append(missing, problem)
+		}
 	}
 	route, err := p.routeProblem(ctx, st, network)
 	if err != nil || route != "" {

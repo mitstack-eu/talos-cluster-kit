@@ -51,7 +51,7 @@ the order a block uses them.
 | `topology` | Renders the topology labeller, a CronJob that labels each Cloud node with its zone and region, and holds the two label names | `Manifests`, `Labels`, `ZoneLabel`, `RegionLabel`, `FieldManager` |
 | `openbaoinit` | Renders OpenBao's init Job, which the hosting set carries: it initialises a hosting cluster's OpenBao once, commits the root token and recovery key to the cluster repository as PGP messages, then writes the policy each slice's External Secrets reads with | `Manifests`, `Inputs`, `InitFile` |
 | `rollout` | Gives a running cluster a release's component set, the manifests one kit release carries; [How a running cluster takes a release's components](#how-a-running-cluster-takes-a-releases-components) defines each term. A block commits the set's files to the cluster repository, where Argo CD applies each component through an Application of its own, which is Argo CD's record of one repository directory it keeps applied to the cluster. Files that an earlier release committed and this release no longer states are retired, which means deleted. The read-back then checks from the node report that the cluster runs each component as the release states it | `Release.Files`, `Release.Retired`, `Release.ReadBack`, `LegacyFiles` |
-| `controlplane` | Builds and deletes a Talos control plane on Hetzner Cloud: a network, a firewall, a gateway in each of `fsn1`, `nbg1` and `hel1`, a builder that makes the cluster's own snapshot, a node in each of `fsn1`, `nbg1` and `hel1`, and an API and an ingress load balancer. Each call reads the resources by their labels and takes the one change still missing. A refusal is a `*Refusal` with a `Class` and a `Message`, which the block answers as its own framework's refusal | `Plane`, `Plane.Read`, `Plane.EnsureNetwork`, `Plane.NextStep`, `Plane.Problems`, `Plane.Unhealthy`, `Plane.Outputs`, `State.IngressAddresses`, `Plane.Release`, `ErrNoIngressAddress`, `Plane.GatewaysAwaitRelease`, `Plane.GatewaysServeRelease`, `Plane.Delete`, `NewAPI`, `Refusal`, `TopologyLabels`, `GatewayUpgradeBound` |
+| `controlplane` | Builds and deletes a Talos control plane on Hetzner Cloud: a network, a firewall, a gateway in each of `fsn1`, `nbg1` and `hel1`, a builder that makes the cluster's own snapshot, a node in each of `fsn1`, `nbg1` and `hel1`, and an API and an ingress load balancer. Each call reads the resources by their labels and takes the one change still missing. A refusal is a `*Refusal` with a `Class` and a `Message`, which the block answers as its own framework's refusal | `Plane`, `Plane.Read`, `Plane.EnsureNetwork`, `Plane.NextStep`, `Plane.Problems`, `Plane.Unhealthy`, `Plane.Outputs`, `State.IngressAddresses`, `Plane.Release`, `ErrNoIngressAddress`, `Plane.GatewaysAwaitRelease`, `Plane.GatewaysServeRelease`, `Plane.Delete`, `NewAPI`, `Refusal`, `TopologyLabels`, `GatewayUpgradeBound`, `GatewayCertRenewBefore`, `KeyGatewayCertExpires` |
 | `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image carries and the gateway copies out of it, and `tools/jq.env`, which pins the tools image's jq. It names the tools image a release published and the directory in that image that holds the node report's, its outside probe's, the labeller's and the cluster tokens' scripts, and where in that image each served manifest sits | `Env`, `Pin`, `Image`, `ScriptDir`, `ManifestPath` |
 | `redundant` | Carries a removal's redundant set, each member with its reading, to the guard the block passes, block-kit's `redundancy.Set.AllowRemoval`, which this module does not import | `Set`, `Guard`, `Held` |
 | `testutil` | Holds the fixtures, fakes and decoders this module's tests and a block's tests share | `NewCluster`, `NewTools`, `Golden` |
@@ -262,9 +262,51 @@ as the cluster needs:
    repeats on one list needs a release with a new one. A gateway read serving
    again before its deletion keeps its place, and the plane takes its
    replacement label off.
+5. It replaces a gateway whose serving certificate has reached its renewal
+   point, which is `GatewayCertRenewBefore`, 30 days, before the certificate
+   lapses. Hetzner fixes a server's user data when it creates the server, so
+   the plane renews a certificate by replacing its gateway and never edits
+   one. A certificate is valid for 365 days, and the plane labels each
+   gateway with the time its certificate lapses,
+   `mitstack.dev/gateway-cert-expires`, in Unix seconds. A gateway built
+   before that label is judged from its creation, and so is one whose label
+   names no time, which `Problems` names. The plane leaves a gateway that
+   step 4 replaces to that step. Of the others it takes first one that does
+   not serve, as in step 3, and else the first in location order. It moves
+   the route off it and labels it as in step 3, with `certificate-renewal` in
+   place of a digest. It deletes it once the guard finds every other gateway
+   read serving by a node report from after that time. The location's next
+   gateway is built at the same address with a new key and a certificate the
+   kept CA signs, so the nodes trust it with no change to their
+   configuration, and the old key goes with its server.
 
-The plane hands each of these events to `Notify`, with each certificate it
-issues.
+A renewal waits while an upgrade runs, since each gateway an upgrade builds
+carries a new certificate. When no upgrade runs, a gateway built from an
+earlier list is renewed like any other. Its successor is built from this
+release's list and keeps each image the node report names, so once every
+location's gateway has been renewed the gateways serve this release.
+
+The plane keeps a gateway past its renewal point, and its event says why, in
+four cases. In three it renews no gateway: the block holds no gateway CA, it
+passes no redundancy guard, or no node report lists the images a replacement
+keeps. In the fourth, Hetzner can order no gateway type in the gateway's
+location, and the plane goes on to the next location's gateway.
+
+No replacement begins, and none deletes a gateway, while Hetzner can order no
+gateway type in that location, since the location would stay without a
+gateway. An upgrade's replacement and a failed gateway's refuse with class
+`server-unavailable`.
+
+The plane acts only when a block calls it, so a renewal begins on the block's
+first call at or after the renewal point.
+
+The plane hands `Notify` an event for each route move, power-on, deletion and
+kept gateway above, and for each certificate it issues. A certificate's event
+names its serial, its validity and the time its renewal begins:
+
+```text
+issued the certificate of the gateway in fsn1 at 10.0.0.2: serial 5fc39fcbfd347a646563fca9ebfa5f81, valid from 2026-10-21T12:00:00Z until 2027-10-21T12:00:00Z, renewed by replacing the gateway from 2027-09-21T12:00:00Z
+```
 
 `Unhealthy` names a failed gateway with one of these causes, and its detail
 names the gateway, the reading and how its replacement stands. A block's

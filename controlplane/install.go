@@ -26,11 +26,17 @@ const (
 // location's gateway has its own user data and certificate.
 type installation struct {
 	builderUserData, servingUserData, workerBuilderUserData string
-	gatewayUserData                                         map[string]string
-	certificateEvents                                       []string
+	gateways                                                map[string]renderedGateway
 	gatewayCA                                               gateway.CA
 	cluster                                                 nodeconfig.Cluster
 	enrolmentDigest, issuerBucket, listDigest               string
+}
+
+// renderedGateway keeps the issued certificate beside the user data, which holds it only as PEM, so the gateway's label
+// and event can name it.
+type renderedGateway struct {
+	userData    string
+	certificate issuedCertificate
 }
 
 // install creates every server stopped and off the network, since Hetzner gives a server joining with no address the
@@ -51,7 +57,7 @@ func (p Plane) install(ctx context.Context, s site) error {
 	orderable := &OrderableTypes{API: p.API}
 	var specs []ServerSpec
 	for _, loc := range Locations {
-		spec, err := p.gatewaySpec(ctx, orderable, loc, inst.gatewayUserData[loc], s, inst.enrolmentDigest, inst.issuerBucket, inst.listDigest)
+		spec, err := p.gatewaySpec(ctx, orderable, loc, inst.gateways[loc], s, inst.enrolmentDigest, inst.issuerBucket, inst.listDigest)
 		if err != nil {
 			return err
 		}
@@ -87,8 +93,8 @@ func (p Plane) install(ctx context.Context, s site) error {
 			return p.rollBackInstall(ctx, err)
 		}
 	}
-	for _, event := range inst.certificateEvents {
-		p.notify(ctx, "%s", event)
+	for _, loc := range Locations {
+		p.notify(ctx, "%s", inst.gateways[loc].certificate.event)
 	}
 	return nil
 }
@@ -197,7 +203,7 @@ func (p Plane) renderNodes(ctx context.Context, apiAddr netip.Addr, now time.Tim
 	}
 	inst := installation{
 		cluster: cluster, enrolmentDigest: enrolmentTokenDigest(token), issuerBucket: bucket, gatewayCA: *p.GatewayCA,
-		gatewayUserData: map[string]string{},
+		gateways: map[string]renderedGateway{},
 	}
 	carried, fetched := cluster, []components.Manifest(nil)
 	if p.Hosting != nil {
@@ -226,8 +232,7 @@ func (p Plane) renderNodes(ctx context.Context, apiAddr netip.Addr, now time.Tim
 	return inst, set, nil
 }
 
-// renderGateways renders each location's gateway from the release's list, the first with the etcd bootstrap, and
-// records each certificate it issues.
+// renderGateways renders each location's gateway from the release's list, the first with the etcd bootstrap.
 func (p Plane) renderGateways(inst *installation, set components.Set, apiAddr, ingressAddr netip.Addr, now time.Time, secrets *nodeconfig.Secrets) error {
 	list, err := p.gatewayList()
 	if err != nil {
@@ -247,15 +252,11 @@ func (p Plane) renderGateways(inst *installation, set components.Set, apiAddr, i
 		if loc != GatewayLocation {
 			bootstrap = nil
 		}
-		userData, tls, err := p.renderGateway(loc, ingressAddr, now, *p.GatewayCA, list, bootstrap)
+		rendered, err := p.renderGateway(loc, ingressAddr, now, *p.GatewayCA, list, bootstrap)
 		if err != nil {
 			return err
 		}
-		event, err := certificateEvent(loc, tls)
-		if err != nil {
-			return err
-		}
-		inst.gatewayUserData[loc], inst.certificateEvents = userData, append(inst.certificateEvents, event)
+		inst.gateways[loc] = rendered
 	}
 	return nil
 }
@@ -275,15 +276,19 @@ func sameList(cluster components.Set, gateways gateway.List) error {
 
 // renderGateway issues the location's certificate from ca and renders its user data, with the first-node bootstrap
 // only when bootstrap is set.
-func (p Plane) renderGateway(loc string, ingressAddr netip.Addr, now time.Time, ca gateway.CA, list gateway.List, bootstrap *firstNodeBootstrap) (string, gateway.TLS, error) {
+func (p Plane) renderGateway(loc string, ingressAddr netip.Addr, now time.Time, ca gateway.CA, list gateway.List, bootstrap *firstNodeBootstrap) (renderedGateway, error) {
 	address := netip.MustParseAddr(GatewayAddresses[loc])
 	tls, err := ca.Issue(address, now, gatewayCertValidity)
 	if err != nil {
-		return "", gateway.TLS{}, err
+		return renderedGateway{}, err
+	}
+	certificate, err := issued(loc, tls)
+	if err != nil {
+		return renderedGateway{}, err
 	}
 	tools, err := components.ParseImage(toolsImage())
 	if err != nil {
-		return "", gateway.TLS{}, fmt.Errorf("the tools image: %w", err)
+		return renderedGateway{}, fmt.Errorf("the tools image: %w", err)
 	}
 	kitPart, err := gateway.Render(gateway.Inputs{
 		Address: address,
@@ -295,8 +300,8 @@ func (p Plane) renderGateway(loc string, ingressAddr netip.Addr, now time.Time, 
 		Gzipped: true,
 	})
 	if err != nil {
-		return "", gateway.TLS{}, err
+		return renderedGateway{}, err
 	}
 	userData, err := p.gatewayUserData(kitPart, bootstrap)
-	return userData, tls, err
+	return renderedGateway{userData: userData, certificate: certificate}, err
 }

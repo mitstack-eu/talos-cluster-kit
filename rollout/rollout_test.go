@@ -596,7 +596,7 @@ func TestHandover_GivesUpTalossFieldsOnEachObjectTalosAndArgoCDBothAppliedAndOnN
 	require.NoError(t, run.err, run.out)
 	require.Len(t, run.calls, waits+3, "the calls: %v", run.calls)
 	for i, call := range run.calls[:waits] {
-		assert.Regexp(t, `^kubectl get [a-z]+\.v[0-9a-z]+\.[a-z.]* --field-selector=metadata\.name=\S+ --watch -o jsonpath=\{\.metadata\.annotations\.argocd\\\.argoproj\\\.io/tracking-id\}\{"\\n"\}( -n \S+)?$`, call,
+		assert.Regexp(t, `^kubectl get [a-z]+\.v[0-9a-z]+\.[0-9a-z.-]* --field-selector=metadata\.name=\S+ --watch -o jsonpath=\{\.metadata\.annotations\.argocd\\\.argoproj\\\.io/tracking-id\}\{"\\n"\}( -n \S+)?$`, call,
 			"watch %d of %d, one for each object, read until Argo CD's annotation shows", i+1, waits)
 	}
 	assert.Contains(t, run.calls[:waits], `kubectl get cronjob.v1.batch --field-selector=metadata.name=mitstack-node-report --watch -o jsonpath={.metadata.annotations.argocd\.argoproj\.io/tracking-id}{"\n"} -n mitstack-node`,

@@ -22,7 +22,7 @@
       "status": {
         "health": {"status": "Healthy"},
         "sync": {"status": "OutOfSync", "revision": "4e1d7a0c3b6f9e2d5a8c1b4e7f0a3d6c9b2e5f8a"},
-        "operationState": {"phase": "Running", "message": "waiting for completion of hook batch/Job/component-shop-handover"},
+        "operationState": {"phase": "Failed", "message": "one or more objects failed to apply, reason: Role.rbac.authorization.k8s.io \"app-repository-shop\" is invalid: rules[0].verbs: Unsupported value: \"impersonate\": supported values: \"get\", \"list\", \"watch\", \"create\", \"update\", \"patch\", \"delete\", \"deletecollection\" (retried 3 times)."},
         "resourceHealthSource": "appTree",
         "resources": [
           {"version": "v1", "kind": "Secret", "namespace": "app-shop", "name": "app-repository-shop", "status": "Synced", "requiresPruning": false},

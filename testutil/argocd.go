@@ -129,7 +129,7 @@ func (c *Cluster) desired(path string) map[ObjectRef]map[string]any {
 	for file, data := range c.repository {
 		if strings.HasPrefix(file, path+"/") && strings.HasSuffix(file, ".yaml") {
 			for _, doc := range c.parsed(data) {
-				if !isHook(doc) {
+				if !IsHook(doc) {
 					out[refOf(c.t, doc)] = doc
 				}
 			}
@@ -141,7 +141,8 @@ func (c *Cluster) desired(path string) map[ObjectRef]map[string]any {
 // hookAnnotation marks a document Argo CD runs during a sync as a hook, which is no object the Application applies.
 const hookAnnotation = "argocd.argoproj.io/hook"
 
-func isHook(doc map[string]any) bool {
+// IsHook is whether Argo CD runs doc during a sync as a hook rather than applying it.
+func IsHook(doc map[string]any) bool {
 	metadata, _ := doc["metadata"].(map[string]any)
 	annotations, _ := metadata["annotations"].(map[string]any)
 	_, hook := annotations[hookAnnotation]
@@ -172,20 +173,16 @@ func (c *Cluster) Report() []byte {
 		Name      string  `json:"name"`
 		Sync      string  `json:"sync"`
 	}
-	type operation struct {
-		Phase   string  `json:"phase"`
-		Message *string `json:"message"`
-	}
 	type application struct {
-		Name      string     `json:"name"`
-		Health    string     `json:"health"`
-		Sync      string     `json:"sync"`
-		Operation operation  `json:"operation"`
-		Resources []resource `json:"resources"`
+		Name      string         `json:"name"`
+		Health    string         `json:"health"`
+		Sync      string         `json:"sync"`
+		Operation map[string]any `json:"operation"`
+		Resources []resource     `json:"resources"`
 	}
 	var apps []application
 	for _, name := range slices.Sorted(maps.Keys(c.applied)) {
-		app := application{Name: name, Health: "Healthy", Sync: "Synced", Operation: operation{Phase: "Succeeded"}, Resources: []resource{}}
+		app := application{Name: name, Health: "Healthy", Sync: "Synced", Operation: map[string]any{"phase": "Succeeded", "message": nil}, Resources: []resource{}}
 		for _, ref := range sortedRefs(c.applied[name]) {
 			r := resource{Group: ref.Group, Kind: ref.Kind, Name: ref.Name, Sync: "Synced"}
 			if ref.Namespace != "" {

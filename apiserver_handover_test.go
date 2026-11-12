@@ -9,9 +9,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/stretchr/testify/assert"
@@ -30,7 +33,6 @@ const (
 	talosInventoryAnnotation = "config.k8s.io/owning-inventory"
 	// droppedContainer is the privileged init container Cilium's agent ran at kit release v0.53.0.
 	droppedContainer = "mount-bpf-fs"
-	argoCDHook       = "argocd.argoproj.io/hook"
 	// argoCDTracking is the annotation Argo CD v3.5.5 gives each object it applies, naming the Application and the object.
 	argoCDTracking    = "argocd.argoproj.io/tracking-id"
 	ciliumApplication = rollout.ApplicationPrefix + "cilium"
@@ -100,18 +102,12 @@ func carriedFile(t *testing.T, m components.Manifest) []byte {
 	return files[0].Bytes
 }
 
-func isArgoCDHook(doc map[string]any) bool {
-	annotations, _ := doc["metadata"].(map[string]any)["annotations"].(map[string]any)
-	_, hook := annotations[argoCDHook]
-	return hook
-}
-
 // statedObjects are the documents of a carried file that Argo CD applies, which leaves out the hook it only runs.
 func statedObjects(t *testing.T, file []byte) []map[string]any {
 	t.Helper()
 	var objects []map[string]any
 	for _, doc := range testutil.Documents(t, file) {
-		if !isArgoCDHook(doc) {
+		if !testutil.IsHook(doc) {
 			objects = append(objects, doc)
 		}
 	}
@@ -168,12 +164,17 @@ func (s *apiServer) talosCreates(t *testing.T, manifest []byte) {
 	s.admin(t, stream(t, docs...), "apply", "--server-side", "--field-manager="+constants.KubernetesFieldManagerName, "-f", "-")
 }
 
-// argoCDSyncs applies each object file states as Argo CD v3.5.5 syncs an Application that sets ServerSideApply=true: a
-// forced server-side apply under Argo CD's field manager, as its application controller, of the object with the
-// annotation Argo CD tracks it by.
+// argoCDSyncs applies each object file states as Argo CD v3.5.5 syncs an Application that sets ServerSideApply=true.
 func (s *apiServer) argoCDSyncs(t *testing.T, file []byte) {
 	t.Helper()
-	objects := statedObjects(t, file)
+	out, err := s.argoCDApply(t, statedObjects(t, file)).CombinedOutput()
+	require.NoError(t, err, "Argo CD's apply: %s", out)
+}
+
+// argoCDApply is the command that applies objects as Argo CD v3.5.5 does: a forced server-side apply under Argo CD's
+// field manager, as its application controller, of each object with the annotation Argo CD tracks it by.
+func (s *apiServer) argoCDApply(t *testing.T, objects []map[string]any) *exec.Cmd {
+	t.Helper()
 	for _, doc := range objects {
 		group, _, versioned := strings.Cut(doc["apiVersion"].(string), "/")
 		if !versioned {
@@ -188,7 +189,7 @@ func (s *apiServer) argoCDSyncs(t *testing.T, file []byte) {
 		annotations[argoCDTracking] = fmt.Sprintf("%s:%s/%s:%s/%s", ciliumApplication, group, doc["kind"], namespace, metadata["name"])
 		metadata["annotations"] = annotations
 	}
-	s.admin(t, stream(t, objects...), "apply", "--server-side", "--force-conflicts",
+	return s.adminCommand(stream(t, objects...), "apply", "--server-side", "--force-conflicts",
 		"--field-manager=argocd-controller", "--as="+argoCDUser, "-f", "-")
 }
 
@@ -198,7 +199,7 @@ func (s *apiServer) runHandover(t *testing.T, file []byte, env ...string) (strin
 	t.Helper()
 	var hooks []map[string]any
 	for _, doc := range testutil.Documents(t, file) {
-		if isArgoCDHook(doc) {
+		if testutil.IsHook(doc) {
 			hooks = append(hooks, doc)
 		}
 	}
@@ -231,6 +232,38 @@ func (s *apiServer) ciliumAgent(t *testing.T) managedObject {
 	out := s.admin(t, nil, "get", "daemonset", "cilium", "-n", "kube-system", "--show-managed-fields", "-o", "json")
 	require.NoError(t, json.Unmarshal(out, &agent))
 	return agent
+}
+
+// argoCDLag is how long after the handover Job starts Argo CD creates the objects of the Job's wave that sort after it.
+const argoCDLag = 5 * time.Second
+
+// createdLater runs apply once argoCDLag has passed, as Argo CD applies a wave's later objects while the Job starts, and
+// sends what it returned.
+func createdLater(apply *exec.Cmd) <-chan error {
+	done := make(chan error, 1)
+	go func() {
+		time.Sleep(argoCDLag)
+		out, err := apply.CombinedOutput()
+		if err != nil {
+			err = fmt.Errorf("%w: %s", err, out)
+		}
+		done <- err
+	}()
+	return done
+}
+
+// lateObjects are the documents of file that Argo CD applies, picked by kind and namespace/name.
+func lateObjects(t *testing.T, file []byte, names ...string) []map[string]any {
+	t.Helper()
+	var picked []map[string]any
+	for _, doc := range statedObjects(t, file) {
+		name := fmt.Sprintf("%s %s/%s", doc["kind"], testutil.Field(t, doc, "metadata", "namespace"), testutil.Field(t, doc, "metadata", "name"))
+		if slices.Contains(names, name) {
+			picked = append(picked, doc)
+		}
+	}
+	require.Len(t, picked, len(names), "the release's objects named %v", names)
+	return picked
 }
 
 func namedByTalos(objects []managedObject) []string {
@@ -300,5 +333,17 @@ func TestAPIServer_AnObjectTalosCreatedKeepsAFieldAReleaseDropsUntilItsComponent
 
 		require.NoError(t, err, "the handover printed:\n%s", out)
 		assert.Equal(t, handedOver.Metadata.ResourceVersion, server.ciliumAgent(t).Metadata.ResourceVersion, "the agent's resource version")
+	})
+
+	t.Run("a handover that starts before Argo CD creates two objects of its wave waits for them and succeeds", func(t *testing.T) {
+		late := lateObjects(t, release, "ServiceAccount kube-system/cilium-envoy", "ConfigMap kube-system/cilium-envoy-config")
+		server.admin(t, nil, "delete", "serviceaccount/cilium-envoy", "configmap/cilium-envoy-config", "-n", "kube-system")
+		created := createdLater(server.argoCDApply(t, late))
+
+		out, err := server.runHandover(t, release)
+
+		require.NoError(t, <-created, "Argo CD's later apply of the two objects")
+		require.NoError(t, err, "the handover printed:\n%s", out)
+		assert.Empty(t, namedByTalos(server.live(t, release)), "the component's objects that still name Talos as a field manager")
 	})
 }

@@ -2,6 +2,7 @@ package rollout_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -355,6 +356,14 @@ func handoverContainer(t *testing.T, job map[string]any) any {
 	return testutil.Field(t, job, "spec", "template", "spec", "containers", "0")
 }
 
+// handoverObjectCount is how many objects the report component's handover Job names.
+func handoverObjectCount(t *testing.T) int {
+	t.Helper()
+	var objects struct{ Items []any }
+	require.NoError(t, json.Unmarshal([]byte(testutil.ContainerEnv(t, handoverContainer(t, handoverJob(t, reportFile(t))))["HANDOVER_OBJECTS"]), &objects))
+	return len(objects.Items)
+}
+
 // reportFile is the node report component's file of the first release.
 func reportFile(t *testing.T) []byte {
 	t.Helper()
@@ -376,9 +385,14 @@ func syncWave(t *testing.T, doc map[string]any) string {
 }
 
 func TestRelease_RunsAComponentsHandoverJobAndAppliesItsMarkerInTheWaveOfItsLastObject(t *testing.T) {
-	inWave := func(wave string) components.Manifest {
-		return components.Manifest{Name: "waved", Bytes: []byte("apiVersion: v1\nkind: Namespace\nmetadata:\n  name: first\n---\n" +
-			"apiVersion: v1\nkind: Namespace\nmetadata:\n  name: later\n  annotations:\n    argocd.argoproj.io/sync-wave: \"" + wave + "\"\n")}
+	inWaves := func(first, later string) func(t *testing.T) []byte {
+		return func(t *testing.T) []byte {
+			document := "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: %s\n  annotations:\n    argocd.argoproj.io/sync-wave: %q\n---\n"
+			waved := components.Manifest{Name: "waved", Bytes: fmt.Appendf(nil, document+document, "first", first, "later", later)}
+			files, err := rollout.Release{ToolsImage: testutil.ToolsImage, Components: []components.Manifest{waved}}.Files(repository)
+			require.NoError(t, err)
+			return files[0].Bytes
+		}
 	}
 	for _, tc := range []struct {
 		name              string
@@ -386,11 +400,8 @@ func TestRelease_RunsAComponentsHandoverJobAndAppliesItsMarkerInTheWaveOfItsLast
 		last, job, marker string
 	}{
 		{"a component whose objects name no wave", reportFile, "0", "0", "0"},
-		{"a component whose last object syncs in wave 3", func(t *testing.T) []byte {
-			files, err := rollout.Release{ToolsImage: testutil.ToolsImage, Components: []components.Manifest{inWave("3")}}.Files(repository)
-			require.NoError(t, err)
-			return files[0].Bytes
-		}, "3", "3", "3"},
+		{"a component whose last object syncs in wave 3", inWaves("0", "3"), "3", "3", "3"},
+		{"a component whose objects all sync in waves before 0", inWaves("-5", "-2"), "-2", "-2", "-2"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			file := tc.file(t)
@@ -578,14 +589,19 @@ func TestHandover_GivesUpTalossFieldsOnEachObjectTalosAndArgoCDBothAppliedAndOnN
 
 	run := runHandover(t, list(t, bothApplied, argoCDOnly, roleApplied), handedOver)
 
+	waits := handoverObjectCount(t)
+
 	require.NoError(t, run.err, run.out)
-	require.Len(t, run.calls, 4, "the calls: %v", run.calls)
-	assert.Regexp(t, `^kubectl wait -f \S+ --for=jsonpath=\{\.metadata\.annotations\.argocd\\\.argoproj\\\.io/tracking-id\} --timeout=120s$`, run.calls[0],
-		"the wait for Argo CD's annotation on every object, since the Job starts while its own sync still applies them")
-	assert.Regexp(t, `^kubectl get -f \S+ --show-managed-fields -o json$`, run.calls[1], "the read of every object the component states")
-	assert.Regexp(t, `^kubectl apply --server-side --validate=false --field-manager=talos -f \S+$`, run.calls[2],
+	require.Len(t, run.calls, waits+3, "the calls: %v", run.calls)
+	for i, call := range run.calls[:waits] {
+		assert.Regexp(t, `^kubectl wait -f \S+ --for=create --for=jsonpath=\{\.metadata\.annotations\.argocd\\\.argoproj\\\.io/tracking-id\} --timeout=\d+s$`, call,
+			"wait %d of %d, one for each object, first for it to exist and then for Argo CD's annotation on it", i+1, waits)
+	}
+	assert.Regexp(t, ` --timeout=120s$`, run.calls[0], "the first wait, which has the whole timeout")
+	assert.Regexp(t, `^kubectl get -f \S+ --show-managed-fields -o json$`, run.calls[waits], "the read of every object the component states")
+	assert.Regexp(t, `^kubectl apply --server-side --validate=false --field-manager=talos -f \S+$`, run.calls[waits+1],
 		"an apply under Talos's name with no force, which states no field and so gives up each field Talos owns")
-	assert.Regexp(t, `^kubectl get -f \S+ --show-managed-fields -o json$`, run.calls[3], "the read that checks the handover took")
+	assert.Regexp(t, `^kubectl get -f \S+ --show-managed-fields -o json$`, run.calls[waits+2], "the read that checks the handover took")
 	assert.JSONEq(t, `{"apiVersion": "v1", "kind": "List", "items": [
 		{"apiVersion": "batch/v1", "kind": "CronJob", "metadata": {"name": "mitstack-node-report", "namespace": "mitstack-node"}},
 		{"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRole", "metadata": {"name": "mitstack-node-report"}}]}`,
@@ -598,7 +614,7 @@ func TestHandover_AppliesNothingWhenNoObjectNamesTalos(t *testing.T) {
 	run := runHandover(t, list(t, argoCDOnly), nil)
 
 	require.NoError(t, run.err, run.out)
-	assert.Len(t, run.calls, 2, "the calls, the wait and a read alone: %v", run.calls)
+	assert.Len(t, run.calls, handoverObjectCount(t)+1, "the calls, the waits and a read alone: %v", run.calls)
 }
 
 func TestHandover_ReadsOneObjectAsKubectlPrintsItOutsideAList(t *testing.T) {
@@ -626,6 +642,7 @@ func TestHandover_FailsNamingWhatItCouldNotHandOver(t *testing.T) {
 		{"an object that names Talos for a plain write, which an apply cannot give up",
 			list(t, bothApplied, updatedByTalos()), nil, nil, "Namespace mitstack-node", false},
 		{"an object Argo CD does not apply within the wait", list(t, bothApplied), nil, []string{"FAKE_WAIT_EXIT=1"}, "within 120s", false},
+		{"a timeout that is no number of seconds", list(t, bothApplied), nil, []string{"HANDOVER_ADOPTION_TIMEOUT=2m"}, "not a number of seconds", false},
 		{"objects that cannot be read", list(t, bothApplied), nil, []string{"FAKE_GET_EXIT=1"}, "cannot read", false},
 		{"an apply the API server refuses", list(t, bothApplied), nil, []string{"FAKE_APPLY_EXIT=1"}, "refused", true},
 		{"an object that still names Talos after the apply", list(t, bothApplied), list(t, bothApplied), nil, "CronJob mitstack-node/mitstack-node-report still", true},

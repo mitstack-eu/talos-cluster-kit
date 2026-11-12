@@ -334,7 +334,7 @@ func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipA
 			"zoneLabelManagers": []any{}},
 	}, posted.body["nodes"], "each node's addresses with their types, its zone and region labels, and every manager of its zone label")
 	assert.Equal(t, []any{}, posted.body["ingresses"], "a cluster with no Ingress reports an empty list")
-	assert.Equal(t, readJSON(t, "testdata", "golden", "argocd.json"), posted.body["argocd"], "each Application names the revision Argo CD compared it against or null, and a Secret is among the applied objects, each with its identity, sync and health alone")
+	assert.Equal(t, readJSON(t, "testdata", "golden", "argocd.json"), posted.body["argocd"], "each Application names the revision Argo CD compared it against or null and its last sync's phase with the message cut to 256 characters, and a Secret is among the applied objects, each with its identity, sync and health alone")
 	wantCalls := []string{
 		"kubectl " + nodesRead,
 		"kubectl get applications.argoproj.io -n argocd -o json",
@@ -674,17 +674,6 @@ func TestReport_CutsAnIngressClassTakenFromItsAnnotationTo256Characters(t *testi
 
 	require.NoError(t, err, out)
 	assert.Equal(t, long[:256], testutil.Field(t, posted.body, "ingresses", "0", "class"))
-}
-
-func TestReport_CutsTheMessageOfAnApplicationsLastSyncTo256Characters(t *testing.T) {
-	long := strings.Repeat("m", 300)
-
-	_, posted, out, err := runReport(t, kubectlWith(applicationsRead,
-		`jq '.items[1].status.operationState.message = "`+long+`"' testdata/applications.json`))
-
-	require.NoError(t, err, out)
-	assert.Equal(t, map[string]any{"phase": "Running", "message": long[:256]}, testutil.Field(t, posted.body, "argocd", "applications", "1", "operation"),
-		"the phase of Argo CD's last sync of the Application and the start of its message")
 }
 
 func TestReport_NamesEachAppliedObjectsArgoCDHealthAndEachContainersStateButNoTerminatedContainersMessage(t *testing.T) {

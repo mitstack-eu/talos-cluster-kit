@@ -172,15 +172,20 @@ func (c *Cluster) Report() []byte {
 		Name      string  `json:"name"`
 		Sync      string  `json:"sync"`
 	}
+	type operation struct {
+		Phase   string  `json:"phase"`
+		Message *string `json:"message"`
+	}
 	type application struct {
 		Name      string     `json:"name"`
 		Health    string     `json:"health"`
 		Sync      string     `json:"sync"`
+		Operation operation  `json:"operation"`
 		Resources []resource `json:"resources"`
 	}
 	var apps []application
 	for _, name := range slices.Sorted(maps.Keys(c.applied)) {
-		app := application{Name: name, Health: "Healthy", Sync: "Synced", Resources: []resource{}}
+		app := application{Name: name, Health: "Healthy", Sync: "Synced", Operation: operation{Phase: "Succeeded"}, Resources: []resource{}}
 		for _, ref := range sortedRefs(c.applied[name]) {
 			r := resource{Group: ref.Group, Kind: ref.Kind, Name: ref.Name, Sync: "Synced"}
 			if ref.Namespace != "" {

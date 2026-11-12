@@ -676,6 +676,17 @@ func TestReport_CutsAnIngressClassTakenFromItsAnnotationTo256Characters(t *testi
 	assert.Equal(t, long[:256], testutil.Field(t, posted.body, "ingresses", "0", "class"))
 }
 
+func TestReport_CutsTheMessageOfAnApplicationsLastSyncTo256Characters(t *testing.T) {
+	long := strings.Repeat("m", 300)
+
+	_, posted, out, err := runReport(t, kubectlWith(applicationsRead,
+		`jq '.items[1].status.operationState.message = "`+long+`"' testdata/applications.json`))
+
+	require.NoError(t, err, out)
+	assert.Equal(t, map[string]any{"phase": "Running", "message": long[:256]}, testutil.Field(t, posted.body, "argocd", "applications", "1", "operation"),
+		"the phase of Argo CD's last sync of the Application and the start of its message")
+}
+
 func TestReport_NamesEachAppliedObjectsArgoCDHealthAndEachContainersStateButNoTerminatedContainersMessage(t *testing.T) {
 	_, posted, out, err := runReport(t, nil)
 

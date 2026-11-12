@@ -216,6 +216,14 @@ func TestRelease_ReadsNothingBackFromAReportThatDoesNotHoldEachComponentsObjects
 		{"a report without a component's Application", string(edited(t, func(app map[string]any) { app["name"] = "other" })), "lists no Argo CD Application component-mitstack-node-report"},
 		{"a report too large to list what it applied", string(edited(t, func(app map[string]any) { delete(app, "resources") })), "carries no list of the objects Argo CD's Application component-mitstack-node-report applied"},
 		{"an Application still progressing", string(edited(t, func(app map[string]any) { app["health"] = "Progressing" })), `health "Progressing"`},
+		{"a sync that still runs, as one does while its handover Job runs", string(edited(t, func(app map[string]any) {
+			app["operation"] = map[string]any{"phase": "Running", "message": "waiting for completion of hook batch/Job/component-mitstack-node-report-handover"}
+		})), `Argo CD's last sync of component-mitstack-node-report reads "Running": waiting for completion of hook batch/Job/component-mitstack-node-report-handover`},
+		{"a sync that failed, as one does when its handover Job fails", string(edited(t, func(app map[string]any) {
+			app["operation"] = map[string]any{"phase": "Failed", "message": nil}
+		})), `Argo CD's last sync of component-mitstack-node-report reads "Failed"`},
+		{"a report that carries no sync outcome", string(edited(t, func(app map[string]any) { delete(app, "operation") })),
+			"carries no outcome of Argo CD's last sync of component-mitstack-node-report"},
 		{"an object out of sync", string(edited(t, func(app map[string]any) {
 			app["resources"].([]any)[0].(map[string]any)["sync"] = "OutOfSync"
 		})), "OutOfSync"},
@@ -367,7 +375,7 @@ func syncWave(t *testing.T, doc map[string]any) string {
 	return wave
 }
 
-func TestRelease_AppliesAComponentsObjectsThenRunsItsHandoverJobAndOnlyThenAppliesItsMarker(t *testing.T) {
+func TestRelease_RunsAComponentsHandoverJobAndAppliesItsMarkerInTheWaveOfItsLastObject(t *testing.T) {
 	inWave := func(wave string) components.Manifest {
 		return components.Manifest{Name: "waved", Bytes: []byte("apiVersion: v1\nkind: Namespace\nmetadata:\n  name: first\n---\n" +
 			"apiVersion: v1\nkind: Namespace\nmetadata:\n  name: later\n  annotations:\n    argocd.argoproj.io/sync-wave: \"" + wave + "\"\n")}
@@ -377,12 +385,12 @@ func TestRelease_AppliesAComponentsObjectsThenRunsItsHandoverJobAndOnlyThenAppli
 		file              func(t *testing.T) []byte
 		last, job, marker string
 	}{
-		{"a component whose objects name no wave", reportFile, "0", "1", "2"},
+		{"a component whose objects name no wave", reportFile, "0", "0", "0"},
 		{"a component whose last object syncs in wave 3", func(t *testing.T) []byte {
 			files, err := rollout.Release{ToolsImage: testutil.ToolsImage, Components: []components.Manifest{inWave("3")}}.Files(repository)
 			require.NoError(t, err)
 			return files[0].Bytes
-		}, "3", "4", "5"},
+		}, "3", "3", "3"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			file := tc.file(t)
@@ -392,9 +400,9 @@ func TestRelease_AppliesAComponentsObjectsThenRunsItsHandoverJobAndOnlyThenAppli
 
 			assert.Equal(t, "Sync", testutil.Field(t, job, "metadata", "annotations", "argocd.argoproj.io/hook"), "Argo CD runs the Job during the sync and keeps no such object applied")
 			assert.Equal(t, tc.last, syncWave(t, docs[len(docs)-3]), "the wave of the component's last object")
-			assert.Equal(t, tc.job, syncWave(t, job), "the Job's wave, which Argo CD starts once every object before it is applied and reads Healthy")
+			assert.Equal(t, tc.job, syncWave(t, job), "the Job's wave: no later wave, which Argo CD would start only once every object reads Healthy, so an object a dropped field keeps unhealthy is handed over too")
 			assert.Equal(t, "ConfigMap", marker["kind"], "the document that closes the file")
-			assert.Equal(t, tc.marker, syncWave(t, marker), "the marker's wave, which Argo CD starts only once the Job succeeded, so a read-back that finds the marker finds the handover done")
+			assert.Equal(t, tc.marker, syncWave(t, marker), "the marker's wave: no later wave either, so the handover adds no step to a sync and none that waits on health")
 		})
 	}
 }
@@ -427,6 +435,8 @@ func TestRelease_RunsAHandoverJobThatNamesEveryObjectTheComponentStates(t *testi
 	assert.Equal(t, want, objects["items"], "the objects the Job reads, which are the component's and never the marker Argo CD alone creates")
 	assert.Equal(t, constants.KubernetesFieldManagerName, env["HANDOVER_TALOS_MANAGER"], "the field manager Talos creates an object under")
 	assert.Equal(t, "argocd-controller", env["HANDOVER_ARGOCD_MANAGER"], "the field manager Argo CD applies under")
+	assert.Equal(t, "argocd.argoproj.io/tracking-id", env["HANDOVER_ARGOCD_ANNOTATION"], "the annotation Argo CD gives each object it applies, which the Job waits for")
+	assert.Equal(t, "120s", env["HANDOVER_ADOPTION_TIMEOUT"], "how long the Job waits for Argo CD to apply the objects of its own sync")
 }
 
 func TestRelease_NamesItsMarkerForTheHandoverJobToo(t *testing.T) {
@@ -482,6 +492,9 @@ func TestRelease_TheKitsArgoCDGivesItsApplicationControllerEveryRightTheHandover
 }
 
 const fakeKubectl = `case "$1" in
+wait)
+  exit "${FAKE_WAIT_EXIT:-0}"
+  ;;
 get)
   read_count=$(cat "$FAKE_DIR/reads" 2> /dev/null || echo 0)
   echo $((read_count + 1)) > "$FAKE_DIR/reads"
@@ -566,11 +579,13 @@ func TestHandover_GivesUpTalossFieldsOnEachObjectTalosAndArgoCDBothAppliedAndOnN
 	run := runHandover(t, list(t, bothApplied, argoCDOnly, roleApplied), handedOver)
 
 	require.NoError(t, run.err, run.out)
-	require.Len(t, run.calls, 3, "the calls: %v", run.calls)
-	assert.Regexp(t, `^kubectl get -f \S+ --show-managed-fields -o json$`, run.calls[0], "the read of every object the component states")
-	assert.Regexp(t, `^kubectl apply --server-side --validate=false --field-manager=talos -f \S+$`, run.calls[1],
+	require.Len(t, run.calls, 4, "the calls: %v", run.calls)
+	assert.Regexp(t, `^kubectl wait -f \S+ --for=jsonpath=\{\.metadata\.annotations\.argocd\\\.argoproj\\\.io/tracking-id\} --timeout=120s$`, run.calls[0],
+		"the wait for Argo CD's annotation on every object, since the Job starts while its own sync still applies them")
+	assert.Regexp(t, `^kubectl get -f \S+ --show-managed-fields -o json$`, run.calls[1], "the read of every object the component states")
+	assert.Regexp(t, `^kubectl apply --server-side --validate=false --field-manager=talos -f \S+$`, run.calls[2],
 		"an apply under Talos's name with no force, which states no field and so gives up each field Talos owns")
-	assert.Regexp(t, `^kubectl get -f \S+ --show-managed-fields -o json$`, run.calls[2], "the read that checks the handover took")
+	assert.Regexp(t, `^kubectl get -f \S+ --show-managed-fields -o json$`, run.calls[3], "the read that checks the handover took")
 	assert.JSONEq(t, `{"apiVersion": "v1", "kind": "List", "items": [
 		{"apiVersion": "batch/v1", "kind": "CronJob", "metadata": {"name": "mitstack-node-report", "namespace": "mitstack-node"}},
 		{"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRole", "metadata": {"name": "mitstack-node-report"}}]}`,
@@ -583,7 +598,7 @@ func TestHandover_AppliesNothingWhenNoObjectNamesTalos(t *testing.T) {
 	run := runHandover(t, list(t, argoCDOnly), nil)
 
 	require.NoError(t, run.err, run.out)
-	assert.Len(t, run.calls, 1, "the calls, a read alone: %v", run.calls)
+	assert.Len(t, run.calls, 2, "the calls, the wait and a read alone: %v", run.calls)
 }
 
 func TestHandover_ReadsOneObjectAsKubectlPrintsItOutsideAList(t *testing.T) {
@@ -610,6 +625,7 @@ func TestHandover_FailsNamingWhatItCouldNotHandOver(t *testing.T) {
 			list(t, bothApplied, talosOnly), nil, nil, "ConfigMap mitstack-node/mitstack-node-report", false},
 		{"an object that names Talos for a plain write, which an apply cannot give up",
 			list(t, bothApplied, updatedByTalos()), nil, nil, "Namespace mitstack-node", false},
+		{"an object Argo CD does not apply within the wait", list(t, bothApplied), nil, []string{"FAKE_WAIT_EXIT=1"}, "within 120s", false},
 		{"objects that cannot be read", list(t, bothApplied), nil, []string{"FAKE_GET_EXIT=1"}, "cannot read", false},
 		{"an apply the API server refuses", list(t, bothApplied), nil, []string{"FAKE_APPLY_EXIT=1"}, "refused", true},
 		{"an object that still names Talos after the apply", list(t, bothApplied), list(t, bothApplied), nil, "CronJob mitstack-node/mitstack-node-report still", true},

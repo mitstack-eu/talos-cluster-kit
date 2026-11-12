@@ -192,9 +192,9 @@ func (s *apiServer) argoCDSyncs(t *testing.T, file []byte) {
 		"--field-manager=argocd-controller", "--as="+argoCDUser, "-f", "-")
 }
 
-// runHandover runs the handover Job of file as Argo CD's sync does once the objects are applied: the API server takes
-// the Job from the application controller, and the Job's container runs as its pod would, with its account's token.
-func (s *apiServer) runHandover(t *testing.T, file []byte) (string, error) {
+// runHandover runs the handover Job of file as Argo CD's sync does: the API server takes the Job from the application
+// controller, and the Job's container runs as its pod would, with its account's token and each of env set over the Job's.
+func (s *apiServer) runHandover(t *testing.T, file []byte, env ...string) (string, error) {
 	t.Helper()
 	var hooks []map[string]any
 	for _, doc := range testutil.Documents(t, file) {
@@ -207,8 +207,12 @@ func (s *apiServer) runHandover(t *testing.T, file []byte) (string, error) {
 	s.admin(t, stream(t, job), "apply", "--server-side", "--dry-run=server", "--field-manager=argocd-controller", "--as="+argoCDUser, "-f", "-")
 	pod := testutil.Field(t, job, "spec", "template", "spec")
 	container := testutil.Field(t, pod, "containers", "0")
+	args := containerArgs(t, job, pod, container, nil)
+	for _, variable := range env {
+		args = append(args, "-e", variable)
+	}
 	return s.asIn(t, testutil.Field(t, job, "metadata", "namespace").(string), testutil.Field(t, pod, "serviceAccountName").(string),
-		containerArgs(t, job, pod, container, nil), command(t, container)...)
+		args, command(t, container)...)
 }
 
 // live reads each object file states, with its managed fields.
@@ -256,11 +260,12 @@ func TestAPIServer_AnObjectTalosCreatedKeepsAFieldAReleaseDropsUntilItsComponent
 	server.admin(t, argoCDIdentity(t), "apply", "-f", "-")
 	server.talosCreates(t, before.Bytes)
 
-	t.Run("a handover before Argo CD applied the component is refused and takes no field away", func(t *testing.T) {
-		out, err := server.runHandover(t, carriedFile(t, before))
+	t.Run("a handover before Argo CD applied the component waits, is refused and takes no field away", func(t *testing.T) {
+		out, err := server.runHandover(t, carriedFile(t, before), "HANDOVER_ADOPTION_TIMEOUT=2s")
 
 		require.Error(t, err, "the handover printed:\n%s", out)
 		assert.Contains(t, out, "DaemonSet kube-system/cilium", "the refusal names an object Argo CD has not applied")
+		assert.Contains(t, out, "within 2s", "the refusal names the wait for Argo CD's annotation that ran out")
 		assert.Contains(t, server.ciliumAgent(t).initContainers(), droppedContainer, "the agent's init containers")
 	})
 

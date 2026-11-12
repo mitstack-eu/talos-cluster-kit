@@ -1039,7 +1039,7 @@ change `report/scripts/report.sh`.
 | `nodes` | Each node with its Talos version, allocatable resources, every address it holds with that address's type as `addresses`, `topology.kubernetes.io/zone` and `topology.kubernetes.io/region` labels, and, as `zoneLabelManagers`, each field manager that wrote its zone label | `kubectl get nodes --show-managed-fields` |
 | `etcd` | Each etcd member, `healthy` only when its node answered `talosctl etcd status` with an empty `ERRORS` cell, the `leader`, and a `statusError` naming a status read that failed | `talosctl etcd members` and `talosctl etcd status` |
 | `systemVolumes` | How each node's `STATE` and `EPHEMERAL` volumes are encrypted | `talosctl get volumestatus` |
-| `argocd` | Each Application's health, sync, `revision` and applied objects, each object with Argo CD's health of it, as [the section on the revision](#how-the-report-names-the-revision-each-application-was-compared-against) and [the section on object health](#how-the-report-shows-each-objects-health-and-each-containers-state) describe, under `routes` the answer each of 17 routes gives a caller with no session, and the `argocd` namespace's Services and Ingresses. The settings route's entry also says [whether any account can sign in with a password](#how-the-report-shows-whether-a-password-signs-in-to-argo-cd) | The Applications, `ARGOCD_URL` and the Ingress read |
+| `argocd` | Each Application's health, sync, `revision`, the `operation` of its last sync and its applied objects, each object with Argo CD's health of it, as [the section on the revision](#how-the-report-names-the-revision-each-application-was-compared-against) and [the section on object health](#how-the-report-shows-each-objects-health-and-each-containers-state) describe, under `routes` the answer each of 17 routes gives a caller with no session, and the `argocd` namespace's Services and Ingresses. The settings route's entry also says [whether any account can sign in with a password](#how-the-report-shows-whether-a-password-signs-in-to-argo-cd) | The Applications, `ARGOCD_URL` and the Ingress read |
 | `kubernetes.argocdPods` | Each pod in `argocd` with its containers' images | The pod read |
 | `pods` | Every pod's namespace, name, node or `null`, phase, and `containers`, each init and app container with its state and reason, as [the section below](#how-the-report-shows-each-objects-health-and-each-containers-state) describes | `kubectl get pods -A` |
 | `images` | Each image reference a pod or the pod template of a Deployment, StatefulSet, DaemonSet, Job or CronJob names, once, as `image` with the `digest` it names or that a pod's status reports it runs by, and otherwise `null`. A failed read leaves `{exitStatus, stderr}` with `read` naming `pods` or `workloads`, in place of a partial list | The pod read and `kubectl get deployments,statefulsets,daemonsets,jobs,cronjobs -A` |
@@ -1087,13 +1087,23 @@ revision to judge. Argo CD writes no revision until it has compared the
 Application once. An Application with several sources keeps one revision per
 source in `status.sync.revisions`, which the report does not read. The
 revision stays when the report leaves out the applied objects to keep the body
-within the platform's 256 KiB. Two Applications of such a report read like
-this, where Argo CD wrote a revision for `cluster-root` and none for `shop`:
+within the platform's 256 KiB.
+
+Each Application also carries `operation`, the outcome of Argo CD's last sync
+of it, from `status.operationState`. Its `phase` is Argo CD's own, such as
+`Running`, `Failed` or `Succeeded`. Its `message` is Argo CD's, cut to 256
+characters, and reads `null` once the sync succeeded. The `operation` reads
+`null` for an Application Argo CD has never synced. Three Applications of a
+report whose objects were left out read like this, where Argo CD wrote a
+revision for `cluster-root` and none for `shop`:
 
 ```json
 {"argocd": {"applications": [
-  {"name": "cluster-root", "health": "Degraded", "sync": "Synced", "revision": "9b2c4e7a1f3d5c8e0a6b4d2f9e7c5a3b1d8f6e4c"},
-  {"name": "shop", "health": "Degraded", "sync": "OutOfSync", "revision": null}
+  {"name": "cluster-root", "health": "Degraded", "sync": "Synced", "revision": "9b2c4e7a1f3d5c8e0a6b4d2f9e7c5a3b1d8f6e4c",
+   "operation": {"phase": "Succeeded", "message": null}},
+  {"name": "repository-credentials", "health": "Healthy", "sync": "OutOfSync", "revision": "4e1d7a0c3b6f9e2d5a8c1b4e7f0a3d6c9b2e5f8a",
+   "operation": {"phase": "Running", "message": "waiting for completion of hook batch/Job/component-shop-handover"}},
+  {"name": "shop", "health": "Degraded", "sync": "OutOfSync", "revision": null, "operation": null}
 ]}}
 ```
 
@@ -1991,9 +2001,10 @@ lists exactly the objects the release states for it, each Synced. Until
 Argo CD compares the new release, its Application still lists the marker of
 the release before, so the report reads nothing back. A report that would
 reach 256 KiB leaves out every Application's objects, and reads nothing back
-either. Argo CD applies a component's marker only once its handover Job
-succeeded, so a release also reads back only once every component is handed
-over.
+either. The report also carries the phase of Argo CD's last sync of each
+Application. That sync succeeds only once the component's handover Job
+succeeded, so the read-back also waits for a sync that reads Succeeded, and a
+release reads back only once every component is handed over.
 
 `Release.ReadBack` returns a `rollout.Reading`. Its `Problem` says why a report
 does not read the release back, and is empty once it does. Its `Applied` then
@@ -2045,30 +2056,36 @@ Argo CD applies. It runs once per sync of a component:
 2. Argo CD applies a file in sync waves, each wave only once the wave before
    it is applied, reads Healthy and saw its hooks succeed. The annotation
    `argocd.argoproj.io/sync-wave` names a document's wave, and a document
-   without it sits in wave 0. The Job sits one wave after the component's last
-   document, and the marker one wave after the Job. Argo CD therefore applies
-   the objects, then runs the Job, and applies the marker only once the Job
-   succeeded.
+   without it sits in wave 0. The Job and the marker sit in the wave of the
+   component's last document. A later wave would start only once every object
+   reads Healthy, so an object that a dropped field keeps unhealthy, such as a
+   DaemonSet whose pods are refused, would never be handed over. The sync
+   succeeds only once the Job succeeded.
 3. The Job runs `rollout/scripts/handover.sh` from the release's tools image,
    under the service account of Argo CD's application controller. That account
    already applies every component, so the cluster gains no other identity
    that may change these objects.
-4. The script reads each object the component states, with its field
+4. Argo CD applies the rest of the Job's wave in the same pass that creates the
+   Job, so the script first waits, for at most 120 seconds, until each object
+   carries the annotation `argocd.argoproj.io/tracking-id` that Argo CD v3.5.5
+   gives every object it applies.
+5. The script reads each object the component states, with its field
    managers. For every object that both `talos` and `argocd-controller`
    applied, it sends one server-side apply under the name `talos` that states
    no field. Talos then owns nothing on the object, and the API server drops
    each field that only Talos owned. Every field Argo CD applies stays.
-5. The script reads those objects again and fails when one still names
+6. The script reads those objects again and fails when one still names
    `talos`.
-6. Argo CD deletes a Job that succeeded. A Job that failed fails the sync,
-   which Argo CD retries from the objects on. The marker is then missing, the
-   Application reads OutOfSync, and the read-back names that Application.
+7. Argo CD deletes a Job that succeeded. A Job that failed fails the sync,
+   which Argo CD retries from the objects on. The last sync then reads Failed,
+   or Running while it retries, and the read-back names that Application.
 
-The script refuses two kinds of object, changes nothing and fails, naming
-each. One is an object that Talos created and Argo CD has not applied, since
+The script refuses three kinds of object, changes nothing and fails, naming
+each. One is an object that still lacks Argo CD's annotation when the wait
+ends. Another is an object that Talos created and Argo CD has not applied, since
 giving up Talos's fields there would take every field away. Argo CD applies
 each object with its tracking annotation, so an object it applied always names
-`argocd-controller`. The other is an object that names `talos` for a write
+`argocd-controller`. The third is an object that names `talos` for a write
 that was no server-side apply, since an apply cannot give such a write up. A
 document that stays with the build, such as a Secret holding data, is never
 named to the script.

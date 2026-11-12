@@ -1,7 +1,7 @@
-# Argo CD runs this Job during a sync, one wave after the component's objects, so once they are applied and read
-# Healthy. It gives up Talos's fields on each of them, since Talos created them under its own field manager and a field a
-# release drops stays while that manager owns it. It runs as Argo CD's application controller, the one identity that
-# already applies these objects.
+# Argo CD runs this Job during a sync, in the wave of the component's last object, so it waits until Argo CD has applied
+# each object. It gives up Talos's fields on each of them, since Talos created them under its own field manager and a
+# field a release drops stays while that manager owns it. It runs as Argo CD's application controller, the one identity
+# that already applies these objects.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -34,6 +34,10 @@ spec:
               value: {{ printf "%q" .TalosManager }}
             - name: HANDOVER_ARGOCD_MANAGER
               value: {{ printf "%q" .ArgoCDManager }}
+            - name: HANDOVER_ARGOCD_ANNOTATION
+              value: {{ printf "%q" .ArgoCDAnnotation }}
+            - name: HANDOVER_ADOPTION_TIMEOUT
+              value: {{ printf "%q" .AdoptionTimeout }}
             - name: HOME
               value: /tmp
           securityContext:

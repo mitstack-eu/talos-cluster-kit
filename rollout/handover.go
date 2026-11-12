@@ -22,6 +22,11 @@ const (
 	// syncWaveAnnotation names the wave of a sync Argo CD applies a document in, each wave after the one before it
 	// is applied and reads Healthy.
 	syncWaveAnnotation = "argocd.argoproj.io/sync-wave"
+	// argoCDTrackingAnnotation is the annotation Argo CD gives each object it applies, naming the Application.
+	argoCDTrackingAnnotation = "argocd.argoproj.io/tracking-id"
+	// adoptionTimeout bounds the Job's wait for Argo CD to apply each object, which its own sync does within the same
+	// pass that creates the Job.
+	adoptionTimeout = "120s"
 )
 
 //go:embed handover.yaml
@@ -40,14 +45,14 @@ func (h documentHead) wave() int {
 	return wave
 }
 
-// handoverWave is the wave after the last one any of heads syncs in, and wave 1 at the earliest, so the handover finds
-// every object applied.
-func handoverWave(heads []documentHead) int {
+// lastWave is the last wave any of heads syncs in. The handover runs in it and in no later one, because Argo CD starts a
+// later wave only once every object reads Healthy, and an object a dropped field keeps unhealthy would then block it.
+func lastWave(heads []documentHead) int {
 	last := 0
 	for _, head := range heads {
 		last = max(last, head.wave())
 	}
-	return last + 1
+	return last
 }
 
 // stub names one object and states none of its fields.
@@ -82,5 +87,6 @@ func (c carried) renderHandover(heads []documentHead, wave int, toolsImage strin
 		"Name": job.Name, "Namespace": job.Namespace, "Wave": strconv.Itoa(wave), "ServiceAccount": argoCDController,
 		"Image": toolsImage, "Script": handoverScript, "Objects": string(objects),
 		"TalosManager": constants.KubernetesFieldManagerName, "ArgoCDManager": argoCDManager,
+		"ArgoCDAnnotation": argoCDTrackingAnnotation, "AdoptionTimeout": adoptionTimeout,
 	})
 }

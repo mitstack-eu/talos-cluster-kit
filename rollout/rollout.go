@@ -59,7 +59,8 @@ type File struct {
 
 // carried is one component as the repository holds it: the documents it carries, the Job that hands them over from
 // Talos, then the ConfigMap named for the digest of both, since Argo CD's list of what it applied names objects and no
-// revision. Argo CD applies the three in that order, each only once the one before is applied and succeeded.
+// revision. The Job and the ConfigMap sync in the wave of the last document, and the sync succeeds only once the Job
+// did.
 type carried struct {
 	name, app string
 	bytes     []byte
@@ -169,20 +170,19 @@ func (r Release) carry(m components.Manifest) (carried, error) {
 		return carried{}, err
 	}
 	if len(heads) > 0 {
-		wave := handoverWave(heads)
+		wave := lastWave(heads)
 		job, err := c.renderHandover(heads, wave, r.ToolsImage)
 		if err != nil {
 			return carried{}, err
 		}
-		c = c.withMarker(append(docs, job...), heads, wave+1)
+		c = c.withMarker(append(docs, job...), heads, wave)
 	}
 	carriedCache.Store(key, c)
 	return c, nil
 }
 
 // markerFormat takes the marker's name, its namespace and its wave.
-const markerFormat = "# Argo CD applies this ConfigMap one wave after the handover Job, so it lists it only once it compared the\n" +
-	"# documents above, whose digest it is named for, and the Job succeeded.\n" +
+const markerFormat = "# Argo CD lists this ConfigMap once it compared the documents above, whose digest it is named for.\n" +
 	"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: %s\n  namespace: %s\n  annotations:\n    " + syncWaveAnnotation + ": \"%d\"\n"
 
 // withMarker closes stated, the component's documents and its handover Job, with the marker named for their digest,
@@ -312,13 +312,36 @@ type listedObject struct {
 
 type reportedApplication struct {
 	Name, Sync, Health string
+	// Operation is Argo CD's last sync of the Application, and nil when the report carries none.
+	Operation *lastSync
 	// Resources is nil when the report left out what each Application applied, to stay within the platform's limit.
 	Resources *[]listedObject
 }
 
-// ReadBack reads the release back from a node report: each component's Application reads Synced and Healthy, and lists
-// exactly the objects the release states for it, each Synced, so an object the release changed or dropped stands as
-// stated.
+// lastSync is the outcome of Argo CD's last sync of an Application, which succeeds only once the handover Job did.
+type lastSync struct {
+	Phase   string
+	Message *string
+}
+
+const syncSucceeded = "Succeeded"
+
+// problem says why the sync does not stand for the release, and is empty when it succeeded.
+func (s *lastSync) problem(app string) string {
+	switch {
+	case s == nil:
+		return "it carries no outcome of Argo CD's last sync of " + app
+	case s.Phase == syncSucceeded:
+		return ""
+	case s.Message == nil:
+		return fmt.Sprintf("Argo CD's last sync of %s reads %q", app, s.Phase)
+	}
+	return fmt.Sprintf("Argo CD's last sync of %s reads %q: %s", app, s.Phase, *s.Message)
+}
+
+// ReadBack reads the release back from a node report: each component's Application reads Synced and Healthy, Argo CD's
+// last sync of it succeeded, so its handover Job did, and it lists exactly the objects the release states for it, each
+// Synced, so an object the release changed or dropped stands as stated.
 func (r Release) ReadBack(report []byte) (Reading, error) {
 	set, err := r.carried()
 	if err != nil {
@@ -358,6 +381,9 @@ func (c carried) readApplication(apps []reportedApplication) (applied, problems 
 		return nil, []string{"it carries no list of the objects Argo CD's Application " + c.app + " applied"}
 	case apps[i].Sync != synced || apps[i].Health != healthy:
 		return nil, []string{fmt.Sprintf("Argo CD's Application %s reads sync %q and health %q", c.app, apps[i].Sync, apps[i].Health)}
+	}
+	if unsettled := apps[i].Operation.problem(c.app); unsettled != "" {
+		return nil, []string{unsettled}
 	}
 	for _, l := range *apps[i].Resources {
 		switch {

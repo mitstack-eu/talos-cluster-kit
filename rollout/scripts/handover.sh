@@ -1,21 +1,25 @@
 #!/usr/bin/env bash
 # Gives up Talos's fields on each object HANDOVER_OBJECTS names, so the object holds only what Argo CD applies.
 # Usage: HANDOVER_OBJECTS='<a v1 List naming each object by apiVersion, kind, name and namespace>' \
-#   HANDOVER_TALOS_MANAGER=<manager> HANDOVER_ARGOCD_MANAGER=<manager> handover.sh
+#   HANDOVER_TALOS_MANAGER=<manager> HANDOVER_ARGOCD_MANAGER=<manager> \
+#   HANDOVER_ARGOCD_ANNOTATION=<annotation> HANDOVER_ADOPTION_TIMEOUT=<duration> handover.sh
 # It exists because Talos creates each object by server-side apply under its own field manager and never applies it
 # again, so a field a later release drops stays on the object for as long as that manager owns it.
 set -euo pipefail
 
 : "${HANDOVER_OBJECTS:?names the objects}" "${HANDOVER_TALOS_MANAGER:?names the field manager Talos creates under}" \
-  "${HANDOVER_ARGOCD_MANAGER:?names the field manager Argo CD applies under}"
-export HANDOVER_TALOS_MANAGER HANDOVER_ARGOCD_MANAGER
+  "${HANDOVER_ARGOCD_MANAGER:?names the field manager Argo CD applies under}" \
+  "${HANDOVER_ARGOCD_ANNOTATION:?names the annotation Argo CD gives each object it applies}" \
+  "${HANDOVER_ADOPTION_TIMEOUT:?bounds the wait for Argo CD to apply each object}"
+export HANDOVER_TALOS_MANAGER HANDOVER_ARGOCD_MANAGER HANDOVER_ARGOCD_ANNOTATION
 
-readonly talos=$HANDOVER_TALOS_MANAGER
+readonly talos=$HANDOVER_TALOS_MANAGER timeout=$HANDOVER_ADOPTION_TIMEOUT
 readonly filters='
   def objects: if .kind == "List" then .items[] else . end;
   def applied_by(manager): any(.metadata.managedFields[]?; .manager == manager and .operation == "Apply");
   def held: objects | select(applied_by(env.HANDOVER_TALOS_MANAGER));
   def unapplied: held | select(applied_by(env.HANDOVER_ARGOCD_MANAGER) | not);
+  def untracked: objects | select(.metadata.annotations[env.HANDOVER_ARGOCD_ANNOTATION] == null);
   def written: objects
     | select(any(.metadata.managedFields[]?; .manager == env.HANDOVER_TALOS_MANAGER and .operation != "Apply"));
   def named: "\(.kind) \(if .metadata.namespace then .metadata.namespace + "/" else "" end)\(.metadata.name)";
@@ -45,7 +49,17 @@ names() {
   query "$1" "[$2 | named] | join(\", \")"
 }
 
+# await_argocd <list> waits until Argo CD has annotated each object <list> names, since the Job runs in the wave of the
+# component's last object and Argo CD's sync applies the rest of that wave beside it.
+await_argocd() {
+  local path="{.metadata.annotations.${HANDOVER_ARGOCD_ANNOTATION//./\\.}}"
+  kubectl wait -f "$1" --for="jsonpath=$path" --timeout="$timeout" && return 0
+  read_objects "$1" "$work/waited.json"
+  fail "Argo CD has not applied $(names "$work/waited.json" untracked) within $timeout, so giving up $talos's fields could take every field away"
+}
+
 printf '%s' "$HANDOVER_OBJECTS" > "$work/stated.json"
+await_argocd "$work/stated.json"
 read_objects "$work/stated.json" "$work/live.json"
 
 unapplied=$(names "$work/live.json" unapplied)

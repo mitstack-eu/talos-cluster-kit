@@ -161,6 +161,8 @@ plane := controlplane.Plane{
 	ReadReport:        readReport,                             // returns the newest node report since a time, for removals and kept images
 	Guard:             guard,                                  // block-kit's redundancy guard, judging every removal
 	Notify:            emitEvent,                              // receives each certificate, route move, power-on and deletion
+	ReplaceNodes:      replace,                                // the locations whose node a confirmed upgrade replaces
+	Removals:          clusterRepository,                      // writes a replaced node's member removal to the cluster repository
 	AppsOnWorkers:     true,
 	WorkerAddresses:   []string{"10.0.1.2"}, // the Robot worker's address in the network's vSwitch subnet
 }
@@ -2515,6 +2517,75 @@ bootstraps etcd from the snapshot, waits for the API server, and deletes every
 Node object that `--keep` does not name. The fourth proof's restore stalled
 until the old Node objects went, because Argo CD's controller stayed bound to
 a dead server's Node.
+
+## How a control-plane node is replaced
+
+A control-plane node keeps its server and its server type for as long as it
+runs. To move one onto a new server, a block names the node's location in
+`Plane.ReplaceNodes` on the call of a confirmed upgrade, with `Upgrading` set.
+The plane records each named location on the network, under the label
+`mitstack.dev/node-replace-<location>`, with the id Hetzner gives the node's
+server and the time of that call. Every later call reads the label and
+carries the replacement on, whether or not it names a node, so a replacement
+stopped part way resumes where it stood. Another server in that location is
+the node's successor, which the plane tells by the id and by no clock. A call
+that is no upgrade records nothing.
+
+The upgrade's call refuses before any change in three cases, each with its own
+class:
+
+| Class | What the upgrade named |
+|---|---|
+| `node-replacement-unknown` | A location the cluster runs no single node in |
+| `server-unavailable` | A location where Hetzner can order none of `ServerTypes` now |
+| `node-removal-unwritable` | A node, on a plane whose block passes no `Removals` |
+
+The plane replaces one node at a time, in the order `fsn1`, `nbg1`, `hel1`.
+Each call takes one of these changes:
+
+1. It labels the node with the time its replacement began, so only a node
+   report received after that time judges the other members.
+2. It asks block-kit's redundancy guard whether etcd keeps a majority of its
+   members serving without the node, and whether OpenBao does without each
+   member whose pod runs on it. It also reads again whether Hetzner can order
+   a successor.
+3. It powers the node off, so the node stops as a lost one does and its etcd
+   member no longer answers.
+4. It writes the Job `etcd.RemoveMemberJob` renders to the cluster repository,
+   at the path `etcd.RemovalPath` gives, through `Plane.Removals`. The
+   cluster's own Application applies the file, and its Job removes the member
+   and then the Node object.
+5. Once a node report lists neither the member nor the Node object, it takes
+   the file out of the repository, and Argo CD prunes the Job.
+6. It deletes the server. The next call finds the location without a node and
+   creates one from the cluster's snapshot under the same name, as it does for
+   a lost node. The new node takes the first type of `ServerTypes` its
+   location can order, and an event names the type when it is not the list's
+   first.
+7. Once a node report received since the new node's creation reads its etcd
+   member healthy and its Node object Ready, it takes the label off the
+   network. Only then does the next named node begin.
+
+A refusal in step 2 carries the guard's class `redundancy-below-minimum` and
+names each member with its reading, or the class `server-unavailable`. The
+node still runs then, so the plane takes the label off the network and the
+replacement is over: no later call carries it on, and the block asks again
+with a new upgrade. Once the node is off the plane keeps the label through any
+failure, and `Problems` names where the replacement stands on every call.
+
+`Removals` is the cluster repository as the plane needs it, which the block
+implements. `Held` lists each path on the default branch that
+`etcd.IsRemovalPath` reads as a removal, and `Commit` writes one file there or
+takes it out. The plane reads the Job's outcome from the node report, among
+the objects of the Application named `cluster`: Argo CD reads a Job that
+completed as `Healthy` and one that failed as `Degraded`.
+
+A Job keeps its name for a day after it finishes, so a removal is never
+written while a Job of its name stands. The plane takes a failed Job's file
+out first, waits for a report that no longer lists the Job, and writes the
+removal again. It also takes the file out before it deletes the server.
+Argo CD would otherwise apply the file again once the Job's day is over, and
+its Job would remove the member of the new node, which has the same name.
 
 ## How a block takes node pools
 

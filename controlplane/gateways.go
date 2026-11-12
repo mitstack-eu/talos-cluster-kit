@@ -161,7 +161,7 @@ func (p Plane) builtGatewayStep(ctx context.Context, st State, s site) (Step, bo
 	if st.SingleGateway() {
 		return p.singleGatewayStep(ctx, st, s)
 	}
-	for _, next := range []func(context.Context, State, site) (Step, bool, error){
+	for _, next := range []gatewayStep{
 		p.keptListStep,
 		p.upgradeMarkStep,
 		p.zoneStep,
@@ -169,18 +169,27 @@ func (p Plane) builtGatewayStep(ctx context.Context, st State, s site) (Step, bo
 		p.routeStep,
 		p.powerBackStep,
 		p.failedStep,
-		func(ctx context.Context, st State, s site) (Step, bool, error) {
-			if st.lacksGateway() {
-				return Step{}, false, nil
-			}
-			return p.replaceStep(ctx, st, s)
-		},
+		onceEveryLocationHasItsGateway(p.replaceStep),
+		onceEveryLocationHasItsGateway(p.renewStep),
 	} {
 		if step, ok, err := next(ctx, st, s); err != nil || ok {
 			return step, ok, err
 		}
 	}
 	return Step{}, false, nil
+}
+
+// gatewayStep is one way the plane keeps a built cluster's gateways, which answers with the step it lacks, if any.
+type gatewayStep func(ctx context.Context, st State, s site) (Step, bool, error)
+
+// onceEveryLocationHasItsGateway holds a step that takes a location's gateway away while any location lacks one.
+func onceEveryLocationHasItsGateway(next gatewayStep) gatewayStep {
+	return func(ctx context.Context, st State, s site) (Step, bool, error) {
+		if st.lacksGateway() {
+			return Step{}, false, nil
+		}
+		return next(ctx, st, s)
+	}
 }
 
 // singleGatewayStep keeps a cluster built before a gateway ran in each location as it stands and refuses the upgrade
@@ -709,22 +718,18 @@ func (p Plane) createGateway(ctx context.Context, st State, s site, loc string, 
 	if k != nil {
 		list = list.Keeping(k.kept)
 	}
-	userData, tls, err := p.renderGateway(loc, ingressAddr, p.now(), *p.GatewayCA, list, nil)
+	rendered, err := p.renderGateway(loc, ingressAddr, p.now(), *p.GatewayCA, list, nil)
 	if err != nil {
 		return err
 	}
-	event, err := certificateEvent(loc, tls)
-	if err != nil {
-		return err
-	}
-	spec, err := p.gatewaySpec(ctx, &OrderableTypes{API: p.API}, loc, userData, s, sibling.Labels[KeyEnrolmentSHA256], sibling.Labels[KeyIssuerBucket], list.Digest())
+	spec, err := p.gatewaySpec(ctx, &OrderableTypes{API: p.API}, loc, rendered, s, sibling.Labels[KeyEnrolmentSHA256], sibling.Labels[KeyIssuerBucket], list.Digest())
 	if err != nil {
 		return err
 	}
 	if _, err := p.API.CreateServers(ctx, spec); err != nil {
 		return errors.Join(fmt.Errorf("creating the gateway in %s: %w", loc, err), p.deleteUnattachedGateway(ctx, loc, s))
 	}
-	p.notify(ctx, "%s", event)
+	p.notify(ctx, "%s", rendered.certificate.event)
 	if k != nil {
 		p.notify(ctx, "%s", k.event(loc, list))
 	}
@@ -747,13 +752,14 @@ func (p Plane) deleteUnattachedGateway(ctx context.Context, loc string, s site) 
 	return nil
 }
 
-func (p Plane) gatewaySpec(ctx context.Context, orderable *OrderableTypes, loc, userData string, s site, enrolment, bucket, digest string) (ServerSpec, error) {
+func (p Plane) gatewaySpec(ctx context.Context, orderable *OrderableTypes, loc string, rendered renderedGateway, s site, enrolment, bucket, digest string) (ServerSpec, error) {
 	serverType, err := orderable.First(ctx, string(RoleGateway), GatewayServerTypes, loc)
 	if err != nil {
 		return ServerSpec{}, err
 	}
 	labels := p.Labels(RoleGateway)
 	labels[KeyEnrolmentSHA256], labels[KeyIssuerBucket], labels[KeyGatewayList] = enrolment, bucket, digest
+	labels[KeyGatewayCertExpires] = rendered.certificate.expiresLabel()
 	if replaced := s.network.Labels[KeyGatewayFailed+loc]; replaced != "" {
 		labels[KeyGatewayReplaces] = replaced
 	}
@@ -762,23 +768,12 @@ func (p Plane) gatewaySpec(ctx context.Context, orderable *OrderableTypes, loc, 
 		ServerType:  serverType,
 		Location:    loc,
 		Image:       gatewayImage,
-		UserData:    userData,
+		UserData:    rendered.userData,
 		Labels:      labels,
 		FirewallIDs: []int64{s.firewall.ID},
 		PublicIPv4:  true,
 		Stopped:     true,
 	}, nil
-}
-
-// certificateEvent names a gateway certificate's serial and validity, read before the gateway is created, so no
-// failure to read it comes after the CA exists.
-func certificateEvent(loc string, tls gateway.TLS) (string, error) {
-	leaf, err := tls.Leaf()
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("issued the certificate of the gateway in %s at %s: serial %s, valid from %s until %s", loc, GatewayAddresses[loc],
-		leaf.SerialNumber.Text(16), leaf.NotBefore.UTC().Format(time.RFC3339), leaf.NotAfter.UTC().Format(time.RFC3339)), nil
 }
 
 // Unhealthy names the failure a cluster meets while it still serves, and what was seen; both are empty when it meets none.

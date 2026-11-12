@@ -193,6 +193,17 @@ subscription is still converging, and the platform calls it again later. `Proble
 plane that stands, `Outputs` gives the private API endpoint and the ingress
 address the block provides, and `Delete` removes everything the labels find.
 
+The state `Plane.Read` returns holds each load balancer as a
+`controlplane.LoadBalancer` with two public addresses. `PublicIPv4` is the
+address it serves from the internet, and it is empty while its public
+interface is off, as on the API load balancer. `AssignedPublicIPv4` is the
+IPv4 address Hetzner assigned it, whether or not that interface is on, so a
+block can name every public address its cluster holds. The plane reads both
+from the `public_net` object Hetzner's Cloud API returns: the address from
+`ipv4.ip`, and whether it serves from `enabled`. Whether a load balancer with
+its public interface off answers on its assigned address from the internet is
+untested.
+
 `Installed` runs once, inside the `NextStep` change that creates the gateway
 and the builder, since that change renders the cluster's configuration.
 That call is the only moment the cluster's keys exist outside the snapshot,

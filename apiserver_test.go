@@ -282,8 +282,8 @@ func (s *apiServer) runCronJob(t *testing.T, rendered []byte, name string, stand
 	return s.as(t, testutil.Field(t, pod, "serviceAccountName").(string), containerArgs(t, job, pod, container, standIns), command(t, container)...)
 }
 
-// containerArgs are the docker run arguments that give container what its pod gives it: its user, its capabilities, a
-// read-only root, its environment, and at each path it mounts the stand-in for that path, or a tmpfs for an emptyDir.
+// containerArgs are the docker run arguments that give container its pod's security context and environment, a tmpfs at
+// each emptyDir it mounts and a stand-in where one is given, and leave out a host path that has no stand-in.
 func containerArgs(t *testing.T, job, pod, container any, standIns map[string][]string) []string {
 	t.Helper()
 	security := testutil.Field(t, container, "securityContext")

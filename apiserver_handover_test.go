@@ -5,6 +5,7 @@
 package talosclusterkit
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -14,7 +15,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/stretchr/testify/assert"
@@ -194,6 +194,33 @@ func (s *apiServer) argoCDApply(t *testing.T, objects []map[string]any) *exec.Cm
 // controller, and the Job's container runs as its pod would, with its account's token and each of env set over the Job's.
 func (s *apiServer) runHandover(t *testing.T, file []byte, env ...string) (string, error) {
 	t.Helper()
+	out, err := s.handover(t, file, env...).CombinedOutput()
+	return string(out), err
+}
+
+// runHandoverApplying runs the handover as runHandover does and runs apply once the handover says its wait begins, as
+// Argo CD applies a wave's later objects while the wave's Job runs.
+func (s *apiServer) runHandoverApplying(t *testing.T, file []byte, apply *exec.Cmd) (string, error) {
+	t.Helper()
+	cmd := s.handover(t, file)
+	printed, err := cmd.StdoutPipe()
+	require.NoError(t, err)
+	cmd.Stderr = cmd.Stdout
+	require.NoError(t, cmd.Start())
+	var out strings.Builder
+	for lines := bufio.NewScanner(printed); lines.Scan(); {
+		out.WriteString(lines.Text() + "\n")
+		if strings.HasPrefix(lines.Text(), "handover: waiting") {
+			applied, err := apply.CombinedOutput()
+			require.NoError(t, err, "Argo CD's apply of the objects the handover waits for: %s", applied)
+		}
+	}
+	return out.String(), cmd.Wait()
+}
+
+// handover is the command that runs the handover Job of file, not yet started.
+func (s *apiServer) handover(t *testing.T, file []byte, env ...string) *exec.Cmd {
+	t.Helper()
 	var hooks []map[string]any
 	for _, doc := range testutil.Documents(t, file) {
 		if testutil.IsHook(doc) {
@@ -209,7 +236,7 @@ func (s *apiServer) runHandover(t *testing.T, file []byte, env ...string) (strin
 	for _, variable := range env {
 		args = append(args, "-e", variable)
 	}
-	return s.asIn(t, testutil.Field(t, job, "metadata", "namespace").(string), testutil.Field(t, pod, "serviceAccountName").(string),
+	return s.asInCommand(t, testutil.Field(t, job, "metadata", "namespace").(string), testutil.Field(t, pod, "serviceAccountName").(string),
 		args, command(t, container)...)
 }
 
@@ -229,24 +256,6 @@ func (s *apiServer) ciliumAgent(t *testing.T) managedObject {
 	out := s.admin(t, nil, "get", "daemonset", "cilium", "-n", "kube-system", "--show-managed-fields", "-o", "json")
 	require.NoError(t, json.Unmarshal(out, &agent))
 	return agent
-}
-
-// argoCDLag is how long after the handover Job starts Argo CD creates the objects of the Job's wave that sort after it.
-const argoCDLag = 5 * time.Second
-
-// createdLater runs apply once argoCDLag has passed, as Argo CD applies a wave's later objects while the Job starts, and
-// sends what it returned.
-func createdLater(apply *exec.Cmd) <-chan error {
-	done := make(chan error, 1)
-	go func() {
-		time.Sleep(argoCDLag)
-		out, err := apply.CombinedOutput()
-		if err != nil {
-			err = fmt.Errorf("%w: %s", err, out)
-		}
-		done <- err
-	}()
-	return done
 }
 
 // lateObjects are the documents of file that Argo CD applies, picked by kind and namespace/name.
@@ -335,11 +344,9 @@ func TestAPIServer_AnObjectTalosCreatedKeepsAFieldAReleaseDropsUntilItsComponent
 	t.Run("a handover that starts before Argo CD creates two objects of its wave waits for them and succeeds", func(t *testing.T) {
 		late := lateObjects(t, release, "ServiceAccount kube-system/cilium-envoy", "ConfigMap kube-system/cilium-envoy-config")
 		server.admin(t, nil, "delete", "serviceaccount/cilium-envoy", "configmap/cilium-envoy-config", "-n", "kube-system")
-		created := createdLater(server.argoCDApply(t, late))
 
-		out, err := server.runHandover(t, release)
+		out, err := server.runHandoverApplying(t, release, server.argoCDApply(t, late))
 
-		require.NoError(t, <-created, "Argo CD's later apply of the two objects")
 		require.NoError(t, err, "the handover printed:\n%s", out)
 		assert.Empty(t, namedByTalos(server.live(t, release)), "the component's objects that still name Talos as a field manager")
 	})

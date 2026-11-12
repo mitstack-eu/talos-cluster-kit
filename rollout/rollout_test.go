@@ -502,20 +502,19 @@ func TestRelease_TheKitsArgoCDGivesItsApplicationControllerEveryRightTheHandover
 		"the handover reads and server-side applies every kind a component states, a ClusterRole's rules among them")
 }
 
-const fakeKubectl = `case "$1" in
-wait)
-  absent_count=$(cat "$FAKE_DIR/absent" 2> /dev/null || echo 0)
-  echo $((absent_count + 1)) > "$FAKE_DIR/absent"
-  if [ "$absent_count" -lt "${FAKE_ABSENT_WAITS:-0}" ]; then echo 'Error from server (NotFound): configmaps "late" not found' >&2; exit 1; fi
-  exit "${FAKE_WAIT_EXIT:-0}"
+const fakeKubectl = `case "$*" in
+get*--watch*)
+  printf '%b' "${FAKE_WATCH-argocd-tracking-id\\n}"
+  [ "${FAKE_WATCH_THEN:-0}" != hold ] || exec tail -f /dev/null
+  exit "${FAKE_WATCH_THEN:-0}"
   ;;
-get)
+get*)
   read_count=$(cat "$FAKE_DIR/reads" 2> /dev/null || echo 0)
   echo $((read_count + 1)) > "$FAKE_DIR/reads"
   [ "${FAKE_GET_EXIT:-0}" = 0 ] || exit "$FAKE_GET_EXIT"
   if [ "$read_count" = 0 ]; then cat "$FAKE_DIR/live.json"; else cat "$FAKE_DIR/after.json"; fi
   ;;
-apply)
+apply*)
   for last; do :; done
   cp "$last" "$FAKE_DIR/applied.json"
   exit "${FAKE_APPLY_EXIT:-0}"
@@ -557,7 +556,7 @@ func runHandover(t *testing.T, before, after []byte, env ...string) handoverRun 
 	c := handoverContainer(t, handoverJob(t, reportFile(t)))
 	script, err := os.ReadFile(filepath.Join("scripts", "handover.sh"))
 	require.NoError(t, err)
-	fakes := testutil.NewTools(t, map[string]string{"kubectl": fakeKubectl, "sleep": ""})
+	fakes := testutil.NewTools(t, map[string]string{"kubectl": fakeKubectl})
 	require.NoError(t, os.WriteFile(filepath.Join(fakes.Dir, "live.json"), before, 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(fakes.Dir, "after.json"), after, 0o644))
 	vars := []string{"FAKE_DIR=" + fakes.Dir}
@@ -597,10 +596,14 @@ func TestHandover_GivesUpTalossFieldsOnEachObjectTalosAndArgoCDBothAppliedAndOnN
 	require.NoError(t, run.err, run.out)
 	require.Len(t, run.calls, waits+3, "the calls: %v", run.calls)
 	for i, call := range run.calls[:waits] {
-		assert.Regexp(t, `^kubectl wait -f \S+ --for=jsonpath=\{\.metadata\.annotations\.argocd\\\.argoproj\\\.io/tracking-id\} --timeout=\d+s$`, call,
-			"wait %d of %d, one for each object, for Argo CD's annotation on it", i+1, waits)
+		assert.Regexp(t, `^kubectl get [a-z]+\.v[0-9a-z]+\.[a-z.]* --field-selector=metadata\.name=\S+ --watch -o jsonpath=\{\.metadata\.annotations\.argocd\\\.argoproj\\\.io/tracking-id\}\{"\\n"\}( -n \S+)?$`, call,
+			"watch %d of %d, one for each object, read until Argo CD's annotation shows", i+1, waits)
 	}
-	assert.Regexp(t, ` --timeout=120s$`, run.calls[0], "the first wait, which has the whole timeout")
+	assert.Contains(t, run.calls[:waits], `kubectl get cronjob.v1.batch --field-selector=metadata.name=mitstack-node-report --watch -o jsonpath={.metadata.annotations.argocd\.argoproj\.io/tracking-id}{"\n"} -n mitstack-node`,
+		"the watch of a namespaced object, by its kind, version and group")
+	assert.Contains(t, run.calls[:waits], `kubectl get clusterrole.v1.rbac.authorization.k8s.io --field-selector=metadata.name=mitstack-node-report --watch -o jsonpath={.metadata.annotations.argocd\.argoproj\.io/tracking-id}{"\n"}`,
+		"the watch of a cluster-wide object, in no namespace")
+	assert.Contains(t, run.out, "handover: waiting up to 120s for Argo CD to apply each object the component states", "what the handover says as its wait begins")
 	assert.Regexp(t, `^kubectl get -f \S+ --show-managed-fields -o json$`, run.calls[waits], "the read of every object the component states")
 	assert.Regexp(t, `^kubectl apply --server-side --validate=false --field-manager=talos -f \S+$`, run.calls[waits+1],
 		"an apply under Talos's name with no force, which states no field and so gives up each field Talos owns")
@@ -613,13 +616,11 @@ func TestHandover_GivesUpTalossFieldsOnEachObjectTalosAndArgoCDBothAppliedAndOnN
 	assert.Contains(t, run.out, "ClusterRole mitstack-node-report", "the report of what it handed over")
 }
 
-func TestHandover_WaitsAgainForAnObjectArgoCDHasNotCreatedYet(t *testing.T) {
-	run := runHandover(t, list(t, argoCDOnly), nil, "FAKE_ABSENT_WAITS=2")
+func TestHandover_ReadsEachWatchPastTheObjectsChangesUntilArgoCDHasAnnotatedIt(t *testing.T) {
+	run := runHandover(t, list(t, argoCDOnly), nil, `FAKE_WATCH=\n\nargocd-tracking-id\n`, "FAKE_WATCH_THEN=hold")
 
 	require.NoError(t, run.err, run.out)
-	assert.Len(t, run.calls, handoverObjectCount(t)+5, "the calls, two waits that found the first object absent, each followed by a sleep, a wait for each object and a read: %v", run.calls)
-	assert.Equal(t, []string{"sleep 1", "sleep 1"}, slices.DeleteFunc(slices.Clone(run.calls), func(call string) bool { return !strings.HasPrefix(call, "sleep") }),
-		"a second's pause before each wait again")
+	assert.Len(t, run.calls, handoverObjectCount(t)+1, "the calls, a watch for each object and a read: %v", run.calls)
 }
 
 func TestHandover_AppliesNothingWhenNoObjectNamesTalos(t *testing.T) {
@@ -653,7 +654,9 @@ func TestHandover_FailsNamingWhatItCouldNotHandOver(t *testing.T) {
 			list(t, bothApplied, talosOnly), nil, nil, "ConfigMap mitstack-node/mitstack-node-report", false},
 		{"an object that names Talos for a plain write, which an apply cannot give up",
 			list(t, bothApplied, updatedByTalos()), nil, nil, "Namespace mitstack-node", false},
-		{"an object Argo CD does not apply within the wait", list(t, bothApplied), nil, []string{"FAKE_WAIT_EXIT=1"}, "within 120s", false},
+		{"an object Argo CD does not apply within the wait", list(t, bothApplied), nil,
+			[]string{`FAKE_WATCH=\n`, "FAKE_WATCH_THEN=hold", "HANDOVER_ADOPTION_TIMEOUT=1s"}, "within 1s", false},
+		{"a watch that ends before Argo CD annotates the object", list(t, bothApplied), nil, []string{`FAKE_WATCH=\n`, "FAKE_WATCH_THEN=1"}, "ended before Argo CD applied it", false},
 		{"a timeout that is no number of seconds", list(t, bothApplied), nil, []string{"HANDOVER_ADOPTION_TIMEOUT=2m"}, "not a number of seconds", false},
 		{"objects that cannot be read", list(t, bothApplied), nil, []string{"FAKE_GET_EXIT=1"}, "cannot read", false},
 		{"an apply the API server refuses", list(t, bothApplied), nil, []string{"FAKE_APPLY_EXIT=1"}, "refused", true},

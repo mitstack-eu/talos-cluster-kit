@@ -219,11 +219,16 @@ func (s *apiServer) as(t *testing.T, account string, dockerArgs []string, comman
 // asIn runs command in the tools image as account in namespace, whose token sits where a pod finds it.
 func (s *apiServer) asIn(t *testing.T, namespace, account string, dockerArgs []string, command ...string) (string, error) {
 	t.Helper()
+	out, err := s.asInCommand(t, namespace, account, dockerArgs, command...).CombinedOutput()
+	return string(out), err
+}
+
+// asInCommand is the command asIn runs, not yet started.
+func (s *apiServer) asInCommand(t *testing.T, namespace, account string, dockerArgs []string, command ...string) *exec.Cmd {
+	t.Helper()
 	args := []string{"run", "--rm", "--network", "container:" + s.etcd, "-v", s.serviceAccount(t, namespace, account) + ":" + serviceAccountDir + ":ro",
 		"-e", "KUBERNETES_SERVICE_HOST=127.0.0.1", "-e", "KUBERNETES_SERVICE_PORT=" + apiServerPort}
-	args = append(append(append(args, dockerArgs...), s.toolsImage), command...)
-	out, err := exec.Command("docker", args...).CombinedOutput()
-	return string(out), err
+	return exec.Command("docker", append(append(append(args, dockerArgs...), s.toolsImage), command...)...)
 }
 
 // serviceAccount is a directory holding a token the API server issues to account in namespace, its CA and namespace.

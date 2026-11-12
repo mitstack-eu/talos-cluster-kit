@@ -1991,9 +1991,9 @@ lists exactly the objects the release states for it, each Synced. Until
 Argo CD compares the new release, its Application still lists the marker of
 the release before, so the report reads nothing back. A report that would
 reach 256 KiB leaves out every Application's objects, and reads nothing back
-either. Argo CD lists a component's handover Job among the Application's
-objects until the Job succeeds, and `ReadBack` reads nothing back while a
-report lists one, naming the Job in its `Problem`.
+either. Argo CD applies a component's marker only once its handover Job
+succeeded, so a release also reads back only once every component is handed
+over.
 
 `Release.ReadBack` returns a `rollout.Reading`. Its `Problem` says why a report
 does not read the release back, and is empty once it does. Its `Applied` then
@@ -2039,28 +2039,39 @@ the agent keeps it until Talos gives the field up.
 The handover is the step that has Talos give up its fields on the objects
 Argo CD applies. It runs once per sync of a component:
 
-1. `Release.Files` ends each component's file with a Job named
+1. `Release.Files` follows each component's documents with a Job named
    `component-<name>-handover` in namespace `argocd`. The Job is an Argo CD
-   PostSync hook. Argo CD runs such a document once a sync has applied the
-   Application's objects and they read Healthy, and does not keep it applied.
-2. The Job runs `rollout/scripts/handover.sh` from the release's tools image,
+   Sync hook, a document Argo CD runs during a sync and does not keep applied.
+2. Argo CD applies a file in sync waves, each wave only once the wave before
+   it is applied, reads Healthy and saw its hooks succeed. The annotation
+   `argocd.argoproj.io/sync-wave` names a document's wave, and a document
+   without it sits in wave 0. The Job sits one wave after the component's last
+   document, and the marker one wave after the Job. Argo CD therefore applies
+   the objects, then runs the Job, and applies the marker only once the Job
+   succeeded.
+3. The Job runs `rollout/scripts/handover.sh` from the release's tools image,
    under the service account of Argo CD's application controller. That account
    already applies every component, so the cluster gains no other identity
    that may change these objects.
-3. The script reads each object the component states, with its field
+4. The script reads each object the component states, with its field
    managers. For every object that both `talos` and `argocd-controller`
    applied, it sends one server-side apply under the name `talos` that states
    no field. Talos then owns nothing on the object, and the API server drops
    each field that only Talos owned. Every field Argo CD applies stays.
-4. The script reads those objects again and fails when one still names
+5. The script reads those objects again and fails when one still names
    `talos`.
-5. Argo CD deletes a Job that succeeded. A Job that failed fails the sync,
-   which Argo CD retries, and the Application lists the Job until it succeeds.
+6. Argo CD deletes a Job that succeeded. A Job that failed fails the sync,
+   which Argo CD retries from the objects on. The marker is then missing, the
+   Application reads OutOfSync, and the read-back names that Application.
 
-The script refuses an object that Talos created and Argo CD has not applied,
-since giving up Talos's fields there would take every field away. It then
-changes nothing and fails, naming the object. A document that stays with the
-build, such as a Secret holding data, is never named to the script.
+The script refuses two kinds of object, changes nothing and fails, naming
+each. One is an object that Talos created and Argo CD has not applied, since
+giving up Talos's fields there would take every field away. Argo CD applies
+each object with its tracking annotation, so an object it applied always names
+`argocd-controller`. The other is an object that names `talos` for a write
+that was no server-side apply, since an apply cannot give such a write up. A
+document that stays with the build, such as a Secret holding data, is never
+named to the script.
 
 A handover changes a running cluster in two ways. Each object Talos created
 loses the annotation `config.k8s.io/owning-inventory`, which only Talos set.

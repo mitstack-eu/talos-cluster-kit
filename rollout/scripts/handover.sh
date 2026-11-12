@@ -16,6 +16,8 @@ readonly filters='
   def applied_by(manager): any(.metadata.managedFields[]?; .manager == manager and .operation == "Apply");
   def held: objects | select(applied_by(env.HANDOVER_TALOS_MANAGER));
   def unapplied: held | select(applied_by(env.HANDOVER_ARGOCD_MANAGER) | not);
+  def written: objects
+    | select(any(.metadata.managedFields[]?; .manager == env.HANDOVER_TALOS_MANAGER and .operation != "Apply"));
   def named: "\(.kind) \(if .metadata.namespace then .metadata.namespace + "/" else "" end)\(.metadata.name)";
   def stub: {apiVersion, kind, metadata: (.metadata | {name} + if .namespace then {namespace} else {} end)};
 '
@@ -48,6 +50,9 @@ read_objects "$work/stated.json" "$work/live.json"
 
 unapplied=$(names "$work/live.json" unapplied)
 [ -z "$unapplied" ] || fail "Argo CD has not applied $unapplied, so giving up $talos's fields would take every field away"
+
+written=$(names "$work/live.json" written)
+[ -z "$written" ] || fail "$written carried $talos as a field manager for a write that is no server-side apply, which an apply cannot give up"
 
 held=$(names "$work/live.json" held)
 if [ -z "$held" ]; then

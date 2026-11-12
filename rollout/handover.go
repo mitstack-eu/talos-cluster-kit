@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"strconv"
 
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 
@@ -18,6 +19,9 @@ const (
 	argoCDController = "argocd-application-controller"
 	// argoCDManager is the field manager Argo CD's application controller applies under.
 	argoCDManager = "argocd-controller"
+	// syncWaveAnnotation names the wave of a sync Argo CD applies a document in, each wave after the one before it
+	// is applied and reads Healthy.
+	syncWaveAnnotation = "argocd.argoproj.io/sync-wave"
 )
 
 //go:embed handover.yaml
@@ -25,9 +29,24 @@ var handoverTemplate string
 
 var handover = tmpl.Must("a component's handover Job", handoverTemplate)
 
-// handoverJob is the Job that ends the component's sync, as Argo CD lists it while it has not succeeded.
+// handoverJob is the Job that hands the component's objects over, as Argo CD names it.
 func (c carried) handoverJob() object {
 	return object{Group: "batch", Kind: "Job", Namespace: argoCDNamespace, Name: c.app + handoverSuffix}
+}
+
+// wave is the wave Argo CD applies the document in, which is zero for one that names none, as Argo CD reads it.
+func (h documentHead) wave() int {
+	wave, _ := strconv.Atoi(h.Metadata.Annotations[syncWaveAnnotation])
+	return wave
+}
+
+// handoverWave is the wave after the last one any of heads syncs in, so the handover finds every object applied.
+func handoverWave(heads []documentHead) int {
+	last := 0
+	for _, head := range heads {
+		last = max(last, head.wave())
+	}
+	return last + 1
 }
 
 // stub names one object and states none of its fields.
@@ -42,8 +61,8 @@ type stubMeta struct {
 	Namespace string `json:"namespace,omitempty"`
 }
 
-// renderHandover renders the Job that gives up Talos's fields on each object heads state, ending with a separator.
-func (c carried) renderHandover(heads []documentHead, toolsImage string) ([]byte, error) {
+// renderHandover renders the Job that gives up Talos's fields on each object heads state, to run in wave.
+func (c carried) renderHandover(heads []documentHead, wave int, toolsImage string) ([]byte, error) {
 	list := struct {
 		APIVersion string `json:"apiVersion"`
 		Kind       string `json:"kind"`
@@ -59,8 +78,8 @@ func (c carried) renderHandover(heads []documentHead, toolsImage string) ([]byte
 	}
 	job := c.handoverJob()
 	return tmpl.Execute(handover, map[string]string{
-		"Name": job.Name, "Namespace": job.Namespace, "ServiceAccount": argoCDController, "Image": toolsImage,
-		"Script": handoverScript, "Objects": string(objects),
+		"Name": job.Name, "Namespace": job.Namespace, "Wave": strconv.Itoa(wave), "ServiceAccount": argoCDController,
+		"Image": toolsImage, "Script": handoverScript, "Objects": string(objects),
 		"TalosManager": constants.KubernetesFieldManagerName, "ArgoCDManager": argoCDManager,
 	})
 }

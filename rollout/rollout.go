@@ -59,7 +59,7 @@ type File struct {
 
 // carried is one component as the repository holds it: the documents it carries, the Job that hands them over from
 // Talos, then the ConfigMap named for the digest of both, since Argo CD's list of what it applied names objects and no
-// revision.
+// revision. Argo CD applies the three in that order, each only once the one before is applied and succeeded.
 type carried struct {
 	name, app string
 	bytes     []byte
@@ -169,23 +169,29 @@ func (r Release) carry(m components.Manifest) (carried, error) {
 		return carried{}, err
 	}
 	if len(heads) > 0 {
-		job, err := c.renderHandover(heads, r.ToolsImage)
+		wave := handoverWave(heads)
+		job, err := c.renderHandover(heads, wave, r.ToolsImage)
 		if err != nil {
 			return carried{}, err
 		}
-		c = c.withMarker(append(docs, job...), heads)
+		c = c.withMarker(append(docs, job...), heads, wave+1)
 	}
 	carriedCache.Store(key, c)
 	return c, nil
 }
 
-// withMarker closes stated, the component's documents and its handover Job, with the marker named for their digest.
-func (c carried) withMarker(stated []byte, heads []documentHead) carried {
+// markerFormat takes the marker's name, its namespace and its wave.
+const markerFormat = "# Argo CD applies this ConfigMap one wave after the handover Job, so it lists it only once it compared the\n" +
+	"# documents above, whose digest it is named for, and the Job succeeded.\n" +
+	"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: %s\n  namespace: %s\n  annotations:\n    " + syncWaveAnnotation + ": \"%d\"\n"
+
+// withMarker closes stated, the component's documents and its handover Job, with the marker named for their digest,
+// which Argo CD applies in wave.
+func (c carried) withMarker(stated []byte, heads []documentHead, wave int) carried {
 	stated = append(stated, "---\n"...)
 	sum := sha256.Sum256(stated)
 	marker := object{Kind: "ConfigMap", Namespace: argoCDNamespace, Name: c.app + "-" + hex.EncodeToString(sum[:])[:markerDigestLen]}
-	c.bytes = fmt.Appendf(stated, "# Argo CD lists this ConfigMap only once it compared the documents above, whose digest it is named for.\n"+
-		"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: %s\n  namespace: %s\n", marker.Name, marker.Namespace)
+	c.bytes = fmt.Appendf(stated, markerFormat, marker.Name, marker.Namespace, wave)
 	for _, head := range heads {
 		c.objects = append(c.objects, head.object())
 	}
@@ -355,8 +361,6 @@ func (c carried) readApplication(apps []reportedApplication) (applied, problems 
 	}
 	for _, l := range *apps[i].Resources {
 		switch {
-		case l.object == c.handoverJob():
-			problems = append(problems, fmt.Sprintf("%s's handover %s has not succeeded, so its objects may still hold a field Talos owns", c.app, l.object))
 		case !slices.Contains(c.objects, l.object):
 			problems = append(problems, fmt.Sprintf("%s lists %s, which the release does not state", c.app, l.object))
 		case l.Sync != synced:

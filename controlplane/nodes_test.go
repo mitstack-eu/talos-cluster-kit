@@ -6,6 +6,7 @@ package controlplane_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
@@ -35,6 +36,8 @@ type cluster struct {
 	// while Argo CD still held a Job of its name.
 	failJobs  int
 	overwrote []string
+	// joinTakes is how long a node runs before it holds an etcd member and a Node object.
+	joinTakes time.Duration
 	synced    time.Time
 }
 
@@ -56,8 +59,8 @@ func (c *cluster) Commit(_ context.Context, path string, content []byte) error {
 	return nil
 }
 
-// sync lets a report interval pass in the cluster: each running node joins, Argo CD prunes each Job whose file is gone,
-// and each Job not yet run removes its node's member and Node object, or fails.
+// sync lets a report interval pass in the cluster: each node running for joinTakes joins, Argo CD prunes each Job whose
+// file is gone, and each Job not yet run removes its node's member and Node object, or fails.
 func (c *cluster) sync(received time.Time) {
 	if !received.After(c.synced) {
 		return
@@ -65,7 +68,7 @@ func (c *cluster) sync(received time.Time) {
 	c.synced = received
 	nodes := c.h.byRole(controlplane.RoleNode)
 	for _, node := range nodes {
-		if node.Status == controlplane.ServerRunning {
+		if node.Status == controlplane.ServerRunning && !received.Before(node.Created.Add(c.joinTakes)) {
 			c.members[node.Name], c.objects[node.Name] = true, true
 		}
 	}
@@ -137,6 +140,14 @@ func withCluster(t *testing.T, opts ...func(*harness)) (*harness, *cluster) {
 	return h, c
 }
 
+// joinsSlowly makes each node created from now on take longer than two report intervals to join the nodes that stand.
+func (c *cluster) joinsSlowly() {
+	for _, node := range c.h.byRole(controlplane.RoleNode) {
+		c.members[node.Name], c.objects[node.Name] = true, true
+	}
+	c.joinTakes = 2*reportEvery + time.Minute
+}
+
 func (h *harness) nodeIn(loc string) controlplane.Server {
 	h.t.Helper()
 	node, ok := h.read().NodeIn(loc)
@@ -177,6 +188,10 @@ func (h *harness) replace(c *cluster, until func() bool, locs ...string) error {
 
 func (h *harness) eventsNaming(part string) []string {
 	return slices.DeleteFunc(slices.Clone(h.events), func(event string) bool { return !strings.Contains(event, part) })
+}
+
+func (h *harness) problems() string {
+	return strings.Join(h.plane.Problems(context.Background(), h.read()), "; ")
 }
 
 func TestPlane_AConfirmedUpgradeReplacesTheNamedNodeFromTheKeptSnapshotOnceItsEtcdMemberAndNodeObjectAreGone(t *testing.T) {
@@ -236,6 +251,11 @@ func TestPlane_RefusesANodeReplacementThroughTheRedundancyGuardNamingTheMemberTh
 			assert.Equal(t, controlplane.ServerRunning, h.nodeIn("fsn1").Status, "the node the refused replacement named")
 			assert.Equal(t, old.ID, h.nodeIn("fsn1").ID, "the node in fsn1 after the refusal")
 			assert.Empty(t, c.commits, "the commits of a refused replacement")
+			assert.False(t, h.replacing(), "the network still carries the refused replacement's mark: %v", h.network().Labels)
+
+			c.unhealthy, c.sealed = nil, nil
+			require.NoError(t, h.replace(c, nil), "a later call that names no node, once every member serves")
+			assert.Equal(t, old.ID, h.nodeIn("fsn1").ID, "the node in fsn1 after that call")
 		})
 	}
 }
@@ -300,33 +320,63 @@ func TestPlane_AReplacedNodeTakesTheListsNextTypeWhenItsLocationCannotOrderTheFi
 }
 
 func TestPlane_RefusesANodeReplacementBeforeAnyChangeToTheNode(t *testing.T) {
+	soldOut := func(h *harness) { h.cloud.SoldOutIn = map[string][]string{"fsn1": h.plane.ServerTypes} }
 	for _, tc := range []struct {
-		name  string
-		set   func(h *harness)
+		name string
+		set  func(h *harness)
+		// late sets the case only once the upgrade's own call has ended.
+		late  bool
 		loc   string
 		class string
 	}{
-		{"its location can order no successor", func(h *harness) { h.cloud.SoldOutIn = map[string][]string{"fsn1": h.plane.ServerTypes} }, "fsn1", "server-unavailable"},
-		{"the upgrade names a location the cluster runs no node in", func(*harness) {}, "ash", "node-replacement-unknown"},
-		{"the block passes no cluster repository to write the member removal to", func(h *harness) { h.plane.Removals = nil }, "fsn1", "node-removal-unwritable"},
+		{"its location can order no successor", soldOut, false, "fsn1", "server-unavailable"},
+		{"its location can order no successor any more once the upgrade's call ended", soldOut, true, "fsn1", "server-unavailable"},
+		{"the upgrade names a location the cluster runs no node in", func(*harness) {}, false, "ash", "node-replacement-unknown"},
+		{"the block passes no cluster repository to write the member removal to", func(h *harness) { h.plane.Removals = nil }, false, "fsn1", "node-removal-unwritable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, c := withCluster(t)
 			old := h.nodeIn("fsn1")
-			tc.set(h)
+			var until func() bool
+			if tc.late {
+				until = func() bool { tc.set(h); return false }
+			} else {
+				tc.set(h)
+			}
 
-			err := h.replace(c, nil, tc.loc)
+			err := h.replace(c, until, tc.loc)
 
 			require.Error(t, err, "the replacement while %s", tc.name)
 			assert.Equal(t, tc.class, refusalClass(t, err), "the refusal's class")
 			assert.Equal(t, old, h.nodeIn("fsn1"), "the node in fsn1 after the refusal")
 			assert.Empty(t, c.commits, "the commits of a refused replacement")
+			assert.False(t, h.replacing(), "the network still carries the refused replacement's mark: %v", h.network().Labels)
 		})
 	}
 }
 
+func TestPlane_NamesAReplacementUnderWayInItsProblemsUntilANodeReportReadsItsSuccessorServing(t *testing.T) {
+	h, c := withCluster(t)
+	c.joinsSlowly()
+	old := h.nodeIn("fsn1")
+	require.NotContains(t, h.problems(), "fsn1", "precondition: the plane's problems before the replacement")
+
+	require.NoError(t, h.replace(c, func() bool { return h.cloud.Servers[old.ID].Status == controlplane.ServerOff }, "fsn1"))
+	assert.Contains(t, h.problems(), fmt.Sprintf("node %d in fsn1 is powered off", old.ID), "the plane's problems while the old node is off")
+
+	require.NoError(t, h.replace(c, func() bool { node, ok := h.read().NodeIn("fsn1"); return ok && node.ID != old.ID }))
+	successor := h.nodeIn("fsn1")
+	assert.Contains(t, h.problems(), fmt.Sprintf("node %d in fsn1 has not been read serving", successor.ID), "the plane's problems once the successor exists")
+	assert.True(t, h.replacing(), "the replacement's mark before any report reads the successor")
+
+	require.NoError(t, h.replace(c, nil))
+	assert.GreaterOrEqual(t, h.now.Sub(successor.Created), c.joinTakes, "how long after the successor's creation its replacement ended")
+	assert.NotContains(t, h.problems(), "fsn1", "the plane's problems once a report reads the successor serving")
+}
+
 func TestPlane_ReplacesTheNodesAnUpgradeNamesOneAtATimeAndNoneOnACallThatIsNoUpgrade(t *testing.T) {
 	h, c := withCluster(t)
+	c.joinsSlowly()
 	before := h.byRole(controlplane.RoleNode)
 	h.plane.ReplaceNodes = []string{"fsn1"}
 	require.NoError(t, h.converge())
@@ -335,7 +385,7 @@ func TestPlane_ReplacesTheNodesAnUpgradeNamesOneAtATimeAndNoneOnACallThatIsNoUpg
 	watch := func() bool {
 		down := len(controlplane.Locations)
 		for _, node := range h.byRole(controlplane.RoleNode) {
-			if node.Status == controlplane.ServerRunning {
+			if node.Status == controlplane.ServerRunning && c.members[node.Name] {
 				down--
 			}
 		}
@@ -345,7 +395,7 @@ func TestPlane_ReplacesTheNodesAnUpgradeNamesOneAtATimeAndNoneOnACallThatIsNoUpg
 
 	require.NoError(t, h.replace(c, watch, "fsn1", "nbg1"))
 
-	assert.Equal(t, 1, mostDown, "the most locations without a running node at once")
+	assert.Equal(t, 1, mostDown, "the most locations without a running node that holds an etcd member at once")
 	after := h.byRole(controlplane.RoleNode)
 	require.Len(t, after, len(controlplane.Locations), "the cluster's nodes")
 	for _, node := range after {

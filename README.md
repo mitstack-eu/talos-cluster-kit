@@ -2059,8 +2059,10 @@ Argo CD applies. It runs once per sync of a component:
    without it sits in wave 0. The Job and the marker sit in the wave of the
    component's last document. A later wave would start only once every object
    reads Healthy, so an object that a dropped field keeps unhealthy, such as a
-   DaemonSet whose pods are refused, would never be handed over. The sync
-   succeeds only once the Job succeeded.
+   DaemonSet whose pods are refused, would never be handed over. An object of
+   an earlier wave still has to read Healthy before the Job's wave starts, and
+   no component of either set names a wave. The sync succeeds only once the Job
+   succeeded.
 3. The Job runs `rollout/scripts/handover.sh` from the release's tools image,
    under the service account of Argo CD's application controller. That account
    already applies every component, so the cluster gains no other identity

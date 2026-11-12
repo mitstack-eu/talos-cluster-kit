@@ -162,7 +162,8 @@ read_argocd() {
 }
 
 # argocd_route INDEX asks one route as a caller without a session, with a GET that sends no credential, cookie or body and
-# follows no redirect, and keeps its status, its size and, for userinfo, the answer's loggedIn. -q reads no ~/.curlrc
+# follows no redirect, and keeps its status, its size and one boolean of the two answers Argo CD gives without a session:
+# userinfo's loggedIn, and settings' userLoginsDisabled, which reads true once no account can sign in. -q reads no ~/.curlrc
 # that could add a credential. -k accepts the certificate Argo CD signs for itself, since the request carries nothing
 # to steal and no text of the answer leaves the pod.
 argocd_route() {
@@ -172,11 +173,15 @@ argocd_route() {
   [ -f "$out.body" ] || : > "$out.body"
   jq -c -n --arg path "$path" --argjson status "$((10#${status:-0}))" --argjson ended "$ended" \
     --argjson bytes "$(wc -c < "$out.body")" --rawfile body "$out.body" '
+    # A 200 answer that is a JSON object holding a boolean under $name gives that boolean, and any other answer null.
+    def kept_boolean($name):
+      if $status != 200 then null
+      else try ($body | fromjson | .[$name] | if type == "boolean" then . else null end) catch null end;
     if $ended != 0 then {path: $path, status: 0, bytes: 0, error: "curl exit \($ended)"}
     else {path: $path, status: $status, bytes: $bytes}
-      + if $path != "/api/v1/session/userinfo" then {}
-        elif $status != 200 then {loggedIn: null}
-        else {loggedIn: (try ($body | fromjson | .loggedIn | if type == "boolean" then . else null end) catch null)} end
+      + if $path == "/api/v1/session/userinfo" then {loggedIn: kept_boolean("loggedIn")}
+        elif $path == "/api/v1/settings" then {userLoginsDisabled: kept_boolean("userLoginsDisabled")}
+        else {} end
     end' > "$out.json"
 }
 

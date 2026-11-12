@@ -997,7 +997,7 @@ change `report/scripts/report.sh`.
 | `nodes` | Each node with its Talos version, allocatable resources, every address it holds with that address's type as `addresses`, `topology.kubernetes.io/zone` and `topology.kubernetes.io/region` labels, and, as `zoneLabelManagers`, each field manager that wrote its zone label | `kubectl get nodes --show-managed-fields` |
 | `etcd` | Each etcd member, `healthy` only when its node answered `talosctl etcd status` with an empty `ERRORS` cell, the `leader`, and a `statusError` naming a status read that failed | `talosctl etcd members` and `talosctl etcd status` |
 | `systemVolumes` | How each node's `STATE` and `EPHEMERAL` volumes are encrypted | `talosctl get volumestatus` |
-| `argocd` | Each Application's health, sync, `revision` and applied objects, each object with Argo CD's health of it, as [the section on the revision](#how-the-report-names-the-revision-each-application-was-compared-against) and [the section on object health](#how-the-report-shows-each-objects-health-and-each-containers-state) describe, the answer each of 17 routes gives a caller with no session, and the `argocd` namespace's Services and Ingresses | The Applications, `ARGOCD_URL` and the Ingress read |
+| `argocd` | Each Application's health, sync, `revision` and applied objects, each object with Argo CD's health of it, as [the section on the revision](#how-the-report-names-the-revision-each-application-was-compared-against) and [the section on object health](#how-the-report-shows-each-objects-health-and-each-containers-state) describe, the answer each of 17 routes gives a caller with no session, the settings route's with [whether any account can sign in with a password](#how-the-report-shows-whether-a-password-signs-in-to-argo-cd), and the `argocd` namespace's Services and Ingresses | The Applications, `ARGOCD_URL` and the Ingress read |
 | `kubernetes.argocdPods` | Each pod in `argocd` with its containers' images | The pod read |
 | `pods` | Every pod's namespace, name, node or `null`, phase, and `containers`, each init and app container with its state and reason, as [the section below](#how-the-report-shows-each-objects-health-and-each-containers-state) describes | `kubectl get pods -A` |
 | `images` | Each image reference a pod or the pod template of a Deployment, StatefulSet, DaemonSet, Job or CronJob names, once, as `image` with the `digest` it names or that a pod's status reports it runs by, and otherwise `null`. A failed read leaves `{exitStatus, stderr}` with `read` naming `pods` or `workloads`, in place of a partial list | The pod read and `kubectl get deployments,statefulsets,daemonsets,jobs,cronjobs -A` |
@@ -1024,7 +1024,9 @@ as the finding.
 
 The 17 routes are listed in `argocd_routes` in `report.sh`. Each request
 sends no credential, cookie or body. The report keeps each answer's status and
-size, and for userinfo whether it says a caller is signed in.
+size. It keeps one boolean more of the two answers Argo CD gives without a
+session: for userinfo whether a caller is signed in, and for settings whether
+user logins are off.
 
 ### How the report names the revision each Application was compared against
 
@@ -1093,6 +1095,36 @@ log. One Application and one pod read like this:
 `applied` and `container` in `report/scripts/report.sh` build these entries.
 The report's ClusterRole grants no new right for them, since both come from the
 Application and pod reads the report already makes.
+
+### How the report shows whether a password signs in to Argo CD
+
+Argo CD's chart turns on a local `admin` account that signs in with a
+password. Nothing on a cluster signs in as that account, so talos-cluster-kit
+turns it off. `components/render/argocd-values.yaml` sets
+`configs.cm.admin.enabled` to false, which the chart writes into `argocd-cm`
+as `admin.enabled: "false"`. Argo CD v3.5.5 generates the account's first
+password only while the account is on, so a new cluster holds no admin
+password.
+
+The report shows the result on every run. Argo CD's settings route answers a
+caller with no session, and its answer holds `userLoginsDisabled`, which reads
+`true` while no enabled account may log in. The report keeps that one boolean
+on the settings entry of `argocd.routes`, as in this entry from a cluster
+whose local login is off:
+
+```json
+{"path": "/api/v1/settings", "status": 200, "bytes": 1432, "userLoginsDisabled": true}
+```
+
+The member reads `null` when the route answers another status than 200, when
+its answer is not JSON, or when the answer holds no boolean under that name.
+Argo CD v3.5.5 leaves the field out of an answer where it would read `false`.
+A cluster whose local login is on therefore reads `null`, and a reader takes
+only `true` as proof that no password signs in.
+
+`argocd_route` in `report/scripts/report.sh` builds the entry. It keeps the
+status, the size and the boolean, so no other text of the settings answer
+leaves the cluster.
 
 ### How the report tries each admission rule
 

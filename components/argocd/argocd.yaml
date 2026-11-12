@@ -281,7 +281,7 @@ metadata:
     app.kubernetes.io/part-of: argocd
     app.kubernetes.io/version: "v3.5.5-sha256-13db7b10db23283b1b36f855046602e18539a8a8204c9f6f0"
 data:
-  admin.enabled: "true"
+  admin.enabled: "false"
   application.instanceLabelKey: argocd.argoproj.io/instance
   application.sync.impersonation.enabled: "false"
   exec.enabled: "false"
@@ -32692,7 +32692,7 @@ spec:
     metadata:
       annotations:
         checksum/cmd-params: 527bbe816627d08563ef41bec19ae37dcf4735368c24639fba84c19373d476d7
-        checksum/cm: e9897e106ce2cce9e25a3c012e3b8075c99d5cb597c9c3a356c1c343d7589ed6
+        checksum/cm: a20053d7b376388fd237d964b4f4b67c76e97f6412d15f754f5c9f2abbd8bc67
       labels:
         helm.sh/chart: argo-cd-10.10.5
         app.kubernetes.io/name: argocd-repo-server
@@ -33126,7 +33126,7 @@ spec:
     metadata:
       annotations:
         checksum/cmd-params: 527bbe816627d08563ef41bec19ae37dcf4735368c24639fba84c19373d476d7
-        checksum/cm: e9897e106ce2cce9e25a3c012e3b8075c99d5cb597c9c3a356c1c343d7589ed6
+        checksum/cm: a20053d7b376388fd237d964b4f4b67c76e97f6412d15f754f5c9f2abbd8bc67
       labels:
         helm.sh/chart: argo-cd-10.10.5
         app.kubernetes.io/name: argocd-server
@@ -33685,7 +33685,7 @@ spec:
     metadata:
       annotations:
         checksum/cmd-params: 527bbe816627d08563ef41bec19ae37dcf4735368c24639fba84c19373d476d7
-        checksum/cm: e9897e106ce2cce9e25a3c012e3b8075c99d5cb597c9c3a356c1c343d7589ed6
+        checksum/cm: a20053d7b376388fd237d964b4f4b67c76e97f6412d15f754f5c9f2abbd8bc67
       labels:
         helm.sh/chart: argo-cd-10.10.5
         app.kubernetes.io/name: argocd-application-controller

@@ -12,6 +12,11 @@ resources:
 - pooler.yaml
 - tagged.yaml
 - unpinned.yaml
+- archiving.yaml
+- recovery.yaml
+- sidecar-without-limits.yaml
+- sidecar-other-release.yaml
+- plugin.yaml
 variables: values.yaml
 results:
 - isValidatingPolicy: true
@@ -22,6 +27,10 @@ results:
   - cloudnative-pg-pooler
   - cloudnative-pg-instance-tagged
   - cloudnative-pg-instance-unpinned
+  - cloudnative-pg-instance-archiving
+  - cloudnative-pg-recovery
+  - cloudnative-pg-instance-sidecar-without-limits
+  - cloudnative-pg-instance-sidecar-other-release
   result: pass
 - isValidatingPolicy: true
   policy: mitstack-require-resource-limits
@@ -31,13 +40,25 @@ results:
   - cloudnative-pg-pooler
   - cloudnative-pg-instance-tagged
   - cloudnative-pg-instance-unpinned
+  - cloudnative-pg-instance-archiving
+  - cloudnative-pg-recovery
+  - cloudnative-pg-instance-sidecar-other-release
   result: pass
+- isValidatingPolicy: true
+  policy: mitstack-require-resource-limits
+  kind: Pod
+  resources:
+  - cloudnative-pg-instance-sidecar-without-limits
+  result: fail
 - isValidatingPolicy: true
   policy: mitstack-restrict-image-registries
   kind: Pod
   resources:
   - cloudnative-pg-instance
   - cloudnative-pg-pooler
+  - cloudnative-pg-instance-archiving
+  - cloudnative-pg-recovery
+  - cloudnative-pg-instance-sidecar-without-limits
   result: pass
 - isValidatingPolicy: true
   policy: mitstack-restrict-image-registries
@@ -45,22 +66,26 @@ results:
   resources:
   - cloudnative-pg-instance-tagged
   - cloudnative-pg-instance-unpinned
+  - cloudnative-pg-instance-sidecar-other-release
   result: fail
 - isValidatingPolicy: true
   policy: mitstack-disallow-host-path
   kind: Pod
   resources:
   - cloudnative-pg-operator
+  - cloudnative-pg-barman-cloud-plugin
   result: skip
 - isValidatingPolicy: true
   policy: mitstack-require-resource-limits
   kind: Pod
   resources:
   - cloudnative-pg-operator
+  - cloudnative-pg-barman-cloud-plugin
   result: skip
 - isValidatingPolicy: true
   policy: mitstack-restrict-image-registries
   kind: Pod
   resources:
   - cloudnative-pg-operator
+  - cloudnative-pg-barman-cloud-plugin
   result: skip

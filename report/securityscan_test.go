@@ -50,8 +50,8 @@ func runScan(t *testing.T, fakes map[string]string) scanRun {
 	bench := testutil.ContainerEnv(t, testutil.Field(t, scanPod(t), "initContainers", "0"))
 	results := "SCAN_RESULTS=" + t.TempDir()
 
-	benchOut, benchErr := testutil.RunBash(t, script, tools.Env(results, "KUBE_BENCH_CONFIG=/kube-bench/cfg",
-		"KUBE_BENCH_VERSION="+bench["KUBE_BENCH_VERSION"]), "bench")
+	benchOut, benchErr := testutil.RunBash(t, script, tools.Env(results, "SCAN_BENCH_CONFIG=/kube-bench/cfg",
+		"SCAN_BENCH_VERSION="+bench["SCAN_BENCH_VERSION"]), "bench")
 	require.NoError(t, benchErr, "kube-bench's step keeps a failure in its summary, so kubescape still runs: %s", benchOut)
 	out, err := testutil.RunBash(t, script, tools.Env(results, "SCAN_CONFIGMAP="+env["SCAN_CONFIGMAP"], "KUBESCAPE_ARTIFACTS=testdata/scan",
 		"KUBESCAPE_CONTROLS_VERSION="+env["KUBESCAPE_CONTROLS_VERSION"]))
@@ -185,13 +185,14 @@ func TestManifests_RunsKubeBenchAsRootOnTheHostsConfigWithNoTokenAndKubescapeAsN
 	assert.Equal(t, map[string]any{"/tmp": nil, "/results": nil, "/etc/kubernetes": true, "/var/lib/kubelet": true, "/var/lib/etcd": true},
 		mounts(t, bench), "kube-bench alone mounts the host, read-only, and holds no token")
 	assert.Equal(t, map[string]any{"/tmp": nil, "/results": nil, "/var/run/secrets/kubernetes.io/serviceaccount": true}, mounts(t, scan))
-	var hostPaths []any
+	typeChecks := map[any]any{}
 	for _, v := range testutil.Field(t, pod, "volumes").([]any) {
-		if hostPath, ok := v.(map[string]any)["hostPath"]; ok {
-			hostPaths = append(hostPaths, testutil.Field(t, hostPath, "path"))
+		if hostPath, ok := v.(map[string]any)["hostPath"].(map[string]any); ok {
+			typeChecks[hostPath["path"]] = hostPath["type"]
 		}
 	}
-	assert.ElementsMatch(t, []any{"/etc/kubernetes", "/var/lib/kubelet", "/var/lib/etcd"}, hostPaths, "nothing else of the host")
+	assert.Equal(t, map[any]any{"/etc/kubernetes": "Directory", "/var/lib/kubelet": "Directory", "/var/lib/etcd": nil}, typeChecks,
+		"nothing else of the host, and no type check on etcd's directory, since Talos's kubelet checks inside its own container, which holds none")
 	for _, c := range []any{bench, scan} {
 		assert.Equal(t, testutil.ToolsImage, testutil.Field(t, c, "image"))
 		assert.NotNil(t, testutil.Field(t, c, "resources", "limits", "memory"), "each step sets its memory limit")

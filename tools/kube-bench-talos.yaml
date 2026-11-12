@@ -1,0 +1,14 @@
+---
+# kube-bench reads this file over its own cfg/config.yaml when it runs cis-1.10. It names etcd's data directory where
+# Talos keeps it, so kube-bench looks up no path inside that directory, which only etcd's own user may search and the
+# scan's root, holding no capability, may not.
+master:
+  etcd:
+    datadirs:
+      - /var/lib/etcd
+    defaultdatadir: /var/lib/etcd
+etcd:
+  etcd:
+    datadirs:
+      - /var/lib/etcd
+    defaultdatadir: /var/lib/etcd

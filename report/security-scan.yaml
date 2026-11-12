@@ -1,10 +1,11 @@
 # The node report's security scan: a CronJob in kube-system, which Talos and Kyverno leave out of pod security, that
 # runs kube-bench against its control-plane node and kubescape against the cluster's objects once a day, and patches a
 # summary of each into one ConfigMap. kube-bench reads each component's flags from its process and its config from the
-# host, read-only. The scan may read the cluster's objects but never a Secret, and read and patch that ConfigMap alone;
-# the report may only read the ConfigMap and the CronJob, and list the namespace's events. kube-bench runs first, as root
-# with the host's files and no token, and kubescape after it as a non-root user with the token and no host file, so
-# neither tool holds both.
+# host, read-only. The etcd directory takes no type check, since Talos's kubelet makes that check inside its own container,
+# which holds no /var/lib/etcd. The scan may read the cluster's objects but never a Secret, and read and patch that
+# ConfigMap alone; the report may only read the ConfigMap and the CronJob, and list the namespace's events. kube-bench
+# runs first, as root with the host's files and no token, and kubescape after it as a non-root user with the token and no
+# host file, so neither tool holds both.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -153,9 +154,9 @@ spec:
               env:
                 - name: SCAN_RESULTS
                   value: /results
-                - name: KUBE_BENCH_CONFIG
+                - name: SCAN_BENCH_CONFIG
                   value: {{ .ScriptDir }}/kube-bench/cfg
-                - name: KUBE_BENCH_VERSION
+                - name: SCAN_BENCH_VERSION
                   value: {{ .KubeBenchVersion }}
               resources:
                 requests:
@@ -252,4 +253,3 @@ spec:
             - name: etcd
               hostPath:
                 path: /var/lib/etcd
-                type: Directory

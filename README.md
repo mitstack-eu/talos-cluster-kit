@@ -1216,18 +1216,22 @@ control-plane node, the only kind that holds the API server, the controller
 manager, the scheduler and etcd. Each run reads one control-plane node, the
 one the scheduler picks, and no run reads a worker's kubelet.
 
-The etcd directory is mounted with no type check. Talos runs the kubelet in a
-container of its own, which holds `/etc/kubernetes` and `/var/lib/kubelet` and
-no `/var/lib/etcd`, and the kubelet checks a host path's type inside that
-container. A check on the etcd directory therefore fails on every node, and
-the pod never starts. The container runtime mounts the node's real directory
-either way, so kube-bench reads the mode and owner Talos gave it.
+The etcd directory is mounted with no type check. Talos's kubelet service
+starts the kubelet in a container of its own, whose mount list holds
+`/etc/kubernetes` and `/var/lib/kubelet` and no `/var/lib/etcd`. The kubelet
+checks a host path's type against its own files, so a pod that asks for a
+check on the etcd directory waits on "does not exist" and never starts.
+Kubernetes makes no check on a host path with no type. Talos runs the
+container runtime on the node itself, which is where the mount is made, so
+kube-bench is expected to read the mode and owner Talos gave the directory.
+No test in this repository runs on a Talos node, so a cluster's own scan is
+what shows the mount.
 
 Three more things let kube-bench read a Talos node truthfully.
 
 | What the scan does | Why |
 |---|---|
-| It names no variable that starts with `KUBE_BENCH_` | kube-bench reads each such variable as its flag of that name, and refuses `KUBE_BENCH_VERSION` beside `--benchmark` |
+| It names no variable that starts with `KUBE_BENCH_` | kube-bench reads its own settings under that prefix. It takes `KUBE_BENCH_VERSION` for its `--version` flag and refuses that flag beside `--benchmark` |
 | The tools image installs `procps` | kube-bench finds each component's process with `ps -C`, which busybox's `ps` refuses. Without it, every check of a component's flags reads nothing and fails |
 | `tools/kube-bench-talos.yaml` stands where kube-bench reads the settings that override its config for `cis-1.10`, and names `/var/lib/etcd` as etcd's data directory | Talos gives that directory mode 700 and etcd's own user. kube-bench's default looks up a path inside it, which the scan's root may not do with every capability dropped, and kube-bench then stops |
 

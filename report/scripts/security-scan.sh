@@ -111,8 +111,8 @@ kubescape_scan() {
   return "$status"
 }
 
-# bench_step always exits 0, keeping a failure in its summary, so the step after it still runs kubescape and patches both.
-# Its variables stay outside KUBE_BENCH_, since kube-bench reads each variable under that prefix as its flag of that name.
+# bench_step exits 0 when kube-bench fails, keeping the failure in its summary, so the step after it still runs kubescape
+# and patches both. Its variables stay outside KUBE_BENCH_, the prefix kube-bench reads its own settings under.
 bench_step() {
   : "${SCAN_BENCH_CONFIG:?names the config directory of kube-bench}" "${SCAN_BENCH_VERSION:?names the kube-bench the image carries}"
   local outcome=ran

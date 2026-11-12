@@ -2,11 +2,10 @@
 # runs kube-bench against its control-plane node and kubescape against the cluster's objects once a day, and patches a
 # summary of each into one ConfigMap. kube-bench reads each component's flags from its process and its config from the
 # host, read-only. The etcd directory takes no type check, since Talos's kubelet makes that check inside its own container,
-# which holds no /var/lib/etcd. No variable starts with KUBE_BENCH_, since kube-bench reads each such variable as its flag
-# of that name. The scan may read the cluster's objects but never a Secret, and read and patch that ConfigMap alone;
-# the report may only read the ConfigMap and the CronJob, and list the namespace's events. kube-bench runs first, as root
-# with the host's files and no token, and kubescape after it as a non-root user with the token and no host file, so
-# neither tool holds both.
+# which holds no /var/lib/etcd. The scan may read the cluster's objects but never a Secret, and read and patch that
+# ConfigMap alone; the report may only read the ConfigMap and the CronJob, and list the namespace's events. kube-bench
+# runs first, as root with the host's files and no token, and kubescape after it as a non-root user with the token and no
+# host file, so neither tool holds both.
 apiVersion: v1
 kind: ConfigMap
 metadata:

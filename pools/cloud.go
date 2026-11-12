@@ -14,7 +14,7 @@ import (
 
 const (
 	// RoleCloudWorker labels each server of the Cloud pool, so a plan finds its members by label alone.
-	RoleCloudWorker controlplane.Role = "cloud-worker"
+	RoleCloudWorker = controlplane.RoleCloudWorker
 	// KeyMember labels a Cloud server with its member key, its location and a sequence number such as fsn1-1.
 	KeyMember = "mitstack.dev/member"
 )

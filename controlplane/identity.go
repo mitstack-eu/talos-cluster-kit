@@ -48,6 +48,8 @@ const (
 	// RoleWorkerBuilder builds the worker image, which RoleWorkerImage labels once it is a snapshot.
 	RoleWorkerBuilder Role = "worker-builder"
 	RoleWorkerImage   Role = "worker-image"
+	// RoleCloudWorker labels each server of the Cloud pool, which boots from the worker image.
+	RoleCloudWorker Role = "cloud-worker"
 )
 
 var labelValueRe = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9_.-]{0,61}[A-Za-z0-9])?$`)

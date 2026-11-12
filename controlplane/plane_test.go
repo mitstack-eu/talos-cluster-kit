@@ -383,7 +383,10 @@ func TestPlane_NoNodeCarriesUserDataAndOnlyTheGatewayHoldsAPublicAddress(t *test
 		require.True(t, ok, "the %s load balancer in the plane's state", r)
 		assert.Equal(t, r == controlplane.RoleIngress, lb.PublicInterface, "load balancer %s's public interface", lb.Name)
 		assert.NotEmpty(t, lb.AssignedPublicIPv4, "the address Hetzner assigned load balancer %s", lb.Name)
-		wantPublic := map[controlplane.Role]string{controlplane.RoleIngress: lb.AssignedPublicIPv4}[r]
+		wantPublic := ""
+		if r == controlplane.RoleIngress {
+			wantPublic = lb.AssignedPublicIPv4
+		}
 		assert.Equal(t, wantPublic, lb.PublicIPv4, "load balancer %s serves the public address %q; want %q", lb.Name, lb.PublicIPv4, wantPublic)
 	}
 }

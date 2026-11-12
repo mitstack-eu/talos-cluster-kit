@@ -4,8 +4,6 @@ package controlplane_test
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -17,7 +15,6 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/pools"
 	"github.com/mitstack-eu/talos-cluster-kit/rollout"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
-	"github.com/mitstack-eu/talos-cluster-kit/tools"
 	"github.com/mitstack-eu/talos-cluster-kit/topology"
 )
 
@@ -27,15 +24,6 @@ var (
 	labellerJob  = testutil.ObjectRef{Group: "batch", Kind: "CronJob", Namespace: "mitstack-node", Name: labellerName}
 	labellerRole = testutil.ObjectRef{Group: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: labellerName}
 )
-
-// everyNodeJoined is a kubectl that finds each node it is asked for and accepts each label.
-const everyNodeJoined = `
-case "$1 $2" in
-  "get node") echo "node/$3" ;;
-  "label node") ;;
-  *) exit 1 ;;
-esac
-`
 
 // poolWorkers creates the servers a Cloud pool of size over locations lacks, as a block's upgrade does, and returns
 // the pool's members.
@@ -57,9 +45,21 @@ func (h *harness) controlPlaneNodes() []string {
 	return nodes
 }
 
-func labellerContainer(t *testing.T, cronJob map[string]any) any {
+// labelledNodes are the nodes a labeller's CronJob names, each with its zone.
+func labelledNodes(t *testing.T, cronJob map[string]any) []string {
 	t.Helper()
-	return testutil.Field(t, cronJob, "spec", "jobTemplate", "spec", "template", "spec", "containers", "0")
+	container := testutil.Field(t, cronJob, "spec", "jobTemplate", "spec", "template", "spec", "containers", "0")
+	return strings.Fields(testutil.ContainerEnv(t, container)["TOPOLOGY_NODES"])
+}
+
+// mayPatch are the nodes a labeller's ClusterRole names.
+func mayPatch(t *testing.T, role map[string]any) []string {
+	t.Helper()
+	var names []string
+	for _, name := range testutil.Field(t, role, "rules", "0", "resourceNames").([]any) {
+		names = append(names, name.(string))
+	}
+	return names
 }
 
 // releasedLabeller is the labeller's manifest as release carries it to a running cluster.
@@ -68,11 +68,12 @@ func releasedLabeller(t *testing.T, release rollout.Release) components.Manifest
 	return testutil.Manifest(t, labellerName, release.Components)
 }
 
-func releasedLabellerNodes(t *testing.T, release rollout.Release) string {
+// only is the one document of kind the labeller's manifest holds.
+func only(t *testing.T, labeller components.Manifest, kind string) map[string]any {
 	t.Helper()
-	cronJobs := testutil.Kind(testutil.Documents(t, releasedLabeller(t, release).Bytes), "CronJob")
-	require.Len(t, cronJobs, 1, "the labeller's CronJobs")
-	return testutil.ContainerEnv(t, labellerContainer(t, cronJobs[0]))["TOPOLOGY_NODES"]
+	docs := testutil.Kind(testutil.Documents(t, labeller.Bytes), kind)
+	require.Len(t, docs, 1, "the labeller's documents of kind %s", kind)
+	return docs[0]
 }
 
 // carryLabeller commits the labeller's files of release to cluster's repository, as a block's carriage does, and has
@@ -89,40 +90,6 @@ func carryLabeller(t *testing.T, cluster *testutil.Cluster, release rollout.Rele
 	cluster.Sync()
 }
 
-// runClustersLabeller runs the labeller as the CronJob cluster's API serves runs it, with every node joined.
-func runClustersLabeller(t *testing.T, cluster *testutil.Cluster) []string {
-	t.Helper()
-	cronJob := cluster.Object(labellerJob)
-	require.NotNil(t, cronJob, "the cluster's labeller")
-	c := labellerContainer(t, cronJob)
-	require.Equal(t, []any{"bash", tools.ScriptDir + "/label-nodes.sh"}, testutil.Field(t, c, "command"), "the script the tools image carries")
-	script, err := os.ReadFile(filepath.Join("..", "topology", "scripts", "label-nodes.sh"))
-	require.NoError(t, err)
-	fakes := testutil.NewTools(t, map[string]string{"kubectl": everyNodeJoined})
-	var vars []string
-	for name, value := range testutil.ContainerEnv(t, c) {
-		vars = append(vars, name+"="+value)
-	}
-	out, err := testutil.RunBash(t, string(script), fakes.Env(vars...))
-	require.NoError(t, err, "the labeller printed:\n%s", out)
-	return fakes.Calls(t)
-}
-
-// mayPatch are the nodes the labeller's ClusterRole names.
-func mayPatch(t *testing.T, role map[string]any) []string {
-	t.Helper()
-	var names []string
-	for _, name := range testutil.Field(t, role, "rules", "0", "resourceNames").([]any) {
-		names = append(names, name.(string))
-	}
-	return names
-}
-
-func labelCall(node, zone string) string {
-	return "kubectl label node " + node + " --overwrite --field-manager=" + topology.FieldManager + " " +
-		topology.ZoneLabel + "=" + zone + " " + topology.RegionLabel + "=" + controlplane.NetworkZone
-}
-
 func TestCluster_LabelsEachCloudNodeWithItsLocationAndTheNetworkZone(t *testing.T) {
 	h := installedOnce(t)
 
@@ -131,12 +98,8 @@ func TestCluster_LabelsEachCloudNodeWithItsLocationAndTheNetworkZone(t *testing.
 	cronJobs := testutil.Kind(labeller, "CronJob")
 	require.Len(t, cronJobs, 1, "the builder's configuration carries the labeller inline")
 	env := testutil.ContainerEnv(t, testutil.Field(t, cronJobs[0], "spec", "jobTemplate", "spec", "template", "spec", "containers", "0"))
-	var want []string
-	for _, loc := range controlplane.Locations {
-		want = append(want, h.plane.LocatedName(controlplane.RoleNode, loc)+"="+loc)
-	}
-	assert.Equal(t, strings.Join(want, " "), env["TOPOLOGY_NODES"], "each node by the name Hetzner gives its server")
-	assert.Contains(t, env["TOPOLOGY_NODES"], h.plane.LocatedName(controlplane.RoleNode, "nbg1")+"=nbg1")
+	assert.Equal(t, h.controlPlaneNodes(), labelledNodes(t, cronJobs[0]), "each node by the name Hetzner gives its server")
+	assert.Contains(t, labelledNodes(t, cronJobs[0]), h.plane.LocatedName(controlplane.RoleNode, "nbg1")+"=nbg1")
 	assert.Equal(t, "eu-central", env["TOPOLOGY_REGION"])
 }
 
@@ -148,26 +111,24 @@ func TestRelease_TheLabellerNamesEachCloudPoolWorkerHetznerListsWithItsServersLo
 	require.NoError(t, err)
 
 	first := h.poolWorkers(1, "nbg1", "fsn1")
-	withOne := h.releaseOf(plane)
+	withOne := releasedLabeller(t, h.releaseOf(plane))
 	both := h.poolWorkers(2, "nbg1", "fsn1")
-	withTwo := h.releaseOf(plane)
+	withTwo := releasedLabeller(t, h.releaseOf(plane))
 
 	require.Len(t, first, 1, "the pool's members once it holds one")
 	require.Len(t, both, 2, "the pool's members once it holds two")
 	require.Equal(t, []string{"nbg1", "fsn1"}, []string{both[0].Location, both[1].Location}, "the members' locations as Hetzner lists them")
 	nbg1, fsn1 := both[0].Name, both[1].Name
-	assert.Equal(t, strings.Join(append(h.controlPlaneNodes(), nbg1+"=nbg1"), " "), releasedLabellerNodes(t, withOne),
+	assert.Equal(t, append(h.controlPlaneNodes(), nbg1+"=nbg1"), labelledNodes(t, only(t, withOne, "CronJob")),
 		"the nodes the labeller names once the pool holds a worker in nbg1")
-	assert.Equal(t, strings.Join(append(h.controlPlaneNodes(), fsn1+"=fsn1", nbg1+"=nbg1"), " "), releasedLabellerNodes(t, withTwo),
+	assert.Equal(t, append(h.controlPlaneNodes(), fsn1+"=fsn1", nbg1+"=nbg1"), labelledNodes(t, only(t, withTwo, "CronJob")),
 		"the nodes the labeller names once the pool holds a worker in fsn1 too")
-	roles := testutil.Kind(testutil.Documents(t, releasedLabeller(t, withTwo).Bytes), "ClusterRole")
-	require.Len(t, roles, 1, "the labeller's ClusterRoles")
-	var labelled []string
-	for _, entry := range strings.Fields(releasedLabellerNodes(t, withTwo)) {
-		name, _, _ := strings.Cut(entry, "=")
-		labelled = append(labelled, name)
+	var named []string
+	for _, node := range labelledNodes(t, only(t, withTwo, "CronJob")) {
+		name, _, _ := strings.Cut(node, "=")
+		named = append(named, name)
 	}
-	assert.Equal(t, labelled, mayPatch(t, roles[0]), "the nodes the labeller may read and patch, against those it labels")
+	assert.Equal(t, named, mayPatch(t, only(t, withTwo, "ClusterRole")), "the nodes the labeller may read and patch, against those it labels")
 }
 
 // The cluster was built, and took an earlier carriage, while its labeller named the control-plane nodes alone.
@@ -181,15 +142,12 @@ func TestRelease_AClusterThatAlreadyRunsACloudWorkerLabelsItWithItsZoneOnceArgoC
 	cluster := testutil.BuildCluster(t, testutil.Manifest(t, labellerName, built.Inline).Bytes)
 	carryLabeller(t, cluster, h.releaseOf(plane))
 	worker := h.poolWorkers(1, "fsn1")[0]
-	require.NotContains(t, strings.Join(runClustersLabeller(t, cluster), "\n"), worker.Name, "the calls of the labeller the cluster ran before the release")
+	require.Equal(t, h.controlPlaneNodes(), labelledNodes(t, cluster.Object(labellerJob)), "the nodes the cluster's labeller named before the release")
 
 	carryLabeller(t, cluster, h.releaseOf(plane))
-	calls := runClustersLabeller(t, cluster)
 
-	assert.Contains(t, calls, labelCall(worker.Name, "fsn1"), "the labeller's calls once Argo CD applied the release: %v", calls)
-	for _, loc := range controlplane.Locations {
-		assert.Contains(t, calls, labelCall(h.plane.LocatedName(controlplane.RoleNode, loc), loc), "the control-plane node in %s keeps its labels", loc)
-	}
+	assert.Equal(t, append(h.controlPlaneNodes(), worker.Name+"=fsn1"), labelledNodes(t, cluster.Object(labellerJob)),
+		"the nodes the cluster's labeller names once Argo CD applied the release")
 	assert.Contains(t, mayPatch(t, cluster.Object(labellerRole)), worker.Name, "the nodes the cluster's labeller may read and patch")
 }
 

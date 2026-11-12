@@ -39,7 +39,7 @@ const (
 // clusterComponents carries the node report, the topology labeller, the enrolment and the Argo CD application inline, so the
 // gateway mirrors their image.
 func (p Plane) clusterComponents(set components.Set, enrolmentToken string) (components.Set, error) {
-	own, data, err := p.ownComponents(enrolmentToken)
+	own, data, err := p.ownComponents(enrolmentToken, nil)
 	if err != nil {
 		return components.Set{}, err
 	}
@@ -57,7 +57,8 @@ const clusterApplicationManifest = "mitstack-cluster-application"
 
 // ownComponents renders the node report, the topology labeller and the cluster's credentials, with the data the cluster's
 // own Application renders from. The report reads each gateway's mirror under p.GatewayCA, so the plane must hold one.
-func (p Plane) ownComponents(enrolmentToken string) ([]components.Manifest, map[string]any, error) {
+// The labeller names poolWorkers beside the control-plane nodes, and a build has none to name.
+func (p Plane) ownComponents(enrolmentToken string, poolWorkers []Server) ([]components.Manifest, map[string]any, error) {
 	if p.GatewayCA == nil {
 		return nil, nil, errors.New("the node report reads each gateway's mirror under the gateway CA, and the plane holds none")
 	}
@@ -66,7 +67,7 @@ func (p Plane) ownComponents(enrolmentToken string) ([]components.Manifest, map[
 	if err != nil {
 		return nil, nil, err
 	}
-	labeller, err := p.topologyManifests()
+	labeller, err := p.topologyManifests(poolWorkers)
 	if err != nil {
 		return nil, nil, err
 	}

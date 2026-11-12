@@ -16,8 +16,9 @@ import (
 var ErrNoIngressAddress = errors.New("the release's Traefik has no ingress address to publish")
 
 // Release is every manifest the build applies but those only an install's keys render and the cluster's own
-// Application, through which the carriage runs, with the credentials rendered without the enrolment token and with
-// Traefik publishing the address st holds for the ingress load balancer.
+// Application, through which the carriage runs, with the credentials rendered without the enrolment token, with
+// Traefik publishing the address st holds for the ingress load balancer, and with the labeller naming each Cloud pool
+// worker st holds.
 func (p Plane) Release(st State) (rollout.Release, error) {
 	if p.Hosting == nil && p.RepoURL == "" || p.Hosting != nil && p.Hosting.Repository == "" {
 		return rollout.Release{}, errors.New("the cluster's credentials name the cluster repository, and the plane names none")
@@ -29,7 +30,7 @@ func (p Plane) Release(st State) (rollout.Release, error) {
 	if set, err = publishingIngress(set, st); err != nil {
 		return rollout.Release{}, err
 	}
-	own, _, err := p.ownComponents("")
+	own, _, err := p.ownComponents("", st.Servers[RoleCloudWorker])
 	if err != nil {
 		return rollout.Release{}, err
 	}

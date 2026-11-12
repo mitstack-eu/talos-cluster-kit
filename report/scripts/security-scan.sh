@@ -2,7 +2,7 @@
 # Runs kube-bench on the cis-1.10 benchmark, and then kubescape on the NSA framework, and patches a summary of each, with
 # the run's outcome, into the ConfigMap the node report reads. A tool that fails is kept as its summary's error, and the
 # scan then exits non-zero, so the Job runs it again.
-# Usage: SCAN_RESULTS=<dir> KUBE_BENCH_CONFIG=<cfg dir> KUBE_BENCH_VERSION=<v> security-scan.sh bench
+# Usage: SCAN_RESULTS=<dir> SCAN_BENCH_CONFIG=<cfg dir> SCAN_BENCH_VERSION=<v> security-scan.sh bench
 #   SCAN_RESULTS=<dir> SCAN_CONFIGMAP=<namespace/name> KUBESCAPE_ARTIFACTS=<dir holding nsa and default_config_inputs>
 #   KUBESCAPE_CONTROLS_VERSION=<v> security-scan.sh
 # The bench step reads the host as root with no token and leaves its summary in SCAN_RESULTS; the second step runs as
@@ -53,7 +53,7 @@ readonly bounded='def bounded($n): reduce .[] as $x ([]; if ((. + [$x]) | tojson
 kube_bench() {
   local started status=0
   started=$(now)
-  run_tool kube-bench kube-bench run --config-dir "$KUBE_BENCH_CONFIG" --benchmark "$benchmark" --targets "$targets" --json || status=$?
+  run_tool kube-bench kube-bench run --config-dir "$SCAN_BENCH_CONFIG" --benchmark "$benchmark" --targets "$targets" --json || status=$?
   if [ "$status" -eq 0 ] && jq -c --argjson limit "$failed_limit" "$bounded"' {
       totals: (.Totals | {pass: .total_pass, fail: .total_fail, warn: .total_warn, info: .total_info}),
       failed: ([.Controls[].tests[].results[] | select(.status == "FAIL")
@@ -64,7 +64,7 @@ kube_bench() {
     unreadable kube-bench "printed no results jq could read"
     status=1
   fi
-  jq -c -n --arg version "$KUBE_BENCH_VERSION" --arg started "$started" --arg finished "$(now)" --arg profile "$benchmark" \
+  jq -c -n --arg version "$SCAN_BENCH_VERSION" --arg started "$started" --arg finished "$(now)" --arg profile "$benchmark" \
     --slurpfile measured "$work/kube-bench.measured" --arg error "$(summary_error kube-bench; echo x)" '
     ($error | rtrimstr("x")) as $error |
     {tool: "kube-bench", version: $version, startedAt: $started, profile: $profile} + $measured[0]
@@ -112,8 +112,9 @@ kubescape_scan() {
 }
 
 # bench_step always exits 0, keeping a failure in its summary, so the step after it still runs kubescape and patches both.
+# Its variables stay outside KUBE_BENCH_, since kube-bench reads each variable under that prefix as its flag of that name.
 bench_step() {
-  : "${KUBE_BENCH_CONFIG:?names the config directory of kube-bench}" "${KUBE_BENCH_VERSION:?names the kube-bench the image carries}"
+  : "${SCAN_BENCH_CONFIG:?names the config directory of kube-bench}" "${SCAN_BENCH_VERSION:?names the kube-bench the image carries}"
   local outcome=ran
   kube_bench || outcome=failed
   cp "$work/kube-bench.json" "$SCAN_RESULTS/kube-bench.json"

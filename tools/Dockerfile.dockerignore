@@ -2,6 +2,7 @@
 !tools/tools.env
 !tools/jq.env
 !tools/scan.env
+!tools/kube-bench-talos.yaml
 !report/scripts/report.sh
 !report/scripts/mesh-probe.sh
 !report/scripts/security-scan.sh

@@ -3,8 +3,9 @@
 # components/: Cilium from its chart, the CRD of Cilium's cluster-wide policy
 # from Cilium's source, Argo CD, Kyverno and the local path provisioner from
 # their charts, and Istio's ambient mesh from its base, istiod, cni and
-# ztunnel charts. It renders the hosting set's six charts too: OpenBao,
-# cert-manager, trust-manager, External Secrets, Sealed Secrets and Traefik.
+# ztunnel charts. It renders the hosting set's seven charts too: OpenBao,
+# cert-manager, trust-manager, External Secrets, Sealed Secrets, Traefik and
+# CloudNativePG's Barman Cloud plugin.
 # It ends each document whose last value is a block scalar with a comment line,
 # since Talos trims every document before it decodes it and would otherwise cut
 # that value's final line break. It drops an empty labels or annotations map
@@ -56,6 +57,7 @@ readonly hosting_charts=(
   "external-secrets 2.11.0 8199b42fe80b871c6a86233a80bb14f599fd6e1e6462c1216d836577f845e161 https://github.com/external-secrets/external-secrets/releases/download/helm-chart-2.11.0/external-secrets-2.11.0.tgz external-secrets create"
   "sealed-secrets 2.20.0 6092d219c697f3c9ae3a386ba24bfdd86877c5e2fc8892e2af8a810145b990ef https://github.com/bitnami/sealed-secrets/releases/download/helm-v2.20.0/sealed-secrets-2.20.0.tgz kube-system -"
   "traefik 41.6.1 1e65d46bae0ba0baef460a1d82686b50f156372865a3d7d8a85b51c3855b2ef9 https://traefik.github.io/charts/traefik/traefik-41.6.1.tgz traefik create"
+  "plugin-barman-cloud 0.9.0 7fb78e89f25c18737e5649ae3c5e840065052f89757d541eaf310a1706ebd7dd https://github.com/cloudnative-pg/charts/releases/download/plugin-barman-cloud-v0.9.0/plugin-barman-cloud-0.9.0.tgz cnpg-system -"
 )
 
 root=$(cd "$(dirname "$0")/.." && pwd)

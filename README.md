@@ -610,7 +610,7 @@ The order runs in five groups.
 | Mesh dataplane | Cilium, its policy CRD, Istio's base chart, istiod, istio-cni and ztunnel | A pod outside `kube-system`, `istio-system` and `kyverno` starts only once istio-cni and ztunnel run |
 | Cluster reporting | The node report, the cluster tokens and the Collector | A component that never starts still leaves the platform its report |
 | Components and policies | Every other component, policy, key and volume | No object here waits on a webhook but Istio's, whose pod runs outside the mesh |
-| What a webhook validates | external-secrets and trust-manager, whose charts hold cert-manager objects, then `mitstack-hosting-tls` | cert-manager's and trust-manager's webhooks answer only once their pods run |
+| What a webhook validates | external-secrets and trust-manager, whose charts hold cert-manager objects, then `mitstack-hosting-tls` and the Barman Cloud plugin, which holds two Certificates and their Issuer | cert-manager's and trust-manager's webhooks answer only once their pods run |
 | Node labelling | The topology labeller | Last, a new manifest changes no other manifest's `TalosName` |
 
 A new manifest takes a place in `applyOrder`, since `TalosName` panics on one
@@ -881,7 +881,7 @@ explains.
 | `mitstack-require-strict-mtls` | Refuses a PeerAuthentication, Istio's policy for which calls a pod takes, that lets a pod or one of its ports take a call with no workload identity. It admits by name only the four exceptions of the hosting set, the extra components a cluster that hosts the platform runs. The CloudNativePG operator's exception sits in `cnpg-system`, which the policy skips | `components/admission/policies/mitstack-require-strict-mtls.yaml` |
 | `mitstack-disallow-host-path` | Refuses a pod, or a Deployment or other controller whose template makes a pod, that mounts a host path, since a host path reaches the node's file system | `components/admission/policies/mitstack-disallow-host-path.yaml` |
 | `mitstack-require-resource-limits` | Refuses a pod, or a controller whose template makes one, with a container or init container that sets no CPU limit or no memory limit. A LimitRange fills limits only into the pod, after the controller has been admitted, so the template must carry them | `components/admission/policies/mitstack-require-resource-limits.yaml` |
-| `mitstack-restrict-image-registries` | Refuses a pod, or a controller whose template makes one, with a container, init container or ephemeral container whose image is outside `ghcr.io/mitstack-eu/` and mitstack's registry in Amazon ECR, `839001574838.dkr.ecr.eu-central-1.amazonaws.com/`. It admits by exact reference only the five images talos-cluster-kit pins for pods an operator or a block starts in an app namespace: cert-manager's ACME solver, the CloudNativePG operator, PgBouncer and Postgres 16 images, and `docker.io/library/busybox:1.37.0` at the digest the policy names, the image that the local path provisioner and the mesh probe run and the kube-app-deploy block runs in its `secrets-import` Job. Another busybox tag or digest is refused | `components/admission/policies/mitstack-restrict-image-registries.yaml` |
+| `mitstack-restrict-image-registries` | Refuses a pod, or a controller whose template makes one, with a container, init container or ephemeral container whose image is outside `ghcr.io/mitstack-eu/` and mitstack's registry in Amazon ECR, `839001574838.dkr.ecr.eu-central-1.amazonaws.com/`. It admits by exact reference only the six images talos-cluster-kit pins for pods an operator or a block starts in an app namespace: cert-manager's ACME solver, the CloudNativePG operator, PgBouncer and Postgres 16 images, the sidecar image [the Barman Cloud plugin](#how-a-postgres-cluster-backs-up) adds to a Postgres pod, and `docker.io/library/busybox:1.37.0` at the digest the policy names, the image that the local path provisioner and the mesh probe run and the kube-app-deploy block runs in its `secrets-import` Job. Another busybox tag or digest is refused | `components/admission/policies/mitstack-restrict-image-registries.yaml` |
 
 Kyverno's webhooks skip the same system namespaces, so a Kyverno outage
 cannot stop a system pod, such as the node report in `mitstack-node`.
@@ -906,7 +906,7 @@ explains. The policies judge each of them.
 | `kube-node-lease` | Nothing; Kubernetes keeps node leases in it | Every cluster has it, and the other policies skip it too |
 | `argocd` | Argo CD | Its images come from `quay.io`, and a refusal would stop it applying the cluster |
 | `kyverno` | Kyverno's controllers | Its images come from `ghcr.io/kyverno`, and a refusal would stop Kyverno restarting |
-| `cnpg-system` | The CloudNativePG operator | Its image comes from `ghcr.io/cloudnative-pg` |
+| `cnpg-system` | The CloudNativePG operator and, on a cluster that hosts the platform, its Barman Cloud plugin | Their images come from `ghcr.io/cloudnative-pg` |
 | `mitstack-node` | The node report, the topology labeller, the enrolment Job and OpenBao's init Job | They run the tools image, the one image talos-cluster-kit builds with its scripts in it, which every gateway mirrors |
 | `istio-system` | istiod, the CNI agent and ztunnel | Their images come from `docker.io/istio`, and the CNI agent and ztunnel mount host paths |
 | `traefik` | Traefik, the hosting set's ingress | Its image comes from Docker Hub |
@@ -1105,7 +1105,9 @@ change `report/scripts/report.sh`.
 | `kubernetes.argocdPods` | Each pod in `argocd` with its containers' images | The pod read |
 | `pods` | Every pod's namespace, name, node or `null`, phase, and `containers`, each init and app container with its state and reason, as [the section below](#how-the-report-shows-each-objects-health-and-each-containers-state) describes | `kubectl get pods -A` |
 | `images` | Each image reference a pod or the pod template of a Deployment, StatefulSet, DaemonSet, Job or CronJob names, once, as `image` with the `digest` it names or that a pod's status reports it runs by, and otherwise `null`. A failed read leaves `{exitStatus, stderr}` with `read` naming `pods` or `workloads`, in place of a partial list | The pod read and `kubectl get deployments,statefulsets,daemonsets,jobs,cronjobs -A` |
-| `cloudNativePG` | Each Cluster with its phase, instance counts and `currentPrimary`, and each Database and DatabaseRole with whether it applied | CloudNativePG's objects |
+| `cloudNativePG` | Each Cluster with its phase, instance counts and `currentPrimary`, and each Database and DatabaseRole with whether it applied. A Cluster also carries `continuousArchiving` and `lastBackup`, its conditions `ContinuousArchiving` and `LastBackupSucceeded`, each as `{status, reason, message}` with the message cut to 256 characters, or `null` while the Cluster holds no such condition. The report cuts no entry from this list: it holds every object the read returned, or the read's failure in the list's place | CloudNativePG's objects |
+| `cloudNativePGPlugins` | The name of each plugin CloudNativePG can find, sorted: the `cnpg.io/pluginName` label of each Service in `cnpg-system`. A cluster with no plugin carries an empty list | The read of claims, StorageClasses and Services |
+| `cloudNativePGObjectStores` | Each ObjectStore of the Barman Cloud plugin with its `namespace`, `name` and `subscription` label, and under `recoveryWindows` one entry per server that writes to it, holding `firstRecoverabilityPoint`, `lastSuccessfulBackupTime` and `lastFailedBackupTime`, each a time or `null`. A cluster without the plugin serves no ObjectStore, so the member holds that read's failure | `kubectl get objectstores.barmancloud.cnpg.io -A` |
 | `openbao` | Each member's `initialized`, `sealed` and `active`, and the active member's name as `leader` | `sys/seal-status` and `sys/leader` on each member in `OPENBAO_MEMBERS`, verified against `OPENBAO_CA_FILE` |
 | `storage` and `services` | Each claim with its storage class, phase, `requestedSize` (what it asks for) and `capacity` (what is bound, `null` while it is Pending), the default storage classes, and every Service with its type | One read of claims, StorageClasses and Services |
 | `ingresses` | Every Ingress in every namespace with its `namespace`, `name` and `class`, and under `status.loadBalancer.ingress` each address its controller wrote, as an `ip` or a `hostname`. The class is the Ingress's `ingressClassName`, or else its `kubernetes.io/ingress.class` annotation cut to 256 characters, or `null`. An Ingress no controller serves carries an empty list, which is how Argo CD reads it as still starting | `kubectl get ingresses -A`, the read `argocd` takes its own Ingresses from |
@@ -1340,6 +1342,10 @@ or OpenBao read that fails is kept in its own entry the same way, and a gateway
 or egress read that fails reads `passed: false` with its reason. An object
 type whose read fails is left out of `subscriptionResourceKinds`.
 
+A cluster without the Barman Cloud plugin stays a full report. Its
+`cloudNativePGPlugins` is an empty list, and its `cloudNativePGObjectStores`
+holds the failed read, since its API server knows no ObjectStore.
+
 Every report needs four reads: the nodes, the Applications, the key set and
 the etcd members. When one of those, the body build or the proof script fails
 or times out, the script posts a report holding only an `error` that names it,
@@ -1442,7 +1448,7 @@ capabilities.
 
 A cluster that runs mitstack's own control plane must start its secret store,
 External Secrets and its web entry point before Argo CD or the platform runs.
-`components.Hosting` returns that boot set. It is the default set with six
+`components.Hosting` returns that boot set. It is the default set with seven
 more charts and the manifests that join them. A cluster built from `components.Default` carries
 none of the hosting set's manifests, and the golden files in
 `nodeconfig/testdata/golden/` and `gateway/testdata/golden/` record its render.
@@ -1503,6 +1509,7 @@ every Docker Hub image goes on the list under its full name.
 | External Secrets v2.11.0 | Copies values from OpenBao into Kubernetes Secrets | `components/render/external-secrets-values.yaml` |
 | Sealed Secrets 0.40.0 | Opens a `SealedSecret` with the block's key pair, and never mints or renews a key | `components/render/sealed-secrets-values.yaml` |
 | Traefik v3.7.13 | Serves web traffic on NodePorts 30080 and 30081, with one pod on every node that takes apps, and writes the ingress load balancer's address into each Ingress's status | `components/render/traefik-values.yaml` |
+| Barman Cloud Plugin v0.16.0 | Lets a CloudNativePG Cluster archive its write-ahead log and take base backups to object storage, as [the section on backups](#how-a-postgres-cluster-backs-up) describes. It needs cert-manager, so a cluster on the default set runs CloudNativePG without it | `components/render/plugin-barman-cloud-values.yaml` |
 
 The two authorities that the next section describes, and the certificates
 they sign, sit in `components/hosting/tls.yaml`. A
@@ -1515,6 +1522,71 @@ caProvider:
   name: openbao-ca
   key: ca.crt
 ```
+
+### How a Postgres cluster backs up
+
+CloudNativePG 1.30 backs a Cluster up through a plugin, a separate program
+the operator calls. The hosting set runs the one the CloudNativePG project
+publishes for object storage, the
+[Barman Cloud Plugin](https://cloudnative-pg.io/plugin-barman-cloud/docs/intro/),
+at v0.16.0 from its Helm chart 0.9.0. The operator's own backup to object
+storage is deprecated in its favour. The plugin needs cert-manager, so it is
+in the hosting set alone. A cluster built from `components.Default` runs
+CloudNativePG without it, and CloudNativePG gives a Cluster that names the
+plugin there the phase "Cluster cannot proceed to reconciliation due to an
+unknown plugin being required".
+
+How it works:
+
+1. One Deployment, `plugin-barman-cloud`, runs in `cnpg-system` beside the
+   operator. The operator finds it by the Service `barman-cloud`, whose label
+   `cnpg.io/pluginName` holds the plugin's name,
+   `barman-cloud.cloudnative-pg.io`.
+2. The operator and the plugin prove who they are to each other with two
+   certificates, which cert-manager issues from an Issuer in `cnpg-system`
+   and renews.
+3. A block declares an `ObjectStore`, the plugin's object that names a bucket
+   and the Secret holding its keys. A Cluster then names the plugin and that
+   ObjectStore under `spec.plugins`.
+4. The plugin adds a container named `plugin-barman-cloud` to each Postgres
+   pod of that Cluster, and to the pod of a Job that restores one. That
+   container sends the write-ahead log and the base backups to the bucket.
+
+The added container runs in an app's namespace, so the pod policies judge it.
+`mitstack-restrict-image-registries` admits its image by the exact reference
+the plugin's ConfigMap `plugin-barman-cloud-config` holds as `SIDECAR_IMAGE`.
+`mitstack-require-resource-limits` needs a CPU and a memory limit on it, which
+come from the ObjectStore's `instanceSidecarConfiguration.resources`. The
+Cilium policy `mitstack-database-slices` opens no route to a bucket, so the
+block that declares the ObjectStore also opens the bucket's host to the
+Postgres pods and the restore Job.
+
+The plugin's ClusterRole, as its chart writes it, reads and writes Secrets in
+every namespace and creates a Role for each Cluster it serves. The plugin's
+[installation page](https://cloudnative-pg.io/plugin-barman-cloud/docs/installation/)
+gives a narrower option: list the namespaces in `WATCH_NAMESPACE` on the
+Deployment and grant a Role in each. Every new database would then change the
+plugin, so the kit keeps the rule the chart ships.
+
+A database that stops backing up shows in the node report, and nowhere else.
+`cloudNativePGPlugins` names each plugin the operator can find. Each Cluster
+carries its phase with its archiving and last-backup conditions, and
+`cloudNativePGObjectStores` gives the time of each server's last base backup.
+CloudNativePG sets no backup time on a Cluster that uses a plugin, so that time
+comes from the ObjectStore.
+
+Argo CD's health check reads none of these, so a failed backup turns no
+Application Degraded. A block fails a deploy on a Degraded object, and a
+database's first archive can fail while its storage key is still on its way,
+so a health check that read backups would undo a deploy that was only waiting. A plugin whose own pod does
+not run reads unhealthy on its Application, `component-plugin-barman-cloud`.
+
+`TestManifests_TheBarmanCloudPluginServesInTheOperatorsNamespaceUnderTheNameAClusterAsksForItBy`
+in `rendered_set_test.go` checks the Service's namespace and plugin name, and
+`TestHosting_AppliesTheBarmanCloudPluginsCertificatesAfterCertManagersWebhook`
+in `components/hosting_test.go` checks the order. The case in
+`components/admission/tests/cloudnative-pg/` tries the policies on a Postgres
+pod and a restore pod that carry the added container.
 
 ### How the two authorities reach every namespace
 
@@ -2392,6 +2464,10 @@ and changes nothing. The owner then decrypts the root token from
 | [cert-manager: Issuer configuration](https://cert-manager.io/docs/configuration/) | A `ClusterIssuer` reads its Secrets in the cluster resource namespace, `cert-manager` unless `--cluster-resource-namespace` names another |
 | [trust-manager](https://cert-manager.io/docs/trust/trust-manager/) | A `Bundle` reads Secrets in its trust namespace and writes a ConfigMap to every namespace |
 | [CloudNativePG: certificates](https://cloudnative-pg.io/documentation/current/certificates/) | `serverTLSSecret` and `serverCASecret` may name one cert-manager Secret, and the label `cnpg.io/reload` reloads it on renewal |
+| [Barman Cloud Plugin: installation](https://cloudnative-pg.io/plugin-barman-cloud/docs/installation/) | The plugin needs CloudNativePG 1.30 or later and cert-manager, and installs in the operator's namespace |
+| [CloudNativePG 1.30: CNPG-I](https://cloudnative-pg.io/docs/1.30/cnpg_i/) | The operator finds a plugin by a Service in its own namespace labelled `cnpg.io/pluginName`, whose annotations name its port and its two certificate Secrets |
+| [Barman Cloud Plugin's sidecar at v0.16.0](https://github.com/cloudnative-pg/plugin-barman-cloud/blob/v0.16.0/internal/cnpgi/operator/lifecycle.go) | The plugin adds an init container that always restarts to each instance pod and to a recovery Job's pod, with the resources the ObjectStore names |
+| [CloudNativePG v1.30.1: Cluster status](https://github.com/cloudnative-pg/cloudnative-pg/blob/v1.30.1/api/v1/cluster_types.go) | The two phases a Cluster reads when its plugin is unknown or fails, and that a Cluster's backup times are "not set for backup plugins" |
 | [Kyverno: ValidatingPolicy](https://kyverno.io/docs/policy-types/validating-policy/) | A CEL validation reads the request's namespace as `namespaceObject` |
 | [External Secrets: HashiCorp Vault provider](https://external-secrets.io/latest/provider/hashicorp-vault/) | A private CA is named through `caProvider` or `caBundle` |
 | [Sealed Secrets: bring your own certificates](https://github.com/bitnami/sealed-secrets/blob/main/docs/bring-your-own-certificates.md) | The controller uses each key pair in its namespace that carries the active label |

@@ -3,7 +3,8 @@
 # node's addresses with their types and its STATE and EPHEMERAL encryption, Argo CD's health of each Application and each
 # object it applied, what each Argo CD route answers a caller without a session, Argo CD's Services, Ingresses and pod
 # images, every Ingress with its class and the addresses its status holds, CloudNativePG's
-# objects with each cluster's primary, every pod's node, phase and container states, each image reference the pods and
+# objects with each cluster's primary, archiving and last backup, the plugins it finds and each ObjectStore's recovery
+# windows, every pod's node, phase and container states, each image reference the pods and
 # the workloads' pod templates name, each OpenBao member's seal state and the active one, each claim with its size and the default
 # storage classes, every Service's type, each default-deny NetworkPolicy, the objects labelled
 # mitstack.dev/subscription, the API server's key set, the mesh probe's results, the outside probe's reading of each
@@ -20,7 +21,7 @@ set -euo pipefail
 
 # Nine limits of 21 seconds, the token request's 5, each with a 5-second kill grace, and the post's 20 make 264, which
 # leaves 16 seconds of the Job's activeDeadlineSeconds of 280 for the tools to start. The mesh, pod, workload, Argo CD,
-# default-deny, credential, scan, OpenBao, etcd status, gateway and egress reads run beside them, each within one limit,
+# default-deny, credential, ObjectStore, scan, OpenBao, etcd status, gateway and egress reads run beside them, each within one limit,
 # and the admission fixtures' read and their dry runs within two.
 limit=${REPORT_READ_SECONDS:-21}
 # The outside probe writes every five minutes, so a result three runs old means it stopped.
@@ -31,6 +32,8 @@ scans_configmap=kube-system/mitstack-security-scans
 scan_cronjob=mitstack-security-scan
 # The report keeps the newest twenty events of the newest scan Job and its pods, since a failing Job repeats an event.
 scan_events_kept=20
+# CloudNativePG finds a plugin only by a Service in the namespace its operator runs in.
+cnpg_namespace=cnpg-system
 # Kinds as kubectl --show-kind names them, as blocks name their objects; never secret, as the report holds no Secret right.
 subscription_kinds=(namespace serviceaccount service resourcequota limitrange deployment.apps
   ingress.networking.k8s.io networkpolicy.networking.k8s.io role.rbac.authorization.k8s.io
@@ -86,7 +89,8 @@ read_egress() {
   read_beside egress curl -q -sS --proto '=https' --max-time 5 -o /dev/null "$EGRESS_URL"
 }
 
-# read_cluster reads every pod, every workload with a pod template, and each default-deny NetworkPolicy, and asks each
+# read_cluster reads every pod, every workload with a pod template, each default-deny NetworkPolicy and each ObjectStore
+# of the Barman Cloud plugin, whose kind a cluster without the plugin does not serve, and asks each
 # OpenBao member for its seal state and whether it is the active one, which OpenBao answers without a token.
 read_cluster() {
   local member
@@ -95,6 +99,7 @@ read_cluster() {
   read_beside default-deny kubectl get networkpolicies.networking.k8s.io -A --field-selector metadata.name=mitstack-default-deny -o json &
   read_beside sealed-secrets kubectl get sealedsecrets.bitnami.com -n argocd -o json &
   read_beside app-projects kubectl get appprojects.argoproj.io -n argocd -o json &
+  read_beside object-stores kubectl get objectstores.barmancloud.cnpg.io -A -o json &
   read_beside security-scans kubectl get configmap "${scans_configmap#*/}" -n "${scans_configmap%%/*}" -o json &
   read_beside security-scan-cronjob kubectl get cronjob.batch "$scan_cronjob" -n "${scans_configmap%%/*}" -o json &
   read_beside security-scan-events kubectl get events -n "${scans_configmap%%/*}" -o json &
@@ -309,6 +314,10 @@ body() {
     --rawfile cnpg "$work/cloudnative-pg.out" \
     --rawfile cnpg_err "$work/cloudnative-pg.err" \
     --argjson cnpg_status "$(cat "$work/cloudnative-pg.status")" \
+    --arg cnpg_namespace "$cnpg_namespace" \
+    --rawfile object_stores "$work/object-stores.out" \
+    --rawfile object_stores_err "$work/object-stores.err" \
+    --argjson object_stores_status "$(cat "$work/object-stores.status")" \
     --rawfile storage "$work/storage-and-services.out" \
     --rawfile storage_err "$work/storage-and-services.err" \
     --argjson storage_status "$(cat "$work/storage-and-services.status")" \
@@ -357,15 +366,32 @@ body() {
     def ready: [.status.conditions[]? | select(.type == "Ready") | .status == "True"] | any;
     # Each message the report carries from a controller is cut to 256 characters, so its size has a bound.
     def at_most_256: if type == "string" then .[0:256] else . end;
+    # condition is the Cluster's condition of one type as CloudNativePG wrote it, or null while the Cluster holds none.
+    def condition($type): [.status.conditions[]? | select(.type == $type)
+      | {status, reason: (.reason // null), message: (.message // null | at_most_256)}] | .[0];
     def cloudnative_pg: {
       namespace: .metadata.namespace, kind: .kind, name: .metadata.name,
       subscription: (.metadata.labels["mitstack.dev/subscription"] // null)
     } + if .kind == "Cluster" then
       {phase: .status.phase, instances: .status.instances, readyInstances: .status.readyInstances,
-        currentPrimary: (.status.currentPrimary // null)}
+        currentPrimary: (.status.currentPrimary // null),
+        continuousArchiving: condition("ContinuousArchiving"), lastBackup: condition("LastBackupSucceeded")}
     else
       {applied: .status.applied, message: (.status.message // null | at_most_256)}
     end;
+    def cloudnative_pg_plugins: [.items[] | select(.kind == "Service" and .metadata.namespace == $cnpg_namespace)
+      | .metadata.labels["cnpg.io/pluginName"] // empty] | unique;
+    # CloudNativePG sets no backup time on a Cluster that backs up through a plugin, so the times come from the
+    # ObjectStore, one window per server that writes to it.
+    def object_store: {
+      namespace: .metadata.namespace, kind: .kind, name: .metadata.name,
+      subscription: (.metadata.labels["mitstack.dev/subscription"] // null),
+      recoveryWindows: (.status.serverRecoveryWindow // {} | map_values({
+        firstRecoverabilityPoint: (.firstRecoverabilityPoint // null),
+        lastSuccessfulBackupTime: (.lastSuccessfulBackupTime // null),
+        lastFailedBackupTime: (.lastFailedBackupTime // null)
+      }))
+    };
     # zone_label_managers are the field managers whose entry in managedFields holds the zone label.
     def zone_label_managers: [.metadata.managedFields[]?
       | select(.fieldsV1["f:metadata"]["f:labels"]["f:topology.kubernetes.io/zone"] != null)
@@ -630,6 +656,12 @@ body() {
       cloudNativePG: beside($cnpg_status; $cnpg_err;
         "kubectl exited 0, and its output is not the CloudNativePG objects this report reads";
         $cnpg | fromjson | [.items[] | cloudnative_pg]),
+      cloudNativePGPlugins: beside($storage_status; $storage_err;
+        "kubectl exited 0, and its output is not the claims, storage classes and Services this report reads";
+        $storage | fromjson | cloudnative_pg_plugins),
+      cloudNativePGObjectStores: beside($object_stores_status; $object_stores_err;
+        "kubectl exited 0, and its output is not the ObjectStores this report reads";
+        $object_stores | fromjson | [.items[] | object_store]),
       pods: beside($pods_status; $pods_err; "kubectl exited 0, and its output is not the pods this report reads";
         $pods | fromjson | [.items[] | pod]),
       images: image_list,

@@ -20,6 +20,11 @@ import (
 
 const scanAt = "echo 2026-11-07T03:17:00Z"
 
+// kubeBenchReading is a fake kube-bench that, as kube-bench does, takes KUBE_BENCH_VERSION for its --version flag and
+// refuses it beside --benchmark.
+const kubeBenchReading = `[ -z "${KUBE_BENCH_VERSION:-}" ] || { echo "It is an error to specify both --version and --benchmark flags" >&2; exit 1; }
+cat testdata/scan/kube-bench.json`
+
 // kubescapeWriting is a fake kubescape that writes testdata/scan/kubescape.json where its --output names.
 const kubescapeWriting = `while [ $# -gt 0 ]; do if [ "$1" = --output ]; then cp testdata/scan/kubescape.json "$2"; fi; shift; done`
 
@@ -42,16 +47,18 @@ func runScan(t *testing.T, fakes map[string]string) scanRun {
 	t.Helper()
 	patch := filepath.Join(t.TempDir(), "patch.json")
 	all := map[string]string{"date": scanAt, "kubectl": `cp "${@: -1}" ` + patch,
-		"kube-bench": "cat testdata/scan/kube-bench.json", "kubescape": kubescapeWriting}
+		"kube-bench": kubeBenchReading, "kubescape": kubescapeWriting}
 	maps.Copy(all, fakes)
 	tools := testutil.NewTools(t, all)
 	tools.AddImageJq(t)
 	script, env := renderedScript(t, reportURL, "mitstack-security-scan")
-	bench := testutil.ContainerEnv(t, testutil.Field(t, scanPod(t), "initContainers", "0"))
 	results := "SCAN_RESULTS=" + t.TempDir()
+	var benchEnv []string
+	for name, value := range testutil.ContainerEnv(t, testutil.Field(t, scanPod(t), "initContainers", "0")) {
+		benchEnv = append(benchEnv, name+"="+value)
+	}
 
-	benchOut, benchErr := testutil.RunBash(t, script, tools.Env(results, "KUBE_BENCH_CONFIG=/kube-bench/cfg",
-		"KUBE_BENCH_VERSION="+bench["KUBE_BENCH_VERSION"]), "bench")
+	benchOut, benchErr := testutil.RunBash(t, script, tools.Env(append(benchEnv, results)...), "bench")
 	require.NoError(t, benchErr, "kube-bench's step keeps a failure in its summary, so kubescape still runs: %s", benchOut)
 	out, err := testutil.RunBash(t, script, tools.Env(results, "SCAN_CONFIGMAP="+env["SCAN_CONFIGMAP"], "KUBESCAPE_ARTIFACTS=testdata/scan",
 		"KUBESCAPE_CONTROLS_VERSION="+env["KUBESCAPE_CONTROLS_VERSION"]))
@@ -69,7 +76,7 @@ func TestSecurityScan_RunsKubeBenchOnTheTalosBenchmarkAndKubescapeOnNSAAndPatche
 	require.NoError(t, run.err, run.out)
 
 	calls := run.tools.Calls(t)
-	assert.Contains(t, calls, "kube-bench run --config-dir /kube-bench/cfg --benchmark cis-1.10 --targets master,etcd,controlplane,node,policies --json",
+	assert.Contains(t, calls, "kube-bench run --config-dir "+tools.ScriptDir+"/kube-bench/cfg --benchmark cis-1.10 --targets master,etcd,controlplane,node,policies --json",
 		"the benchmark Sidero documents for Talos, since kube-bench's version mapping picks none for Talos")
 	for _, call := range calls {
 		if strings.HasPrefix(call, "kubescape ") {
@@ -185,17 +192,22 @@ func TestManifests_RunsKubeBenchAsRootOnTheHostsConfigWithNoTokenAndKubescapeAsN
 	assert.Equal(t, map[string]any{"/tmp": nil, "/results": nil, "/etc/kubernetes": true, "/var/lib/kubelet": true, "/var/lib/etcd": true},
 		mounts(t, bench), "kube-bench alone mounts the host, read-only, and holds no token")
 	assert.Equal(t, map[string]any{"/tmp": nil, "/results": nil, "/var/run/secrets/kubernetes.io/serviceaccount": true}, mounts(t, scan))
-	var hostPaths []any
-	for _, v := range testutil.Field(t, pod, "volumes").([]any) {
-		if hostPath, ok := v.(map[string]any)["hostPath"]; ok {
-			hostPaths = append(hostPaths, testutil.Field(t, hostPath, "path"))
-		}
-	}
-	assert.ElementsMatch(t, []any{"/etc/kubernetes", "/var/lib/kubelet", "/var/lib/etcd"}, hostPaths, "nothing else of the host")
 	for _, c := range []any{bench, scan} {
 		assert.Equal(t, testutil.ToolsImage, testutil.Field(t, c, "image"))
 		assert.NotNil(t, testutil.Field(t, c, "resources", "limits", "memory"), "each step sets its memory limit")
 	}
+}
+
+func TestManifests_MountsThreeHostDirectoriesAndTypeChecksOnlyTheTwoTalossKubeletHolds(t *testing.T) {
+	typeChecks := map[any]any{}
+	for _, v := range testutil.Field(t, scanPod(t), "volumes").([]any) {
+		if hostPath, ok := v.(map[string]any)["hostPath"].(map[string]any); ok {
+			typeChecks[hostPath["path"]] = hostPath["type"]
+		}
+	}
+
+	assert.Equal(t, map[any]any{"/etc/kubernetes": "Directory", "/var/lib/kubelet": "Directory", "/var/lib/etcd": nil}, typeChecks,
+		"nothing else of the host, and Talos's kubelet checks a type inside its own container, which holds no /var/lib/etcd")
 }
 
 func TestManifests_LetsTheScanReadNoSecret(t *testing.T) {

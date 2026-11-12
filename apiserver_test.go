@@ -5,6 +5,7 @@
 package talosclusterkit
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/rand"
 	"encoding/json"
@@ -46,7 +47,7 @@ func TestAPIServer_TheOutsideProbeAndTheSecurityScanWriteTheirOwnConfigMapAndNoO
 	server.admin(t, nil, "create", "configmap", otherConfigMap, "-n", "kube-system")
 
 	t.Run("the outside probe writes its result into mitstack-mesh-probe", func(t *testing.T) {
-		out, err := server.runCronJob(t, rendered, "mitstack-mesh-probe")
+		out, err := server.runCronJob(t, rendered, "mitstack-mesh-probe", nil)
 
 		require.NoError(t, err, "the outside probe printed:\n%s", out)
 		var result map[string]any
@@ -55,7 +56,7 @@ func TestAPIServer_TheOutsideProbeAndTheSecurityScanWriteTheirOwnConfigMapAndNoO
 	})
 
 	t.Run("the security scan writes both summaries and its outcome into mitstack-security-scans when kube-bench left none", func(t *testing.T) {
-		out, err := server.runCronJob(t, rendered, "mitstack-security-scan")
+		out, err := server.runCronJob(t, rendered, "mitstack-security-scan", nil)
 
 		data := server.configMapData(t, "mitstack-security-scans")
 		require.Contains(t, data, "last-run", "the security scan printed:\n%s", out)
@@ -66,6 +67,34 @@ func TestAPIServer_TheOutsideProbeAndTheSecurityScanWriteTheirOwnConfigMapAndNoO
 		assert.Equal(t, "kubescape", summary(t, data, "kubescape")["tool"])
 		assert.Equal(t, float64(1), summary(t, data, "last-run")["exitStatus"])
 		assert.Regexp(t, `^kube-bench: failed; kubescape: (ran|failed)$`, summary(t, data, "last-run")["output"])
+	})
+
+	t.Run("the security scan writes what kube-bench read of each control-plane process and of etcd's directory as Talos owns it", func(t *testing.T) {
+		results := sharedDir(t)
+		require.NoError(t, os.Chmod(results, 0o777))
+		standIns := map[string][]string{"/results": {"-v", results + ":/results"}, "/var/lib/etcd": {"--tmpfs", "/var/lib/etcd:ro," + talosEtcdDirectory}}
+		job, pod := cronJobPod(t, rendered, "mitstack-security-scan")
+		bench := testutil.Field(t, pod, "initContainers", "0")
+		benchArgs := append([]string{"run", "--rm", "--pid", "container:" + controlPlaneStandIns(t, server.toolsImage)},
+			containerArgs(t, job, pod, bench, standIns)...)
+
+		benchOut, benchErr := exec.Command("docker", append(append(benchArgs, server.toolsImage), command(t, bench)...)...).CombinedOutput()
+		require.NoError(t, benchErr, "the kube-bench step printed:\n%s", benchOut)
+		out, _ := server.runCronJob(t, rendered, "mitstack-security-scan", standIns)
+
+		kubeBench := summary(t, server.configMapData(t, "mitstack-security-scans"), "kube-bench")
+		require.NotContains(t, kubeBench, "error", "the scan printed:\n%s%s", benchOut, out)
+		assert.Equal(t, "cis-1.10", kubeBench["profile"])
+		assert.Positive(t, testutil.Field(t, kubeBench, "totals", "pass"), "kube-bench passed some check")
+		var failed []any
+		for _, check := range kubeBench["failed"].([]any) {
+			failed = append(failed, testutil.Field(t, check, "id"))
+		}
+		for id, read := range map[string]string{"1.2.15": "the API server's --profiling=false", "1.3.2": "the controller manager's --profiling=false",
+			"1.4.1": "the scheduler's --profiling=false", "1.1.11": "mode 700 on etcd's directory, which another user owns"} {
+			assert.NotContains(t, failed, id, "kube-bench read %s", read)
+		}
+		assert.Regexp(t, `^kube-bench: ran; kubescape: (ran|failed)$`, summary(t, server.configMapData(t, "mitstack-security-scans"), "last-run")["output"])
 	})
 
 	get := func(name string) []string { return []string{"get", "configmap", name, "-n", "kube-system"} }
@@ -201,35 +230,99 @@ func (s *apiServer) serviceAccount(t *testing.T, account string) string {
 	return dir
 }
 
-// runCronJob runs the CronJob name's first container as its pod runs it: as its user, on a read-only root with a tmpfs
-// at each emptyDir it mounts, with its environment and command and its service account's token.
-func (s *apiServer) runCronJob(t *testing.T, rendered []byte, name string) (string, error) {
+// talosEtcdDirectory is the mode and owner Talos gives /var/lib/etcd, as tmpfs options.
+const talosEtcdDirectory = "mode=0700,uid=60,gid=60"
+
+// controlPlaneStandIns starts a container that holds one process named as each component kube-bench looks for, with the
+// flag the scan test reads back, and returns the container's name once every process runs.
+func controlPlaneStandIns(t *testing.T, toolsImage string) string {
+	t.Helper()
+	name := "mitstack-apiserver-check-" + strings.ToLower(rand.Text()[:8]) + "-control-plane"
+	cmd := exec.Command("docker", "run", "--rm", "--name", name, toolsImage, "bash", "-c", `set -euo pipefail
+mkdir /tmp/bin
+mkfifo /tmp/up /tmp/hold
+exec 3<> /tmp/up
+start() { ln -s /bin/bash "/tmp/bin/$1"; "/tmp/bin/$1" -c 'echo up > /tmp/up; read -r _ < /tmp/hold' "$@" & }
+start kube-apiserver --profiling=false
+start kube-controller-manager --profiling=false
+start kube-scheduler --profiling=false
+start etcd --data-dir=/var/lib/etcd
+start kubelet
+for _ in 1 2 3 4 5; do read -r _ <&3; done
+echo ready
+wait`)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
+	require.NoError(t, err)
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() {
+		_ = exec.Command("docker", "rm", "-f", name).Run()
+		_ = cmd.Wait()
+	})
+	line, err := bufio.NewReader(stdout).ReadString('\n')
+	require.NoError(t, err, "the stand-in control plane never started: %s", stderr.String())
+	require.Equal(t, "ready\n", line)
+	return name
+}
+
+func cronJobPod(t *testing.T, rendered []byte, name string) (job map[string]any, pod any) {
 	t.Helper()
 	jobs := testutil.Kind(testutil.Documents(t, rendered), "CronJob")
 	i := slices.IndexFunc(jobs, func(job map[string]any) bool { return testutil.Field(t, job, "metadata", "name") == name })
 	require.GreaterOrEqual(t, i, 0, "no CronJob %s", name)
-	job := jobs[i]
-	pod := testutil.Field(t, job, "spec", "jobTemplate", "spec", "template", "spec")
+	return jobs[i], testutil.Field(t, jobs[i], "spec", "jobTemplate", "spec", "template", "spec")
+}
+
+// runCronJob runs the CronJob name's first container as its pod runs it, with its service account's token.
+func (s *apiServer) runCronJob(t *testing.T, rendered []byte, name string, standIns map[string][]string) (string, error) {
+	t.Helper()
+	job, pod := cronJobPod(t, rendered, name)
 	container := testutil.Field(t, pod, "containers", "0")
-	user := testutil.Field(t, container, "securityContext", "runAsUser")
+	return s.as(t, testutil.Field(t, pod, "serviceAccountName").(string), containerArgs(t, job, pod, container, standIns), command(t, container)...)
+}
+
+// containerArgs are the docker run arguments that give container what its pod gives it: its user, its capabilities, a
+// read-only root, its environment, and at each path it mounts the stand-in for that path, or a tmpfs for an emptyDir.
+func containerArgs(t *testing.T, job, pod, container any, standIns map[string][]string) []string {
+	t.Helper()
+	security := testutil.Field(t, container, "securityContext")
+	user := testutil.Field(t, security, "runAsUser")
 	if user == nil {
 		user = testutil.Field(t, pod, "securityContext", "runAsUser")
 	}
 	args := []string{"--user", fmt.Sprint(user)}
-	if testutil.Field(t, container, "securityContext", "readOnlyRootFilesystem") == true {
+	if testutil.Field(t, security, "readOnlyRootFilesystem") == true {
 		args = append(args, "--read-only")
 	}
-	for _, path := range emptyDirMounts(t, pod, container) {
-		args = append(args, "--tmpfs", path)
+	if testutil.Field(t, security, "allowPrivilegeEscalation") == false {
+		args = append(args, "--security-opt", "no-new-privileges")
+	}
+	for _, capability := range testutil.Field(t, security, "capabilities", "drop").([]any) {
+		args = append(args, "--cap-drop", capability.(string))
+	}
+	emptyDirs := emptyDirMounts(t, pod, container)
+	for _, mount := range testutil.Field(t, container, "volumeMounts").([]any) {
+		path := testutil.Field(t, mount, "mountPath").(string)
+		if standIn, ok := standIns[path]; ok {
+			args = append(args, standIn...)
+		} else if slices.Contains(emptyDirs, path) {
+			args = append(args, "--tmpfs", path)
+		}
 	}
 	for _, env := range testutil.Field(t, container, "env").([]any) {
 		args = append(args, "-e", envVariable(t, env, testutil.Field(t, job, "metadata", "namespace").(string)))
 	}
-	var command []string
+	return args
+}
+
+func command(t *testing.T, container any) []string {
+	t.Helper()
+	var words []string
 	for _, word := range testutil.Field(t, container, "command").([]any) {
-		command = append(command, word.(string))
+		words = append(words, word.(string))
 	}
-	return s.as(t, testutil.Field(t, pod, "serviceAccountName").(string), args, command...)
+	return words
 }
 
 func emptyDirMounts(t *testing.T, pod, container any) []string {

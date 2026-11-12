@@ -138,7 +138,7 @@ func (c *Cluster) desired(path string) map[ObjectRef]map[string]any {
 	return out
 }
 
-// hookAnnotation marks a document Argo CD runs during a sync and deletes once it succeeds, so it applies no object.
+// hookAnnotation marks a document Argo CD runs during a sync as a hook, which is no object the Application applies.
 const hookAnnotation = "argocd.argoproj.io/hook"
 
 func isHook(doc map[string]any) bool {

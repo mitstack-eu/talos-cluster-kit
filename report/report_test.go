@@ -326,14 +326,18 @@ func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipA
 	assert.Equal(t, []any{
 		map[string]any{"name": "poc-talos4-cp1", "ready": true, "talosVersion": "v1.14.4", "kubeletVersion": "v1.37.1", "internalIP": "10.0.0.5",
 			"addresses": []any{map[string]any{"type": "InternalIP", "address": "10.0.0.5"}, map[string]any{"type": "Hostname", "address": "poc-talos4-cp1"}}, "allocatable": map[string]any{"cpu": "3950m", "memory": "7712Mi", "pods": "110"}, "zone": "fsn1", "region": "eu-central",
-			"zoneLabelManagers": []any{map[string]any{"manager": "mitstack-node-topology", "operation": "Update", "time": "2026-11-04T08:05:00Z"}}},
+			"zoneLabelManagers": []any{map[string]any{"manager": "mitstack-node-topology", "operation": "Update", "time": "2026-11-04T08:05:00Z"}},
+			"taints":            []any{map[string]any{"key": "node-role.kubernetes.io/control-plane", "value": nil, "effect": "NoSchedule"}}, "unschedulable": false},
 		map[string]any{"name": "poc-talos4-cp2", "ready": true, "talosVersion": "v1.14.4", "kubeletVersion": "v1.37.1", "internalIP": "10.0.0.6",
 			"addresses": []any{map[string]any{"type": "InternalIP", "address": "10.0.0.6"}}, "allocatable": map[string]any{"cpu": "4", "memory": "15622080Ki", "pods": "110"}, "zone": "nbg1", "region": nil,
-			"zoneLabelManagers": []any{map[string]any{"manager": "kubectl-label", "operation": "Update", "time": "2026-11-04T08:07:00Z"}}},
+			"zoneLabelManagers": []any{map[string]any{"manager": "kubectl-label", "operation": "Update", "time": "2026-11-04T08:07:00Z"}},
+			"taints":            []any{}, "unschedulable": false},
 		map[string]any{"name": "poc-talos4-cp3", "ready": false, "talosVersion": "v1.14.3", "kubeletVersion": "v1.37.1", "internalIP": "10.0.0.7",
 			"addresses": []any{map[string]any{"type": "InternalIP", "address": "10.0.0.7"}}, "allocatable": map[string]any{"cpu": "1950m", "memory": "3615Mi", "pods": "110"}, "zone": nil, "region": nil,
-			"zoneLabelManagers": []any{}},
-	}, posted.body["nodes"], "each node's addresses with their types, its zone and region labels, and every manager of its zone label")
+			"zoneLabelManagers": []any{},
+			"taints": []any{map[string]any{"key": "node.kubernetes.io/unschedulable", "value": nil, "effect": "NoSchedule"},
+				map[string]any{"key": "mitstack.dev/pool", "value": "db", "effect": "NoExecute"}}, "unschedulable": true},
+	}, posted.body["nodes"], "each node's addresses with their types, its zone and region labels, every manager of its zone label, each taint without the time it was added, and whether the node is unschedulable")
 	assert.Equal(t, []any{}, posted.body["ingresses"], "a cluster with no Ingress reports an empty list")
 	assert.Equal(t, readJSON(t, "testdata", "golden", "argocd.json"), posted.body["argocd"], "each Application names the revision Argo CD compared it against or null and its last sync's phase with the message cut to 256 characters, and a Secret is among the applied objects, each with its identity, sync and health alone")
 	wantCalls := []string{

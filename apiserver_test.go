@@ -152,6 +152,7 @@ func startAPIServer(t *testing.T) *apiServer {
 	docker(t, "run", "-d", "--rm", "--name", apiServer, "--network", "container:"+s.etcd, "-v", s.keys+":/keys:ro",
 		"--entrypoint", "/usr/local/bin/kube-apiserver", talosImage(t, "registry.k8s.io/kube-apiserver"),
 		"--etcd-servers", "http://127.0.0.1:2379", "--secure-port", apiServerPort, "--authorization-mode", "RBAC",
+		"--allow-privileged=true", // as Talos runs it, so the API server admits a component that ships a privileged container
 		"--token-auth-file", "/keys/tokens.csv", "--tls-cert-file", "/keys/serving.crt", "--tls-private-key-file", "/keys/serving.key",
 		"--service-account-issuer", "https://kubernetes.default.svc", "--service-account-key-file", "/keys/serving.key",
 		"--service-account-signing-key-file", "/keys/serving.key", "--service-cluster-ip-range", "10.96.0.0/16")
@@ -212,21 +213,27 @@ func (s *apiServer) configMapData(t *testing.T, name string) map[string]string {
 // as runs command in the tools image as account in kube-system, whose token sits where a pod finds it.
 func (s *apiServer) as(t *testing.T, account string, dockerArgs []string, command ...string) (string, error) {
 	t.Helper()
-	args := []string{"run", "--rm", "--network", "container:" + s.etcd, "-v", s.serviceAccount(t, account) + ":" + serviceAccountDir + ":ro",
+	return s.asIn(t, "kube-system", account, dockerArgs, command...)
+}
+
+// asIn runs command in the tools image as account in namespace, whose token sits where a pod finds it.
+func (s *apiServer) asIn(t *testing.T, namespace, account string, dockerArgs []string, command ...string) (string, error) {
+	t.Helper()
+	args := []string{"run", "--rm", "--network", "container:" + s.etcd, "-v", s.serviceAccount(t, namespace, account) + ":" + serviceAccountDir + ":ro",
 		"-e", "KUBERNETES_SERVICE_HOST=127.0.0.1", "-e", "KUBERNETES_SERVICE_PORT=" + apiServerPort}
 	args = append(append(append(args, dockerArgs...), s.toolsImage), command...)
 	out, err := exec.Command("docker", args...).CombinedOutput()
 	return string(out), err
 }
 
-// serviceAccount is a directory holding a token the API server issues to account in kube-system, its CA and namespace.
-func (s *apiServer) serviceAccount(t *testing.T, account string) string {
+// serviceAccount is a directory holding a token the API server issues to account in namespace, its CA and namespace.
+func (s *apiServer) serviceAccount(t *testing.T, namespace, account string) string {
 	t.Helper()
 	ca, err := os.ReadFile(filepath.Join(s.keys, "ca.crt"))
 	require.NoError(t, err)
 	dir := sharedDir(t)
-	writeFiles(t, dir, map[string][]byte{"token": s.admin(t, nil, "create", "token", account, "-n", "kube-system"),
-		"ca.crt": ca, "namespace": []byte("kube-system")})
+	writeFiles(t, dir, map[string][]byte{"token": s.admin(t, nil, "create", "token", account, "-n", namespace),
+		"ca.crt": ca, "namespace": []byte(namespace)})
 	return dir
 }
 

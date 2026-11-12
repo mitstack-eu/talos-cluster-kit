@@ -41,6 +41,7 @@ func refOf(t *testing.T, doc map[string]any) ObjectRef {
 
 // Cluster is a running cluster as far as a cluster repository reaches it: the objects its API serves, the ones Talos
 // created once at the build among them, and Argo CD, whose Applications apply, change and prune what the repository holds.
+// It tracks no field manager, so an object reads as it does once its Application's handover gave up Talos's fields.
 type Cluster struct {
 	t          *testing.T
 	objects    map[ObjectRef]map[string]any
@@ -128,11 +129,23 @@ func (c *Cluster) desired(path string) map[ObjectRef]map[string]any {
 	for file, data := range c.repository {
 		if strings.HasPrefix(file, path+"/") && strings.HasSuffix(file, ".yaml") {
 			for _, doc := range c.parsed(data) {
-				out[refOf(c.t, doc)] = doc
+				if !isHook(doc) {
+					out[refOf(c.t, doc)] = doc
+				}
 			}
 		}
 	}
 	return out
+}
+
+// hookAnnotation marks a document Argo CD runs during a sync and deletes once it succeeds, so it applies no object.
+const hookAnnotation = "argocd.argoproj.io/hook"
+
+func isHook(doc map[string]any) bool {
+	metadata, _ := doc["metadata"].(map[string]any)
+	annotations, _ := metadata["annotations"].(map[string]any)
+	_, hook := annotations[hookAnnotation]
+	return hook
 }
 
 // parsedFiles keeps each file's documents by its digest, since a component set runs to megabytes of YAML and a test

@@ -50,7 +50,7 @@ the order a block uses them.
 | `report` | Renders the node report, a CronJob that reads the cluster and posts what it read to the platform, signed for its exact body. [What the node report carries](#what-the-node-report-carries) lists its members, the nine checks it names and what happens when a read fails. It also renders the outside probe, a CronJob in `kube-system` that calls the mesh probe's target with no workload identity and reads each gateway's mirror from outside the mesh, the admission probe namespace and the daily security scan. The report holds no right on Secrets | `Manifests`, `Interval` |
 | `topology` | Renders the topology labeller, a CronJob that labels each Cloud node with its zone and region, and holds the two label names | `Manifests`, `Labels`, `ZoneLabel`, `RegionLabel`, `FieldManager` |
 | `openbaoinit` | Renders OpenBao's init Job, which the hosting set carries: it initialises a hosting cluster's OpenBao once, commits the root token and recovery key to the cluster repository as PGP messages, then writes the policy each slice's External Secrets reads with | `Manifests`, `Inputs`, `InitFile` |
-| `rollout` | Gives a running cluster a release's component set, the manifests one kit release carries; [How a running cluster takes a release's components](#how-a-running-cluster-takes-a-releases-components) defines each term. A block commits the set's files to the cluster repository, where Argo CD applies each component through an Application of its own, which is Argo CD's record of one repository directory it keeps applied to the cluster. Files that an earlier release committed and this release no longer states are retired, which means deleted. Each component's sync ends with a handover Job, which takes Talos's fields off the objects Talos created, so they hold only what the release states. The read-back then checks from the node report that the cluster runs each component as the release states it | `Release.Files`, `Release.Retired`, `Release.ReadBack`, `Release.ToolsImage`, `LegacyFiles` |
+| `rollout` | Gives a running cluster a release's component set, the manifests one kit release carries; [How a running cluster takes a release's components](#how-a-running-cluster-takes-a-releases-components) defines each term. A block commits the set's files to the cluster repository, where Argo CD applies each component through an Application of its own, which is Argo CD's record of one repository directory it keeps applied to the cluster. Files that an earlier release committed and this release no longer states are retired, which means deleted. Each component's sync runs a handover Job, which has Talos give up the fields it set when it created the component's objects, so they hold only what the release states. The read-back then checks from the node report that the cluster runs each component as the release states it | `Release.Files`, `Release.Retired`, `Release.ReadBack`, `Release.ToolsImage`, `LegacyFiles` |
 | `controlplane` | Builds and deletes a Talos control plane on Hetzner Cloud: a network, a firewall, a gateway in each of `fsn1`, `nbg1` and `hel1`, a builder that makes the cluster's own snapshot, a node in each of `fsn1`, `nbg1` and `hel1`, and an API and an ingress load balancer. Each call reads the resources by their labels and takes the one change still missing. A refusal is a `*Refusal` with a `Class` and a `Message`, which the block answers as its own framework's refusal | `Plane`, `Plane.Read`, `Plane.EnsureNetwork`, `Plane.NextStep`, `Plane.Problems`, `Plane.Unhealthy`, `Plane.Outputs`, `State.IngressAddresses`, `Plane.Release`, `ErrNoIngressAddress`, `Plane.GatewaysAwaitRelease`, `Plane.GatewaysServeRelease`, `Plane.Delete`, `NewAPI`, `Refusal`, `TopologyLabels`, `GatewayUpgradeBound`, `GatewayCertRenewBefore`, `KeyGatewayCertExpires` |
 | `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image carries and the gateway copies out of it, `tools/jq.env`, which pins the tools image's jq, and `tools/kube-bench-talos.yaml`, the settings kube-bench reads over its own on Talos. It names the tools image a release published and the directory in that image that holds the node report's, its outside probe's, the labeller's, the cluster tokens' and the handover's scripts, and where in that image each served manifest sits | `Env`, `Pin`, `Image`, `ScriptDir`, `ManifestPath` |
 | `redundant` | Carries a removal's redundant set, each member with its reading, to the guard the block passes, block-kit's `redundancy.Set.AllowRemoval`, which this module does not import | `Set`, `Guard`, `Held` |
@@ -1910,8 +1910,10 @@ Traefik, so its release needs no address.
 | `cluster/component-<name>.yaml` | The Argo CD Application `component-<name>`, which applies `components/<name>/` |
 
 The marker ConfigMap is how the read-back tells which release Argo CD
-compared. Argo CD's list of what an Application applied names objects and no
-Git revision. The marker's name carries the digest of the component's
+compared. The report's `revision` names the last commit Argo CD compared, and
+a commit can change other files while it leaves this component as it was.
+Argo CD's list of what an Application applied names objects and no revision
+at all. The marker's name carries the digest of the component's
 documents and its handover Job: the first 12 hexadecimal characters of the
 SHA-256 of the bytes that precede the marker in `manifest.yaml`. The name
 therefore changes whenever the component does. It also changes with every kit
@@ -1950,10 +1952,11 @@ Kubernetes hold an object's deletion until its controller has cleaned up;
 Argo CD's resources finalizer has it delete every object the Application
 applied before the Application itself goes. The effects:
 
-- Server-side apply writes no last-applied annotation. A resource
-  definition, here a CustomResourceDefinition (the CRD of the `components`
-  row), can be large enough that the annotation would push its object past
-  the 262,144 bytes Kubernetes allows for annotations.
+- Server-side apply writes no last-applied annotation. A
+  CustomResourceDefinition (CRD), the object that defines a custom kind of
+  object such as Cilium's network policies, can be large enough that the
+  annotation would push it past the 262,144 bytes Kubernetes allows for
+  annotations.
 - The retries wait out a resource definition, again a CRD, that another
   component's Application has yet to apply. A component that uses a custom
   resource fails to sync until its definition exists, and a retry succeeds
@@ -2001,8 +2004,8 @@ lists exactly the objects the release states for it, each Synced. Until
 Argo CD compares the new release, its Application still lists the marker of
 the release before, so the report reads nothing back. A report that would
 reach 256 KiB leaves out every Application's objects, and reads nothing back
-either. The report also carries the phase of Argo CD's last sync of each
-Application. That sync succeeds only once the component's handover Job
+either. The report also carries `operation`, the outcome of Argo CD's last
+sync of each Application. That sync succeeds only once the component's handover Job
 succeeded, so the read-back also waits for a sync that reads Succeeded, and a
 release reads back only once every component is handed over.
 
@@ -2067,10 +2070,12 @@ Argo CD applies. It runs once per sync of a component:
    under the service account of Argo CD's application controller. That account
    already applies every component, so the cluster gains no other identity
    that may change these objects.
-4. Argo CD applies the rest of the Job's wave in the same pass that creates the
-   Job, so the script first waits, for at most 120 seconds, until each object
-   carries the annotation `argocd.argoproj.io/tracking-id` that Argo CD v3.5.5
-   gives every object it applies.
+4. Argo CD creates and applies the rest of the Job's wave in the same pass
+   that creates the Job, so the script first waits until each object exists
+   and carries the annotation `argocd.argoproj.io/tracking-id` that Argo CD
+   v3.5.5 gives every object it applies. It waits for each object on its own,
+   since kubectl's wait for creation gives up at once on a file in which two
+   objects are absent, and all the waits together take at most 120 seconds.
 5. The script reads each object the component states, with its field
    managers. For every object that both `talos` and `argocd-controller`
    applied, it sends one server-side apply under the name `talos` that states
@@ -2079,12 +2084,13 @@ Argo CD applies. It runs once per sync of a component:
 6. The script reads those objects again and fails when one still names
    `talos`.
 7. Argo CD deletes a Job that succeeded. A Job that failed fails the sync,
-   which Argo CD retries from the objects on. The last sync then reads Failed,
-   or Running while it retries, and the read-back names that Application.
+   and Argo CD runs the whole sync again under the Application's `retry`
+   settings. The last sync then reads Failed, or Running while it retries,
+   and the read-back names that Application.
 
 The script refuses three kinds of object, changes nothing and fails, naming
-each. One is an object that still lacks Argo CD's annotation when the wait
-ends. Another is an object that Talos created and Argo CD has not applied, since
+each. One is an object that is still absent or lacks Argo CD's annotation when
+the wait ends. Another is an object that Talos created and Argo CD has not applied, since
 giving up Talos's fields there would take every field away. Argo CD applies
 each object with its tracking annotation, so an object it applied always names
 `argocd-controller`. The third is an object that names `talos` for a write

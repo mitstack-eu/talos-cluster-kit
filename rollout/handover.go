@@ -45,11 +45,12 @@ func (h documentHead) wave() int {
 	return wave
 }
 
-// lastWave is the last wave any of heads syncs in. The handover runs in it and in no later one, because Argo CD starts a
-// later wave only once every object reads Healthy, and an object a dropped field keeps unhealthy would then block it.
+// lastWave is the last wave any of heads syncs in, below 0 when every one does, for heads that are not empty. The
+// handover runs in it and in no later one, because Argo CD starts a later wave only once every object reads Healthy, and
+// an object a dropped field keeps unhealthy would then block it.
 func lastWave(heads []documentHead) int {
-	last := 0
-	for _, head := range heads {
+	last := heads[0].wave()
+	for _, head := range heads[1:] {
 		last = max(last, head.wave())
 	}
 	return last

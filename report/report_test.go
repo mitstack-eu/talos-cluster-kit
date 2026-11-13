@@ -847,8 +847,8 @@ func TestReport_SaysWhenItCutsTheScheduledJobsAtTheirBoundAndStaysInsideThePlatf
 	}{
 		"100 CronJobs fill the bound": {many("CronJob", 100), "cronJobs", 100, 100, false},
 		"101 CronJobs pass it":        {many("CronJob", 101), "cronJobs", 100, 101, true},
-		"200 Jobs fill the bound":     {many("Job", 200), "jobs", 200, 200, false},
-		"201 Jobs pass it":            {many("Job", 201), "jobs", 200, 201, true},
+		"100 Jobs fill the bound":     {many("Job", 100), "jobs", 100, 100, false},
+		"101 Jobs pass it":            {many("Job", 101), "jobs", 100, 101, true},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

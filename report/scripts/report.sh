@@ -410,11 +410,11 @@ body() {
         + [$jobs | map(select(.owner != null)) | group_by(.owner)[] | map(.entry) | sort_by(.createdAt)
           | ([last] + [map(select(.condition.type == "Failed")) | last // empty]) | unique_by(.name)[]]
         | sort_by([.namespace, .name])) as $kept
-      | {cut: (($crons | length) > 100 or ($kept | length) > 200), found: {cronJobs: ($crons | length), jobs: ($kept | length)},
+      | {cut: (($crons | length) > 100 or ($kept | length) > 100), found: {cronJobs: ($crons | length), jobs: ($kept | length)},
         cronJobs: [$crons | sort_by([.metadata.namespace, .metadata.name]) | .[0:100][] | {namespace: .metadata.namespace, name: .metadata.name,
           subscription: scheduled_subscription, schedule: (.spec.schedule // null), suspended: (.spec.suspend // false),
           lastScheduleTime: (.status.lastScheduleTime // null), lastSuccessfulTime: (.status.lastSuccessfulTime // null)}],
-        jobs: $kept[0:200]};
+        jobs: $kept[0:100]};
     # zone_label_managers are the field managers whose entry in managedFields holds the zone label.
     def zone_label_managers: [.metadata.managedFields[]?
       | select(.fieldsV1["f:metadata"]["f:labels"]["f:topology.kubernetes.io/zone"] != null)

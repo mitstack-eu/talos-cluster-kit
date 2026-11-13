@@ -2549,7 +2549,8 @@ Each call takes one of these changes:
 2. It asks block-kit's redundancy guard whether etcd keeps a majority of its
    members serving without the node, and whether OpenBao does without each
    member whose pod runs on it. It also reads again whether Hetzner can order
-   a successor.
+   a successor, and whether the report carries the health a removal Job is
+   read by.
 3. It powers the node off, so the node stops as a lost one does and its etcd
    member no longer answers.
 4. It writes the Job `etcd.RemoveMemberJob` renders to the cluster repository,
@@ -2567,11 +2568,14 @@ Each call takes one of these changes:
    member healthy and its Node object Ready, it takes the label off the
    network. Only then does the next named node begin.
 
-A refusal in step 2 carries the guard's class `redundancy-below-minimum` and
-names each member with its reading, or the class `server-unavailable`. The
-node still runs then, so the plane takes the label off the network and the
-replacement is over: no later call carries it on, and the block asks again
-with a new upgrade.
+A refusal in step 2 carries one of three classes. The guard's class
+`redundancy-below-minimum` names each member with its reading, and
+`server-unavailable` names the location. The class
+`node-replacement-unjudged` says that the report carries no health of what the
+Application named `cluster` applied, so no report could show a removal Job
+that failed. The node still runs then, so the plane takes the label off the
+network and the replacement is over: no later call carries it on, and the
+block asks again with a new upgrade.
 
 The guard judges once more before the removal is written in step 4, since a
 second member may have stopped serving while the node was off. On that refusal
@@ -2588,8 +2592,13 @@ file there or takes it out.
 The plane reads the Job's outcome from the node report, among the objects of
 the Application named `cluster`. Argo CD reads a Job that completed as
 `Healthy` and one that failed as `Degraded`, and the plane reads either as
-finished. A report that carries no objects of that Application reads no Job,
-and `Problems` says so.
+finished. A report carries no health of those objects in two cases: its body
+neared the size limit and dropped them, or Argo CD keeps health off the
+Application, as
+[the report's own section](#how-the-report-shows-each-objects-health-and-each-containers-state)
+explains. The plane reads no Job from such a report. `Problems` names the Job
+it cannot read, and the replacement still goes on once a report lists neither
+the member nor the Node object.
 
 A Job keeps its name for a day after it finishes, so a removal is never
 written while a Job of its name stands. The plane takes a failed Job's file

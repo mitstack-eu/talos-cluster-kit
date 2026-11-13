@@ -30,8 +30,7 @@ const (
 	argoCDUser = "system:serviceaccount:" + rollout.ArgoCDNamespace + ":" + rollout.ArgoCDController
 	// talosInventoryAnnotation is the annotation Talos v1.14.4 gives each object it creates, naming its inventory.
 	talosInventoryAnnotation = "config.k8s.io/owning-inventory"
-	// argoCDTrackingAnnotation is the annotation Argo CD v3.5.5 gives each object it applies but a
-	// CustomResourceDefinition, naming the Application.
+	// argoCDTrackingAnnotation is what Argo CD v3.5.5 gives each object it applies but a CustomResourceDefinition.
 	argoCDTrackingAnnotation = "argocd.argoproj.io/tracking-id"
 	// droppedContainer is the privileged init container Cilium's agent ran at kit release v0.53.0.
 	droppedContainer  = "mount-bpf-fs"
@@ -165,8 +164,7 @@ func (s *apiServer) talosCreates(t *testing.T, manifest []byte) {
 	s.admin(t, stream(t, docs...), "apply", "--server-side", "--field-manager="+constants.KubernetesFieldManagerName, "-f", "-")
 }
 
-// argoCDSyncs applies each object file states as Argo CD v3.5.5 syncs the Application app, which sets
-// ServerSideApply=true.
+// argoCDSyncs applies each object file states as Argo CD v3.5.5 syncs the Application app with ServerSideApply=true.
 func (s *apiServer) argoCDSyncs(t *testing.T, app string, file []byte) {
 	t.Helper()
 	out, err := s.argoCDApply(t, app, statedObjects(t, file)).CombinedOutput()
@@ -174,8 +172,7 @@ func (s *apiServer) argoCDSyncs(t *testing.T, app string, file []byte) {
 }
 
 // argoCDApply is the command that applies objects as Argo CD v3.5.5 does for the Application app: a forced server-side
-// apply under Argo CD's field manager, as its application controller. Each object carries the annotation Argo CD tracks
-// it by but a CustomResourceDefinition, which its repo-server gives none.
+// apply as its application controller, of each object with the tracking annotation its repo-server gave it.
 func (s *apiServer) argoCDApply(t *testing.T, app string, objects []map[string]any) *exec.Cmd {
 	t.Helper()
 	for _, doc := range objects {
@@ -313,7 +310,7 @@ func TestAPIServer_AnObjectTalosCreatedKeepsAFieldAReleaseDropsUntilItsComponent
 
 		require.Error(t, err, "the handover printed:\n%s", out)
 		assert.Contains(t, out, "DaemonSet kube-system/cilium", "the refusal names an object Argo CD has not applied")
-		assert.Contains(t, out, "within 2s", "the refusal names the wait for Argo CD's annotation that ran out")
+		assert.Contains(t, out, "within 2s", "the refusal names the wait for Argo CD's apply that ran out")
 		assert.Contains(t, server.ciliumAgent(t).initContainers(), droppedContainer, "the agent's init containers")
 	})
 

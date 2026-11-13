@@ -306,7 +306,7 @@ func (p Plane) refused(network Network, r nodeReplacement, err error) (progress,
 	})
 }
 
-// backOn powers node on again and withdraws r, so its etcd member, which the report still lists, serves again; it takes
+// backOn powers node on again and withdraws r, since its etcd member, which the report still lists, is not removed; it takes
 // the removal at held out first, when there is one, so no removal stands beside a node that runs.
 func (p Plane) backOn(network Network, r nodeReplacement, node Server, held string, refusal *Refusal) (progress, error) {
 	return next("power the node in "+r.loc+" back on and withdraw its replacement, since it is refused: "+refusal.Message, func(ctx context.Context) error {

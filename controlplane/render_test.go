@@ -646,17 +646,20 @@ func TestBuilder_UserDataIsOneCloudConfigDocumentWithinHetznersLimit(t *testing.
 	assert.Len(t, docs, 1, "YAML documents in the builder's user data")
 }
 
-func TestBuilder_CarriesTheBuildScriptWithItsCommentLinesLeftOut(t *testing.T) {
-	var want strings.Builder
-	for i, line := range strings.SplitAfter(controlplane.BuildImageScript, "\n") {
-		if i == 0 || !strings.HasPrefix(strings.TrimLeft(line, " \t"), "#") {
-			want.WriteString(line)
-		}
-	}
+func TestWithoutCommentLines_LeavesOutEachLineButTheFirstThatHoldsOnlyAComment(t *testing.T) {
+	script := "#!/usr/bin/env bash\n# Builds the image.\nset -euo pipefail\n\n  # an indented comment\n\t# a tabbed comment\n" +
+		"echo '# a quoted hash'\nrun # a trailing comment\n"
 
+	got := controlplane.WithoutCommentLines(script)
+
+	assert.Equal(t, "#!/usr/bin/env bash\nset -euo pipefail\n\necho '# a quoted hash'\nrun # a trailing comment\n", got,
+		"WithoutCommentLines(%q)", script)
+}
+
+func TestBuilder_CarriesTheBuildScriptWithItsCommentLinesLeftOut(t *testing.T) {
 	shipped := shippedBuildImageScript(t)
 
-	assert.Equal(t, want.String(), shipped, "the build script the builder's user data carries")
+	assert.Equal(t, controlplane.WithoutCommentLines(controlplane.BuildImageScript), shipped, "the build script the builder's user data carries")
 }
 
 func TestBuilder_UserDataOverHetznersLimitFailsTheRender(t *testing.T) {
@@ -674,9 +677,8 @@ func TestBuilder_UserDataOverHetznersLimitFailsTheRender(t *testing.T) {
 // passes and for minted keys that gzip shortens less than the ones the reserve test holds.
 const userDataReserve = 1024
 
-// heldKeySeed fixes the cluster's key bundle and heldDrawSeed every other value an install mints, such as the gateway CA,
-// the enrolment token and the issuer bucket, since only those bytes move the builder's size between runs, through how far
-// gzip shortens them. Each is the seed whose builder came out largest of those measured.
+// heldKeySeed fixes the cluster's key bundle and heldDrawSeed every other minted value, the only inputs that move the
+// builder's size between runs, each at the seed that gave the largest builder of those measured.
 const (
 	heldKeySeed  = 82
 	heldDrawSeed = 9

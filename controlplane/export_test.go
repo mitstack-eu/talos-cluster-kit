@@ -28,6 +28,7 @@ var (
 	BootstrapFirstNodeScript = bootstrapFirstNodeScript
 	ServingFile              = servingFile
 	GatewayAddrs             = gatewayAddrs
+	WithoutCommentLines      = withoutCommentLines
 )
 
 func SwapToolsImage(t testing.TB, image string) {

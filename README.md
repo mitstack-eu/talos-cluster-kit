@@ -2030,17 +2030,18 @@ compress poorly. The minted keys come second. Their length barely changes from
 one set to the next, but gzip shortens some sets more than others, and across
 100 sets the builder's size spans 240 bytes. The other minted values move it
 by 32 bytes more across 40 draws. The seeds hold the set of keys and the draw
-whose builder came out largest of those measured, and a set that gzip shortens
-less than that one takes from the 480 bytes the names leave.
+whose builder came out largest of those measured. The names leave 480 bytes
+of the reserve, 1,024 less 544, and a set that gzip shortens less than the
+held one takes from those.
 
 With that proof script, that signer list and the seeds' keys, the builder
 takes 30,204 bytes, or 30,280 on a cluster that hosts the platform. The signer
 list costs the builder only the address and key of the serving server. The
 serving server carries the policy, and takes about 10,900 bytes, or about
-30,600 on a cluster that hosts the platform. With a one-line proof script and
-no signer list, as the tests in `controlplane/render_test.go` and
-`controlplane/hosting_test.go` log it, the builder takes about 27,400 and
-27,500 bytes.
+30,600 on a cluster that hosts the platform, which leaves it at least 2,169
+bytes free. With a one-line proof script and no signer list, as the tests in
+`controlplane/render_test.go` and `controlplane/hosting_test.go` log it, the
+builder takes about 27,400 and 27,500 bytes.
 
 ### How Argo CD reads the cluster repository
 

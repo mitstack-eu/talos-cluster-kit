@@ -2403,14 +2403,14 @@ OpenBao recovery key:
 -----END PGP MESSAGE-----
 ```
 
-Once the init has returned the root token, no answer OpenBao gives can stop
+Once the init has returned the root token, nothing in OpenBao's answer stops
 the script before the commit, since the commit is the only copy of the root
 token. A recovery key in the
 answer that is missing, or is not one base64 PGP message, is replaced by a line
 saying it is lost. The script then commits the root token alone, finishes the
 setup, and exits 1 naming the lost recovery key. A pod killed between the init
-and the commit still loses both keys, and the next pod stops on finding the
-store initialised with no file.
+and the commit still loses both keys. Either the Job then fails, or a pod that
+replaces the killed one stops on finding the store initialised with no file.
 
 With the root token, the script enables the KV v2 mount `kv` and Kubernetes
 auth, and points that auth method at the API server. It then reads the method's
@@ -2456,18 +2456,18 @@ The root token lives in the script's memory alone. The script hands curl each
 header that carries a token on curl's standard input, through the shell's
 builtin `printf`, and never prints a token.
 
-The script sorts each answer OpenBao gives a call. It tries again while waiting
-can change the answer, and it ends the Job when waiting cannot:
+The script sorts each answer OpenBao gives a call. It tries again when a later
+try may get a different answer, and it ends the Job when no later try can:
 
 | What OpenBao answers | What the script does |
 |---|---|
 | Nothing, because the connection is refused, times out or fails its TLS check | Waits and tries again |
-| 429, 500 or 503, which OpenBao's documentation gives for a standby member, an internal error, and a store that is sealed or down for maintenance | Waits and tries again |
+| 429, 500 or 503, which OpenBao's documentation gives for a standby member, an internal error, and a store that is [sealed](https://openbao.org/docs/concepts/seal/), which means it cannot decrypt its stored data yet, or down for maintenance | Waits and tries again |
 | 400, 403, 404 or 405, which the documentation describes as a fault in the request | Exits 1 and names the method, the path and the status |
-| Any other status | Waits and tries again, since the documentation does not say whether waiting changes it |
+| Any other status | Waits and tries again, since the documentation does not say whether a later try gets a different answer |
 
-For example, a store that refuses the script's first read ends the Job with
-these two lines:
+For example, a store that answers 403 to the script's first read ends the Job
+with these two lines:
 
 ```text
 openbao-init: OpenBao answered 403 to GET sys/init
@@ -2485,25 +2485,27 @@ path is now listed. Otherwise the failed write's answer stands, as the table
 gives it.
 
 The script holds the root token uncommitted only between the init's answer and
-the commit, and it sends OpenBao nothing in that time. It retries the two steps
-in between, encrypting the token and pushing the commit, without limit. The
-commit counts as made only when the write, the Git commit and the push each
-succeed. The Job sets no `activeDeadlineSeconds`, because Kubernetes ends a
-Job's running pod once that deadline passes, whatever the pod holds.
+the commit, and it sends OpenBao nothing in that time. It retries the steps in
+between without limit: encrypting the token, cloning the repository, and
+writing, committing and pushing the file. The commit counts as made only when
+writing the file, the Git commit and the push each succeed. The Job sets no
+`activeDeadlineSeconds`, a time limit on the whole Job, because Kubernetes ends
+a Job's running pod once that limit passes, whatever the pod holds.
 
-The Job's pod failure policy, its rules for what a failed pod means, fails the
-Job as soon as the script exits non-zero. Without that rule Kubernetes would
-start a new pod. After the commit that pod finds the file, changes nothing and
-exits 0, so the Job would read as complete with the setup unfinished. The
-policy's first rule sets aside a pod that Kubernetes itself disrupts, such as
-one evicted from a node that is going away, so Kubernetes replaces that pod.
+The Job's pod failure policy, its rules for what a failed pod means, has two
+rules, and Kubernetes reads them in order. The first sets aside a pod that
+Kubernetes itself disrupts, such as one evicted from a node that is going
+away, so Kubernetes replaces that pod. The second fails the Job as soon as the
+script exits non-zero. Without the second rule Kubernetes would start a new
+pod. After the commit that pod finds the file, changes nothing and exits 0, so
+the Job would read as complete with the setup unfinished.
 
 A pod lost after the commit may leave the mount, the auth method, its
 configuration, a policy or a role unwritten. The pod that replaces it finds the
 file, changes nothing and exits 0, so a complete Job does not prove the setup
-finished when a pod was lost on the way. A Job that one of the four statuses
-ends after the commit fails with the same left unwritten. In both cases the
-owner decrypts the root token from `openbao-init.asc` and writes whichever is
+finished when a pod was lost on the way. A Job that ends on a 400, 403, 404 or
+405 after the commit leaves the same steps unwritten. In both cases the owner
+decrypts the root token from `openbao-init.asc` and writes whichever is
 missing.
 
 ### The documentation the hosting set follows
@@ -2519,7 +2521,8 @@ missing.
 | [OpenBao: static seal](https://openbao.org/docs/configuration/seal/static/) | The key is 32 bytes, read through `file://` |
 | [OpenBao: `/sys/init`](https://openbao.org/api-docs/system/init/) | `recovery_shares`, `recovery_threshold` and `recovery_pgp_keys`, each key the base64 of its binary form, apply to an auto-unseal such as the static seal |
 | [OpenBao: HTTP API](https://openbao.org/docs/api/) | OpenBao treats `PUT` and `POST` as synonyms. Its list of HTTP status codes describes 400, 403, 404 and 405 as a fault in the request, and says to try again later on 500 and 503 |
-| [Kubernetes: Jobs](https://kubernetes.io/docs/concepts/workloads/controllers/job/#job-termination-and-cleanup) | Once a Job reaches `activeDeadlineSeconds`, Kubernetes ends all of its running pods. A pod failure policy's rules are read in order, `FailJob` on a container's exit code fails the Job, and `Ignore` on the condition `DisruptionTarget` keeps a disrupted pod out of the count `backoffLimit` holds |
+| [Kubernetes: how a Job ends](https://kubernetes.io/docs/concepts/workloads/controllers/job/#job-termination-and-cleanup) | Once a Job reaches `activeDeadlineSeconds`, Kubernetes ends all of its running pods |
+| [Kubernetes: a Job's pod failure policy](https://kubernetes.io/docs/concepts/workloads/controllers/job/#pod-failure-policy) | The policy's rules are read in order, `FailJob` on a container's exit code fails the Job, and `Ignore` on the condition `DisruptionTarget` keeps a disrupted pod out of the count `backoffLimit` holds |
 | [OpenBao: HA with Raft on Kubernetes](https://openbao.org/docs/platform/k8s/helm/examples/ha-with-raft/) | You initialise `openbao-0`, and the other members join it |
 | [OpenBao: Kubernetes auth API](https://openbao.org/api-docs/auth/kubernetes/) and [its login check at v2.7.1](https://github.com/openbao/openbao/blob/v2.7.1/internal/builtin/credential/kubernetes/path_login.go#L361-L369) | A role binds service account names and namespaces, and a login matches each against the role's list as a glob, so `app-*` admits every slice namespace |
 | [External Secrets: PushSecret to Vault at v2.11.0](https://github.com/external-secrets/external-secrets/blob/v2.11.0/providers/v1/vault/client_push.go) | A push reads the path and its metadata, then writes the metadata and the path |

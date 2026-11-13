@@ -4,6 +4,7 @@ package controlplane_test
 // its etcd member and Node object go through the cluster repository, and only then its server is deleted and built anew.
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -17,15 +18,16 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/etcd"
 	"github.com/mitstack-eu/talos-cluster-kit/redundant"
 	"github.com/mitstack-eu/talos-cluster-kit/report"
+	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// cluster stands in for what the plane reaches only through its block: the removal files of the cluster repository,
-// and what each node report reads of etcd, the Node objects, OpenBao and the removal Jobs Argo CD applied.
+// cluster stands in for what the plane reaches only through its block: the cluster repository with the Argo CD that
+// syncs it, and what each node report reads of etcd, the Node objects, OpenBao and the objects Argo CD applied.
 type cluster struct {
 	h       *harness
-	held    map[string][]byte
+	argo    *testutil.Cluster
 	commits []string
 	// members and objects hold each hostname with an etcd member and a Node object, and jobs each removal Job's health.
 	members, objects map[string]bool
@@ -39,23 +41,32 @@ type cluster struct {
 	// joinTakes is how long a node runs before it holds an etcd member and a Node object.
 	joinTakes time.Duration
 	synced    time.Time
+	// unread is what a node report leaves out of each Application: its "resources", or the "health" of each of them.
+	unread string
+}
+
+func removalJob(name string) testutil.ObjectRef {
+	return testutil.ObjectRef{Group: "batch", Kind: "Job", Namespace: "mitstack-node", Name: name}
 }
 
 func (c *cluster) Held(context.Context) ([]string, error) {
-	return slices.Sorted(maps.Keys(c.held)), nil
+	return slices.DeleteFunc(c.argo.Files(), func(path string) bool { return !etcd.IsRemovalPath(path) }), nil
 }
 
+func (c *cluster) holds(path string) bool { return slices.Contains(c.argo.Files(), path) }
+
 func (c *cluster) Commit(_ context.Context, path string, content []byte) error {
-	if content == nil {
-		delete(c.held, path)
-		c.commits = append(c.commits, "delete "+path)
-		return nil
+	verb := "delete "
+	if content != nil {
+		verb = "write "
+		for _, doc := range testutil.Documents(c.h.t, content) {
+			if doc["kind"] == "Job" && c.argo.Object(removalJob(testutil.Field(c.h.t, doc, "metadata", "name").(string))) != nil {
+				c.overwrote = append(c.overwrote, path)
+			}
+		}
 	}
-	if c.jobs[strings.TrimSuffix(strings.TrimPrefix(path, "cluster/"), ".yaml")] != "" {
-		c.overwrote = append(c.overwrote, path)
-	}
-	c.held[path] = content
-	c.commits = append(c.commits, "write "+path)
+	c.argo.Commit(map[string][]byte{path: content})
+	c.commits = append(c.commits, verb+path)
 	return nil
 }
 
@@ -64,20 +75,20 @@ func (c *cluster) sync(received time.Time) {
 		return
 	}
 	c.synced = received
-	nodes := c.h.byRole(controlplane.RoleNode)
-	for _, node := range nodes {
+	for _, node := range c.h.byRole(controlplane.RoleNode) {
 		if node.Status == controlplane.ServerRunning && !received.Before(node.Created.Add(c.joinTakes)) {
 			c.members[node.Name], c.objects[node.Name] = true, true
 		}
 	}
+	c.argo.Sync()
 	for job := range c.jobs {
-		if !slices.ContainsFunc(slices.Collect(maps.Keys(c.held)), func(path string) bool { return strings.Contains(path, job) }) {
+		if c.argo.Object(removalJob(job)) == nil {
 			delete(c.jobs, job)
 		}
 	}
 	for hostname := range maps.Clone(c.objects) {
 		job := etcd.JobName(hostname)
-		if _, ran := c.jobs[job]; ran || c.held[etcd.RemovalPath(hostname)] == nil {
+		if _, ran := c.jobs[job]; ran || c.argo.Object(removalJob(job)) == nil {
 			continue
 		}
 		if c.failJobs > 0 {
@@ -96,7 +107,7 @@ func (c *cluster) body() []byte {
 	for _, node := range c.h.byRole(controlplane.RoleNode) {
 		running[node.Name] = node.Status == controlplane.ServerRunning
 	}
-	var nodes, members, pods, openBao, jobs []map[string]any
+	var nodes, members, pods, openBao []map[string]any
 	for i, hostname := range slices.Sorted(maps.Keys(c.objects)) {
 		member := "openbao-" + string(rune('0'+i))
 		nodes = append(nodes, map[string]any{"name": hostname, "ready": running[hostname]})
@@ -106,22 +117,43 @@ func (c *cluster) body() []byte {
 	for _, hostname := range slices.Sorted(maps.Keys(c.members)) {
 		members = append(members, map[string]any{"hostname": hostname, "healthy": running[hostname] && !slices.Contains(c.unhealthy, hostname)})
 	}
-	for _, job := range slices.Sorted(maps.Keys(c.jobs)) {
-		jobs = append(jobs, map[string]any{"group": "batch", "kind": "Job", "namespace": "mitstack-node", "name": job, "health": c.jobs[job]})
+	var body map[string]any
+	require.NoError(c.h.t, json.Unmarshal(c.argo.Report(), &body))
+	for _, app := range testutil.Field(c.h.t, body, "argocd", "applications").([]any) {
+		app := app.(map[string]any)
+		if c.unread == "resources" {
+			delete(app, "resources")
+			continue
+		}
+		for _, r := range app["resources"].([]any) {
+			if r := r.(map[string]any); c.unread != "health" {
+				r["health"] = c.health(r)
+			}
+		}
 	}
-	data, err := json.Marshal(map[string]any{
+	maps.Copy(body, map[string]any{
 		"images": []report.ImageRef{}, "nodes": nodes, "etcd": map[string]any{"members": members}, "pods": pods,
 		"openbao": map[string]any{"members": openBao},
-		"argocd":  map[string]any{"applications": []map[string]any{{"name": "cluster", "resources": append([]map[string]any{}, jobs...)}}},
 	})
+	data, err := json.Marshal(body)
 	require.NoError(c.h.t, err)
 	return data
+}
+
+// health is what Argo CD keeps of an applied object: a Job's own, and none for a kind it has no health check for.
+func (c *cluster) health(resource map[string]any) any {
+	if resource["kind"] != "Job" {
+		return nil
+	}
+	return cmp.Or(c.jobs[resource["name"].(string)], "Progressing")
 }
 
 func withCluster(t *testing.T, opts ...func(*harness)) (*harness, *cluster) {
 	t.Helper()
 	h := newHarness(t, append([]func(*harness){withReports}, opts...)...)
-	c := &cluster{h: h, held: map[string][]byte{}, members: map[string]bool{}, objects: map[string]bool{}, jobs: map[string]string{}}
+	c := &cluster{h: h, argo: testutil.BuildCluster(t), members: map[string]bool{}, objects: map[string]bool{}, jobs: map[string]string{}}
+	c.argo.Commit(map[string][]byte{"cluster/namespace.yaml": []byte("apiVersion: v1\nkind: Namespace\nmetadata:\n  name: mitstack-node\n")})
+	c.argo.Sync()
 	h.plane.Removals = &controlplane.Removals{Held: c.Held, Commit: c.Commit}
 	h.plane.ReadReport = func(_ context.Context, since time.Time) (*report.Read, error) {
 		received := h.reportReceived()
@@ -296,7 +328,7 @@ func TestPlane_TakesAHeldRemovalOutBeforeItCreatesASuccessorForANodeWhoseServerW
 	require.NoError(t, h.cloud.DeleteServer(context.Background(), old.ID), "deleting the old server behind the plane's back")
 	var heldBesideSuccessor bool
 	watch := func() bool {
-		if _, stands := h.read().NodeIn("fsn1"); stands && c.held[path] != nil {
+		if _, stands := h.read().NodeIn("fsn1"); stands && c.holds(path) {
 			heldBesideSuccessor = true
 		}
 		return false
@@ -329,7 +361,10 @@ func TestPlane_DeletesAFinishedRemovalJobBeforeItAppliesOne(t *testing.T) {
 		h, c := withCluster(t)
 		finished := h.nodeIn("hel1").Name
 		earlier := etcd.RemovalPath(finished)
-		c.held[earlier], c.jobs[etcd.JobName(finished)] = []byte("kind: Job\n"), "Healthy"
+		job := etcd.JobName(finished)
+		c.argo.Commit(map[string][]byte{earlier: []byte("apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: " + job + "\n  namespace: mitstack-node\n")})
+		c.argo.Sync()
+		c.jobs[job] = "Healthy"
 		path := etcd.RemovalPath(h.nodeIn("fsn1").Name)
 
 		require.NoError(t, h.replace(c, nil, "fsn1"))
@@ -338,6 +373,49 @@ func TestPlane_DeletesAFinishedRemovalJobBeforeItAppliesOne(t *testing.T) {
 		assert.Empty(t, c.overwrote, "the removals written while Argo CD still held a Job of their name")
 		assert.Len(t, h.byRole(controlplane.RoleNode), len(controlplane.Locations), "the cluster's nodes, hel1's among them")
 	})
+}
+
+func TestPlane_RefusesANodeReplacementWhileItsNodeRunsWhenTheNodeReportCarriesNoHealthOfWhatArgoCDApplied(t *testing.T) {
+	for _, unread := range []string{"resources", "health"} {
+		t.Run("a report without the "+unread+" of the cluster's own Application", func(t *testing.T) {
+			h, c := withCluster(t)
+			old := h.nodeIn("fsn1")
+			c.unread = unread
+
+			err := h.replace(c, nil, "fsn1")
+
+			require.Error(t, err, "the replacement of the node in fsn1, whose failed removal Job no report could show")
+			assert.Equal(t, "node-replacement-unjudged", refusalClass(t, err), "the refusal's class")
+			assert.Contains(t, err.Error(), "Application cluster", "the Application the refusal names")
+			assert.Equal(t, controlplane.ServerRunning, h.nodeIn("fsn1").Status, "the node the refused replacement named")
+			assert.Equal(t, old.ID, h.nodeIn("fsn1").ID, "the node in fsn1 after the refusal")
+			assert.Empty(t, c.commits, "the commits of a refused replacement")
+			assert.False(t, h.replacing(), "the network still carries the refused replacement's mark: %v", h.network().Labels)
+		})
+	}
+}
+
+func TestPlane_NamesARemovalJobWhoseHealthNoNodeReportCarriesAndCarriesOnOnceAReportDoes(t *testing.T) {
+	for _, unread := range []string{"resources", "health"} {
+		t.Run("a report without the "+unread+" of the cluster's own Application", func(t *testing.T) {
+			h, c := withCluster(t)
+			old := h.nodeIn("fsn1")
+			job := etcd.JobName(old.Name)
+			c.failJobs = 1
+			require.NoError(t, h.replace(c, func() bool { return len(c.commits) == 1 }, "fsn1"))
+			c.unread = unread
+
+			require.NoError(t, h.replace(c, func() bool { return c.jobs[job] != "" }))
+
+			assert.Contains(t, h.problems(), "removal Job "+job+" cannot be read", "the plane's problems while no report carries the failed Job's health")
+			assert.Len(t, c.commits, 1, "the commits while no report carried the failed Job's health: %v", c.commits)
+
+			c.unread = ""
+			require.NoError(t, h.replace(c, nil))
+			assert.Len(t, h.eventsNaming("whose Job failed"), 1, "the events naming the failed Job: %v", h.events)
+			assert.NotEqual(t, old.ID, h.nodeIn("fsn1").ID, "the node in fsn1 once a report carried the Job's health")
+		})
+	}
 }
 
 func TestPlane_AReplacedNodeTakesTheListsNextTypeWhenItsLocationCannotOrderTheFirstAndTheEventNamesIt(t *testing.T) {

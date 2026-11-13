@@ -346,5 +346,444 @@
         }
       ]
     }
+  },
+  {
+    "kind": "CronJob",
+    "metadata": {
+      "namespace": "app-shop",
+      "name": "dump-cross",
+      "labels": {
+        "mitstack.dev/subscription": "sub_dump01234567"
+      }
+    },
+    "spec": {
+      "schedule": "0 2 * * *"
+    },
+    "status": {
+      "lastScheduleTime": "2026-11-13T02:00:00Z"
+    }
+  },
+  {
+    "kind": "Job",
+    "metadata": {
+      "namespace": "app-other",
+      "name": "dump-cross-1",
+      "ownerReferences": [
+        {
+          "kind": "CronJob",
+          "name": "dump-cross"
+        }
+      ]
+    },
+    "status": {
+      "conditions": [
+        {
+          "type": "Failed",
+          "status": "True",
+          "reason": "BackoffLimitExceeded",
+          "message": "m",
+          "lastTransitionTime": "2026-11-13T02:10:00Z"
+        }
+      ]
+    }
+  },
+  {
+    "kind": "CronJob",
+    "metadata": {
+      "namespace": "app-shop",
+      "name": "dump-edge",
+      "labels": {
+        "mitstack.dev/subscription": "sub_dump01234567"
+      }
+    },
+    "spec": {
+      "schedule": "0 2 * * *"
+    },
+    "status": {
+      "lastScheduleTime": "2026-11-13T02:00:00Z",
+      "lastSuccessfulTime": "2026-11-13T02:10:00Z"
+    }
+  },
+  {
+    "kind": "Job",
+    "metadata": {
+      "namespace": "app-shop",
+      "name": "dump-edge-1",
+      "ownerReferences": [
+        {
+          "kind": "CronJob",
+          "name": "dump-edge"
+        }
+      ]
+    },
+    "status": {
+      "conditions": [
+        {
+          "type": "Failed",
+          "status": "True",
+          "reason": "BackoffLimitExceeded",
+          "message": "m",
+          "lastTransitionTime": "2026-11-13T02:10:00Z"
+        }
+      ]
+    }
+  },
+  {
+    "kind": "CronJob",
+    "metadata": {
+      "namespace": "app-shop",
+      "name": "dump-count",
+      "labels": {
+        "mitstack.dev/subscription": "sub_dump01234567"
+      }
+    },
+    "spec": {
+      "schedule": "0 2 * * *"
+    },
+    "status": {
+      "lastScheduleTime": "2026-11-13T02:00:00Z"
+    }
+  },
+  {
+    "kind": "Job",
+    "metadata": {
+      "namespace": "app-shop",
+      "name": "dump-count-1",
+      "ownerReferences": [
+        {
+          "kind": "CronJob",
+          "name": "dump-count"
+        }
+      ]
+    },
+    "status": {
+      "failed": 3
+    }
+  },
+  {
+    "kind": "Job",
+    "metadata": {
+      "namespace": "app-shop",
+      "name": "dump-count-2",
+      "ownerReferences": [
+        {
+          "kind": "CronJob",
+          "name": "dump-count"
+        }
+      ]
+    },
+    "status": {
+      "conditions": [
+        {
+          "type": "Failed",
+          "status": "False",
+          "lastTransitionTime": "2026-11-13T02:10:00Z"
+        }
+      ]
+    }
+  },
+  {
+    "kind": "CronJob",
+    "metadata": {
+      "namespace": "app-shop",
+      "name": "dump-tie",
+      "labels": {
+        "mitstack.dev/subscription": "sub_dump01234567"
+      }
+    },
+    "spec": {
+      "schedule": "0 2 * * *"
+    },
+    "status": {
+      "lastScheduleTime": "2026-11-13T02:00:00Z"
+    }
+  },
+  {
+    "kind": "Job",
+    "metadata": {
+      "namespace": "app-shop",
+      "name": "dump-tie-b",
+      "ownerReferences": [
+        {
+          "kind": "CronJob",
+          "name": "dump-tie"
+        }
+      ]
+    },
+    "status": {
+      "conditions": [
+        {
+          "type": "Failed",
+          "status": "True",
+          "reason": "BackoffLimitExceeded",
+          "message": "m",
+          "lastTransitionTime": "2026-11-13T02:10:00Z"
+        }
+      ]
+    }
+  },
+  {
+    "kind": "Job",
+    "metadata": {
+      "namespace": "app-shop",
+      "name": "dump-tie-a",
+      "ownerReferences": [
+        {
+          "kind": "CronJob",
+          "name": "dump-tie"
+        }
+      ]
+    },
+    "status": {
+      "conditions": [
+        {
+          "type": "Failed",
+          "status": "True",
+          "reason": "BackoffLimitExceeded",
+          "message": "m",
+          "lastTransitionTime": "2026-11-13T02:10:00Z"
+        }
+      ]
+    }
+  },
+  {
+    "kind": "CronJob",
+    "metadata": {
+      "namespace": "app-shop",
+      "name": "dump-m256",
+      "labels": {
+        "mitstack.dev/subscription": "sub_dump01234567"
+      }
+    },
+    "spec": {
+      "schedule": "0 2 * * *"
+    },
+    "status": {
+      "lastScheduleTime": "2026-11-13T02:00:00Z"
+    }
+  },
+  {
+    "kind": "Job",
+    "metadata": {
+      "namespace": "app-shop",
+      "name": "dump-m256-1",
+      "ownerReferences": [
+        {
+          "kind": "CronJob",
+          "name": "dump-m256"
+        }
+      ]
+    },
+    "status": {
+      "conditions": [
+        {
+          "type": "Failed",
+          "status": "True",
+          "reason": "BackoffLimitExceeded",
+          "message": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "lastTransitionTime": "2026-11-13T02:10:00Z"
+        }
+      ]
+    }
+  },
+  {
+    "kind": "CronJob",
+    "metadata": {
+      "namespace": "app-shop",
+      "name": "dump-m257",
+      "labels": {
+        "mitstack.dev/subscription": "sub_dump01234567"
+      }
+    },
+    "spec": {
+      "schedule": "0 2 * * *"
+    },
+    "status": {
+      "lastScheduleTime": "2026-11-13T02:00:00Z"
+    }
+  },
+  {
+    "kind": "Job",
+    "metadata": {
+      "namespace": "app-shop",
+      "name": "dump-m257-1",
+      "ownerReferences": [
+        {
+          "kind": "CronJob",
+          "name": "dump-m257"
+        }
+      ]
+    },
+    "status": {
+      "conditions": [
+        {
+          "type": "Failed",
+          "status": "True",
+          "reason": "BackoffLimitExceeded",
+          "message": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "lastTransitionTime": "2026-11-13T02:10:00Z"
+        }
+      ]
+    }
+  },
+  {
+    "kind": "CronJob",
+    "metadata": {
+      "namespace": "app-shop",
+      "name": "dump-m2b",
+      "labels": {
+        "mitstack.dev/subscription": "sub_dump01234567"
+      }
+    },
+    "spec": {
+      "schedule": "0 2 * * *"
+    },
+    "status": {
+      "lastScheduleTime": "2026-11-13T02:00:00Z"
+    }
+  },
+  {
+    "kind": "Job",
+    "metadata": {
+      "namespace": "app-shop",
+      "name": "dump-m2b-1",
+      "ownerReferences": [
+        {
+          "kind": "CronJob",
+          "name": "dump-m2b"
+        }
+      ]
+    },
+    "status": {
+      "conditions": [
+        {
+          "type": "Failed",
+          "status": "True",
+          "reason": "BackoffLimitExceeded",
+          "message": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+          "lastTransitionTime": "2026-11-13T02:10:00Z"
+        }
+      ]
+    }
+  },
+  {
+    "kind": "CronJob",
+    "metadata": {
+      "namespace": "app-shop",
+      "name": "dump-m2bs",
+      "labels": {
+        "mitstack.dev/subscription": "sub_dump01234567"
+      }
+    },
+    "spec": {
+      "schedule": "0 2 * * *"
+    },
+    "status": {
+      "lastScheduleTime": "2026-11-13T02:00:00Z"
+    }
+  },
+  {
+    "kind": "Job",
+    "metadata": {
+      "namespace": "app-shop",
+      "name": "dump-m2bs-1",
+      "ownerReferences": [
+        {
+          "kind": "CronJob",
+          "name": "dump-m2bs"
+        }
+      ]
+    },
+    "status": {
+      "conditions": [
+        {
+          "type": "Failed",
+          "status": "True",
+          "reason": "BackoffLimitExceeded",
+          "message": "aéééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+          "lastTransitionTime": "2026-11-13T02:10:00Z"
+        }
+      ]
+    }
+  },
+  {
+    "kind": "CronJob",
+    "metadata": {
+      "namespace": "app-shop",
+      "name": "dump-m4b",
+      "labels": {
+        "mitstack.dev/subscription": "sub_dump01234567"
+      }
+    },
+    "spec": {
+      "schedule": "0 2 * * *"
+    },
+    "status": {
+      "lastScheduleTime": "2026-11-13T02:00:00Z"
+    }
+  },
+  {
+    "kind": "Job",
+    "metadata": {
+      "namespace": "app-shop",
+      "name": "dump-m4b-1",
+      "ownerReferences": [
+        {
+          "kind": "CronJob",
+          "name": "dump-m4b"
+        }
+      ]
+    },
+    "status": {
+      "conditions": [
+        {
+          "type": "Failed",
+          "status": "True",
+          "reason": "BackoffLimitExceeded",
+          "message": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+          "lastTransitionTime": "2026-11-13T02:10:00Z"
+        }
+      ]
+    }
+  },
+  {
+    "kind": "CronJob",
+    "metadata": {
+      "namespace": "app-shop",
+      "name": "dump-m4bs",
+      "labels": {
+        "mitstack.dev/subscription": "sub_dump01234567"
+      }
+    },
+    "spec": {
+      "schedule": "0 2 * * *"
+    },
+    "status": {
+      "lastScheduleTime": "2026-11-13T02:00:00Z"
+    }
+  },
+  {
+    "kind": "Job",
+    "metadata": {
+      "namespace": "app-shop",
+      "name": "dump-m4bs-1",
+      "ownerReferences": [
+        {
+          "kind": "CronJob",
+          "name": "dump-m4bs"
+        }
+      ]
+    },
+    "status": {
+      "conditions": [
+        {
+          "type": "Failed",
+          "status": "True",
+          "reason": "BackoffLimitExceeded",
+          "message": "a😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+          "lastTransitionTime": "2026-11-13T02:10:00Z"
+        }
+      ]
+    }
   }
 ]

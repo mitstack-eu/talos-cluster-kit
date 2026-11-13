@@ -435,8 +435,10 @@ body() {
         elif $s.running then {state: "running"}
         else {state: null} end;
     # A kit Job's script writes only its own refusal, which FallbackToLogsOnError makes a failed container's message.
+    # last_256_bytes keeps a message's end, where a script says why it failed, and never cuts inside a character.
+    def last_256_bytes: if type == "string" and utf8bytelength > 256 then .[-256:] | until(utf8bytelength <= 256; .[1:]) else . end;
     def failed_message: .state.terminated as $t
-      | if $t != null and ($t.exitCode // 0) != 0 then {message: ($t.message // null | at_most_256_bytes)} else {} end;
+      | if $t != null and ($t.exitCode // 0) != 0 then {message: ($t.message // null | last_256_bytes)} else {} end;
     def qualified_name: "\(.metadata.namespace)/\(.metadata.name)";
     # kit_jobs names each Job the kit labels as its own, and none when the workload read failed.
     def kit_jobs: if $workloads_status != 0 then {} else

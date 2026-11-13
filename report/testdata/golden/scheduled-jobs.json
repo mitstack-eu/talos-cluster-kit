@@ -1,0 +1,222 @@
+{
+  "cut": false,
+  "found": 16,
+  "cronJobs": [
+    {
+      "namespace": "app-shop",
+      "name": "dump-count",
+      "subscription": "sub_dump01234567",
+      "schedule": "0 2 * * *",
+      "suspended": false,
+      "lastScheduleTime": "2026-11-13T02:00:00Z",
+      "lastSuccessfulTime": null
+    },
+    {
+      "namespace": "app-shop",
+      "name": "dump-cross",
+      "subscription": "sub_dump01234567",
+      "schedule": "0 2 * * *",
+      "suspended": false,
+      "lastScheduleTime": "2026-11-13T02:00:00Z",
+      "lastSuccessfulTime": null
+    },
+    {
+      "namespace": "app-shop",
+      "name": "dump-edge",
+      "subscription": "sub_dump01234567",
+      "schedule": "0 2 * * *",
+      "suspended": false,
+      "lastScheduleTime": "2026-11-13T02:00:00Z",
+      "lastSuccessfulTime": "2026-11-13T02:10:00Z"
+    },
+    {
+      "namespace": "app-shop",
+      "name": "dump-failed",
+      "subscription": "sub_dump01234567",
+      "schedule": "0 2 * * *",
+      "suspended": false,
+      "lastScheduleTime": "2026-11-13T02:00:00Z",
+      "lastSuccessfulTime": "2026-11-11T02:00:31Z",
+      "failedSinceSuccess": {
+        "job": "dump-failed-2",
+        "at": "2026-11-13T02:10:00Z",
+        "reason": "BackoffLimitExceeded",
+        "message": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm"
+      }
+    },
+    {
+      "namespace": "app-shop",
+      "name": "dump-m256",
+      "subscription": "sub_dump01234567",
+      "schedule": "0 2 * * *",
+      "suspended": false,
+      "lastScheduleTime": "2026-11-13T02:00:00Z",
+      "lastSuccessfulTime": null,
+      "failedSinceSuccess": {
+        "job": "dump-m256-1",
+        "at": "2026-11-13T02:10:00Z",
+        "reason": "BackoffLimitExceeded",
+        "message": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "namespace": "app-shop",
+      "name": "dump-m257",
+      "subscription": "sub_dump01234567",
+      "schedule": "0 2 * * *",
+      "suspended": false,
+      "lastScheduleTime": "2026-11-13T02:00:00Z",
+      "lastSuccessfulTime": null,
+      "failedSinceSuccess": {
+        "job": "dump-m257-1",
+        "at": "2026-11-13T02:10:00Z",
+        "reason": "BackoffLimitExceeded",
+        "message": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "namespace": "app-shop",
+      "name": "dump-m2b",
+      "subscription": "sub_dump01234567",
+      "schedule": "0 2 * * *",
+      "suspended": false,
+      "lastScheduleTime": "2026-11-13T02:00:00Z",
+      "lastSuccessfulTime": null,
+      "failedSinceSuccess": {
+        "job": "dump-m2b-1",
+        "at": "2026-11-13T02:10:00Z",
+        "reason": "BackoffLimitExceeded",
+        "message": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
+      }
+    },
+    {
+      "namespace": "app-shop",
+      "name": "dump-m2bs",
+      "subscription": "sub_dump01234567",
+      "schedule": "0 2 * * *",
+      "suspended": false,
+      "lastScheduleTime": "2026-11-13T02:00:00Z",
+      "lastSuccessfulTime": null,
+      "failedSinceSuccess": {
+        "job": "dump-m2bs-1",
+        "at": "2026-11-13T02:10:00Z",
+        "reason": "BackoffLimitExceeded",
+        "message": "aééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
+      }
+    },
+    {
+      "namespace": "app-shop",
+      "name": "dump-m4b",
+      "subscription": "sub_dump01234567",
+      "schedule": "0 2 * * *",
+      "suspended": false,
+      "lastScheduleTime": "2026-11-13T02:00:00Z",
+      "lastSuccessfulTime": null,
+      "failedSinceSuccess": {
+        "job": "dump-m4b-1",
+        "at": "2026-11-13T02:10:00Z",
+        "reason": "BackoffLimitExceeded",
+        "message": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+      }
+    },
+    {
+      "namespace": "app-shop",
+      "name": "dump-m4bs",
+      "subscription": "sub_dump01234567",
+      "schedule": "0 2 * * *",
+      "suspended": false,
+      "lastScheduleTime": "2026-11-13T02:00:00Z",
+      "lastSuccessfulTime": null,
+      "failedSinceSuccess": {
+        "job": "dump-m4bs-1",
+        "at": "2026-11-13T02:10:00Z",
+        "reason": "BackoffLimitExceeded",
+        "message": "a😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+      }
+    },
+    {
+      "namespace": "app-shop",
+      "name": "dump-new",
+      "subscription": "sub_dump01234567",
+      "schedule": "0 2 * * *",
+      "suspended": false,
+      "lastScheduleTime": "2026-11-13T02:00:00Z",
+      "lastSuccessfulTime": null,
+      "failedSinceSuccess": {
+        "job": "dump-new-1",
+        "at": "2026-11-13T02:10:00Z",
+        "reason": "BackoffLimitExceeded",
+        "message": "the dump could not reach its bucket"
+      }
+    },
+    {
+      "namespace": "app-shop",
+      "name": "dump-ok",
+      "subscription": "sub_dump01234567",
+      "schedule": "0 2 * * *",
+      "suspended": false,
+      "lastScheduleTime": "2026-11-13T02:00:00Z",
+      "lastSuccessfulTime": "2026-11-13T02:00:31Z"
+    },
+    {
+      "namespace": "app-shop",
+      "name": "dump-running",
+      "subscription": "sub_dump01234567",
+      "schedule": "0 2 * * *",
+      "suspended": false,
+      "lastScheduleTime": "2026-11-13T02:00:00Z",
+      "lastSuccessfulTime": "2026-11-10T02:00:31Z",
+      "failedSinceSuccess": {
+        "job": "dump-running-1",
+        "at": "2026-11-12T02:10:00Z",
+        "reason": "BackoffLimitExceeded",
+        "message": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm"
+      }
+    },
+    {
+      "namespace": "app-shop",
+      "name": "dump-tie",
+      "subscription": "sub_dump01234567",
+      "schedule": "0 2 * * *",
+      "suspended": false,
+      "lastScheduleTime": "2026-11-13T02:00:00Z",
+      "lastSuccessfulTime": null,
+      "failedSinceSuccess": {
+        "job": "dump-tie-b",
+        "at": "2026-11-13T02:10:00Z",
+        "reason": "BackoffLimitExceeded",
+        "message": "m"
+      }
+    },
+    {
+      "namespace": "app-shop",
+      "name": "dump-wide",
+      "subscription": "sub_dump01234567",
+      "schedule": "0 2 * * *",
+      "suspended": false,
+      "lastScheduleTime": "2026-11-13T02:00:00Z",
+      "lastSuccessfulTime": null,
+      "failedSinceSuccess": {
+        "job": "dump-wide-1",
+        "at": "2026-11-13T02:10:00Z",
+        "reason": "BackoffLimitExceeded",
+        "message": "€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€"
+      }
+    },
+    {
+      "namespace": "app-shop",
+      "name": "export-shop",
+      "subscription": "sub_export012345",
+      "schedule": "30 3 * * *",
+      "suspended": true,
+      "lastScheduleTime": "2026-11-13T03:30:00Z",
+      "lastSuccessfulTime": "2026-11-10T03:30:20Z",
+      "failedSinceSuccess": {
+        "job": "export-shop-1",
+        "at": "2026-11-12T03:40:00Z",
+        "reason": "ExportFailed",
+        "message": "the export ran out of time"
+      }
+    }
+  ]
+}

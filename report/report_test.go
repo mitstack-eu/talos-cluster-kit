@@ -17,6 +17,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -810,6 +811,8 @@ func TestReport_NamesAFailedVolumeCloudNativePGStorageOrServiceReadInlineWithIts
 				objectStoresRead: `echo "error: the server doesn't have a resource type \"objectstores\"" >&2; exit 1`,
 				storageRead:      `jq 'del(.items[] | select(.metadata.labels["cnpg.io/pluginName"]))' testdata/storage-and-services.json`})},
 			map[string]any{"cloudNativePGObjectStores": noObjectStores, "cloudNativePGPlugins": []any{}, "cloudNativePG.0.kind": "Cluster"}},
+		"the workload read is forbidden, so no CronJob or Job is listed": {kubectlWith(workloadsRead, `printf 'Error from server (Forbidden): cronjobs.batch is forbidden: User cannot list resource "cronjobs"\n' >&2; exit 1`),
+			map[string]any{"scheduledJobs": failed(1, "Error from server (Forbidden): cronjobs.batch is forbidden: User cannot list resource \"cronjobs\"\n")}},
 		"the ObjectStore read prints no JSON": {kubectlWith(objectStoresRead, "echo 'not json'"), map[string]any{"cloudNativePGObjectStores": notObjectStores}},
 	}
 	for name, tc := range cases {
@@ -823,6 +826,36 @@ func TestReport_NamesAFailedVolumeCloudNativePGStorageOrServiceReadInlineWithIts
 			for member, want := range tc.want {
 				assert.Equal(t, want, testutil.Field(t, posted.body, strings.Split(member, ".")...), member)
 			}
+		})
+	}
+}
+
+func TestReport_ListsEachLabelledCronJobWithItsNewestFailureSinceItsLastSuccessAndCutsAMessageAt256BytesWholeCharacters(t *testing.T) {
+	_, posted, out, err := runReport(t, kubectlWith(workloadsRead, `jq -s '.[0].items += .[1] | .[0]' testdata/workloads.json testdata/scheduled-jobs.json`))
+
+	require.NoError(t, err, out)
+	assert.Equal(t, readJSON(t, "testdata", "golden", "scheduled-jobs.json"), posted.body["scheduledJobs"], "a failure older than or at the last success gives no field, a newer one gives it, a CronJob with no success yet gives its one failure, an older failure shows beside a running Job, a failed counter alone and a same-named CronJob in another namespace name nothing, a tie goes to the greater Job name, and two CronJobs of one namespace keep their own Jobs")
+	for _, c := range posted.body["scheduledJobs"].(map[string]any)["cronJobs"].([]any) {
+		failure, _ := c.(map[string]any)["failedSinceSuccess"].(map[string]any)
+		message, _ := failure["message"].(string)
+		assert.True(t, len(message) <= 256 && utf8.ValidString(message), "a message is at most 256 bytes and whole characters")
+	}
+}
+
+func TestReport_SaysWhenItCutsTheScheduledCronJobsAtTheirBound(t *testing.T) {
+	for _, n := range []int{100, 101} {
+		t.Run(fmt.Sprint(n), func(t *testing.T) {
+			read := fmt.Sprintf(`jq '.items += [range(%d) | {kind: "CronJob", metadata: {namespace: "app-\(.)", name: "dump", labels: {"mitstack.dev/subscription": "sub_x"}}},
+				{kind: "Job", metadata: {namespace: "app-\(.)", name: "dump-run", ownerReferences: [{kind: "CronJob", name: "dump"}]}, status: {conditions: [{type: "Failed", status: "True", message: ("m" * 300)}]}}]' testdata/workloads.json`, n)
+
+			_, posted, out, err := runReport(t, kubectlWith(workloadsRead, read))
+
+			require.NoError(t, err, out)
+			jobs := posted.body["scheduledJobs"].(map[string]any)
+			assert.LessOrEqual(t, len(posted.raw), 256<<10, "a full list of failures leaves the body inside the platform's limit")
+			assert.Equal(t, n > 100, jobs["cut"])
+			assert.EqualValues(t, n, jobs["found"])
+			assert.Len(t, jobs["cronJobs"], min(n, 100))
 		})
 	}
 }

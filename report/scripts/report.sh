@@ -4,15 +4,16 @@
 # of each Application and each object it applied, what each Argo CD route answers a caller without a session, Argo CD's
 # Services, Ingresses and pod images, every Ingress with its class and the addresses its status holds, CloudNativePG's
 # objects with each cluster's primary, archiving and last backup, the plugins it finds and each ObjectStore's recovery
-# windows, every pod's node, phase and container states, each image reference the pods and the workloads' pod templates
-# name, each OpenBao member's seal state and the active one, each claim with its size and the default storage classes,
-# every Service's type, each default-deny NetworkPolicy, the objects labelled mitstack.dev/subscription, the API
-# server's key set, the mesh probe's results, the outside probe's reading of each gateway's mirror, whether a TLS
-# connection to Let's Encrypt's ACME API opens through the network's default route, each repository credential Argo CD's
-# SealedSecrets declare with each AppProject's source repositories, the API server's answer to a dry run of each
-# admission fixture, the security scan's last runs, newest Job with its events and kept summaries, and a checks member
-# naming each check of the platform's verdict, signed with a token the API server mints for the body through block-kit's
-# token-request.sh in REPORT_PROOF_SCRIPT.
+# windows, each CronJob a block labels with its last success and newest failure since, every pod's node, phase and
+# container states, each image reference the pods and the workloads' pod templates name, each OpenBao member's seal
+# state and the active one, each claim with its size and the default storage classes, every Service's type, each
+# default-deny NetworkPolicy, the objects labelled mitstack.dev/subscription, the API server's key set, the mesh probe's
+# results, the outside probe's reading of each gateway's mirror, whether a TLS connection to Let's Encrypt's ACME API
+# opens through the network's default route, each repository credential Argo CD's SealedSecrets declare with each
+# AppProject's source repositories, the API server's answer to a dry run of each admission fixture, the security scan's
+# last runs, newest Job with its events and kept summaries, and a checks member naming each check of the platform's
+# verdict, signed with a token the API server mints for the body through block-kit's token-request.sh in
+# REPORT_PROOF_SCRIPT.
 # When a read, the body or the token request fails or times out, it posts an unsigned report whose error names it
 # instead, then exits non-zero.
 # Usage: REPORT_URL=<https url> SUBSCRIPTION_ID=<id> HOST_IP=<this pod's node> REPORT_PROOF_SCRIPT=<script> MESH_PROBE_URL=<target's url> MESH_PROBE_ANSWER=<its answer> MESH_PROBE_IDENTITY=<its SPIFFE id> MESH_PROBE_CONFIGMAP=<namespace/name> OPENBAO_MEMBERS="<name>=<https url> ..." OPENBAO_CA_FILE=<pem> ARGOCD_URL=<https url> GATEWAYS="<address> ..." EGRESS_URL=<https url> [POD_NAMESPACE=mitstack-node] [REPORT_TOKEN_FILE=/var/run/mitstack/token] [REPORT_READ_SECONDS=21] report.sh
@@ -392,6 +393,25 @@ body() {
         lastFailedBackupTime: (.lastFailedBackupTime // null)
       }))
     };
+    # A message is cut to 256 bytes, never inside a character.
+    def at_most_256_bytes: if type == "string" and utf8bytelength > 256 then .[0:256] | until(utf8bytelength <= 256; .[0:-1]) else . end;
+    # scheduled_jobs lists each labelled CronJob with its schedule and last start and success, and since Argo CD gives a CronJob no
+    # health, with failedSinceSuccess naming its newest failed Job (the greater name on a tie) whose failure is newer than its
+    # last success or, while it has none, the newest failed one, cutting the list at 100 with found counting the CronJobs read.
+    def scheduled_failure: [.status.conditions[]? | select(.type == "Failed" and .status == "True")
+      | {at: (.lastTransitionTime // null), reason: (.reason // null), message: (.message // null | at_most_256_bytes)}] | .[0];
+    def scheduled_owner: .metadata.namespace as $ns | [.metadata.ownerReferences[]? | select(.kind == "CronJob") | "\($ns)/\(.name)"] | .[0];
+    def scheduled_jobs:
+      [.items[] | select(.kind == "CronJob" and .metadata.labels["mitstack.dev/subscription"] != null)] as $crons
+      | [.items[] | select(.kind == "Job") | {owner: scheduled_owner, name: .metadata.name, failure: scheduled_failure}] as $jobs
+      | {cut: (($crons | length) > 100), found: ($crons | length),
+        cronJobs: [$crons | sort_by([.metadata.namespace, .metadata.name]) | .[0:100][] | "\(.metadata.namespace)/\(.metadata.name)" as $key
+          | (.status.lastSuccessfulTime // null) as $ok
+          | ([$jobs[] | select(.owner == $key and .failure != null and ($ok == null or .failure.at > $ok))] | sort_by([.failure.at, .name]) | last) as $f
+          | {namespace: .metadata.namespace, name: .metadata.name, subscription: .metadata.labels["mitstack.dev/subscription"],
+            schedule: (.spec.schedule // null), suspended: (.spec.suspend // false),
+            lastScheduleTime: (.status.lastScheduleTime // null), lastSuccessfulTime: $ok}
+            + if $f == null then {} else {failedSinceSuccess: {job: $f.name, at: $f.failure.at, reason: $f.failure.reason, message: $f.failure.message}} end]};
     # zone_label_managers are the field managers whose entry in managedFields holds the zone label.
     def zone_label_managers: [.metadata.managedFields[]?
       | select(.fieldsV1["f:metadata"]["f:labels"]["f:topology.kubernetes.io/zone"] != null)
@@ -664,6 +684,8 @@ body() {
       cloudNativePGObjectStores: beside($object_stores_status; $object_stores_err;
         "kubectl exited 0, and its output is not the ObjectStores this report reads";
         $object_stores | fromjson | [.items[] | object_store]),
+      scheduledJobs: beside($workloads_status; $workloads_err; "kubectl exited 0, and its output is not the workloads this report reads";
+        $workloads | fromjson | scheduled_jobs),
       pods: beside($pods_status; $pods_err; "kubectl exited 0, and its output is not the pods this report reads";
         $pods | fromjson | [.items[] | pod]),
       images: image_list,

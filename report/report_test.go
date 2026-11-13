@@ -836,29 +836,37 @@ func TestReport_ListsEachLabelledCronJobAndTheNewestJobAndTheNewestFailureOfEach
 	assert.Equal(t, readJSON(t, "testdata", "golden", "scheduled-jobs.json"), posted.body["scheduledJobs"], "a Job takes its CronJob's subscription, the unlabelled CronJob and its Job are left out, an older failure and success give way to the newest failure, and its message is cut to 256 characters")
 }
 
-func TestReport_SaysWhenItCutsTheScheduledJobsAtTheirBoundAndStaysInsideThePlatformsLimit(t *testing.T) {
-	many := func(kind string, n int) string {
-		return fmt.Sprintf(`jq '.items += [range(%d) | {kind: "%s", metadata: {namespace: "app-\(.)", name: "dump", labels: {"mitstack.dev/subscription": "sub_x"}}, status: {conditions: [{type: "Failed", status: "True", message: ("m" * 300)}]}}]' testdata/workloads.json`, n, kind)
+func TestReport_SaysSeparatelyWhetherItCutTheCronJobsAndTheJobsAndCountsTheJobsItReadAndListsAJobOnlyWithItsListedCronJob(t *testing.T) {
+	many := func(n int, names ...string) string {
+		return fmt.Sprintf(`jq '.items += [range(%d) | {kind: "CronJob", metadata: {namespace: "app-\(.)", name: "dump", labels: {"mitstack.dev/subscription": "sub_x"}}},
+			{kind: "Job", metadata: {namespace: "app-\(.)", name: "dump-run", ownerReferences: [{kind: "CronJob", name: "dump"}]}, status: {conditions: [{type: "Failed", status: "True", message: ("m" * 300)}]}},
+			{kind: "Job", metadata: {namespace: "app-\(.)", name: "solo", labels: {"mitstack.dev/subscription": "sub_x"}}, status: {conditions: [{type: "Failed", status: "True", message: ("m" * 300)}]}}
+			| select(.metadata.name | IN(%s))]' testdata/workloads.json`, n, `"`+strings.Join(names, `", "`)+`"`)
 	}
 	cases := map[string]struct {
-		read, member  string
-		listed, found int
-		cut           bool
+		read                       string
+		cutCronJobs, cutJobs       bool
+		foundCronJobs, foundJobs   int
+		listedCronJobs, listedJobs int
 	}{
-		"100 CronJobs fill the bound": {many("CronJob", 100), "cronJobs", 100, 100, false},
-		"101 CronJobs pass it":        {many("CronJob", 101), "cronJobs", 100, 101, true},
-		"100 Jobs fill the bound":     {many("Job", 100), "jobs", 100, 100, false},
-		"101 Jobs pass it":            {many("Job", 101), "jobs", 100, 101, true},
+		"100 CronJobs fill the bound":                    {many(100, "dump"), false, false, 100, 0, 100, 0},
+		"101 CronJobs pass it":                           {many(101, "dump"), true, false, 101, 0, 100, 0},
+		"100 Jobs no CronJob owns fill the bound":        {many(100, "solo"), false, false, 0, 100, 0, 100},
+		"101 such Jobs pass it":                          {many(101, "solo"), false, true, 0, 101, 0, 100},
+		"100 CronJobs and their Jobs fill both":          {many(100, "dump", "dump-run"), false, false, 100, 100, 100, 100},
+		"the Job of a CronJob that is not listed is not": {many(101, "dump", "dump-run"), true, true, 101, 101, 100, 100},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			_, posted, out, err := runReport(t, kubectlWith(workloadsRead, tc.read))
 
 			require.NoError(t, err, out)
+			jobs := posted.body["scheduledJobs"].(map[string]any)
 			assert.LessOrEqual(t, len(posted.raw), 256<<10, "a full list of failed Jobs leaves the body inside the platform's limit")
-			assert.Equal(t, tc.cut, testutil.Field(t, posted.body, "scheduledJobs", "cut"))
-			assert.Len(t, testutil.Field(t, posted.body, "scheduledJobs", tc.member), tc.listed)
-			assert.EqualValues(t, tc.found, testutil.Field(t, posted.body, "scheduledJobs", "found", tc.member))
+			assert.Equal(t, map[string]any{"cronJobs": tc.cutCronJobs, "jobs": tc.cutJobs}, jobs["cut"])
+			assert.Equal(t, map[string]any{"cronJobs": float64(tc.foundCronJobs), "jobs": float64(tc.foundJobs)}, jobs["found"])
+			assert.Len(t, jobs["cronJobs"], tc.listedCronJobs)
+			assert.Len(t, jobs["jobs"], tc.listedJobs)
 		})
 	}
 }

@@ -1,8 +1,11 @@
 {
-  "cut": false,
+  "cut": {
+    "cronJobs": false,
+    "jobs": false
+  },
   "found": {
-    "cronJobs": 1,
-    "jobs": 2
+    "cronJobs": 2,
+    "jobs": 8
   },
   "cronJobs": [
     {
@@ -11,8 +14,17 @@
       "subscription": "sub_dump01234567",
       "schedule": "0 2 * * *",
       "suspended": false,
-      "lastScheduleTime": "2026-11-13T02:00:00Z",
-      "lastSuccessfulTime": "2026-11-11T02:00:31Z"
+      "lastScheduleTime": "2026-11-13T14:00:00Z",
+      "lastSuccessfulTime": "2026-11-13T14:00:31Z"
+    },
+    {
+      "namespace": "app-shop",
+      "name": "export-shop",
+      "subscription": "sub_export012345",
+      "schedule": "30 3 * * *",
+      "suspended": true,
+      "lastScheduleTime": "2026-11-13T03:30:00Z",
+      "lastSuccessfulTime": "2026-11-11T03:30:20Z"
     }
   ],
   "jobs": [
@@ -30,6 +42,46 @@
         "message": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm",
         "at": "2026-11-13T02:10:00Z"
       }
+    },
+    {
+      "namespace": "app-shop",
+      "name": "dump-shop-4",
+      "subscription": "sub_dump01234567",
+      "cronJob": "dump-shop",
+      "createdAt": "2026-11-13T14:00:00Z",
+      "startTime": "2026-11-13T14:00:00Z",
+      "completionTime": "2026-11-13T14:00:31Z",
+      "condition": {
+        "type": "Complete",
+        "reason": null,
+        "message": null,
+        "at": "2026-11-13T14:00:31Z"
+      }
+    },
+    {
+      "namespace": "app-shop",
+      "name": "export-shop-2",
+      "subscription": "sub_export012345",
+      "cronJob": "export-shop",
+      "createdAt": "2026-11-12T03:30:00Z",
+      "startTime": "2026-11-12T03:30:00Z",
+      "completionTime": null,
+      "condition": {
+        "type": "Failed",
+        "reason": "BackoffLimitExceeded",
+        "message": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm",
+        "at": "2026-11-12T03:40:00Z"
+      }
+    },
+    {
+      "namespace": "app-shop",
+      "name": "export-shop-3",
+      "subscription": "sub_export012345",
+      "cronJob": "export-shop",
+      "createdAt": "2026-11-13T03:30:00Z",
+      "startTime": "2026-11-13T03:30:00Z",
+      "completionTime": null,
+      "condition": null
     },
     {
       "namespace": "app-shop",

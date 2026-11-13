@@ -12,8 +12,8 @@
       "schedule": "0 2 * * *"
     },
     "status": {
-      "lastScheduleTime": "2026-11-13T02:00:00Z",
-      "lastSuccessfulTime": "2026-11-11T02:00:31Z"
+      "lastScheduleTime": "2026-11-13T14:00:00Z",
+      "lastSuccessfulTime": "2026-11-13T14:00:31Z"
     }
   },
   {
@@ -97,6 +97,117 @@
     "kind": "Job",
     "metadata": {
       "namespace": "app-shop",
+      "name": "dump-shop-4",
+      "creationTimestamp": "2026-11-13T14:00:00Z",
+      "ownerReferences": [
+        {
+          "kind": "CronJob",
+          "name": "dump-shop"
+        }
+      ]
+    },
+    "status": {
+      "startTime": "2026-11-13T14:00:00Z",
+      "completionTime": "2026-11-13T14:00:31Z",
+      "conditions": [
+        {
+          "type": "Complete",
+          "status": "True",
+          "lastTransitionTime": "2026-11-13T14:00:31Z"
+        }
+      ]
+    }
+  },
+  {
+    "kind": "CronJob",
+    "metadata": {
+      "namespace": "app-shop",
+      "name": "export-shop",
+      "labels": {
+        "mitstack.dev/subscription": "sub_export012345"
+      }
+    },
+    "spec": {
+      "schedule": "30 3 * * *",
+      "suspend": true
+    },
+    "status": {
+      "lastScheduleTime": "2026-11-13T03:30:00Z",
+      "lastSuccessfulTime": "2026-11-11T03:30:20Z"
+    }
+  },
+  {
+    "kind": "Job",
+    "metadata": {
+      "namespace": "app-shop",
+      "name": "export-shop-1",
+      "creationTimestamp": "2026-11-11T03:30:00Z",
+      "ownerReferences": [
+        {
+          "kind": "CronJob",
+          "name": "export-shop"
+        }
+      ]
+    },
+    "status": {
+      "startTime": "2026-11-11T03:30:00Z",
+      "completionTime": "2026-11-11T03:30:20Z",
+      "conditions": [
+        {
+          "type": "Complete",
+          "status": "True",
+          "lastTransitionTime": "2026-11-11T03:30:20Z"
+        }
+      ]
+    }
+  },
+  {
+    "kind": "Job",
+    "metadata": {
+      "namespace": "app-shop",
+      "name": "export-shop-2",
+      "creationTimestamp": "2026-11-12T03:30:00Z",
+      "ownerReferences": [
+        {
+          "kind": "CronJob",
+          "name": "export-shop"
+        }
+      ]
+    },
+    "status": {
+      "startTime": "2026-11-12T03:30:00Z",
+      "conditions": [
+        {
+          "type": "Failed",
+          "status": "True",
+          "reason": "BackoffLimitExceeded",
+          "message": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm",
+          "lastTransitionTime": "2026-11-12T03:40:00Z"
+        }
+      ]
+    }
+  },
+  {
+    "kind": "Job",
+    "metadata": {
+      "namespace": "app-shop",
+      "name": "export-shop-3",
+      "creationTimestamp": "2026-11-13T03:30:00Z",
+      "ownerReferences": [
+        {
+          "kind": "CronJob",
+          "name": "export-shop"
+        }
+      ]
+    },
+    "status": {
+      "startTime": "2026-11-13T03:30:00Z"
+    }
+  },
+  {
+    "kind": "Job",
+    "metadata": {
+      "namespace": "app-shop",
       "name": "first-dump",
       "labels": {
         "mitstack.dev/subscription": "sub_dump01234567"
@@ -123,6 +234,32 @@
         {
           "kind": "CronJob",
           "name": "cleanup"
+        }
+      ]
+    }
+  },
+  {
+    "kind": "Job",
+    "metadata": {
+      "namespace": "app-shop",
+      "name": "orphan-1",
+      "creationTimestamp": "2026-11-09T02:00:00Z",
+      "ownerReferences": [
+        {
+          "kind": "CronJob",
+          "name": "gone-cron"
+        }
+      ]
+    },
+    "status": {
+      "startTime": "2026-11-09T02:00:00Z",
+      "conditions": [
+        {
+          "type": "Failed",
+          "status": "True",
+          "reason": "BackoffLimitExceeded",
+          "message": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm",
+          "lastTransitionTime": "2026-11-09T02:10:00Z"
         }
       ]
     }

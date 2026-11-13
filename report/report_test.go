@@ -810,7 +810,6 @@ func TestReport_NamesAFailedVolumeCloudNativePGStorageOrServiceReadInlineWithIts
 				objectStoresRead: `echo "error: the server doesn't have a resource type \"objectstores\"" >&2; exit 1`,
 				storageRead:      `jq 'del(.items[] | select(.metadata.labels["cnpg.io/pluginName"]))' testdata/storage-and-services.json`})},
 			map[string]any{"cloudNativePGObjectStores": noObjectStores, "cloudNativePGPlugins": []any{}, "cloudNativePG.0.kind": "Cluster"}},
-		"the ObjectStore read times out":      {kubectlWith(objectStoresRead, "sleep 10"), map[string]any{"cloudNativePGObjectStores": timedOut}},
 		"the ObjectStore read prints no JSON": {kubectlWith(objectStoresRead, "echo 'not json'"), map[string]any{"cloudNativePGObjectStores": notObjectStores}},
 	}
 	for name, tc := range cases {

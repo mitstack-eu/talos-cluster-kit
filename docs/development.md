@@ -160,15 +160,45 @@ which it leaves alone.
 
 The `mitstack-verify-image-signatures` case judges a signature policy that
 `components.SignaturePolicy` rendered for the two signers in
-`signature_policy_test.go`. `policy.yaml` and `egress.yaml` in its directory
-are that render, and `TestSignaturePolicy_RendersThePolicyAndTheEgressLimitTheKyvernoTestsRead`
+`signature_policy_test.go`. `policy.yaml` in its directory holds that
+render's two image policies and `egress.yaml` its egress limit, and
+`TestSignaturePolicy_RendersThePolicyAndTheEgressLimitTheKyvernoTestsRead`
 fails when they differ from it. Record them again with `-update` after a
 change to the template. The case reads real signatures from `ghcr.io`, so it
 needs the network.
 [The README's section on signatures](../README.md#how-a-cluster-checks-who-signed-an-image)
 says what CI's three runs of it prove.
 
-The policy holds each of its six exact images as a literal, since Kyverno reads
+No Kyverno case judges a debug container. The Kyverno CLI v1.19.1 sends no
+subresource with the request it builds for a ValidatingPolicy
+(`ApplyPoliciesOnResource` in its
+[`policy_processor.go`](https://github.com/kyverno/kyverno/blob/v1.19.1/cmd/cli/kubectl-kyverno/processor/policy_processor.go)),
+so the second policy of each image rule, which matches only an update of
+`pods/ephemeralcontainers`, matches nothing there. A Go test holds the
+second policy's checks equal to the first policy's, as
+[the README's section on debug containers](../README.md#how-the-image-rules-judge-a-debug-container)
+says. To watch the second policy refuse, run these commands from the
+repository root. They start a kind cluster, a local test cluster in Docker,
+which `kind create cluster` also makes `kubectl`'s current cluster, and
+install the kit's Kyverno on it:
+
+```bash
+kind create cluster --name debug-check
+kubectl apply --server-side -f components/kyverno/kyverno.yaml
+kubectl -n kyverno wait --for=condition=Available deployment --all --timeout=400s
+kubectl apply -f components/admission/policies/mitstack-require-image-digest.yaml
+kubectl create namespace app-shop
+kubectl -n app-shop run shop --image=ghcr.io/mitstack-eu/talos-cluster-kit-tools:v0.35.0@sha256:9f3f51745e05bf0815682eed41fa4eb2bca2698dcc9577520044cef13118126a --command -- sleep infinity
+kubectl debug -n app-shop pod/shop --image=ghcr.io/mitstack-eu/talos-cluster-kit-tools:v0.35.0 --profile=general -- true
+kind delete cluster --name debug-check
+```
+
+The `kubectl debug` command is refused with a message that opens
+`mitstack-require-image-digest:`. `--profile=general` picks kubectl's
+general-purpose debug settings, and `true` is the command the debug container
+would run, which ends at once.
+
+The registry rule's policy holds each of its six exact images as a literal, since Kyverno reads
 YAML. `TestManifests_RestrictImageRegistriesNamesExactlyTheImagesTheKitPinsForPodsInAnAppNamespace`
 reads the same six from the manifests that pin them, and fails when the policy
 differs from them. It reads the three CloudNativePG images from the operator's

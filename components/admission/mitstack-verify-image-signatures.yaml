@@ -1,11 +1,4 @@
-# An image of a repository the cluster's signer list names starts only with the keyless signature of that entry's
-# issuer and subject. The policy names no ctlog, so Kyverno checks the log entry each signature carries against
-# Sigstore's trust root and calls no log.
-apiVersion: policies.kyverno.io/v1
-kind: ImageValidatingPolicy
-metadata:
-  name: {{ .Name }}
-spec:
+{{- define "settings" }}
   validationActions: [Deny]
   failurePolicy: Fail
   # A background scan would read every signature again from the reports controller, which the egress limit below does not cover.
@@ -14,12 +7,8 @@ spec:
       enabled: false
   validationConfigurations:
     mutateDigest: false
-  matchConstraints:
-    resourceRules:
-    - apiGroups: [""]
-      apiVersions: ["v1"]
-      operations: ["CREATE", "UPDATE"]
-      resources: ["pods"]
+{{- end }}
+{{- define "checks" }}
     namespaceSelector:
       matchExpressions:
       - key: kubernetes.io/metadata.name
@@ -47,6 +36,39 @@ spec:
   - expression: "variables.images.filter(i, i.startsWith('{{ $s.Repository }}:') || i.startsWith('{{ $s.Repository }}@')).all(i, verifyImageSignatures(i, [attestors.signer{{ $i }}]) > 0)"
     message: "{{ $.Name }}: an image of {{ $s.Repository }} must carry the keyless signature of {{ $s.Subject }}, issued by {{ $s.Issuer }}"
 {{- end }}
+{{- end -}}
+# An image of a repository the cluster's signer list names starts only with the keyless signature of that entry's
+# issuer and subject. The policy names no ctlog, so Kyverno checks the log entry each signature carries against
+# Sigstore's trust root and calls no log.
+apiVersion: policies.kyverno.io/v1
+kind: ImageValidatingPolicy
+metadata:
+  name: {{ .Name }}
+spec:
+{{- template "settings" }}
+  matchConstraints:
+    resourceRules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      operations: ["CREATE", "UPDATE"]
+      resources: ["pods"]
+{{- template "checks" . }}
+---
+# kubectl debug adds an ephemeral container through an update of pods/ephemeralcontainers. Kyverno extends a policy to
+# the controllers that make pods only while it names pods alone, so this second policy judges that update.
+apiVersion: policies.kyverno.io/v1
+kind: ImageValidatingPolicy
+metadata:
+  name: {{ .Name }}-ephemeral-containers
+spec:
+{{- template "settings" }}
+  matchConstraints:
+    resourceRules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      operations: ["UPDATE"]
+      resources: ["pods/ephemeralcontainers"]
+{{- template "checks" . }}
 ---
 # Each gateway forwards port 443 to any address, so this names the only hosts the admission controller reaches.
 apiVersion: cilium.io/v2

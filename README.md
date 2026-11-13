@@ -875,6 +875,9 @@ volumes, limits and registry skip five more namespaces, which
 [the table of skipped namespaces](#which-namespaces-the-pod-policies-skip)
 explains. A cluster that is given a signer list runs a ninth policy, which
 [the section on signatures](#how-a-cluster-checks-who-signed-an-image)
+explains. The registry rule, the digest rule and the ninth policy each come
+with a second Kyverno policy that judges a debug container, as
+[the section on debug containers](#how-the-image-rules-judge-a-debug-container)
 explains.
 
 | Policy | What it does | File |
@@ -885,11 +888,58 @@ explains.
 | `mitstack-require-strict-mtls` | Refuses a PeerAuthentication, Istio's policy for which calls a pod takes, that lets a pod or one of its ports take a call with no workload identity. It admits by name only the four exceptions of the hosting set, the extra components a cluster that hosts the platform runs. The CloudNativePG operator's exception sits in `cnpg-system`, which the policy skips | `components/admission/policies/mitstack-require-strict-mtls.yaml` |
 | `mitstack-disallow-host-path` | Refuses a pod, or a Deployment or other controller whose template makes a pod, that mounts a host path, since a host path reaches the node's file system | `components/admission/policies/mitstack-disallow-host-path.yaml` |
 | `mitstack-require-resource-limits` | Refuses a pod, or a controller whose template makes one, with a container or init container that sets no CPU limit or no memory limit. A LimitRange fills limits only into the pod, after the controller has been admitted, so the template must carry them | `components/admission/policies/mitstack-require-resource-limits.yaml` |
-| `mitstack-restrict-image-registries` | Refuses a pod, or a controller whose template makes one, with a container, init container or ephemeral container whose image is outside `ghcr.io/mitstack-eu/` and mitstack's registry in Amazon ECR, `839001574838.dkr.ecr.eu-central-1.amazonaws.com/`. It admits by exact reference only the six images talos-cluster-kit pins for pods an operator or a block starts in an app namespace: cert-manager's ACME solver, the CloudNativePG operator, PgBouncer and Postgres 16 images, the sidecar image [the Barman Cloud plugin](#how-a-postgres-cluster-backs-up) adds to a Postgres pod, and `docker.io/library/busybox:1.37.0` at the digest the policy names, the image that the local path provisioner and the mesh probe run and the kube-app-deploy block runs in its `secrets-import` Job. Another busybox tag or digest is refused | `components/admission/policies/mitstack-restrict-image-registries.yaml` |
-| `mitstack-require-image-digest` | Refuses a pod, or a controller whose template makes one, with a container, init container or ephemeral container whose image does not end in `@sha256:` and 64 hexadecimal digits. A tag may stand before the digest. A tag that moves therefore never changes what runs. It skips only the system namespaces, so it also judges `traefik`, `cert-manager`, `openbao`, `external-secrets` and `local-path-storage`, where every image the kit pins carries its digest | `components/admission/policies/mitstack-require-image-digest.yaml` |
+| `mitstack-restrict-image-registries` | Refuses a pod, or a controller whose template makes one, with a container, init container or ephemeral container whose image is outside `ghcr.io/mitstack-eu/` and mitstack's registry in Amazon ECR, `839001574838.dkr.ecr.eu-central-1.amazonaws.com/`. It admits by exact reference only the six images talos-cluster-kit pins for pods an operator or a block starts in an app namespace: cert-manager's ACME solver, the CloudNativePG operator, PgBouncer and Postgres 16 images, the sidecar image [the Barman Cloud plugin](#how-a-postgres-cluster-backs-up) adds to a Postgres pod, and `docker.io/library/busybox:1.37.0` at the digest the policy names, the image that the local path provisioner and the mesh probe run and the kube-app-deploy block runs in its `secrets-import` Job. Another busybox tag or digest is refused. Its second policy, `mitstack-restrict-image-registries-ephemeral-containers`, judges a debug container the same way | `components/admission/policies/mitstack-restrict-image-registries.yaml` |
+| `mitstack-require-image-digest` | Refuses a pod, or a controller whose template makes one, with a container, init container or ephemeral container whose image does not end in `@sha256:` and 64 hexadecimal digits. A tag may stand before the digest. A tag that moves therefore never changes what runs. It skips only the system namespaces, so it also judges `traefik`, `cert-manager`, `openbao`, `external-secrets` and `local-path-storage`, where every image the kit pins carries its digest. Its second policy, `mitstack-require-image-digest-ephemeral-containers`, judges a debug container the same way | `components/admission/policies/mitstack-require-image-digest.yaml` |
 
 Kyverno's webhooks skip the same system namespaces, so a Kyverno outage
 cannot stop a system pod, such as the node report in `mitstack-node`.
+
+### How the image rules judge a debug container
+
+`kubectl debug` adds a debug container, which Kubernetes calls an ephemeral
+container, to a pod that already runs. The API server takes it as an update
+of `pods/ephemeralcontainers`, a subresource of the pod, which is a separate
+address for one part of it. A Kyverno policy whose resource rule names `pods`
+never sees that update, because a rule that names a resource leaves out its
+subresources.
+
+The first policy of the registry rule or the digest rule cannot add the
+subresource to its own resource rule. Kyverno copies a pod policy onto the
+pod template of six kinds of controller (Deployments, StatefulSets,
+DaemonSets, Jobs, CronJobs and ReplicaSets), so it refuses such a controller
+at its creation. Kyverno does this only while the policy has one resource
+rule whose one resource is `pods`, as `CanAutoGen` in Kyverno's
+[`support.go`](https://github.com/kyverno/kyverno/blob/v1.19.1/pkg/cel/autogen/support.go)
+decides. With the subresource added, Kyverno would admit a Deployment whose
+template breaks the rule, and refuse only the pods it then tries to start.
+
+Each image rule therefore has a second policy in the same file, named after
+the first with `-ephemeral-containers` added. It matches only an update of
+`pods/ephemeralcontainers`, skips the same namespaces, and makes the same
+checks, so its refusal opens with the first policy's name. Like the first
+policy, it judges every container of the pod, so a pod that already holds a
+container breaking the rule takes no debug container at all.
+
+Kyverno also checks existing objects again on a schedule, a pass it calls
+its background scan. The second policy turns that scan off. The API server
+offers no list of a subresource to scan, and with the scan on, Kyverno
+reports the policy as not ready while it still refuses. The first policy's
+scan already reads the ephemeral containers of every pod that exists.
+
+For example, with the registry and digest rules in force,
+`kubectl debug -n app-shop pod/shop --image=ghcr.io/mitstack-eu/talos-cluster-kit-tools:v0.35.0`
+names its image by its tag alone, and it is refused with a message that
+opens `mitstack-require-image-digest:`. The same command with that image
+named by its digest adds the debug container.
+
+`TestManifests_APodPolicyThatReadsEphemeralContainersJudgesTheUpdateKubectlDebugAddsThemThrough`
+in `rendered_set_test.go` finds every pod policy that reads ephemeral
+containers. It fails when the first policy has any resource rule but the one
+for `pods`, or when the second policy matches anything but the update of
+`pods/ephemeralcontainers`, scans in the background, skips other namespaces
+or makes other checks.
+`TestSignaturePolicy_JudgesTheUpdateKubectlDebugAddsAnEphemeralContainerThroughAndKeepsTheRuleAutogenNeeds`
+holds the signature policy to the same.
 
 ### Which namespaces the pod policies skip
 
@@ -946,11 +996,12 @@ certificate that Sigstore, a public signing service, issues for the
 pipeline's own identity. No signing key exists to keep or to lose.
 
 `components.SignaturePolicy` renders the list as one manifest,
-`mitstack-verify-image-signatures`, which holds two objects.
+`mitstack-verify-image-signatures`, which holds three objects.
 
 | Object | What it does |
 |---|---|
 | The Kyverno ImageValidatingPolicy `mitstack-verify-image-signatures` | Refuses a pod, or a controller whose template makes one, with a container, init container or ephemeral container whose image is in a listed repository and carries no signature of that entry's issuer and subject. It skips the system namespaces, as the other policies do |
+| The Kyverno ImageValidatingPolicy `mitstack-verify-image-signatures-ephemeral-containers` | Makes the same check of a debug container that `kubectl debug` adds to a running pod, as [the section on debug containers](#how-the-image-rules-judge-a-debug-container) explains |
 | The CiliumClusterwideNetworkPolicy `mitstack-kyverno-egress` | Limits where Kyverno's admission controller connects, as the table of hosts below lists |
 
 An entry names one repository exactly, with no tag, digest or pattern. An

@@ -1509,7 +1509,7 @@ every Docker Hub image goes on the list under its full name.
 | External Secrets v2.11.0 | Copies values from OpenBao into Kubernetes Secrets | `components/render/external-secrets-values.yaml` |
 | Sealed Secrets 0.40.0 | Opens a `SealedSecret` with the block's key pair, and never mints or renews a key | `components/render/sealed-secrets-values.yaml` |
 | Traefik v3.7.13 | Serves web traffic on NodePorts 30080 and 30081, with one pod on every node that takes apps, and writes the ingress load balancer's address into each Ingress's status | `components/render/traefik-values.yaml` |
-| Barman Cloud Plugin v0.16.0 | Lets a CloudNativePG Cluster archive its write-ahead log and take base backups to object storage, as [the section on backups](#how-a-postgres-cluster-backs-up) describes | `components/render/plugin-barman-cloud-values.yaml` |
+| Barman Cloud Plugin v0.16.0 | Lets a CloudNativePG Cluster archive its write-ahead log and take base backups to object storage, as [the section on backups](#how-a-postgres-cluster-backs-up) describes. It needs cert-manager, so a cluster on the default set runs CloudNativePG without it | `components/render/plugin-barman-cloud-values.yaml` |
 
 The two authorities that the next section describes, and the certificates
 they sign, sit in `components/hosting/tls.yaml`. A
@@ -1530,8 +1530,11 @@ the operator calls. The hosting set runs the one the CloudNativePG project
 publishes for object storage, the
 [Barman Cloud Plugin](https://cloudnative-pg.io/plugin-barman-cloud/docs/intro/),
 at v0.16.0 from its Helm chart 0.9.0. The operator's own backup to object
-storage is deprecated in its favour. The plugin needs cert-manager, so a
-cluster built from `components.Default` has none.
+storage is deprecated in its favour. The plugin needs cert-manager, so it is
+in the hosting set alone. A cluster built from `components.Default` runs
+CloudNativePG without it, and CloudNativePG gives a Cluster that names the
+plugin there the phase "Cluster cannot proceed to reconciliation due to an
+unknown plugin being required".
 
 How it works:
 
@@ -1578,9 +1581,10 @@ database's first archive can fail while its storage key is still on its way,
 so a health check that read backups would undo a deploy that was only waiting. A plugin whose own pod does
 not run reads unhealthy on its Application, `component-plugin-barman-cloud`.
 
-`TestHosting_RunsTheBarmanCloudPluginInTheOperatorsNamespaceBehindTheServiceCloudNativePGFindsItBy`
-in `components/hosting_test.go` checks the Service, the certificates and the
-Deployment against each other. The case in
+`TestManifests_TheBarmanCloudPluginServesInTheOperatorsNamespaceUnderTheNameAClusterAsksForItBy`
+in `rendered_set_test.go` checks the Service's namespace and plugin name, and
+`TestHosting_AppliesTheBarmanCloudPluginsCertificatesAfterCertManagersWebhook`
+in `components/hosting_test.go` checks the order. The case in
 `components/admission/tests/cloudnative-pg/` tries the policies on a Postgres
 pod and a restore pod that carry the added container.
 

@@ -4,8 +4,8 @@
 # of each Application and each object it applied, what each Argo CD route answers a caller without a session, Argo CD's
 # Services, Ingresses and pod images, every Ingress with its class and the addresses its status holds, CloudNativePG's
 # objects with each cluster's primary, archiving and last backup, the plugins it finds and each ObjectStore's recovery
-# windows, every pod's node, phase and container states, each image reference the pods and the workloads' pod templates
-# name, each OpenBao member's seal state and the active one, each claim with its size and the default storage classes,
+# windows, each CronJob a block labels with its newest Job and newest failed Job, every pod's node, phase and container
+# states, each image reference the pods and the workloads' pod templates name, each OpenBao member's seal state and the active one, each claim with its size and the default storage classes,
 # every Service's type, each default-deny NetworkPolicy, the objects labelled mitstack.dev/subscription, the API
 # server's key set, the mesh probe's results, the outside probe's reading of each gateway's mirror, whether a TLS
 # connection to Let's Encrypt's ACME API opens through the network's default route, each repository credential Argo CD's
@@ -392,6 +392,29 @@ body() {
         lastFailedBackupTime: (.lastFailedBackupTime // null)
       }))
     };
+    # scheduled_jobs lists each CronJob a block labels, and of each its newest Job and its newest failed Job, with the Jobs a
+    # block labels that no CronJob owns. A Job takes its CronJob's label, so a block labels the CronJob alone. A list passing
+    # its bound is cut and says so, and found counts what was read, so an observer never reads a cut-off object absent.
+    def scheduled_subscription: .metadata.labels["mitstack.dev/subscription"] // null;
+    def scheduled_condition: [.status.conditions[]? | select((.type == "Complete" or .type == "Failed") and .status == "True")
+      | {type, reason: (.reason // null), message: (.message // null | at_most_256), at: (.lastTransitionTime // null)}] | .[0];
+    def scheduled_owner: .metadata.namespace as $ns | [.metadata.ownerReferences[]? | select(.kind == "CronJob") | "\($ns)/\(.name)"] | .[0];
+    def scheduled_jobs:
+      [.items[] | select(.kind == "CronJob" and scheduled_subscription != null)] as $crons
+      | ($crons | map({key: "\(.metadata.namespace)/\(.metadata.name)", value: scheduled_subscription}) | from_entries) as $labels
+      | [.items[] | select(.kind == "Job") | scheduled_owner as $owner | (scheduled_subscription // $labels[$owner // ""]) as $sub
+        | select($sub != null) | {owner: $owner, entry: {namespace: .metadata.namespace, name: .metadata.name, subscription: $sub,
+          cronJob: ([.metadata.ownerReferences[]? | select(.kind == "CronJob") | .name] | .[0]), createdAt: (.metadata.creationTimestamp // null),
+          startTime: (.status.startTime // null), completionTime: (.status.completionTime // null), condition: scheduled_condition}}] as $jobs
+      | ([$jobs[] | select(.owner == null) | .entry]
+        + [$jobs | map(select(.owner != null)) | group_by(.owner)[] | map(.entry) | sort_by(.createdAt)
+          | ([last] + [map(select(.condition.type == "Failed")) | last // empty]) | unique_by(.name)[]]
+        | sort_by([.namespace, .name])) as $kept
+      | {cut: (($crons | length) > 100 or ($kept | length) > 200), found: {cronJobs: ($crons | length), jobs: ($kept | length)},
+        cronJobs: [$crons | sort_by([.metadata.namespace, .metadata.name]) | .[0:100][] | {namespace: .metadata.namespace, name: .metadata.name,
+          subscription: scheduled_subscription, schedule: (.spec.schedule // null), suspended: (.spec.suspend // false),
+          lastScheduleTime: (.status.lastScheduleTime // null), lastSuccessfulTime: (.status.lastSuccessfulTime // null)}],
+        jobs: $kept[0:200]};
     # zone_label_managers are the field managers whose entry in managedFields holds the zone label.
     def zone_label_managers: [.metadata.managedFields[]?
       | select(.fieldsV1["f:metadata"]["f:labels"]["f:topology.kubernetes.io/zone"] != null)
@@ -664,6 +687,8 @@ body() {
       cloudNativePGObjectStores: beside($object_stores_status; $object_stores_err;
         "kubectl exited 0, and its output is not the ObjectStores this report reads";
         $object_stores | fromjson | [.items[] | object_store]),
+      scheduledJobs: beside($workloads_status; $workloads_err; "kubectl exited 0, and its output is not the workloads this report reads";
+        $workloads | fromjson | scheduled_jobs),
       pods: beside($pods_status; $pods_err; "kubectl exited 0, and its output is not the pods this report reads";
         $pods | fromjson | [.items[] | pod]),
       images: image_list,

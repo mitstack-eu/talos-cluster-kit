@@ -26,7 +26,7 @@ func TestArgoCD_ReadsACloudNativePGClusterPassingThroughAPhaseAsProgressingAStuc
 		{"Cluster in healthy state", "{}", "Healthy"},
 		{"Waiting for user action", "{}", "Degraded"},
 		{"Cluster in healthy state", hibernated, "Suspended"},
-		{"Cluster in healthy state", `{{type = "ContinuousArchiving", status = "False"}, {type = "LastBackupSucceeded", status = "False", reason = "LastBackupFailed"}}`, "Healthy"},
+		{"Cluster in healthy state", `{{type = "ContinuousArchiving", status = "False", message = "archive failed"}, {type = "LastBackupSucceeded", status = "False", reason = "LastBackupFailed", message = "backup failed"}}`, "Healthy"},
 		{"Cluster cannot proceed to reconciliation due to an unknown plugin being required", "{}", "Suspended"},
 		{"Cluster cannot proceed to reconciliation due to an error while interacting with plugins", "{}", "Unknown"},
 	} {

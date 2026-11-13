@@ -18,7 +18,7 @@ var (
 		"mitstack-openbao-storage", "mitstack-require-app-label", "mitstack-require-mesh", "mitstack-require-resource-limits",
 		"mitstack-require-strict-mtls", "mitstack-restrict-image-registries", "mitstack-sealed-secrets-key", "mitstack-strict-mtls", "openbao", "sealed-secrets", "traefik",
 	}
-	webhookValidated = []string{"external-secrets", "trust-manager", "mitstack-hosting-tls"}
+	webhookValidated = []string{"external-secrets", "trust-manager", "mitstack-hosting-tls", "plugin-barman-cloud"}
 	// nodeLabelling comes last, the one place a new manifest changes no other manifest's TalosName.
 	nodeLabelling = []string{"mitstack-node-topology"}
 )

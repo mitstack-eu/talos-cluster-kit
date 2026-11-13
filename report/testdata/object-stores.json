@@ -1,0 +1,21 @@
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "apiVersion": "barmancloud.cnpg.io/v1",
+      "kind": "ObjectStore",
+      "metadata": {"name": "shared", "namespace": "app-pg", "labels": {"mitstack.dev/subscription": "sub_pg0123456789"}},
+      "spec": {"configuration": {"destinationPath": "s3://backups/shared", "endpointURL": "https://s3.fr-par.scw.cloud",
+        "s3Credentials": {"accessKeyId": {"name": "backup-credentials", "key": "ACCESS_KEY_ID"}, "secretAccessKey": {"name": "backup-credentials", "key": "ACCESS_SECRET_KEY"}}},
+        "retentionPolicy": "30d"},
+      "status": {"serverRecoveryWindow": {"shared": {"firstRecoverabilityPoint": "2026-11-12T02:00:11Z", "lastSuccessfulBackupTime": "2026-11-12T02:00:11Z"}}}
+    },
+    {
+      "apiVersion": "barmancloud.cnpg.io/v1",
+      "kind": "ObjectStore",
+      "metadata": {"name": "fresh", "namespace": "app-pg"},
+      "spec": {"configuration": {"destinationPath": "s3://backups/fresh"}}
+    }
+  ]
+}

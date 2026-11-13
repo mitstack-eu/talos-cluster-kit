@@ -93,8 +93,9 @@ func defaultManifest(name, file string) Manifest {
 	return Manifest{Name: name, Path: "components/" + file, Bytes: data}
 }
 
-// imageLineRe matches an image field, an operator's *_IMAGE_NAME default or an --*-image= flag, its reference in group 1.
-var imageLineRe = regexp.MustCompile(`(?m)^[ \t]*(?:- )?(?:(?:image|[A-Z][A-Z_]*_IMAGE_NAME):[ \t]*|--[a-z0-9-]+-image=)"?([^"\s]+)"?[ \t]*$`)
+// imageLineRe matches an image field, an operator's *_IMAGE_NAME default, a plugin's *_IMAGE default or an --*-image=
+// flag, its reference in group 1.
+var imageLineRe = regexp.MustCompile(`(?m)^[ \t]*(?:- )?(?:(?:image|[A-Z][A-Z_]*_IMAGE(?:_NAME)?):[ \t]*|--[a-z0-9-]+-image=)"?([^"\s]+)"?[ \t]*$`)
 
 // manifestImages keeps the images of each manifest under its name with the hash of the bytes they were read from, so it
 // holds one slot per manifest name however many contents a name has had, such as an install's enrolment token. Scanning a

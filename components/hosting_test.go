@@ -696,7 +696,7 @@ func TestHosting_RunsOpenBaosMembersOnTheTaintedControlPlaneNodesAndEveryOtherHo
 	members := podTemplates(t, testutil.Manifest(t, "openbao", set.Served))["openbao/openbao"]
 	require.NotNil(t, members, "the openbao manifest has no openbao/openbao workload")
 	assert.True(t, toleratesControlPlane(t, members), "OpenBao's members cannot run on the control-plane nodes their volumes are pinned to")
-	for _, name := range []string{"traefik", "cert-manager", "trust-manager", "external-secrets", "sealed-secrets", "argocd", "mitstack-openbao-init"} {
+	for _, name := range []string{"traefik", "cert-manager", "trust-manager", "external-secrets", "sealed-secrets", "argocd", "mitstack-openbao-init", "plugin-barman-cloud"} {
 		templates := podTemplates(t, testutil.Manifest(t, name, set.Served, set.Inline))
 		assert.NotEmpty(t, templates, "the %s manifest renders no workload", name)
 		for workload, template := range templates {
@@ -799,4 +799,12 @@ func TestHosting_AdmitsTheAPIServerToEveryWebhookPortFromTheControlPlaneNodesAnd
 			assert.Equal(t, "node-role.kubernetes.io/control-plane", testutil.Field(t, config, "data", "node-labels"), "the node label Cilium's identities carry")
 		})
 	}
+}
+
+func TestHosting_AppliesTheBarmanCloudPluginsCertificatesAfterCertManagersWebhook(t *testing.T) {
+	set := hostingSet(t, testutil.HostingInputs(t))
+
+	plugin := testutil.Manifest(t, "plugin-barman-cloud", set.Served)
+
+	assert.Greater(t, plugin.TalosName(), testutil.Manifest(t, "cert-manager", set.Served).TalosName(), "Talos applies a Certificate before cert-manager's webhook, which abandons the pass")
 }

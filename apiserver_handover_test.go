@@ -392,3 +392,23 @@ func TestAPIServer_AComponentsHandoverGivesUpTalossFieldsOnACustomResourceDefini
 		assert.Equal(t, handedOver.Metadata.ResourceVersion, definition().Metadata.ResourceVersion, "the definition's resource version")
 	})
 }
+
+func TestAPIServer_AComponentsHandoverGivesUpTalossFieldsOnEachObjectOfTheBarmanCloudPluginAfterCertManagersDefinitionsExist(t *testing.T) {
+	served := components.HostingServed().Served
+	plugin := testutil.Manifest(t, "plugin-barman-cloud", served)
+	file := carriedFile(t, plugin)
+	server := startAPIServer(t)
+	server.admin(t, argoCDIdentity(t), "apply", "-f", "-")
+	server.admin(t, nil, "create", "namespace", "cnpg-system")
+	definitions := testutil.Kind(testutil.Documents(t, testutil.Manifest(t, "cert-manager", served).Bytes), "CustomResourceDefinition")
+	server.admin(t, stream(t, definitions...), "apply", "--server-side", "-f", "-")
+	server.admin(t, nil, "wait", "--for=condition=Established", "crd", "--all", "--timeout=60s")
+	server.talosCreates(t, plugin.Bytes)
+
+	out, err := server.runHandoverApplying(t, file, server.argoCDApply(t, rollout.ApplicationPrefix+plugin.Name, statedObjects(t, file)))
+
+	require.NoError(t, err, "the handover printed:\n%s", out)
+	objects := server.live(t, plugin.Bytes)
+	require.Len(t, objects, len(testutil.Documents(t, plugin.Bytes)), "the plugin's objects")
+	assert.Empty(t, namedByTalos(objects), "the plugin's objects that still name Talos as a field manager")
+}

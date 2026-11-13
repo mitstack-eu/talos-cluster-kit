@@ -15,6 +15,7 @@
             "fieldsType": "FieldsV1", "fieldsV1": {"f:status": {"f:conditions": {}}}}
         ]
       },
+      "spec": {"taints": [{"key": "node-role.kubernetes.io/control-plane", "effect": "NoSchedule"}]},
       "status": {
         "addresses": [{"type": "InternalIP", "address": "10.0.0.5"}, {"type": "Hostname", "address": "poc-talos4-cp1"}],
         "conditions": [{"type": "MemoryPressure", "status": "False"}, {"type": "Ready", "status": "True"}],
@@ -40,6 +41,9 @@
     },
     {
       "metadata": {"name": "poc-talos4-cp3"},
+      "spec": {"unschedulable": true, "taints": [
+        {"key": "node.kubernetes.io/unschedulable", "effect": "NoSchedule", "timeAdded": "2026-11-04T08:10:00Z"},
+        {"key": "mitstack.dev/pool", "value": "db", "effect": "NoExecute"}]},
       "status": {
         "addresses": [{"type": "InternalIP", "address": "10.0.0.7"}],
         "conditions": [{"type": "Ready", "status": "Unknown"}],

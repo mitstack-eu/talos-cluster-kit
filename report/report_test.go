@@ -34,6 +34,7 @@ const (
 	keySetRead        = "get --raw /openid/v1/jwks"
 	cloudNativePGRead = "get clusters.postgresql.cnpg.io,databases.postgresql.cnpg.io,databaseroles.postgresql.cnpg.io -A -o json"
 	storageRead       = "get persistentvolumeclaims,storageclasses.storage.k8s.io,services -A -o json"
+	objectStoresRead  = "get objectstores.barmancloud.cnpg.io -A -o json"
 	podsRead          = "get pods -A -o json"
 	workloadsRead     = "get deployments.apps,statefulsets.apps,daemonsets.apps,jobs.batch,cronjobs.batch -A -o json"
 	ingressesRead     = "get ingresses.networking.k8s.io -A -o json"
@@ -103,7 +104,7 @@ func kubectlAnswering(overrides map[string]string) string {
 		tokenRequest: "echo " + reportProof, meshProbeRead: "cat testdata/mesh-probe.json", podsRead: "cat testdata/pods.json",
 		workloadsRead: "cat testdata/workloads.json",
 		ingressesRead: `echo '{"apiVersion": "v1", "kind": "List", "items": []}'`, defaultDenyRead: "cat testdata/default-deny.json",
-		sealedSecretsRead: "cat testdata/sealed-secrets.json", appProjectsRead: "cat testdata/app-projects.json",
+		sealedSecretsRead: "cat testdata/sealed-secrets.json", appProjectsRead: "cat testdata/app-projects.json", objectStoresRead: "cat testdata/object-stores.json",
 		fixturesRead: "cat testdata/admission-fixtures.json", dryRun: dryRunAnswer, scansRead: "cat testdata/security-scans.json",
 		scanCronJobRead: "cat testdata/security-scan-cronjob.json", scanEventsRead: `echo '{"items": []}'`}
 	for _, kind := range subscriptionKinds {
@@ -325,14 +326,18 @@ func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipA
 	assert.Equal(t, []any{
 		map[string]any{"name": "poc-talos4-cp1", "ready": true, "talosVersion": "v1.14.4", "kubeletVersion": "v1.37.1", "internalIP": "10.0.0.5",
 			"addresses": []any{map[string]any{"type": "InternalIP", "address": "10.0.0.5"}, map[string]any{"type": "Hostname", "address": "poc-talos4-cp1"}}, "allocatable": map[string]any{"cpu": "3950m", "memory": "7712Mi", "pods": "110"}, "zone": "fsn1", "region": "eu-central",
-			"zoneLabelManagers": []any{map[string]any{"manager": "mitstack-node-topology", "operation": "Update", "time": "2026-11-04T08:05:00Z"}}},
+			"zoneLabelManagers": []any{map[string]any{"manager": "mitstack-node-topology", "operation": "Update", "time": "2026-11-04T08:05:00Z"}},
+			"taints":            []any{map[string]any{"key": "node-role.kubernetes.io/control-plane", "value": nil, "effect": "NoSchedule"}}, "unschedulable": false},
 		map[string]any{"name": "poc-talos4-cp2", "ready": true, "talosVersion": "v1.14.4", "kubeletVersion": "v1.37.1", "internalIP": "10.0.0.6",
 			"addresses": []any{map[string]any{"type": "InternalIP", "address": "10.0.0.6"}}, "allocatable": map[string]any{"cpu": "4", "memory": "15622080Ki", "pods": "110"}, "zone": "nbg1", "region": nil,
-			"zoneLabelManagers": []any{map[string]any{"manager": "kubectl-label", "operation": "Update", "time": "2026-11-04T08:07:00Z"}}},
+			"zoneLabelManagers": []any{map[string]any{"manager": "kubectl-label", "operation": "Update", "time": "2026-11-04T08:07:00Z"}},
+			"taints":            []any{}, "unschedulable": false},
 		map[string]any{"name": "poc-talos4-cp3", "ready": false, "talosVersion": "v1.14.3", "kubeletVersion": "v1.37.1", "internalIP": "10.0.0.7",
 			"addresses": []any{map[string]any{"type": "InternalIP", "address": "10.0.0.7"}}, "allocatable": map[string]any{"cpu": "1950m", "memory": "3615Mi", "pods": "110"}, "zone": nil, "region": nil,
-			"zoneLabelManagers": []any{}},
-	}, posted.body["nodes"], "each node's addresses with their types, its zone and region labels, and every manager of its zone label")
+			"zoneLabelManagers": []any{},
+			"taints": []any{map[string]any{"key": "node.kubernetes.io/unschedulable", "value": nil, "effect": "NoSchedule"},
+				map[string]any{"key": "mitstack.dev/pool", "value": "db", "effect": "NoExecute"}}, "unschedulable": true},
+	}, posted.body["nodes"], "each node's addresses with their types, its zone and region labels, every manager of its zone label, each taint without the time it was added, and whether the node is unschedulable")
 	assert.Equal(t, []any{}, posted.body["ingresses"], "a cluster with no Ingress reports an empty list")
 	assert.Equal(t, readJSON(t, "testdata", "golden", "argocd.json"), posted.body["argocd"], "each Application names the revision Argo CD compared it against or null and its last sync's phase with the message cut to 256 characters, and a Secret is among the applied objects, each with its identity, sync and health alone")
 	wantCalls := []string{
@@ -351,6 +356,7 @@ func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipA
 	require.NotEmpty(t, calls)
 	beside := []string{"kubectl " + meshProbeRead, "kubectl " + podsRead, "kubectl " + workloadsRead, "kubectl " + ingressesRead, "kubectl " + defaultDenyRead,
 		"talosctl " + etcdStatusRead, "kubectl " + sealedSecretsRead, "kubectl " + appProjectsRead, "kubectl " + fixturesRead,
+		"kubectl " + objectStoresRead,
 		"kubectl " + scansRead, "kubectl " + scanCronJobRead, "kubectl " + scanEventsRead}
 	for _, read := range beside {
 		assert.Contains(t, calls[:len(calls)-1], read, "a read beside the others ends before the proof")
@@ -582,13 +588,22 @@ func TestReport_PostsEachMemberItReadsFromAHealthyCluster(t *testing.T) {
 			readJSON(t, "testdata", "golden", "system-volumes.json")},
 		"the key set the API server signs service account tokens with, under jwks": {"jwks",
 			"the report's jwks member is the API server's key set as read", readJSON(t, "testdata", "jwks.json")},
-		"CloudNativePG's clusters with their current primary, databases and roles": {"cloudNativePG", "", []any{
+		"CloudNativePG's clusters with their current primary, archiving and last backup, databases and roles": {"cloudNativePG", "", []any{
 			map[string]any{"namespace": "app-pg", "kind": "Cluster", "name": "shared", "subscription": "sub_pg0123456789",
-				"phase": "Cluster in healthy state", "instances": float64(2), "readyInstances": float64(2), "currentPrimary": "shared-1"},
+				"phase": "Cluster in healthy state", "instances": float64(2), "readyInstances": float64(2), "currentPrimary": "shared-1",
+				"continuousArchiving": map[string]any{"status": "True", "reason": "ContinuousArchivingSuccess", "message": "Continuous archiving is working"},
+				"lastBackup":          map[string]any{"status": "False", "reason": "LastBackupFailed", "message": "can't execute backup: exit status 4"}},
 			map[string]any{"namespace": "app-pg", "kind": "Database", "name": "shop", "subscription": "sub_shop01234567",
 				"applied": true, "message": nil},
 			map[string]any{"namespace": "app-pg", "kind": "DatabaseRole", "name": "shop", "subscription": nil,
 				"applied": false, "message": `role "shop" cannot be created: the cluster is not ready`}}},
+		"each plugin CloudNativePG finds by a Service in its own namespace, in name order, and none a Service elsewhere names": {
+			"cloudNativePGPlugins", "", []any{"barman-cloud.cloudnative-pg.io", "other.example"}},
+		"each ObjectStore with every server's recovery window, and one the plugin has not written a status for": {"cloudNativePGObjectStores", "", []any{
+			map[string]any{"namespace": "app-pg", "kind": "ObjectStore", "name": "shared", "subscription": "sub_pg0123456789",
+				"recoveryWindows": map[string]any{"shared": map[string]any{"firstRecoverabilityPoint": "2026-11-12T02:00:11Z",
+					"lastSuccessfulBackupTime": "2026-11-12T02:00:11Z", "lastFailedBackupTime": nil}}},
+			map[string]any{"namespace": "app-pg", "kind": "ObjectStore", "name": "fresh", "subscription": nil, "recoveryWindows": map[string]any{}}}},
 		"each claim with its storage class, phase, requested size and bound capacity, and the default storage classes": {"storage", "", map[string]any{
 			"claims": []any{
 				map[string]any{"namespace": "app-shop", "name": "data-shop-db-1", "storageClass": "local-path", "phase": "Bound", "requestedSize": "10Gi", "capacity": "10Gi"},
@@ -601,7 +616,11 @@ func TestReport_PostsEachMemberItReadsFromAHealthyCluster(t *testing.T) {
 			map[string]any{"namespace": "app-shop", "name": "shop-db-rw", "type": "ClusterIP"},
 			map[string]any{"namespace": "app-shop", "name": "edge", "type": "NodePort"},
 			map[string]any{"namespace": "argocd", "name": "argocd-server", "type": "ClusterIP"},
-			map[string]any{"namespace": "argocd", "name": "argocd-repo-server", "type": "ClusterIP"}}},
+			map[string]any{"namespace": "argocd", "name": "argocd-repo-server", "type": "ClusterIP"},
+			map[string]any{"namespace": "cnpg-system", "name": "cnpg-webhook-service", "type": "ClusterIP"},
+			map[string]any{"namespace": "cnpg-system", "name": "other-plugin", "type": "ClusterIP"},
+			map[string]any{"namespace": "cnpg-system", "name": "barman-cloud", "type": "ClusterIP"},
+			map[string]any{"namespace": "app-shop", "name": "plugin-lookalike", "type": "ClusterIP"}}},
 		"the node-report contract and each of the verdict's nine checks": {"checks", "", everyCheck},
 		"Argo CD's Services": {"argocd.services", "", []any{
 			map[string]any{"name": "argocd-server", "type": "ClusterIP"},
@@ -676,6 +695,18 @@ func TestReport_CutsAnIngressClassTakenFromItsAnnotationTo256Characters(t *testi
 	assert.Equal(t, long[:256], testutil.Field(t, posted.body, "ingresses", "0", "class"))
 }
 
+func TestReport_CutsAClustersArchivingMessageTo256CharactersAndReadsTheLastBackupItHoldsNoConditionForAsNull(t *testing.T) {
+	long := strings.Repeat("m", 300)
+	failing := `jq '.items[0].status.conditions = [{type: "ContinuousArchiving", status: "False", reason: "ContinuousArchivingFailing", message: "` + long + `"}]' testdata/cloudnative-pg.json`
+
+	_, posted, out, err := runReport(t, kubectlWith(cloudNativePGRead, failing))
+
+	require.NoError(t, err, out)
+	assert.Equal(t, map[string]any{"status": "False", "reason": "ContinuousArchivingFailing", "message": long[:256]},
+		testutil.Field(t, posted.body, "cloudNativePG", "0", "continuousArchiving"))
+	assert.Nil(t, testutil.Field(t, posted.body, "cloudNativePG", "0", "lastBackup"), "a Cluster that has taken no backup holds no LastBackupSucceeded condition")
+}
+
 func TestReport_NamesEachAppliedObjectsArgoCDHealthAndEachContainersStateButNoTerminatedContainersMessage(t *testing.T) {
 	_, posted, out, err := runReport(t, nil)
 
@@ -746,6 +777,8 @@ func TestReport_NamesAFailedVolumeCloudNativePGStorageOrServiceReadInlineWithIts
 	notStorage := failed(0, "kubectl exited 0, and its output is not the claims, storage classes and Services this report reads")
 	ingressesFailed := failed(1, "error: ingresses is forbidden\n")
 	notIngresses := failed(0, "kubectl exited 0, and its output is not the Ingresses this report reads")
+	noObjectStores := failed(1, "error: the server doesn't have a resource type \"objectstores\"\n")
+	notObjectStores := failed(0, "kubectl exited 0, and its output is not the ObjectStores this report reads")
 	cases := map[string]struct {
 		fakes map[string]string
 		want  map[string]any
@@ -760,10 +793,10 @@ func TestReport_NamesAFailedVolumeCloudNativePGStorageOrServiceReadInlineWithIts
 		"the volume read prints no volume": {map[string]string{"talosctl": talosctlAnswering("true")}, map[string]any{"systemVolumes": notVolumes}},
 		"the storage and Service read exits 1, for every Service and Argo CD's": {
 			kubectlWith(storageRead, `echo 'error: persistentvolumeclaims is forbidden' >&2; exit 1`),
-			map[string]any{"storage": storageFailed, "services": storageFailed, "argocd.services": storageFailed}},
+			map[string]any{"storage": storageFailed, "services": storageFailed, "argocd.services": storageFailed, "cloudNativePGPlugins": storageFailed}},
 		"the storage read times out": {kubectlWith(storageRead, "sleep 10"), map[string]any{"storage": timedOut}},
 		"the storage and Service read prints no JSON": {kubectlWith(storageRead, "echo 'not json'"),
-			map[string]any{"storage": notStorage, "services": notStorage}},
+			map[string]any{"storage": notStorage, "services": notStorage, "cloudNativePGPlugins": notStorage}},
 		"the pod read exits 1, for every pod and Argo CD's": {kubectlWith(podsRead, `echo 'error: pods is forbidden' >&2; exit 1`),
 			map[string]any{"pods": podsFailed, "kubernetes.argocdPods": podsFailed}},
 		"the pod read times out": {kubectlWith(podsRead, "sleep 10"), map[string]any{"pods": timedOut}},
@@ -772,6 +805,12 @@ func TestReport_NamesAFailedVolumeCloudNativePGStorageOrServiceReadInlineWithIts
 		"the Ingress read prints no JSON": {kubectlWith(ingressesRead, "echo 'not json'"),
 			map[string]any{"ingresses": notIngresses, "argocd.ingresses": notIngresses}},
 		"the default-deny read times out": {kubectlWith(defaultDenyRead, "sleep 10"), map[string]any{"defaultDenyPolicies": timedOut}},
+		"a cluster without the Barman Cloud plugin, whose API server knows no ObjectStore and whose operator namespace holds no plugin Service": {
+			map[string]string{"kubectl": kubectlAnswering(map[string]string{
+				objectStoresRead: `echo "error: the server doesn't have a resource type \"objectstores\"" >&2; exit 1`,
+				storageRead:      `jq 'del(.items[] | select(.metadata.labels["cnpg.io/pluginName"]))' testdata/storage-and-services.json`})},
+			map[string]any{"cloudNativePGObjectStores": noObjectStores, "cloudNativePGPlugins": []any{}, "cloudNativePG.0.kind": "Cluster"}},
+		"the ObjectStore read prints no JSON": {kubectlWith(objectStoresRead, "echo 'not json'"), map[string]any{"cloudNativePGObjectStores": notObjectStores}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -852,6 +891,7 @@ func TestManifests_LetsTheReportListPodsEachKindItReadsAndCloudNativePGsObjectsA
 		map[string]any{"apiGroups": []any{"external-secrets.io"}, "resources": []any{"externalsecrets"}, "verbs": []any{"list"}},
 		map[string]any{"apiGroups": []any{"postgresql.cnpg.io"}, "resources": []any{"clusters", "databases", "databaseroles"},
 			"verbs": []any{"get", "list"}},
+		map[string]any{"apiGroups": []any{"barmancloud.cnpg.io"}, "resources": []any{"objectstores"}, "verbs": []any{"list"}},
 		map[string]any{"apiGroups": []any{""}, "resources": []any{"persistentvolumeclaims"}, "verbs": []any{"list"}},
 		map[string]any{"apiGroups": []any{"storage.k8s.io"}, "resources": []any{"storageclasses"}, "verbs": []any{"list"}},
 	}, rules)

@@ -51,13 +51,13 @@ func TestDefault_RunsKyvernoWithBothPoliciesAndCloudNativePGWithTheDatabaseSlice
 	}
 }
 
-func TestImages_RefusesAnOperatorsDefaultImageWithoutADigest(t *testing.T) {
-	set := components.Set{Inline: []components.Manifest{{Name: "operator", Bytes: []byte("data:\n  PGBOUNCER_IMAGE_NAME: ghcr.io/cloudnative-pg/pgbouncer:1.25.2\n")}}}
+func TestImages_RefusesAnOperatorsDefaultImageAndAPluginsSidecarImageWithoutADigest(t *testing.T) {
+	for setting, ref := range map[string]string{"PGBOUNCER_IMAGE_NAME": "ghcr.io/cloudnative-pg/pgbouncer:1.25.2", "SIDECAR_IMAGE": `"ghcr.io/cloudnative-pg/plugin-barman-cloud-sidecar:v0.16.0"`} {
+		_, err := components.Set{Inline: []components.Manifest{{Name: "operator", Bytes: []byte("data:\n  " + setting + ": " + ref + "\n")}}}.Images()
 
-	_, err := set.Images()
-
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "ghcr.io/cloudnative-pg/pgbouncer:1.25.2")
+		require.Error(t, err, setting)
+		assert.Contains(t, err.Error(), strings.Trim(ref, `"`))
+	}
 }
 
 func TestDefault_PinsTheReleasesToolsEnvInstalls(t *testing.T) {

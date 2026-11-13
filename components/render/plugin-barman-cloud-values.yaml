@@ -1,0 +1,15 @@
+image:
+  tag: v0.16.0@sha256:6404a416718bd7aad943c67a25a7bb20d0558b43edfeab0bf167f013ca435882
+# The plugin adds this image to every Postgres pod that archives through it, so the registry policy names it exactly.
+sidecarImage:
+  tag: v0.16.0@sha256:c669259e20ed1e11fad821f735c396c19d929985aa05b9544b13ecc8b5a386d0
+podLabels:
+  mitstack.dev/app: plugin-barman-cloud
+# The chart sets no resources, so the plugin takes the limits the CloudNativePG operator runs under.
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi

@@ -737,7 +737,7 @@ func TestReport_CarriesOneMessageOfAtMost256BytesForEachOf40FailedKitJobsInsideT
 	for _, pod := range posted.body["pods"].([]any) {
 		if message, ok := testutil.Field(t, pod, "containers", "0", "message").(string); ok {
 			carried++
-			assert.True(t, len(message) <= 256 && utf8.ValidString(message), "a message is at most 256 bytes of whole characters, not %d", len(message))
+			assert.True(t, len(message) == 255 && utf8.ValidString(message) && strings.HasSuffix(message, "."), "a message is the end of its log in whole characters, not %q", message)
 		}
 	}
 	assert.Equal(t, 40, carried, "one message for each Job, from its newest failed pod")

@@ -22,7 +22,7 @@
         "name": "handover",
         "state": "terminated",
         "reason": "Error",
-        "message": "handover: waiting up to 120s for Argo CD to apply each object the component states\nhandover: Argo CD has not applied CustomResourceDefinition ingressroutes.traefik.io, CustomResourceDefinition middlewares.traefik.io, CustomResourceDefinition serverstranspo"
+        "message": "andover: Argo CD has not applied CustomResourceDefinition ingressroutes.traefik.io, CustomResourceDefinition middlewares.traefik.io, CustomResourceDefinition serverstransports.traefik.io within 120s, so giving up talos's fields could take every field away\n"
       }
     ]
   },

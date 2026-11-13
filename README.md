@@ -2095,8 +2095,8 @@ default, the
 
 The `cluster` Application creates each `component-` Application, and each of
 those applies its directory. Every one syncs by server-side apply with
-`prune` and `selfHeal` on, unlimited retries, and Argo CD's resources
-finalizer. In Argo CD's terms, `prune` deletes a live object once the
+`prune` and `selfHeal` on, retries without a count limit inside a sync's
+one-hour bound, and Argo CD's resources finalizer. In Argo CD's terms, `prune` deletes a live object once the
 repository no longer holds it, and `selfHeal` puts back an object someone
 changed in the cluster by hand. Server-side apply has the Kubernetes API
 server merge each object's fields, where the default client-side apply
@@ -2112,9 +2112,26 @@ applied before the Application itself goes. The effects:
   annotations.
 - The retries wait out a resource definition, again a CRD, that another
   component's Application has yet to apply. A component that uses a custom
-  resource fails to sync until its definition exists, and a retry succeeds
-  once it does. A retry takes the newest commit, which `retry.refresh` sets,
-  so a later release still reaches a component whose sync keeps failing.
+  resource fails to sync until its definition exists, and a retry within the
+  hour below succeeds once it does. A retry takes the newest commit, which
+  `retry.refresh` sets, so a later release still reaches a component whose
+  sync keeps failing.
+- Argo CD ends any sync operation, the run that applies one commit and
+  retries it, once it has run for an hour. The setting is
+  `controller.sync.timeout.seconds` in `argocd-cmd-params-cm`, the ConfigMap
+  that holds the application controller's settings. Argo CD copies the
+  Application's retry settings into an operation when it starts the
+  operation, and the operation keeps that copy until it ends. So an operation
+  that began before its Application carried `retry.refresh` retries its first
+  commit without end, until the hour ends it.
+- After an operation ends, Argo CD compares the Application with its
+  repository within about three minutes and starts a sync of the newest
+  commit if no operation has tried that commit yet. An operation that still
+  fails after an hour on the newest commit ends with the phase Failed, which
+  the node report carries and the read-back names. Argo CD then tries that
+  commit again only once a newer one lands, so a dependency that takes a new
+  cluster more than an hour leaves its component Failed until the next
+  release.
 - The finalizer deletes a component's objects once a release drops the
   component. Those objects include its resource definitions, and Kubernetes
   then deletes every custom resource of those definitions too. Deleting a

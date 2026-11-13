@@ -42,10 +42,11 @@ func TestArgoCD_ReadsACloudNativePGClusterPassingThroughAPhaseAsProgressingAStuc
 	}
 }
 
-func TestArgoCD_KeepsEachObjectsHealthOnItsApplicationWhereTheNodeReportReadsIt(t *testing.T) {
+func TestArgoCD_KeepsEachObjectsHealthOnItsApplicationAndEndsASyncOperationAfterAnHour(t *testing.T) {
 	cm := namedDocument(t, manifest(t, "argocd"), "ConfigMap", "argocd-cmd-params-cm")
 
-	assert.Equal(t, "true", testutil.Field(t, cm, "data", "controller.resource.health.persist"), "Argo CD 3 keeps object health off the Application otherwise")
+	assert.Equal(t, "true", testutil.Field(t, cm, "data", "controller.resource.health.persist"), "Argo CD 3 keeps object health off the Application otherwise, and the node report reads it there")
+	assert.Equal(t, "3600", testutil.Field(t, cm, "data", "controller.sync.timeout.seconds"), "the sync timeout the application controller reads as ARGOCD_APPLICATION_CONTROLLER_SYNC_TIMEOUT; an operation that began without retry.refresh retries its first commit without end otherwise")
 }
 
 func TestArgoCD_StartsEveryClusterWithItsLocalAdminAccountOff(t *testing.T) {

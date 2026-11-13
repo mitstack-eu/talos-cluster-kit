@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Posts the node report: nodes with their zone and region labels, taints and unschedulable flag, etcd members with
-# their health and the leader, each node's addresses with their types and its STATE and EPHEMERAL encryption, Argo CD's health of each Application and each
-# object it applied, what each Argo CD route answers a caller without a session, Argo CD's Services, Ingresses and pod
-# images, every Ingress with its class and the addresses its status holds, CloudNativePG's
+# Posts the node report: nodes with their zone and region labels, taints and unschedulable flag, etcd members with their
+# health and the leader, each node's addresses with their types and its STATE and EPHEMERAL encryption, Argo CD's health
+# of each Application and each object it applied, what each Argo CD route answers a caller without a session, Argo CD's
+# Services, Ingresses and pod images, every Ingress with its class and the addresses its status holds, CloudNativePG's
 # objects with each cluster's primary, archiving and last backup, the plugins it finds and each ObjectStore's recovery
-# windows, every pod's node, phase and container states, each image reference the pods and
-# the workloads' pod templates name, each OpenBao member's seal state and the active one, each claim with its size and the default
-# storage classes, every Service's type, each default-deny NetworkPolicy, the objects labelled
-# mitstack.dev/subscription, the API server's key set, the mesh probe's results, the outside probe's reading of each
-# gateway's mirror, whether a TLS connection to Let's Encrypt's ACME API opens through the network's default route, each
-# repository credential Argo CD's SealedSecrets declare with each AppProject's source repositories, the API server's
-# answer to a dry run of each admission fixture, the security scan's last runs, newest Job with its events and kept summaries, and a checks member
+# windows, every pod's node, phase and container states, each image reference the pods and the workloads' pod templates
+# name, each OpenBao member's seal state and the active one, each claim with its size and the default storage classes,
+# every Service's type, each default-deny NetworkPolicy, the objects labelled mitstack.dev/subscription, the API
+# server's key set, the mesh probe's results, the outside probe's reading of each gateway's mirror, whether a TLS
+# connection to Let's Encrypt's ACME API opens through the network's default route, each repository credential Argo CD's
+# SealedSecrets declare with each AppProject's source repositories, the API server's answer to a dry run of each
+# admission fixture, the security scan's last runs, newest Job with its events and kept summaries, and a checks member
 # naming each check of the platform's verdict, signed with a token the API server mints for the body through block-kit's
 # token-request.sh in REPORT_PROOF_SCRIPT.
 # When a read, the body or the token request fails or times out, it posts an unsigned report whose error names it

@@ -1344,7 +1344,11 @@ type whose read fails is left out of `subscriptionResourceKinds`.
 
 A cluster without the Barman Cloud plugin stays a full report. Its
 `cloudNativePGPlugins` is an empty list, and its `cloudNativePGObjectStores`
-holds the failed read, since its API server knows no ObjectStore.
+holds the failed read, since its API server knows no ObjectStore. That is the
+convention for a kind a cluster does not serve: `cloudNativePG` holds its read's
+failure on a cluster without the CloudNativePG operator in the same way, and
+`TestReport_NamesAFailedVolumeCloudNativePGStorageOrServiceReadInlineWithItsExitStatusAsANumberInAFullReport`
+in `report/report_test.go` pins both.
 
 Every report needs four reads: the nodes, the Applications, the key set and
 the etcd members. When one of those, the body build or the proof script fails
@@ -1561,12 +1565,16 @@ Cilium policy `mitstack-database-slices` opens no route to a bucket, so the
 block that declares the ObjectStore also opens the bucket's host to the
 Postgres pods and the restore Job.
 
-The plugin's ClusterRole, as its chart writes it, reads and writes Secrets in
-every namespace and creates a Role for each Cluster it serves. The plugin's
+The plugin's ClusterRole, as its chart writes it, grants `create`, `delete`,
+`get`, `list` and `watch` on Secrets in every namespace, and no `update` or
+`patch`, and it creates a Role for each Cluster it serves. The plugin's
 [installation page](https://cloudnative-pg.io/plugin-barman-cloud/docs/installation/)
-gives a narrower option: list the namespaces in `WATCH_NAMESPACE` on the
-Deployment and grant a Role in each. Every new database would then change the
-plugin, so the kit keeps the rule the chart ships.
+documents a narrower mode: list the namespaces in `WATCH_NAMESPACE` on the
+Deployment and grant a Role in each. Every new database namespace would then
+change the plugin's Deployment and its RBAC, and the CloudNativePG operator,
+in the same `cnpg-system`, already holds `create`, `delete`, `get`, `list`,
+`patch`, `update` and `watch` on Secrets in every namespace through its
+ClusterRole `cloudnative-pg`. The kit therefore keeps the rule the chart ships.
 
 A database that stops backing up shows in the node report, and nowhere else.
 `cloudNativePGPlugins` names each plugin the operator can find. Each Cluster
@@ -2270,6 +2278,14 @@ container gone.
 does the same for the Cilium policy definition, which Argo CD applies without
 its tracking annotation. `rollout/rollout_test.go` covers the script's
 refusals with a fake kubectl.
+
+The Barman Cloud plugin's component states a CustomResourceDefinition, the
+ObjectStore, so its handover Job relies on the fix released as kit v0.63.0,
+which waits for Argo CD's field manager and not for its tracking annotation.
+`TestAPIServer_AComponentsHandoverGivesUpTalossFieldsOnEachObjectOfTheBarmanCloudPluginAfterCertManagersDefinitionsExist`
+creates the plugin as Talos does after cert-manager's definitions exist, runs
+its handover Job as Argo CD's application controller and reads no object that
+still names `talos`.
 
 ### What the rendered components must look like for Argo CD to read them Synced
 

@@ -7,8 +7,8 @@
 # windows, each CronJob a block labels with its last success and newest failure since, every pod's node, phase and
 # container states with the message of each failed container in the newest failed pod of each Job the kit renders, each
 # image reference the pods and the workloads' pod templates name, each OpenBao member's seal state and the active one,
-# each claim with its size and the default storage classes, every Service's type, each
-# default-deny NetworkPolicy, the objects labelled mitstack.dev/subscription, the API server's key set, the mesh probe's
+# each claim with its size and the default storage classes, every Service's type, each default-deny NetworkPolicy,
+# the objects labelled mitstack.dev/subscription, the API server's key set, the mesh probe's
 # results, the outside probe's reading of each gateway's mirror, whether a TLS connection to Let's Encrypt's ACME API
 # opens through the network's default route, each repository credential Argo CD's SealedSecrets declare with each
 # AppProject's source repositories, the API server's answer to a dry run of each admission fixture, the security scan's
@@ -427,24 +427,27 @@ body() {
         | select(.metadata.annotations["storageclass.kubernetes.io/is-default-class"] == "true") | .metadata.name]
     };
     # A container carries its state with the reason Kubernetes gives, and the message only while it waits, since a
-    # terminated container's message is whatever its program wrote.
+    # terminated container's message is whatever the app wrote.
     def container: (.state // {}) as $s | {name: .name}
       + if $s.waiting then
           {state: "waiting", reason: ($s.waiting.reason // null), message: ($s.waiting.message // null | at_most_256)}
         elif $s.terminated then {state: "terminated", reason: ($s.terminated.reason // null)}
         elif $s.running then {state: "running"}
         else {state: null} end;
-    # A container that exited non-zero in the newest failed pod of a Job the kit renders also carries its message, since
-    # the kit's scripts write only their own refusals, and FallbackToLogsOnError makes that the end of the output.
-    def failed_message: .state.terminated as $t | if $t != null and ($t.exitCode // 0) != 0 then {message: ($t.message // null | at_most_256_bytes)} else {} end;
+    # A kit Job's script writes only its own refusal, which FallbackToLogsOnError makes a failed container's message.
+    def failed_message: .state.terminated as $t
+      | if $t != null and ($t.exitCode // 0) != 0 then {message: ($t.message // null | at_most_256_bytes)} else {} end;
     def qualified_name: "\(.metadata.namespace)/\(.metadata.name)";
-    # kit_jobs are the Jobs labelled mitstack.dev/rendered-by: talos-cluster-kit, by key, and none when the workload read failed.
+    # kit_jobs names each Job the kit labels as its own, and none when the workload read failed.
     def kit_jobs: if $workloads_status != 0 then {} else
-      try ([$workloads | fromjson | .items[] | select(.kind == "Job" and .metadata.labels["mitstack.dev/rendered-by"] == "talos-cluster-kit") | {key: qualified_name, value: true}] | from_entries) catch {} end;
+      try ([$workloads | fromjson | .items[]
+        | select(.kind == "Job" and .metadata.labels["mitstack.dev/rendered-by"] == "talos-cluster-kit")
+        | {key: qualified_name, value: true}] | from_entries) catch {} end;
     def job_of: .metadata.namespace as $ns | [.metadata.ownerReferences[]? | select(.kind == "Job") | "\($ns)/\(.name)"] | .[0];
-    # newest_failed($jobs) keys the newest failed pod of each of $jobs, the greater name on a tie.
-    def newest_failed($jobs): [.items[] | select(.status.phase == "Failed") | {job: job_of, at: .metadata.creationTimestamp, name: .metadata.name, key: qualified_name}
-      | select(.job != null and $jobs[.job])] | group_by(.job) | map(sort_by([.at, .name]) | last | {key, value: true}) | from_entries;
+    # newest_failed($jobs) names the newest failed pod of each of $jobs, the greater name on a tie.
+    def newest_failed($jobs): [.items[] | select(.status.phase == "Failed")
+      | {job: job_of, at: .metadata.creationTimestamp, name: .metadata.name, key: qualified_name} | select(.job != null and $jobs[.job])]
+      | group_by(.job) | map(sort_by([.at, .name]) | last | {key, value: true}) | from_entries;
     def pod($carried): $carried[qualified_name] as $carries | {
       namespace: .metadata.namespace, name: .metadata.name, node: (.spec.nodeName // null), phase: (.status.phase // null),
       containers: [(.status.initContainerStatuses // []) + (.status.containerStatuses // []) | .[] | container + if $carries then failed_message else {} end]

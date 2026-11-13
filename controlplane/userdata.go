@@ -102,8 +102,7 @@ func builderUserData(what string, machineConfig, gatewayCA []byte, fetch *servin
 	return out, nil
 }
 
-// withoutCommentLines drops each line after the first that holds only a comment, since nothing on the builder reads one
-// and its user data is near Hetzner's limit; it would drop such a line inside a heredoc too, so the script holds none.
+// withoutCommentLines drops every comment-only line after the first to save user data, and would drop one inside a heredoc.
 func withoutCommentLines(script string) string {
 	lines := strings.SplitAfter(script, "\n")
 	kept := []string{lines[0]}

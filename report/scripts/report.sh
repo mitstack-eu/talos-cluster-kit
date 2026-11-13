@@ -4,15 +4,16 @@
 # of each Application and each object it applied, what each Argo CD route answers a caller without a session, Argo CD's
 # Services, Ingresses and pod images, every Ingress with its class and the addresses its status holds, CloudNativePG's
 # objects with each cluster's primary, archiving and last backup, the plugins it finds and each ObjectStore's recovery
-# windows, each CronJob a block labels with its newest Job and newest failed Job, every pod's node, phase and container
-# states, each image reference the pods and the workloads' pod templates name, each OpenBao member's seal state and the
-# active one, each claim with its size and the default storage classes, every Service's type, each default-deny
-# NetworkPolicy, the objects labelled mitstack.dev/subscription, the API server's key set, the mesh probe's results, the
-# outside probe's reading of each gateway's mirror, whether a TLS connection to Let's Encrypt's ACME API opens through
-# the network's default route, each repository credential Argo CD's SealedSecrets declare with each AppProject's source
-# repositories, the API server's answer to a dry run of each admission fixture, the security scan's last runs, newest
-# Job with its events and kept summaries, and a checks member naming each check of the platform's verdict, signed with a
-# token the API server mints for the body through block-kit's token-request.sh in REPORT_PROOF_SCRIPT.
+# windows, each CronJob a block labels with its last success and newest failure since, every pod's node, phase and
+# container states, each image reference the pods and the workloads' pod templates name, each OpenBao member's seal
+# state and the active one, each claim with its size and the default storage classes, every Service's type, each
+# default-deny NetworkPolicy, the objects labelled mitstack.dev/subscription, the API server's key set, the mesh probe's
+# results, the outside probe's reading of each gateway's mirror, whether a TLS connection to Let's Encrypt's ACME API
+# opens through the network's default route, each repository credential Argo CD's SealedSecrets declare with each
+# AppProject's source repositories, the API server's answer to a dry run of each admission fixture, the security scan's
+# last runs, newest Job with its events and kept summaries, and a checks member naming each check of the platform's
+# verdict, signed with a token the API server mints for the body through block-kit's token-request.sh in
+# REPORT_PROOF_SCRIPT.
 # When a read, the body or the token request fails or times out, it posts an unsigned report whose error names it
 # instead, then exits non-zero.
 # Usage: REPORT_URL=<https url> SUBSCRIPTION_ID=<id> HOST_IP=<this pod's node> REPORT_PROOF_SCRIPT=<script> MESH_PROBE_URL=<target's url> MESH_PROBE_ANSWER=<its answer> MESH_PROBE_IDENTITY=<its SPIFFE id> MESH_PROBE_CONFIGMAP=<namespace/name> OPENBAO_MEMBERS="<name>=<https url> ..." OPENBAO_CA_FILE=<pem> ARGOCD_URL=<https url> GATEWAYS="<address> ..." EGRESS_URL=<https url> [POD_NAMESPACE=mitstack-node] [REPORT_TOKEN_FILE=/var/run/mitstack/token] [REPORT_READ_SECONDS=21] report.sh
@@ -392,35 +393,25 @@ body() {
         lastFailedBackupTime: (.lastFailedBackupTime // null)
       }))
     };
-    # scheduled_jobs lists each CronJob a block labels, and of each its newest Job and its newest failed Job, with the Jobs a
-    # block labels that no CronJob owns. A Job takes its CronJob's label, so a block labels the CronJob alone, and a Job is
-    # listed only with its CronJob. cut says for each list whether it passed its bound, and found counts what was read, so
-    # an observer never reads a cut-off object absent.
-    def scheduled_subscription: .metadata.labels["mitstack.dev/subscription"] // null;
-    def scheduled_condition: [.status.conditions[]? | select((.type == "Complete" or .type == "Failed") and .status == "True")
-      | {type, reason: (.reason // null), message: (.message // null | at_most_256), at: (.lastTransitionTime // null)}] | .[0];
+    # A message is cut to 256 bytes, never inside a character.
+    def at_most_256_bytes: if type == "string" and utf8bytelength > 256 then .[0:256] | until(utf8bytelength <= 256; .[0:-1]) else . end;
+    # scheduled_jobs lists each CronJob a block labels with its schedule and its last start and success. Argo CD gives a
+    # CronJob no health, so failedSinceSuccess names the newest failed Job of the CronJob whose failure is newer than its last
+    # success, or the newest failed one while it has none. The list is cut at 100 and says so, and found counts the CronJobs read.
+    def scheduled_failure: [.status.conditions[]? | select(.type == "Failed" and .status == "True")
+      | {at: (.lastTransitionTime // null), reason: (.reason // null), message: (.message // null | at_most_256_bytes)}] | .[0];
     def scheduled_owner: .metadata.namespace as $ns | [.metadata.ownerReferences[]? | select(.kind == "CronJob") | "\($ns)/\(.name)"] | .[0];
     def scheduled_jobs:
-      [.items[] | select(.kind == "CronJob" and scheduled_subscription != null)] as $crons
-      | ($crons | sort_by([.metadata.namespace, .metadata.name]) | .[0:100]) as $listed
-      | ($crons | map({key: "\(.metadata.namespace)/\(.metadata.name)", value: scheduled_subscription}) | from_entries) as $labels
-      | [$listed[] | "\(.metadata.namespace)/\(.metadata.name)"] as $listed_keys
-      | [.items[] | select(.kind == "Job") | scheduled_owner as $owner | (scheduled_subscription // $labels[$owner // ""]) as $sub
-        | select($sub != null) | {owner: $owner, entry: {namespace: .metadata.namespace, name: .metadata.name, subscription: $sub,
-          cronJob: ([.metadata.ownerReferences[]? | select(.kind == "CronJob") | .name] | .[0]), createdAt: (.metadata.creationTimestamp // null),
-          startTime: (.status.startTime // null), completionTime: (.status.completionTime // null), condition: scheduled_condition}}] as $jobs
-      | [$jobs[] | select(.owner != null)] as $owned
-      | [$owned[] | select(.owner as $o | any($listed_keys[]; . == $o))] as $under
-      | ([$jobs[] | select(.owner == null) | .entry]
-        + [$under | group_by(.owner)[] | map(.entry) | sort_by(.createdAt)
-          | ([last] + [map(select(.condition.type == "Failed")) | last // empty]) | unique_by(.name)[]]
-        | sort_by([.namespace, .name])) as $kept
-      | {cut: {cronJobs: (($crons | length) > 100), jobs: (($under | length) < ($owned | length) or ($kept | length) > 100)},
-        found: {cronJobs: ($crons | length), jobs: ($jobs | length)},
-        cronJobs: [$listed[] | {namespace: .metadata.namespace, name: .metadata.name,
-          subscription: scheduled_subscription, schedule: (.spec.schedule // null), suspended: (.spec.suspend // false),
-          lastScheduleTime: (.status.lastScheduleTime // null), lastSuccessfulTime: (.status.lastSuccessfulTime // null)}],
-        jobs: $kept[0:100]};
+      [.items[] | select(.kind == "CronJob" and .metadata.labels["mitstack.dev/subscription"] != null)] as $crons
+      | [.items[] | select(.kind == "Job") | {owner: scheduled_owner, name: .metadata.name, failure: scheduled_failure}] as $jobs
+      | {cut: (($crons | length) > 100), found: ($crons | length),
+        cronJobs: [$crons | sort_by([.metadata.namespace, .metadata.name]) | .[0:100][] | "\(.metadata.namespace)/\(.metadata.name)" as $key
+          | (.status.lastSuccessfulTime // null) as $ok
+          | ([$jobs[] | select(.owner == $key and .failure != null and ($ok == null or .failure.at > $ok))] | sort_by(.failure.at) | last) as $f
+          | {namespace: .metadata.namespace, name: .metadata.name, subscription: .metadata.labels["mitstack.dev/subscription"],
+            schedule: (.spec.schedule // null), suspended: (.spec.suspend // false),
+            lastScheduleTime: (.status.lastScheduleTime // null), lastSuccessfulTime: $ok}
+            + if $f == null then {} else {failedSinceSuccess: {job: $f.name, at: $f.failure.at, reason: $f.failure.reason, message: $f.failure.message}} end]};
     # zone_label_managers are the field managers whose entry in managedFields holds the zone label.
     def zone_label_managers: [.metadata.managedFields[]?
       | select(.fieldsV1["f:metadata"]["f:labels"]["f:topology.kubernetes.io/zone"] != null)

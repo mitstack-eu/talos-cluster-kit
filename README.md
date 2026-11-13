@@ -2522,9 +2522,10 @@ a dead server's Node.
 
 A control-plane node keeps its server and its server type for as long as it
 runs. To move one onto a new server, a block names the node's location in
-`Plane.ReplaceNodes` on the call it makes for an upgrade the user confirmed,
-with `Upgrading` set as on every upgrade's call. The plane records each named
-location on the network, under the label
+`Plane.ReplaceNodes` on an upgrade's call, the one it makes with `Upgrading`
+set. Which nodes an upgrade replaces, and how its user confirms that, is the
+block's to decide: talos-cluster-kit takes the locations as given. The plane
+records each named location on the Hetzner network, under the label
 `mitstack.dev/node-replace-<location>`, with the id Hetzner gives the node's
 server and the time of that call. Every later call reads the label and
 carries the replacement on, whether or not it names a node, so a replacement
@@ -2550,22 +2551,28 @@ the same class and changes nothing.
 The plane replaces one node at a time, in the order `fsn1`, `nbg1`, `hel1`.
 Each call takes one of these changes:
 
-1. It labels the node with the time its replacement began, so only a node
-   report received after that time judges the other members.
+1. It labels the node's Hetzner server with the time its replacement began, so
+   only a node report received after that time judges the other members.
 2. It asks block-kit's redundancy guard whether etcd keeps a majority of its
-   members serving without the node, and whether OpenBao does without each
-   member whose pod runs on it. It also reads again whether Hetzner can order
-   a successor. And it reads whether the report carries Argo CD's health of
-   what the Application named `cluster` applied, since step 6 reads the
-   removal Job's outcome from that health.
+   members serving without the node. Where the report lists OpenBao members,
+   it asks the same for each member whose pod runs on the node, and a cluster
+   whose report lists none is judged on etcd alone. It also reads again
+   whether Hetzner can order a successor. And it reads whether the report
+   carries Argo CD's health of what the Application named `cluster` applied,
+   since step 6 reads the removal Job's outcome from that health. That
+   Application is the cluster's own, which applies the `cluster/` directory of
+   the cluster repository, as
+   [the section on a release's components](#how-a-running-cluster-takes-a-releases-components)
+   describes.
 3. It powers the node off, so the node stops as a lost one does and its etcd
    member no longer answers.
-4. It labels the node with the time it found the node off, so only a node
+4. It labels the server with the time it found the node off, so only a node
    report received after that time judges the other members once more.
 5. It writes the Job `etcd.RemoveMemberJob` renders to the cluster repository,
-   at the path `etcd.RemovalPath` gives, through `Plane.Removals`. The
-   cluster's own Application applies the file, and its Job removes the member
-   and then the Node object.
+   through `Plane.Removals`, at the path `etcd.RemovalPath` gives:
+   `cluster/mitstack-etcd-remove-<hostname>.yaml`. The cluster's own
+   Application applies the file, and its Job removes the member and then the
+   Node object.
 6. Once a node report lists neither the member nor the Node object, it takes
    the file out of the repository, and Argo CD prunes the Job.
 7. It deletes the server. The next call finds the location without a node and
@@ -2589,7 +2596,9 @@ block asks again with a new upgrade.
 The guard judges once more before the removal is written in step 5, on a
 report received since the node was found off, since a second member may have
 stopped serving meanwhile. On that refusal the plane powers the node back on
-and takes the label off, so the node's member serves again. From step 5 on,
+and takes the label off. The node's member was not removed, so it is expected
+to serve again, which no run has shown yet for a node powered off this way.
+From step 5 on,
 `Problems` names on every call the node, whether it still runs, and the next
 step or what the replacement waits for.
 
@@ -2605,11 +2614,12 @@ removals := &controlplane.Removals{
 }
 ```
 
-`etcd.IsRemovalPath` exists for the block's `Held`, and the kit itself calls
-it nowhere. `listRemovals` and `commit` stand for the block's own code.
+`etcd.IsRemovalPath` exists for the block's `Held`, and talos-cluster-kit
+itself calls it nowhere. `listRemovals` and `commit` stand for the block's own
+code.
 
 The plane reads the Job's outcome from the node report, among the objects of
-the Application named `cluster`. Argo CD v3.5.5, which the kit deploys, reads
+the Application named `cluster`. Argo CD v3.5.5, which talos-cluster-kit deploys, reads
 a Job as `Progressing` until it ends, as `Healthy` once it completed and as
 `Degraded` once it failed, in its `gitops-engine/pkg/health/health_job.go`.
 The plane reads the last two as finished.
@@ -2623,29 +2633,31 @@ it cannot read, and the replacement still goes on once a report lists neither
 the member nor the Node object.
 
 A Job that failed and left the node's etcd member ends the replacement. The
-plane takes the file out, powers the node back on and takes the label off, so
-the member serves again. The call refuses with the class
+plane takes the file out, powers the node back on and takes the label off,
+since the member is still there to serve. The call refuses with the class
 `node-removal-failed` and the message Argo CD gives of the Job.
 
 A Job that failed after it removed the etcd member left only the Node object,
-and a node without its member does not serve again. The plane then takes the
-file out, waits for a report that no longer lists the Job, and writes the
+and the plane does not power a node back on whose member is removed. It takes
+the file out, waits for a report that no longer lists the Job, and writes the
 removal again. The guard judges that write too: while another member does not
 serve, the call refuses with `redundancy-below-minimum` and the node stays
 off. The plane sets no limit on how often it writes the removal again, and
-each round shows as two events and in `Problems`. It sets no time limit either on a removal that Argo
-CD never applies or whose Job never ends: the node stays off, the label stays,
-and `Problems` names the wait on every call.
+each round shows as two events and in `Problems`. It sets no time limit either
+on a removal that Argo CD never applies or whose Job never ends: the node
+stays off, the label stays, and `Problems` names the wait on every call.
 
-A Job keeps its name until Kubernetes deletes it, a day after it finishes, so
-a removal is never written while a Job of its name stands. The plane also
-takes the file out before it deletes the server. The cluster's own Application
-syncs with self-heal on, which applies again what the repository holds and the
-cluster lacks. A file left in the repository would therefore be expected to
-run its Job again once that day is over, against the new node, which has the
-same name. No run has shown that, and the plane's order keeps it from arising.
-For the same reason, when the old server is gone while the repository still
-holds a removal, the plane takes the file out before it creates the successor.
+The Job sets `ttlSecondsAfterFinished` to 86,400, so Kubernetes deletes it a
+day after it finishes. Until then a Job of its name stands, so the plane never
+writes a removal while a report still lists the Job. The plane also takes the
+file out before it deletes the
+server. The cluster's own Application syncs with self-heal on. Once the Job is
+deleted, the cluster lacks an object the file in the repository still
+declares, and self-heal is expected to apply the file again, which would run
+the Job against the new node of the same name. No run has shown that, and the
+plane's order keeps it from arising. For the same reason, when the old server
+is gone while the repository still holds a removal, the plane takes the file
+out before it creates the successor.
 
 ## How a block takes node pools
 

@@ -2474,6 +2474,16 @@ openbao-init: OpenBao answered 403 to GET sys/init
 openbao-init: reading OpenBao's init state met an answer that waiting cannot change, so this Job ends
 ```
 
+The two writes that enable the mount and the auth method take one more step.
+OpenBao 2.7.1 answers a repeat of either 400 "path is already in use", and a
+repeat of each other write the script sends 204. A write whose answer was lost
+can still land after the next try has read the listing, so that try's write
+meets the 400 with nothing wrong. The script reads `GET /v1/sys/mounts` or
+`GET /v1/sys/auth` before each try and skips a path already listed. After a
+write that fails, it reads the listing again, and the step succeeds when the
+path is now listed. Otherwise the failed write's answer stands, as the table
+gives it.
+
 The script holds the root token uncommitted only between the init's answer and
 the commit, and it sends OpenBao nothing in that time. It retries the two steps
 in between, encrypting the token and pushing the commit, without limit. The

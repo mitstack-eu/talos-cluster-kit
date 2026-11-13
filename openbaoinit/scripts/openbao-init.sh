@@ -163,8 +163,7 @@ seal_root() {
   printf '%s' "$root" | encrypt
 }
 
-# push_init_file stops at its first failing step, since bash ignores set -e in a function a loop tests, and a push
-# after a failed commit succeeds with nothing to send.
+# push_init_file stops at its first failing step, since bash ignores set -e in a function a loop tests.
 push_init_file() {
   local messages=$1 repository=$2
   printf '%s' "$messages" > "$repository/$INIT_FILE" &&
@@ -189,14 +188,19 @@ commit() {
   fi
 }
 
-# enable enables a secrets engine or auth method unless sys/<kind> lists it, since a lost answer may hide an earlier try.
+# enable skips a path sys/<kind> lists, and reads it again after a failed write, since an earlier lost write may land late.
 enable() {
-  local kind=$1 path=$2 request=$3 listed
+  local kind=$1 path=$2 request=$3 listed failed
   listed=$(bao GET "sys/$kind") || return
-  if printf '%s' "$listed" | jq -e --arg path "$path/" '(.data // .) | has($path)' > /dev/null; then
-    return 0
-  fi
-  bao POST "sys/$kind/$path" "$request" > /dev/null
+  lists "$listed" "$path" && return 0
+  bao POST "sys/$kind/$path" "$request" > /dev/null && return 0
+  failed=$?
+  listed=$(bao GET "sys/$kind") || return
+  lists "$listed" "$path" || return "$failed"
+}
+
+lists() {
+  printf '%s' "$1" | jq -e --arg path "$2/" '(.data // .) | has($path)' > /dev/null
 }
 
 kubernetes_accessor() {

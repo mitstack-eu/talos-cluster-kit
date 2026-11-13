@@ -5,6 +5,7 @@ package controlplane_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/netip"
 	"slices"
 	"strings"
@@ -15,6 +16,9 @@ import (
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
+	"github.com/mitstack-eu/talos-cluster-kit/etcd"
+	"github.com/mitstack-eu/talos-cluster-kit/internal/redundanttest"
+	"github.com/mitstack-eu/talos-cluster-kit/report"
 	"github.com/mitstack-eu/talos-cluster-kit/rollout"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 	"github.com/mitstack-eu/talos-cluster-kit/tools"
@@ -211,4 +215,79 @@ func TestRelease_RefusesAPlaneThatCannotRenderTheBuildsOwnManifests(t *testing.T
 			assert.ErrorContains(t, err, tc.want, "the refusal")
 		})
 	}
+}
+
+// kitJobLabel and kitJobValue are the label each Job the kit writes carries, by which the node report carries its message.
+const kitJobLabel, kitJobValue = "mitstack.dev/rendered-by", "talos-cluster-kit"
+
+// jobOf is the Job a Job or a CronJob's template describes, or false for any other kind.
+func jobOf(doc map[string]any) (map[string]any, bool) {
+	switch doc["kind"] {
+	case "Job":
+		return doc, true
+	case "CronJob":
+		spec, _ := doc["spec"].(map[string]any)
+		job, ok := spec["jobTemplate"].(map[string]any)
+		return job, ok
+	}
+	return nil, false
+}
+
+func labelsOf(object map[string]any) map[string]any {
+	metadata, _ := object["metadata"].(map[string]any)
+	labels, _ := metadata["labels"].(map[string]any)
+	return labels
+}
+
+func TestPlane_EveryJobAndCronJobTheKitWritesLabelsItsJobsAsTheKitsAndRunsEachContainerWithFallbackToLogsOnError(t *testing.T) {
+	h := newHarness(t, hosting)
+	h.withLoadBalancers()
+	plane, err := h.plane.WithGatewayCA()
+	require.NoError(t, err)
+	built, err := plane.BuildSet(context.Background(), testStart, "enrolment-token")
+	require.NoError(t, err)
+	builder := plane
+	builder.Hosting = nil
+	unhosted, err := builder.ClusterComponents("enrolment-token")
+	require.NoError(t, err)
+	files, err := h.releaseOf(plane).Files(testutil.InitRepository)
+	require.NoError(t, err)
+	removal, err := etcd.RemoveMemberJob(etcd.RemoveMember{Hostname: "shop-node-nbg1", ToolsImage: tools.Image, StepStart: testStart, Guard: redundanttest.Guard,
+		Report: report.Read{At: testStart, Body: []byte(`{"etcd":{"members":[{"hostname":"shop-node-fsn1","healthy":true},{"hostname":"shop-node-nbg1","healthy":false},{"hostname":"shop-node-hel1","healthy":true}]}}`)}})
+	require.NoError(t, err)
+	rendered := [][]byte{removal}
+	for _, m := range slices.Concat(built.Served, built.Inline, unhosted.Inline) {
+		rendered = append(rendered, m.Bytes)
+	}
+	for _, f := range files {
+		rendered = append(rendered, f.Bytes)
+	}
+
+	var written, wrong []string
+	for _, manifest := range rendered {
+		for _, doc := range testutil.Documents(t, manifest) {
+			job, ok := jobOf(doc)
+			// An upstream chart writes its own Job's pod spec, and the pinned argo-cd chart has no value for the policy.
+			if !ok || labelsOf(doc)["helm.sh/chart"] != nil {
+				continue
+			}
+			name := fmt.Sprint(testutil.Field(t, doc, "metadata", "name"))
+			written = append(written, name)
+			if labelsOf(job)[kitJobLabel] != kitJobValue {
+				wrong = append(wrong, fmt.Sprintf("%s %s gives its Jobs no %s: %s label", doc["kind"], name, kitJobLabel, kitJobValue))
+			}
+			spec := testutil.Field(t, job, "spec", "template", "spec").(map[string]any)
+			inits, _ := spec["initContainers"].([]any)
+			containers, _ := spec["containers"].([]any)
+			for _, c := range slices.Concat(inits, containers) {
+				if policy := testutil.Field(t, c, "terminationMessagePolicy"); policy != "FallbackToLogsOnError" {
+					wrong = append(wrong, fmt.Sprintf("%s %s runs container %v with terminationMessagePolicy %v", doc["kind"], name, testutil.Field(t, c, "name"), policy))
+				}
+			}
+		}
+	}
+
+	assert.Subset(t, written, []string{"component-cilium-handover", etcd.JobName("shop-node-nbg1"), "mitstack-openbao-init", "mitstack-node-report",
+		"mitstack-security-scan", "mitstack-mesh-probe", "mitstack-enrolment", "mitstack-repository-token", "mitstack-node-topology"}, "the walk reaches each renderer's Job")
+	assert.Empty(t, wrong, "a failed container leaves the end of its output as its message only under FallbackToLogsOnError, and the report carries it only from a Job with the kit's label")
 }

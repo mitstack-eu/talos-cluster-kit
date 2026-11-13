@@ -1,0 +1,75 @@
+[
+  {
+    "namespace": "argocd",
+    "name": "component-traefik-handover-4kq2m",
+    "node": "poc-talos4-cp1",
+    "phase": "Failed",
+    "containers": [
+      {
+        "name": "handover",
+        "state": "terminated",
+        "reason": "Error"
+      }
+    ]
+  },
+  {
+    "namespace": "argocd",
+    "name": "component-traefik-handover-9xw7d",
+    "node": "poc-talos4-cp2",
+    "phase": "Failed",
+    "containers": [
+      {
+        "name": "handover",
+        "state": "terminated",
+        "reason": "Error",
+        "message": "handover: waiting up to 120s for Argo CD to apply each object the component states\nhandover: Argo CD has not applied CustomResourceDefinition ingressroutes.traefik.io, CustomResourceDefinition middlewares.traefik.io, CustomResourceDefinition serverstranspo"
+      }
+    ]
+  },
+  {
+    "namespace": "app-shop",
+    "name": "migrate-z8r5t",
+    "node": "poc-talos4-cp2",
+    "phase": "Failed",
+    "containers": [
+      {
+        "name": "migrate",
+        "state": "terminated",
+        "reason": "Error"
+      }
+    ]
+  },
+  {
+    "namespace": "mitstack-node",
+    "name": "mitstack-node-report-29381250-h2v6c",
+    "node": "poc-talos4-cp1",
+    "phase": "Failed",
+    "containers": [
+      {
+        "name": "report",
+        "state": "terminated",
+        "reason": "OOMKilled",
+        "message": null
+      }
+    ]
+  },
+  {
+    "namespace": "kube-system",
+    "name": "mitstack-security-scan-29381000-p5n8s",
+    "node": "poc-talos4-cp3",
+    "phase": "Failed",
+    "containers": [
+      {
+        "name": "kube-bench",
+        "state": "terminated",
+        "reason": "Completed"
+      },
+      {
+        "name": "scan",
+        "state": "terminated",
+        "reason": "Error",
+        "message": "security-scan: kubescape ended with exit status 1: failed to pull the NSA framework\n"
+      }
+    ]
+  }
+]

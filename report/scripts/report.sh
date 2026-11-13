@@ -395,9 +395,9 @@ body() {
     };
     # A message is cut to 256 bytes, never inside a character.
     def at_most_256_bytes: if type == "string" and utf8bytelength > 256 then .[0:256] | until(utf8bytelength <= 256; .[0:-1]) else . end;
-    # scheduled_jobs lists each CronJob a block labels with its schedule and its last start and success. Argo CD gives a
-    # CronJob no health, so failedSinceSuccess names the newest failed Job of the CronJob whose failure is newer than its last
-    # success, or the newest failed one while it has none. The list is cut at 100 and says so, and found counts the CronJobs read.
+    # scheduled_jobs lists each labelled CronJob with its schedule and last start and success, and since Argo CD gives a CronJob no
+    # health, with failedSinceSuccess naming its newest failed Job (the greater name on a tie) whose failure is newer than its
+    # last success or, while it has none, the newest failed one, cutting the list at 100 with found counting the CronJobs read.
     def scheduled_failure: [.status.conditions[]? | select(.type == "Failed" and .status == "True")
       | {at: (.lastTransitionTime // null), reason: (.reason // null), message: (.message // null | at_most_256_bytes)}] | .[0];
     def scheduled_owner: .metadata.namespace as $ns | [.metadata.ownerReferences[]? | select(.kind == "CronJob") | "\($ns)/\(.name)"] | .[0];
@@ -407,7 +407,7 @@ body() {
       | {cut: (($crons | length) > 100), found: ($crons | length),
         cronJobs: [$crons | sort_by([.metadata.namespace, .metadata.name]) | .[0:100][] | "\(.metadata.namespace)/\(.metadata.name)" as $key
           | (.status.lastSuccessfulTime // null) as $ok
-          | ([$jobs[] | select(.owner == $key and .failure != null and ($ok == null or .failure.at > $ok))] | sort_by(.failure.at) | last) as $f
+          | ([$jobs[] | select(.owner == $key and .failure != null and ($ok == null or .failure.at > $ok))] | sort_by([.failure.at, .name]) | last) as $f
           | {namespace: .metadata.namespace, name: .metadata.name, subscription: .metadata.labels["mitstack.dev/subscription"],
             schedule: (.spec.schedule // null), suspended: (.spec.suspend // false),
             lastScheduleTime: (.status.lastScheduleTime // null), lastSuccessfulTime: $ok}

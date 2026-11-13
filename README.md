@@ -2143,10 +2143,12 @@ Argo CD applies. It runs once per sync of a component:
    that may change these objects.
 4. Argo CD creates and applies the rest of the Job's wave in the same pass
    that creates the Job, so the script first waits until each object exists
-   and names `argocd-controller` as a field manager that applied it. Argo CD
-   v3.5.5 leaves that mark on every object it applies by server-side apply.
-   Its annotation `argocd.argoproj.io/tracking-id` cannot stand in for the
-   mark, because `GenerateManifests` in its
+   and names `argocd-controller` as a field manager that applied it. The API
+   server records that name on an object of any kind that is applied under it
+   by server-side apply, and each component's Application sets
+   `ServerSideApply=true`. Argo CD's annotation
+   `argocd.argoproj.io/tracking-id` cannot stand in for that record, because
+   `GenerateManifests` in Argo CD v3.5.5's
    [`repository.go`](https://github.com/argoproj/argo-cd/blob/v3.5.5/reposerver/repository/repository.go)
    gives a CustomResourceDefinition none. The script watches each object on
    its own with `kubectl get --watch`, which the API server wakes at each
@@ -2173,9 +2175,8 @@ Argo CD has not applied, since giving up Talos's fields there would take every
 field away. The script checks it again on the read that follows the wait,
 which is the read it decides on. The third is an object that names `talos` for
 a write that was no server-side apply, since an apply cannot give such a write
-up. A
-document that stays with the build, such as a Secret holding data, is never
-named to the script.
+up. A document that stays with the build, such as a Secret holding data, is
+never named to the script.
 
 A handover changes a running cluster in two ways. Each object Talos created
 loses the annotation `config.k8s.io/owning-inventory`, which only Talos set.

@@ -162,7 +162,7 @@ plane := controlplane.Plane{
 	Guard:             guard,                                  // block-kit's redundancy guard, judging every removal
 	Notify:            emitEvent,                              // receives each certificate, route move, power-on and deletion
 	ReplaceNodes:      replace,                                // the locations whose node a confirmed upgrade replaces
-	Removals:          clusterRepository,                      // writes a replaced node's member removal to the cluster repository
+	Removals:          removals,                               // the block's two functions that list and write a member removal in the cluster repository
 	AppsOnWorkers:     true,
 	WorkerAddresses:   []string{"10.0.1.2"}, // the Robot worker's address in the network's vSwitch subnet
 }
@@ -2531,7 +2531,7 @@ stopped part way resumes where it stood. Another server in that location is
 the node's successor, which the plane tells by the id and by no clock. A call
 that is no upgrade records nothing.
 
-The upgrade's call refuses before any change in three cases, each with its own
+The upgrade's call refuses before any change in four cases, each with its own
 class:
 
 | Class | What the upgrade named |
@@ -2539,6 +2539,7 @@ class:
 | `node-replacement-unknown` | A location the cluster runs no single node in |
 | `server-unavailable` | A location where Hetzner can order none of `ServerTypes` now |
 | `node-removal-unwritable` | A node, on a plane whose block passes no `Removals` |
+| `node-replacement-unjudged` | A node, on a plane whose block passes no `ReadReport` or no `Guard` |
 
 The plane replaces one node at a time, in the order `fsn1`, `nbg1`, `hel1`.
 Each call takes one of these changes:
@@ -2570,22 +2571,35 @@ A refusal in step 2 carries the guard's class `redundancy-below-minimum` and
 names each member with its reading, or the class `server-unavailable`. The
 node still runs then, so the plane takes the label off the network and the
 replacement is over: no later call carries it on, and the block asks again
-with a new upgrade. Once the node is off the plane keeps the label through any
-failure, and `Problems` names where the replacement stands on every call.
+with a new upgrade.
 
-`Removals` is the cluster repository as the plane needs it, which the block
-implements. `Held` lists each path on the default branch that
-`etcd.IsRemovalPath` reads as a removal, and `Commit` writes one file there or
-takes it out. The plane reads the Job's outcome from the node report, among
-the objects of the Application named `cluster`: Argo CD reads a Job that
-completed as `Healthy` and one that failed as `Degraded`.
+The guard judges once more before the removal is written in step 4, since a
+second member may have stopped serving while the node was off. On that refusal
+the plane powers the node back on and takes the label off, so the node's
+member serves again. From step 4 on the plane keeps the label through any
+failure, and `Problems` names on every call the node, whether it still runs,
+and the next step or what the replacement waits for.
+
+`Removals` holds the two functions through which the plane reaches the cluster
+repository, and the block writes both. `Held` lists each path on the default
+branch that `etcd.IsRemovalPath` reads as a removal, and `Commit` writes one
+file there or takes it out.
+
+The plane reads the Job's outcome from the node report, among the objects of
+the Application named `cluster`. Argo CD reads a Job that completed as
+`Healthy` and one that failed as `Degraded`, and the plane reads either as
+finished. A report that carries no objects of that Application reads no Job,
+and `Problems` says so.
 
 A Job keeps its name for a day after it finishes, so a removal is never
 written while a Job of its name stands. The plane takes a failed Job's file
-out first, waits for a report that no longer lists the Job, and writes the
-removal again. It also takes the file out before it deletes the server.
-Argo CD would otherwise apply the file again once the Job's day is over, and
-its Job would remove the member of the new node, which has the same name.
+out first, with an event that says the Job failed, waits for a report that no
+longer lists the Job, and writes the removal again. It also takes the file out
+before it deletes the server. Argo CD would otherwise apply the file again
+once the Job's day is over, and its Job would remove the member of the new
+node, which has the same name. For the same reason, when the old server is
+gone while the repository still holds a removal, the plane takes the file out
+before it creates the successor.
 
 ## How a block takes node pools
 

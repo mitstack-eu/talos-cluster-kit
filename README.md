@@ -2499,10 +2499,12 @@ policy's first rule sets aside a pod that Kubernetes itself disrupts, such as
 one evicted from a node that is going away, so Kubernetes replaces that pod.
 
 A pod lost after the commit may leave the mount, the auth method, its
-configuration, a policy or a role unwritten, and the pod that replaces it finds
-the file and changes nothing. A Job that one of the four statuses ends after
-the commit fails with the same left unwritten. The owner then decrypts the root
-token from `openbao-init.asc` and writes whichever is missing.
+configuration, a policy or a role unwritten. The pod that replaces it finds the
+file, changes nothing and exits 0, so a complete Job does not prove the setup
+finished when a pod was lost on the way. A Job that one of the four statuses
+ends after the commit fails with the same left unwritten. In both cases the
+owner decrypts the root token from `openbao-init.asc` and writes whichever is
+missing.
 
 ### The documentation the hosting set follows
 

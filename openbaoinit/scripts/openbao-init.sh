@@ -33,7 +33,6 @@ unless_final() {
   [ "$1" -ne "$FINAL" ]
 }
 
-# retry runs its command until it succeeds, or ends the Job once its test says the failure cannot change.
 retry() {
   local can_change=$1 what=$2
   shift 2

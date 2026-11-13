@@ -721,9 +721,7 @@ func TestReport_NamesEachAppliedObjectsArgoCDHealthAndEachContainersStateButNoTe
 }
 
 func TestReport_CarriesEachFailedContainersMessageCutTo256BytesFromTheNewestFailedPodOfEachJobTheKitRendersAndNoneOfAnAppsJob(t *testing.T) {
-	fakes := map[string]string{"kubectl": kubectlAnswering(map[string]string{podsRead: "cat testdata/failed-job-pods.json", workloadsRead: "cat testdata/failed-jobs.json"})}
-
-	_, posted, out, err := runReport(t, fakes)
+	_, posted, out, err := runReport(t, map[string]string{"kubectl": kubectlAnswering(map[string]string{podsRead: "cat testdata/failed-job-pods.json", workloadsRead: "cat testdata/failed-jobs.json"})})
 
 	require.NoError(t, err, out)
 	assert.Equal(t, readJSON(t, "testdata", "golden", "failed-job-pods.json"), posted.body["pods"], "the newest failed pod of a kit Job carries the message of each container that exited non-zero, cut to 256 bytes, or null for one killed before it printed, while its older pod, a container that exited 0 and an app's own Job carry none")
@@ -731,11 +729,7 @@ func TestReport_CarriesEachFailedContainersMessageCutTo256BytesFromTheNewestFail
 }
 
 func TestReport_CarriesOneMessageOfAtMost256BytesForEachOf40FailedKitJobsInsideThePlatformsLimit(t *testing.T) {
-	jobs := `jq -n '{items: [range(40) | {kind: "Job", metadata: {namespace: "argocd", name: "component-\(.)-handover", labels: {"mitstack.dev/rendered-by": "talos-cluster-kit"}}}]}'`
-	// A kubelet keeps at most 4096 bytes of a termination message, so each pod's message here is 2048 two-byte characters.
-	pods := `jq -n '{items: [range(40) as $j | range(3) | {metadata: {namespace: "argocd", name: "component-\($j)-handover-\(.)", creationTimestamp: "2026-11-13T10:3\(.):00Z", ownerReferences: [{kind: "Job", name: "component-\($j)-handover"}]}, status: {phase: "Failed", containerStatuses: [{name: "handover", state: {terminated: {exitCode: 1, reason: "Error", message: ("é" * 2048)}}}]}}]}'`
-
-	_, posted, out, err := runReport(t, map[string]string{"kubectl": kubectlAnswering(map[string]string{workloadsRead: jobs, podsRead: pods})})
+	_, posted, out, err := runReport(t, map[string]string{"kubectl": kubectlAnswering(map[string]string{workloadsRead: "jq -n -f testdata/forty-kit-jobs.jq", podsRead: "jq -n -f testdata/forty-kit-job-pods.jq"})})
 
 	require.NoError(t, err, out)
 	assert.LessOrEqual(t, len(posted.raw), 256<<10, "the body fits the platform's limit")

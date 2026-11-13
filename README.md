@@ -1385,8 +1385,8 @@ message. A failed handover pod reads like this:
 
 The bound keeps the body inside the platform's 256 KiB. Each Job adds the
 messages of one pod, at most 256 bytes for each container that failed, and a kit
-Job's pod runs one container, or two for the security scan. Forty failed
-handover Jobs add about 12 KiB.
+Job's pod runs one container, or two for the security scan. Forty failed kit
+Jobs whose messages each fill 256 bytes add about 11 KB to the `pods` member.
 
 The kit's scripts write what they refuse and why, and write a key or a token
 only to a file, so a message holds neither. The Argo CD chart's

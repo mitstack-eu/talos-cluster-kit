@@ -111,6 +111,11 @@ func TestSignaturePolicy_RefusesASignerWhoseImagesKyvernoCouldNotCheck(t *testin
 		change(&s)
 		return []components.Signer{s}
 	}
+	var tooMany []components.Signer
+	for i := range components.SignerLimit + 1 {
+		tooMany = append(tooMany, signer(func(s *components.Signer) { s.Repository += fmt.Sprint("-", i) })[0])
+	}
+	const ecr = "839001574838.dkr.ecr.eu-central-1.amazonaws.com"
 	for _, tc := range []struct {
 		name    string
 		signers []components.Signer
@@ -122,27 +127,19 @@ func TestSignaturePolicy_RefusesASignerWhoseImagesKyvernoCouldNotCheck(t *testin
 		{"a repository pattern", signer(func(s *components.Signer) { s.Repository = "ghcr.io/mitstack-eu/*" }), "ghcr.io/mitstack-eu/*"},
 		{"a registry with no repository", signer(func(s *components.Signer) { s.Repository = "ghcr.io" }), "ghcr.io"},
 		{"a repository that would close the policy's quoted string", signer(func(s *components.Signer) { s.Repository = "ghcr.io/mitstack-eu/a'b" }), "a'b"},
-		{"a registry whose hosts and credentials the kit does not hold", signer(func(s *components.Signer) {
-			s.Repository = "839001574838.dkr.ecr.eu-central-1.amazonaws.com/mitstack-api"
-		}), "839001574838.dkr.ecr.eu-central-1.amazonaws.com"},
+		{"a registry whose hosts and credentials the kit does not hold", signer(func(s *components.Signer) { s.Repository = ecr + "/mitstack-api" }), ecr},
 		{"no issuer", signer(func(s *components.Signer) { s.Issuer = "" }), "issuer"},
 		{"an issuer that is no https URL", signer(func(s *components.Signer) { s.Issuer = "token.actions.githubusercontent.com" }), "issuer"},
 		{"no subject", signer(func(s *components.Signer) { s.Subject = "" }), "subject"},
 		{"a subject that would close the policy's quoted string", signer(func(s *components.Signer) { s.Subject += `"` }), "subject"},
 		{"a subject over two lines", signer(func(s *components.Signer) { s.Subject += "\nspec: {}" }), "subject"},
 		{"a repository named twice", []components.Signer{testedSigners[0], testedSigners[0]}, "twice"},
-		{"a repository longer than the serving server's user data has room for", signer(func(s *components.Signer) {
+		{"a repository longer than its limit", signer(func(s *components.Signer) {
 			s.Repository += "/" + strings.Repeat("a", components.SignerRepositoryLimit)
 		}), fmt.Sprint(components.SignerRepositoryLimit)},
 		{"an issuer longer than its limit", signer(func(s *components.Signer) { s.Issuer += "/" + strings.Repeat("a", components.SignerIssuerLimit) }), fmt.Sprint(components.SignerIssuerLimit)},
 		{"a subject longer than its limit", signer(func(s *components.Signer) { s.Subject += strings.Repeat("a", components.SignerSubjectLimit) }), fmt.Sprint(components.SignerSubjectLimit)},
-		{"more signers than the kit takes", func() []components.Signer {
-			var list []components.Signer
-			for i := range components.SignerLimit + 1 {
-				list = append(list, signer(func(s *components.Signer) { s.Repository += fmt.Sprint("-", i) })[0])
-			}
-			return list
-		}(), fmt.Sprint(components.SignerLimit, " signers")},
+		{"more signers than the kit takes", tooMany, fmt.Sprint(components.SignerLimit, " signers")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			manifests, err := components.SignaturePolicy(tc.signers)

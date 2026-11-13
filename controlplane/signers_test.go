@@ -1,10 +1,8 @@
 package controlplane_test
 
 import (
-	"fmt"
 	mathrand "math/rand/v2"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -12,7 +10,6 @@ import (
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
-	"github.com/mitstack-eu/talos-cluster-kit/controlplane/cloudtest"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 )
 
@@ -133,30 +130,6 @@ func TestSigners_ASignerKyvernoCouldNotCheckStopsTheInstallBeforeAnyServerAndThe
 			assert.ErrorContains(t, releaseErr, ecr, "the release's refusal names the registry")
 			assert.ErrorContains(t, installErr, ecr, "the install's refusal names the registry")
 			assert.Empty(t, h.cloud.ServerSpecs, "servers the refused install created")
-		})
-	}
-}
-
-func TestSigners_EveryServerOfAnInstallKeepsTheUserDataReserveUnderTheLongestSignerListAndProofScript(t *testing.T) {
-	for name, opts := range map[string][]func(*harness){
-		"a cluster":                           {},
-		"a cluster whose apps run on workers": {appsOnWorkers},
-		"a cluster that hosts the platform":   {hosting},
-		"a cluster that hosts the platform and runs its apps on workers": {hosting, appsOnWorkers},
-	} {
-		t.Run(name, func(t *testing.T) {
-			h := newHarness(t, append(opts, longestProofScript, longestSignerList)...)
-
-			require.NoError(t, h.converge())
-
-			require.NotEmpty(t, h.cloud.ServerSpecs, "the servers the install created")
-			var sizes []string
-			for _, spec := range h.cloud.ServerSpecs {
-				sizes = append(sizes, fmt.Sprintf("%s %d", spec.Name, len(spec.UserData)))
-				assert.LessOrEqual(t, len(spec.UserData), cloudtest.UserDataLimit-userDataReserve, "the user data of %s keeps under %d of Hetzner's %d bytes free",
-					spec.Name, userDataReserve, cloudtest.UserDataLimit)
-			}
-			t.Logf("user data in bytes: %s", strings.Join(sizes, ", "))
 		})
 	}
 }

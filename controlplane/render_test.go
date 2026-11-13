@@ -679,7 +679,7 @@ func TestPlane_EveryServerOfAnInstallKeepsTheUserDataReserveWithTheLongestProofS
 		"a cluster that hosts the platform and runs its apps on workers": {hosting, appsOnWorkers},
 	} {
 		t.Run(name, func(t *testing.T) {
-			h := newHarness(t, append(opts, longestProofScript)...)
+			h := newHarness(t, append(opts, longestProofScript, longestSignerList)...)
 
 			require.NoError(t, h.converge())
 

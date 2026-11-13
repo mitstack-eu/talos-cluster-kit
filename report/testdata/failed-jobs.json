@@ -5,6 +5,8 @@
     {"kind": "Job", "metadata": {"namespace": "argocd", "name": "component-traefik-handover", "labels": {"mitstack.dev/rendered-by": "talos-cluster-kit"}}},
     {"kind": "Job", "metadata": {"namespace": "mitstack-node", "name": "mitstack-node-report-29381250", "labels": {"mitstack.dev/rendered-by": "talos-cluster-kit"}}},
     {"kind": "Job", "metadata": {"namespace": "kube-system", "name": "mitstack-security-scan-29381000", "labels": {"mitstack.dev/rendered-by": "talos-cluster-kit"}}},
+    {"kind": "Job", "metadata": {"namespace": "mitstack-node", "name": "mitstack-node-topology-29381250", "labels": {"mitstack.dev/rendered-by": "talos-cluster-kit"}}},
+    {"kind": "Job", "metadata": {"namespace": "mitstack-node", "name": "mitstack-enrolment", "labels": {"mitstack.dev/rendered-by": "talos-cluster-kit"}}},
     {"kind": "Job", "metadata": {"namespace": "app-shop", "name": "migrate", "labels": {"mitstack.dev/subscription": "sub_shop01234567"}}}
   ]
 }

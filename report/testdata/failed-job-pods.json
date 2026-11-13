@@ -176,6 +176,72 @@
           }
         ]
       }
+    },
+    {
+      "metadata": {
+        "namespace": "mitstack-node",
+        "name": "mitstack-node-topology-29381250-q2w4e",
+        "creationTimestamp": "2026-11-13T10:50:00Z",
+        "ownerReferences": [
+          {
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "name": "mitstack-node-topology-29381250",
+            "controller": true
+          }
+        ]
+      },
+      "spec": {
+        "nodeName": "poc-talos4-cp2"
+      },
+      "status": {
+        "phase": "Failed",
+        "containerStatuses": [
+          {
+            "name": "label-nodes",
+            "state": {
+              "terminated": {
+                "exitCode": 1,
+                "reason": "Error",
+                "message": "label-nodes: the API server refused the zone label on poc-talos4-cp2 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "metadata": {
+        "namespace": "mitstack-node",
+        "name": "mitstack-enrolment-7hd2k",
+        "creationTimestamp": "2026-11-13T09:02:11Z",
+        "ownerReferences": [
+          {
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "name": "mitstack-enrolment",
+            "controller": true
+          }
+        ]
+      },
+      "spec": {
+        "nodeName": "poc-talos4-cp2"
+      },
+      "status": {
+        "phase": "Failed",
+        "containerStatuses": [
+          {
+            "name": "enrol",
+            "state": {
+              "terminated": {
+                "exitCode": 1,
+                "reason": "Error",
+                "message": "cluster-tokens: the platform answered 503 to the enrolment xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
+              }
+            }
+          }
+        ]
+      }
     }
   ]
 }

@@ -25,6 +25,9 @@ const (
 	// removalApplication is the Application of the cluster repository that applies and prunes each removal file.
 	removalApplication = "cluster"
 	jobKind            = "Job"
+	// jobCompleted and jobFailed are the health Argo CD reads of a Job that completed and of one that failed.
+	jobCompleted = "Healthy"
+	jobFailed    = "Degraded"
 	// nodeWhat names a control-plane node in the refusal of a location that can order none of its types.
 	nodeWhat = "control-plane node"
 )
@@ -371,6 +374,11 @@ func (p Plane) readReport(ctx context.Context, since time.Time) (*report.Read, e
 }
 
 func (p Plane) allowNodeRemoval(read report.Read, node Server, began time.Time) error {
+	if _, readable, err := appliedJobs(read); err != nil {
+		return err
+	} else if !readable {
+		return refuse("node-replacement-unjudged", "%s, so no report could show a removal Job that failed", unreadJobs(read))
+	}
 	members, err := read.EtcdMembers()
 	if err != nil {
 		return err
@@ -420,19 +428,20 @@ func (p Plane) removeMember(ctx context.Context, st State, network Network, r no
 		}
 	}
 	name, at := etcd.JobName(node.Name), read.At.UTC().Format(time.RFC3339)
-	job, err := appliedJob(read, name)
+	jobs, readable, err := appliedJobs(read)
+	health, applied := jobs[name]
 	switch {
 	case err != nil:
 		return progress{}, err
-	case job == jobUnread:
-		return waitsOn("the node report read at %s carries no objects of the Application %s, so its removal Job cannot be read", at, removalApplication)
-	case holds && job == jobFailed:
+	case !readable:
+		return waitsOn("%s, so its removal Job %s cannot be read", unreadJobs(read), name)
+	case holds && health == jobFailed:
 		return p.takeOut(path, "whose Job failed and left the member of "+node.Name)
-	case holds && job == jobCompleted:
+	case holds && health == jobCompleted:
 		return p.takeOut(path, "whose Job completed in a report that still lists the member of "+node.Name)
 	case holds:
 		return waitsOn("its removal Job %s has not finished in the node report read at %s", name, at)
-	case job == jobAbsent:
+	case !applied:
 		g, err := p.writeRemoval(node, began, read, path)
 		if err != nil {
 			return p.backOn(network, r, node, err)
@@ -463,54 +472,42 @@ func memberGone(read report.Read, st State, hostname string) (bool, error) {
 		slices.ContainsFunc(members, otherListed) && slices.ContainsFunc(nodes, otherListed), nil
 }
 
-type jobState int
-
-const (
-	// jobUnread is a report that carries no objects of the cluster's own Application, which a body near its size limit drops.
-	jobUnread jobState = iota
-	jobAbsent
-	jobPending
-	jobCompleted
-	jobFailed
-)
-
-// appliedJob reads the Job named name among the objects the cluster's own Application applied, which Argo CD reads
-// Healthy once it completed and Degraded once it failed.
-func appliedJob(read report.Read, name string) (jobState, error) {
+// appliedJobs reads the health Argo CD keeps of each Job the cluster's own Application applied, and false when read
+// carries none: a body near its size limit drops the objects, and an Argo CD that keeps health off the Application
+// leaves each object without one.
+func appliedJobs(read report.Read) (map[string]string, bool, error) {
 	var body struct {
 		ArgoCD struct {
 			Applications []struct {
-				Name      string `json:"name"`
-				Resources *[]struct {
-					Kind   string `json:"kind"`
-					Name   string `json:"name"`
-					Health string `json:"health"`
-				} `json:"resources"`
+				Name      string            `json:"name"`
+				Resources *[]map[string]any `json:"resources"`
 			} `json:"applications"`
 		} `json:"argocd"`
 	}
 	if err := json.Unmarshal(read.Body, &body); err != nil {
-		return jobUnread, fmt.Errorf("the node report read at %s cannot be read: %w", read.At.UTC().Format(time.RFC3339), err)
+		return nil, false, fmt.Errorf("the node report read at %s cannot be read: %w", read.At.UTC().Format(time.RFC3339), err)
 	}
 	for _, app := range body.ArgoCD.Applications {
 		if app.Name != removalApplication || app.Resources == nil {
 			continue
 		}
+		jobs := map[string]string{}
 		for _, r := range *app.Resources {
-			if r.Kind != jobKind || r.Name != name {
-				continue
+			health, kept := r["health"]
+			if !kept {
+				return nil, false, nil
 			}
-			switch r.Health {
-			case "Healthy":
-				return jobCompleted, nil
-			case "Degraded":
-				return jobFailed, nil
+			if name, _ := r["name"].(string); r["kind"] == jobKind {
+				jobs[name], _ = health.(string)
 			}
-			return jobPending, nil
 		}
-		return jobAbsent, nil
+		return jobs, true, nil
 	}
-	return jobUnread, nil
+	return nil, false, nil
+}
+
+func unreadJobs(read report.Read) string {
+	return fmt.Sprintf("the node report read at %s carries no health of what the Application %s applied", read.At.UTC().Format(time.RFC3339), removalApplication)
 }
 
 func (p Plane) takeOut(path, why string) (progress, error) {

@@ -66,13 +66,13 @@ func (c cloudConfig) render() (string, error) {
 	return cloudConfigHeader + string(out), nil
 }
 
-// hostingFetch is where a builder fetches the hosting set from, and the pin of the serving server's key.
-type hostingFetch struct {
+// servingFetch is where a builder fetches the manifests its user data has no room for, and the pin of the serving server's key.
+type servingFetch struct {
 	url, pin string
 }
 
 // builderUserData carries the configuration and the script gzipped, since as text they pass Hetzner's limit, and refuses a result still over it.
-func builderUserData(what string, machineConfig, gatewayCA []byte, fetch *hostingFetch) (string, error) {
+func builderUserData(what string, machineConfig, gatewayCA []byte, fetch *servingFetch) (string, error) {
 	config, err := serve.Gzipped(machineConfig)
 	if err != nil {
 		return "", err

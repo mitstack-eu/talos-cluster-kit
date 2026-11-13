@@ -23,6 +23,10 @@ func (p Plane) Release(st State) (rollout.Release, error) {
 	if p.Hosting == nil && p.RepoURL == "" || p.Hosting != nil && p.Hosting.Repository == "" {
 		return rollout.Release{}, errors.New("the cluster's credentials name the cluster repository, and the plane names none")
 	}
+	signatures, err := components.SignaturePolicy(p.Signers)
+	if err != nil {
+		return rollout.Release{}, err
+	}
 	set, _, err := p.gatewayComponents()
 	if err != nil {
 		return rollout.Release{}, err
@@ -34,7 +38,7 @@ func (p Plane) Release(st State) (rollout.Release, error) {
 	if err != nil {
 		return rollout.Release{}, err
 	}
-	return rollout.Release{Components: slices.Concat(set.Served, set.Inline, own), ToolsImage: toolsImage()}, nil
+	return rollout.Release{Components: slices.Concat(set.Served, set.Inline, own, signatures), ToolsImage: toolsImage()}, nil
 }
 
 // The gateways serve the set without an address, since one tools image is built for every cluster.

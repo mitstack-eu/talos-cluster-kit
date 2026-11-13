@@ -613,7 +613,7 @@ The order runs in five groups.
 | Cluster reporting | The node report, the cluster tokens and the Collector | A component that never starts still leaves the platform its report |
 | Components and policies | Every other component, policy, key and volume | No object here waits on a webhook but Istio's, whose pod runs outside the mesh |
 | What a webhook validates | external-secrets and trust-manager, whose charts hold cert-manager objects, then `mitstack-hosting-tls` and the Barman Cloud plugin, which holds two Certificates and their Issuer | cert-manager's and trust-manager's webhooks answer only once their pods run |
-| Node labelling | The topology labeller | Last, a new manifest changes no other manifest's `TalosName` |
+| Later manifests | The topology labeller, `mitstack-require-image-digest` and the signature policy, in the order they joined | At the end a new manifest changes no other manifest's `TalosName`, so no gateway's list changes for it |
 
 A new manifest takes a place in `applyOrder`, since `TalosName` panics on one
 it leaves out. `TestBuilder_TalosAppliesEveryObjectAWebhookInterceptsAfterTheWebhookTheMeshAndTheNodeReport`
@@ -867,12 +867,14 @@ that changes a list therefore fails until the table records it.
 ## How a cluster isolates each app
 
 Every cluster runs Kyverno, an admission controller that checks each object
-the API server is asked to create. Seven of its policies apply to every
+the API server is asked to create. Eight of its policies apply to every
 namespace outside the system namespaces, which are `kube-system`,
 `kube-public`, `kube-node-lease`, `argocd`, `kyverno`, `cnpg-system`,
 `mitstack-node` and `istio-system`. The three policies that judge a pod's
-volumes, limits and image skip five more namespaces, which
+volumes, limits and registry skip five more namespaces, which
 [the table of skipped namespaces](#which-namespaces-the-pod-policies-skip)
+explains. A cluster that is given a signer list runs a ninth policy, which
+[the section on signatures](#how-a-cluster-checks-who-signed-an-image)
 explains.
 
 | Policy | What it does | File |
@@ -884,6 +886,7 @@ explains.
 | `mitstack-disallow-host-path` | Refuses a pod, or a Deployment or other controller whose template makes a pod, that mounts a host path, since a host path reaches the node's file system | `components/admission/policies/mitstack-disallow-host-path.yaml` |
 | `mitstack-require-resource-limits` | Refuses a pod, or a controller whose template makes one, with a container or init container that sets no CPU limit or no memory limit. A LimitRange fills limits only into the pod, after the controller has been admitted, so the template must carry them | `components/admission/policies/mitstack-require-resource-limits.yaml` |
 | `mitstack-restrict-image-registries` | Refuses a pod, or a controller whose template makes one, with a container, init container or ephemeral container whose image is outside `ghcr.io/mitstack-eu/` and mitstack's registry in Amazon ECR, `839001574838.dkr.ecr.eu-central-1.amazonaws.com/`. It admits by exact reference only the six images talos-cluster-kit pins for pods an operator or a block starts in an app namespace: cert-manager's ACME solver, the CloudNativePG operator, PgBouncer and Postgres 16 images, the sidecar image [the Barman Cloud plugin](#how-a-postgres-cluster-backs-up) adds to a Postgres pod, and `docker.io/library/busybox:1.37.0` at the digest the policy names, the image that the local path provisioner and the mesh probe run and the kube-app-deploy block runs in its `secrets-import` Job. Another busybox tag or digest is refused | `components/admission/policies/mitstack-restrict-image-registries.yaml` |
+| `mitstack-require-image-digest` | Refuses a pod, or a controller whose template makes one, with a container, init container or ephemeral container whose image does not end in `@sha256:` and 64 hexadecimal digits. A tag may stand before the digest. A tag that moves therefore never changes what runs. It skips only the system namespaces, so it also judges `traefik`, `cert-manager`, `openbao`, `external-secrets` and `local-path-storage`, where every image the kit pins carries its digest | `components/admission/policies/mitstack-require-image-digest.yaml` |
 
 Kyverno's webhooks skip the same system namespaces, so a Kyverno outage
 cannot stop a system pod, such as the node report in `mitstack-node`.
@@ -931,6 +934,87 @@ mitstack-eu/cluster-bases, the repository of pinned third-party manifests.
 Argo CD's built-in health check reads a Postgres switchover, failover,
 upgrade or configuration change as Degraded. The kit's `argocd-cm` reads each
 of those as Progressing, since CloudNativePG passes through them on its own.
+
+### How a cluster checks who signed an image
+
+A digest says which image runs. It does not say who built it. A block can
+therefore give a cluster a signer list in `Plane.Signers`. Each entry is a
+`components.Signer`: one repository, and the issuer and subject of the build
+pipeline whose signature every image of that repository must carry. The
+signature is keyless, which means the pipeline signs with a short-lived
+certificate that Sigstore, a public signing service, issues for the
+pipeline's own identity. No signing key exists to keep or to lose.
+
+`components.SignaturePolicy` renders the list as one manifest,
+`mitstack-verify-image-signatures`, which holds two objects.
+
+| Object | What it does |
+|---|---|
+| The Kyverno ImageValidatingPolicy `mitstack-verify-image-signatures` | Refuses a pod, or a controller whose template makes one, with a container, init container or ephemeral container whose image is in a listed repository and carries no signature of that entry's issuer and subject. It skips the system namespaces, as the other policies do |
+| The CiliumClusterwideNetworkPolicy `mitstack-kyverno-egress` | Limits where Kyverno's admission controller connects, as the table of hosts below lists |
+
+An entry names one repository exactly, with no tag, digest or pattern. An
+image of a repository whose name only begins with a listed one is outside the
+list. An image outside the list passes on its digest alone, and so does every
+image once a repository leaves the list. An empty list renders no manifest, so
+such a cluster checks no signature and its Kyverno keeps the reach it had.
+
+Kyverno reads each signature from the registry that holds the image. It
+checks the signature's certificate against Sigstore's trust root, the keys
+Sigstore publishes at `tuf-repo-cdn.sigstore.dev`. Sigstore records every
+signature in a public log, and the signature carries its log entry with it.
+The policy names no log, so Kyverno v1.19.1 checks that entry against the
+log's key from the trust root and calls no log (`getRekor` in its
+[`opts.go`](https://github.com/kyverno/kyverno/blob/v1.19.1/pkg/image/verifiers/ivpol/cosign/opts.go)).
+
+The check reads the issuer and the subject of the certificate and nothing
+else in it. A GitHub Actions certificate also names the repository, the
+branch and the event that started the run, and Kyverno v1.19.1 reads none of
+those from the policy. A workflow in another repository that calls the same
+reusable workflow at the same branch gets the same subject. A subject
+therefore has to name a workflow that only the trusted pipeline can run.
+
+The kit reads signatures from `ghcr.io` alone, and with no login.
+`SignaturePolicy` refuses a repository in any other registry, since Kyverno
+would hold no credential for it and the egress limit would name no host for
+it, and the policy would then refuse every image of that repository. A listed
+repository must be public for the same reason, which the kit cannot check: a
+private one answers Kyverno no signature. `SignaturePolicy` also refuses more
+than 8 entries, a repository or issuer over 128 characters and a subject over
+256. Those limits keep the policy within the room the serving server's user
+data has.
+
+| Host | Port | Why the admission controller reaches it |
+|---|---|---|
+| The API server | 6443 | Every admission request and Kyverno's own objects |
+| `kube-dns` in `kube-system`, through Cilium's DNS proxy | 53 | Cilium admits a host by name only after it has seen the name looked up |
+| `ghcr.io` | 443 | The signature's manifest |
+| `pkg-containers.githubusercontent.com` | 443 | The signature's layers, which `ghcr.io` redirects to |
+| `tuf-repo-cdn.sigstore.dev` | 443 | Sigstore's trust root |
+
+While Sigstore's trust root cannot be reached, Kyverno refuses every image of
+a listed repository with the policy's message, and admits every other image.
+A pod that already runs keeps running. A new pod of a listed repository waits
+until the trust root answers again.
+
+A cluster applies the manifest at its build. The builder's user data has no
+room for it, so the builder fetches it from the serving server, as
+[the section on the serving server](#how-the-hosting-set-reaches-the-builder)
+explains. A cluster that hosts no platform orders that short-lived server
+for the manifest alone, and orders none when its list is empty. Every release
+carries the manifest too, so a changed list reaches a running cluster at its
+next upgrade.
+
+The case `components/admission/tests/mitstack-verify-image-signatures` judges
+real signatures. Its list names the kit's own tools image under the kit's
+pipeline, and Kyverno's image under that same pipeline, which did not sign it.
+CI runs the case three times. The first run reaches any host. The second
+reaches only the hosts `egress.yaml` in that directory names, so a host the
+egress limit lacks fails it. The third also loses Sigstore's host and expects
+the refusals `sigstore-unreachable.yaml` lists. `kyverno test` has no result
+to name for a pod an image policy leaves alone, so a fourth step applies the
+policy to the two pods of `system.yaml`, in `mitstack-node` and `kube-system`,
+and expects no result.
 
 ## How every call between pods proves who makes it
 
@@ -1270,12 +1354,17 @@ namespace. A ValidatingAdmissionPolicy there refuses every request that is not
 a dry run, so nothing the report sends is ever kept.
 
 The platform requires a refusal naming its rule for each of the six. A
-Talos cluster runs four of the five Kyverno rules the Deployment fixtures break:
-`mitstack-require-app-label`,
-`mitstack-disallow-host-path`, `mitstack-require-resource-limits` and
-`mitstack-restrict-image-registries`. The fixture for the fifth,
-`mitstack-require-image-digest`, reads `accepted`, and the admission check
-fails naming it until the cluster enforces that rule.
+Talos cluster runs the five Kyverno rules the Deployment fixtures break:
+`mitstack-require-app-label`, `mitstack-disallow-host-path`,
+`mitstack-require-resource-limits`, `mitstack-restrict-image-registries` and
+`mitstack-require-image-digest`. The digest fixture names its image by a tag
+in `ghcr.io/mitstack-eu/`, so the registry rule admits it and the digest rule
+alone refuses it.
+
+The signature policy has no fixture. A fixture would need a digest that a
+listed repository holds and nobody signed, and the kit knows of none for a
+list a block passes. A digest the repository does not hold ends Kyverno's
+check in an error, which does not carry the policy's message.
 
 ### How the security scan runs
 
@@ -1717,6 +1806,12 @@ The plane deletes the serving server once the builder is gone, once the
 snapshot exists, or once the build is overdue. A build that fails therefore
 takes the serving server with it.
 
+The same file carries the signature policy of a cluster that has a signer
+list, which
+[the section on signatures](#how-a-cluster-checks-who-signed-an-image)
+explains. A cluster with a list that hosts no platform therefore orders a
+serving server too, whose file holds that policy alone.
+
 The `serve` package holds the server's key, its files and its command, and a
 block reuses it to serve any one file to one client.
 
@@ -1737,7 +1832,7 @@ everything a control-plane node boots with.
 | `controlplane/scripts/build-image.sh` and the gateway CA's certificate | In the builder's user data |
 | The node report's, its outside probe's, the security scan's, the labeller's and the cluster tokens' scripts | In the tools image at `tools.ScriptDir`, where each command names its script's path |
 | Each served manifest | From the gateway, which copies it out of the tools image |
-| The hosting set's inline manifests | From the serving server, where the builder fetches them |
+| The hosting set's inline manifests, and the signature policy of a cluster that has a signer list | From the serving server, where the builder fetches them |
 
 A script in the tools image costs no server any user data, because the
 gateway mirrors that image whole. A served manifest does cost some. The
@@ -1749,7 +1844,9 @@ that hosts the platform takes about 31,300 bytes when it keeps 300 images.
 in `controlplane/render_test.go` keeps room free. It installs a cluster four
 ways: with and without the platform, and with apps on the control plane or on
 workers. Each plane takes a proof script of `report.ProofScriptLimit` bytes of
-random printable text, which gzip shortens by about a sixth. The test fails
+random printable text, which gzip shortens by about a sixth. Each also takes
+a signer list of `components.SignerLimit` entries, with every field at its
+limit and of random text, which the serving server carries. The test fails
 when any server's user data leaves less than 1,024 bytes of the limit, and it
 logs each size.
 
@@ -1761,10 +1858,14 @@ by up to 224 bytes with the same settings. Inside one run, where every install
 shares one set of minted keys, it moves by 40 at most. The two sum to 768
 bytes, and the reserve is a third more.
 
-With that proof script the builder takes about 30,800 bytes, or about 30,900
-on a cluster that hosts the platform. With a one-line proof script, as the
-tests in `controlplane/render_test.go` and `controlplane/hosting_test.go` log
-it, the builder takes about 28,100 and 28,200 bytes.
+With that proof script and signer list the builder takes about 31,100 bytes,
+or about 31,200 on a cluster that hosts the platform. The signer list costs
+the builder only the address and key of the serving server. The serving
+server carries the policy, and takes about 10,500 bytes, or about 29,400 on a
+cluster that hosts the platform. With a one-line proof script and no signer
+list, as the tests in `controlplane/render_test.go` and
+`controlplane/hosting_test.go` log it, the builder takes about 28,400 and
+28,600 bytes.
 
 ### How Argo CD reads the cluster repository
 

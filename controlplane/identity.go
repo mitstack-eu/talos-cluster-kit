@@ -43,7 +43,7 @@ const (
 	RoleImage   Role = "image"
 	RoleAPI     Role = "api"
 	RoleIngress Role = "ingress"
-	// RoleServing is the short-lived server that hands the builder a hosting cluster's hosting set.
+	// RoleServing is the short-lived server that hands the builder a hosting set's keys and a signer list's policy.
 	RoleServing Role = "serving"
 	// RoleWorkerBuilder builds the worker image, which RoleWorkerImage labels once it is a snapshot.
 	RoleWorkerBuilder Role = "worker-builder"

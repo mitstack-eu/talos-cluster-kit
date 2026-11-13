@@ -1,0 +1,78 @@
+# An image of a repository the cluster's signer list names starts only with the keyless signature of that entry's
+# issuer and subject. The policy names no ctlog, so Kyverno checks the log entry each signature carries against
+# Sigstore's trust root and calls no log.
+apiVersion: policies.kyverno.io/v1
+kind: ImageValidatingPolicy
+metadata:
+  name: {{ .Name }}
+spec:
+  validationActions: [Deny]
+  failurePolicy: Fail
+  # A background scan would read every signature again from the reports controller, which the egress limit below does not cover.
+  evaluation:
+    background:
+      enabled: false
+  validationConfigurations:
+    mutateDigest: false
+  matchConstraints:
+    resourceRules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      operations: ["CREATE", "UPDATE"]
+      resources: ["pods"]
+    namespaceSelector:
+      matchExpressions:
+      - key: kubernetes.io/metadata.name
+        operator: NotIn
+        values: [kube-system, kube-public, kube-node-lease, argocd, kyverno, cnpg-system, mitstack-node, istio-system]
+  matchImageReferences:
+{{- range .Signers }}
+  - glob: "{{ .Repository }}:*"
+  - glob: "{{ .Repository }}@*"
+{{- end }}
+  attestors:
+{{- range $i, $s := .Signers }}
+  - name: signer{{ $i }}
+    cosign:
+      keyless:
+        identities:
+        - issuer: "{{ $s.Issuer }}"
+          subject: "{{ $s.Subject }}"
+{{- end }}
+  variables:
+  - name: images
+    expression: "images.containers + images.initContainers + images.ephemeralContainers"
+  validations:
+{{- range $i, $s := .Signers }}
+  - expression: "variables.images.filter(i, i.startsWith('{{ $s.Repository }}:') || i.startsWith('{{ $s.Repository }}@')).all(i, verifyImageSignatures(i, [attestors.signer{{ $i }}]) > 0)"
+    message: "{{ $.Name }}: an image of {{ $s.Repository }} must carry the keyless signature of {{ $s.Subject }}, issued by {{ $s.Issuer }}"
+{{- end }}
+---
+# Each gateway forwards port 443 to any address, so this names the only hosts the admission controller reaches.
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: mitstack-kyverno-egress
+spec:
+  description: "Kyverno's admission controller reaches the API server, looks names up through Cilium's DNS proxy, and reaches on 443 the registries of the cluster's signer list and Sigstore's trust root."
+  endpointSelector:
+    matchLabels:
+      k8s:io.kubernetes.pod.namespace: kyverno
+      k8s:app.kubernetes.io/component: admission-controller
+  egress:
+  - toEntities: [kube-apiserver]
+  - toEndpoints:
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: kube-system
+        k8s:k8s-app: kube-dns
+    toPorts:
+    - ports: [{port: "53", protocol: UDP}, {port: "53", protocol: TCP}]
+      rules:
+        dns:
+        - matchPattern: "*"
+  - toFQDNs:
+{{- range .Hosts }}
+    - matchName: {{ . }}
+{{- end }}
+    toPorts:
+    - ports: [{port: "443", protocol: TCP}]

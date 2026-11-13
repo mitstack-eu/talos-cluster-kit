@@ -72,21 +72,21 @@ func (p Plane) hostingSet(ctx context.Context, now time.Time) (components.Set, e
 	})
 }
 
-// splitHosting takes out of set the inline manifests the hosting set adds to the default one, which the builder
-// fetches rather than carries, since with them its user data is over Hetzner's limit.
-func splitHosting(set, hostingSet components.Set) (carried, fetched []components.Manifest) {
+// splitFetched takes out of set the signature policy and the inline manifests base adds to the default set, a hosting
+// set's keys, which the builder fetches rather than carries, since with them its user data is over Hetzner's limit.
+func splitFetched(set, base components.Set) (carried, fetched []components.Manifest) {
 	var defaults []string
 	for _, m := range components.Default().Inline {
 		defaults = append(defaults, m.Name)
 	}
-	var hosting []string
-	for _, m := range hostingSet.Inline {
+	fetchedNames := []string{components.SignaturePolicyName}
+	for _, m := range base.Inline {
 		if !slices.Contains(defaults, m.Name) {
-			hosting = append(hosting, m.Name)
+			fetchedNames = append(fetchedNames, m.Name)
 		}
 	}
 	for _, m := range set.Inline {
-		if slices.Contains(hosting, m.Name) {
+		if slices.Contains(fetchedNames, m.Name) {
 			fetched = append(fetched, m)
 		} else {
 			carried = append(carried, m)
@@ -95,9 +95,9 @@ func splitHosting(set, hostingSet components.Set) (carried, fetched []components
 	return carried, fetched
 }
 
-// servingUserData serves the hosting set's inline manifests, as configuration documents, to the builder alone.
-func servingUserData(hosting []components.Manifest, now time.Time) (string, *hostingFetch, error) {
-	docs, err := nodeconfig.InlineManifests(hosting)
+// servingUserData serves the manifests the builder fetches, as configuration documents, to the builder alone.
+func servingUserData(fetched []components.Manifest, now time.Time) (string, *servingFetch, error) {
+	docs, err := nodeconfig.InlineManifests(fetched)
 	if err != nil {
 		return "", nil, err
 	}
@@ -114,5 +114,5 @@ func servingUserData(hosting []components.Manifest, now time.Time) (string, *hos
 	if err != nil {
 		return "", nil, err
 	}
-	return data, &hostingFetch{url: hostingURL(), pin: key.Pin}, nil
+	return data, &servingFetch{url: hostingURL(), pin: key.Pin}, nil
 }

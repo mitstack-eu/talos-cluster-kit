@@ -47,7 +47,12 @@ func (p Plane) clusterComponents(set components.Set, enrolmentToken string) (com
 	if err != nil {
 		return components.Set{}, err
 	}
+	signatures, err := components.SignaturePolicy(p.Signers)
+	if err != nil {
+		return components.Set{}, err
+	}
 	set.Inline = append(slices.Clone(set.Inline), own...)
+	set.Inline = append(set.Inline, signatures...)
 	set.Inline = append(set.Inline, components.Manifest{Name: clusterApplicationManifest, Path: manifestDir + "cluster-application.yaml", Bytes: application})
 	return set, nil
 }

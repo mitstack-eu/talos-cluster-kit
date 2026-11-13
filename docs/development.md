@@ -30,7 +30,8 @@ exceptions for callers with no identity, and a Postgres instance's port 8000.
 | `components/local-path-provisioner/local-path-provisioner.yaml` | The local-path-provisioner 0.0.37 chart with `components/render/local-path-provisioner-values.yaml`, taken from the source archive of the commit the project's v0.0.37 tag names, since the project publishes no chart repository | Rancher's local path provisioner in namespace `local-path-storage`, behind the default StorageClass `local-path`, keeping each claim on the user volume `local-path-provisioner` |
 | `components/istio/istio-base.yaml`, `istiod.yaml`, `istio-cni.yaml`, `ztunnel.yaml` | Istio's base, istiod, cni and ztunnel 1.30.7 charts, each with its values file in `components/render/` | Istio in ambient mode in namespace `istio-system`: its CRDs, istiod with no sidecar injector, the CNI agent that puts every pod outside `kube-system`, `istio-system` and `kyverno` in the mesh, and ztunnel on every node |
 | `components/cloudnative-pg/cloudnative-pg.yaml`, `components/cloudnative-pg/namespace.yaml` | Copied from mitstack-eu/cluster-bases v0.4.0, with the operator's header and `POSTGRES_IMAGE_NAME` changed, and the closing comment line the render script gives a document that ends in a block scalar, which the paragraph below the table shows | The CloudNativePG 1.30.1 operator in namespace `cnpg-system`, with its PgBouncer image and its default Postgres image by digest. The default is Postgres 16.15, the image postgres-db-kube pins, so the gateway mirrors it |
-| `components/admission/policies/` | Written by hand | The Kyverno policies that require the `mitstack.dev/app` label, give each app namespace `mitstack-default-deny`, refuse a pod the mesh leaves out, refuse a PeerAuthentication that takes a call with no workload identity, and refuse a pod outside the system namespaces that mounts a host path, sets no CPU or memory limit or names an image outside mitstack's registries. The three pod policies skip the system namespaces and five more, which [the README's table of skipped namespaces](../README.md#which-namespaces-the-pod-policies-skip) lists |
+| `components/admission/policies/` | Written by hand | The Kyverno policies that require the `mitstack.dev/app` label, give each app namespace `mitstack-default-deny`, refuse a pod the mesh leaves out, refuse a PeerAuthentication that takes a call with no workload identity, and refuse a pod outside the system namespaces that mounts a host path, sets no CPU or memory limit, names an image outside mitstack's registries or names an image without its digest. The first three of those pod policies skip the system namespaces and five more, which [the README's table of skipped namespaces](../README.md#which-namespaces-the-pod-policies-skip) lists |
+| `components/admission/mitstack-verify-image-signatures.yaml` | Written by hand, as a template `components.SignaturePolicy` renders for a cluster's signer list | The signature policy and the egress limit on Kyverno's admission controller, which [the README's section on signatures](../README.md#how-a-cluster-checks-who-signed-an-image) explains |
 | `components/mesh/strict-mtls.yaml`, `probes.yaml`, `cloudnative-pg.yaml`, `argocd.yaml` | Written by hand | The mesh-wide `STRICT` PeerAuthentication, the Cilium policy that admits the kubelet's probes from `169.254.7.127`, the CloudNativePG operator's webhook exception and the ports a Postgres instance takes, and the network policies that admit the mesh's port 15008 between Argo CD's pods |
 | `components/mesh/probe.yaml` | Written by hand | The mesh probe's target in namespace `mitstack-mesh-probe`, on the local path provisioner's busybox image, and the Cilium policy that admits only the node report and its outside probe in `kube-system` to it, as [the README](../README.md#how-the-node-report-shows-the-mesh-refusing-a-call) explains |
 | `components/network-policies/mitstack-database-slices.yaml` | Written by hand | The Cilium policy that opens a database slice's Postgres instances to each other, the operator and the app slices |
@@ -132,27 +133,40 @@ Each admission policy has a `kyverno test` case under
 kyverno test components/admission/tests
 ```
 
-The `report-admission-fixtures` case runs the five policies that refuse a pod
+The `report-admission-fixtures` case runs the six policies that refuse a pod
 or a Deployment, `mitstack-require-app-label`, `mitstack-require-mesh`,
-`mitstack-disallow-host-path`, `mitstack-require-resource-limits` and
-`mitstack-restrict-image-registries`, against the six fixtures in
-`report/admission/` that the node report tries. The fixtures for the app
-label, the host path, the limits and the registries each break one rule, and
-the matching policy refuses that fixture alone. `mitstack-require-mesh` admits
-all six. Two fixtures are refused by none of these policies: the digest
-fixture, whose policy the kit does not hold yet, and `pod-security-restricted`,
-which Pod Security refuses. The
-`kube-app-deploy` case feeds the three pod policies a Deployment shaped like
+`mitstack-disallow-host-path`, `mitstack-require-resource-limits`,
+`mitstack-restrict-image-registries` and `mitstack-require-image-digest`,
+against the six fixtures in `report/admission/` that the node report tries.
+The fixtures for the app label, the host path, the limits, the registries and
+the digest each break one rule, and the matching policy refuses that fixture
+alone. `mitstack-require-mesh` admits all six. One fixture is refused by none
+of these policies: `pod-security-restricted`, which Pod Security refuses. The
+`kube-app-deploy` case feeds the four pod policies a Deployment shaped like
 the ones the kube-app-deploy block deploys for an app. It also feeds the
-registry policy a `secrets-import` Job shaped like the one that block runs,
-once with the busybox image the kit pins, which the policy admits, and four
-times with a variant of it, which the policy refuses: another tag, another
-digest, the tag with no digest and another Docker Hub image. The
-`cloudnative-pg` and `acme-http01-solver` cases feed the policies the pods that
-CloudNativePG and cert-manager start in an app namespace. The `cloudnative-pg`
-case also holds a Postgres pod and a restore pod that carry the container the
-Barman Cloud plugin adds. The policies admit both, refuse that container with
-no limits, and refuse it from another release of the plugin.
+registry policy and the digest policy a `secrets-import` Job shaped like the
+one that block runs, once with the busybox image the kit pins, which the
+registry policy admits, and four times with a variant of it, which that policy
+refuses: another tag, another digest, the tag with no digest and another
+Docker Hub image. The digest policy refuses only the variant with no digest.
+The `cloudnative-pg` and `acme-http01-solver` cases feed the policies the pods
+that CloudNativePG and cert-manager start in an app namespace. The
+`cloudnative-pg` case also holds a Postgres pod and a restore pod that carry
+the container the Barman Cloud plugin adds. The policies admit both, refuse
+that container with no limits, and refuse it from another release of the
+plugin. The `mitstack-require-image-digest` case feeds the digest policy each form an
+image reference takes, and a pod in `mitstack-node` and in `kube-system`,
+which it leaves alone.
+
+The `mitstack-verify-image-signatures` case judges a signature policy that
+`components.SignaturePolicy` rendered for the two signers in
+`signature_policy_test.go`. `policy.yaml` and `egress.yaml` in its directory
+are that render, and `TestSignaturePolicy_RendersThePolicyAndTheEgressLimitTheKyvernoTestsRead`
+fails when they differ from it. Record them again with `-update` after a
+change to the template. The case reads real signatures from `ghcr.io`, so it
+needs the network.
+[The README's section on signatures](../README.md#how-a-cluster-checks-who-signed-an-image)
+says what CI's three runs of it prove.
 
 The policy holds each of its six exact images as a literal, since Kyverno reads
 YAML. `TestManifests_RestrictImageRegistriesNamesExactlyTheImagesTheKitPinsForPodsInAnAppNamespace`
@@ -473,7 +487,7 @@ TOOLS_IMAGE=talos-tools:ci go test -tags toolsimage -count=1 -run '^TestToolsIma
 | `TestPlane_LeavesOutAnUnresolvedTagAndAnImageOnARegistryTheNodesReachDirectlyAndNamesEachBesideWhatItKeeps` | A tag with no digest and an image outside the mirrored registries stay out, a short name is mirrored under its Docker Hub name, and the event names each image kept and each left out with why | The same |
 | `TestPlane_AnUpgradeReplacesNoGatewayWhileTheNewestNodeReportListsNoImages` | An upgrade whose newest report has no `images` refuses with class `gateway-images-unread` and makes no write | The same |
 | `TestPlane_AGatewayKeeping300ImagesStaysInsideHetznersUserDataLimit` | A gateway keeping 300 images fits in 32,768 bytes, on a default cluster and one that hosts the platform, and the test logs that size and the install's first gateway's | The same |
-| `TestPlane_EveryServerOfAnInstallKeepsTheUserDataReserveWithTheLongestProofScriptUnderEachOptionOfThePlane` | Every server an install creates keeps 1,024 of Hetzner's 32,768 bytes free, on a cluster and on one that hosts the platform, with apps on the control plane and on workers. The plane's proof script is `report.ProofScriptLimit` bytes of random printable text, and the test logs each server's size, as [the README's section on the builder's user data](../README.md#what-fits-in-the-builders-user-data) explains | The same |
+| `TestPlane_EveryServerOfAnInstallKeepsTheUserDataReserveWithTheLongestProofScriptUnderEachOptionOfThePlane` | Every server an install creates keeps 1,024 of Hetzner's 32,768 bytes free, on a cluster and on one that hosts the platform, with apps on the control plane and on workers. The plane's proof script is `report.ProofScriptLimit` bytes of random printable text and its signer list is the longest the kit takes, and the test logs each server's size, as [the README's section on the builder's user data](../README.md#what-fits-in-the-builders-user-data) explains | The same |
 | `TestPlane_AnUpgradeWithNoGatewayToReplaceChangesNothingThoughNoReportNamesAGateway` | An upgrade of a cluster whose gateways all carry the current list makes no write and reads no problem, though no report names a gateway | The same fake |
 | `TestPlane_APinBumpReplacesNoGatewayWithoutAnUpgrade` | Gateways built from an earlier list stay without `Upgrading` | The same fake |
 | `TestPlane_KeepsAClusterBuiltWithOneGatewayAndReadsItUnhealthyWithItsRemedy` | A cluster with one unlabelled gateway keeps it, and `Unhealthy` names the rebuild | The same fake |

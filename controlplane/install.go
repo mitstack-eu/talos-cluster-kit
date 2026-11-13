@@ -182,7 +182,7 @@ func (p Plane) buildSet(ctx context.Context, now time.Time, token string) (set, 
 }
 
 // renderNodes renders the cluster under the plane's gateway CA, and the user data of the builder, the worker builder and
-// a hosting cluster's serving server.
+// the serving server of a build whose builder fetches manifests.
 func (p Plane) renderNodes(ctx context.Context, apiAddr netip.Addr, now time.Time, secrets *nodeconfig.Secrets, token, bucket string) (installation, components.Set, error) {
 	set, base, err := p.buildSet(ctx, now, token)
 	if err != nil {
@@ -205,16 +205,15 @@ func (p Plane) renderNodes(ctx context.Context, apiAddr netip.Addr, now time.Tim
 		cluster: cluster, enrolmentDigest: enrolmentTokenDigest(token), issuerBucket: bucket, gatewayCA: *p.GatewayCA,
 		gateways: map[string]renderedGateway{},
 	}
-	carried, fetched := cluster, []components.Manifest(nil)
-	if p.Hosting != nil {
-		carried.Components.Inline, fetched = splitHosting(set, base)
-	}
+	carried := cluster
+	var fetched []components.Manifest
+	carried.Components.Inline, fetched = splitFetched(set, base)
 	config, err := nodeconfig.Render(carried, nodeconfig.Node{})
 	if err != nil {
 		return installation{}, components.Set{}, err
 	}
-	var fetch *hostingFetch
-	if p.Hosting != nil {
+	var fetch *servingFetch
+	if len(fetched) > 0 {
 		if inst.servingUserData, fetch, err = servingUserData(fetched, now); err != nil {
 			return installation{}, components.Set{}, err
 		}

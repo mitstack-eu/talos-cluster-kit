@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: left-alone-in-mitstack-node
+  namespace: mitstack-node
+spec:
+  containers:
+  - name: app
+    image: ghcr.io/mitstack-eu/talos-cluster-kit-tools@sha256:a44ec3d0346ad35195e4d59c51c31ffe8831cf4be4fe372fe3250bf6c50575d4
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: left-alone-in-kube-system
+  namespace: kube-system
+spec:
+  containers:
+  - name: app
+    image: ghcr.io/mitstack-eu/talos-cluster-kit-tools@sha256:a44ec3d0346ad35195e4d59c51c31ffe8831cf4be4fe372fe3250bf6c50575d4

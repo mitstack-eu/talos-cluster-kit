@@ -4,6 +4,7 @@ metadata:
   name: cloudnative-pg
 policies:
 - ../../policies/mitstack-disallow-host-path.yaml
+- ../../policies/mitstack-require-image-digest.yaml
 - ../../policies/mitstack-require-resource-limits.yaml
 - ../../policies/mitstack-restrict-image-registries.yaml
 resources:
@@ -84,6 +85,31 @@ results:
   result: skip
 - isValidatingPolicy: true
   policy: mitstack-restrict-image-registries
+  kind: Pod
+  resources:
+  - cloudnative-pg-operator
+  - cloudnative-pg-barman-cloud-plugin
+  result: skip
+- isValidatingPolicy: true
+  policy: mitstack-require-image-digest
+  kind: Pod
+  resources:
+  - cloudnative-pg-instance
+  - cloudnative-pg-pooler
+  - cloudnative-pg-instance-unpinned
+  - cloudnative-pg-instance-archiving
+  - cloudnative-pg-recovery
+  - cloudnative-pg-instance-sidecar-without-limits
+  - cloudnative-pg-instance-sidecar-other-release
+  result: pass
+- isValidatingPolicy: true
+  policy: mitstack-require-image-digest
+  kind: Pod
+  resources:
+  - cloudnative-pg-instance-tagged
+  result: fail
+- isValidatingPolicy: true
+  policy: mitstack-require-image-digest
   kind: Pod
   resources:
   - cloudnative-pg-operator

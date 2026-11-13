@@ -15,6 +15,7 @@ import (
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
+	"github.com/mitstack-eu/talos-cluster-kit/tools"
 )
 
 type renderedDoc struct {
@@ -202,6 +203,27 @@ func TestManifests_NoPodOutsideTheSkippedNamespacesIsRefusedByTheHostPathLimitsO
 	assert.Empty(t, refused, "a pod the kit renders would stop at its next restart")
 }
 
+const digestPolicy = "mitstack-require-image-digest"
+
+func TestManifests_NoPodOutsideTheNamespacesTheLabelPolicySkipsNamesAnImageWithoutItsDigest(t *testing.T) {
+	policy := podPolicy(t, digestPolicy)
+	skipped := policySkips(t, policy)
+	var refused []string
+
+	for _, pod := range renderedPods(t) {
+		if slices.Contains(skipped, pod.namespace) {
+			continue
+		}
+		if !testutil.Admits(t, policy, map[string]any{"spec": pod.spec}, map[string]any{"metadata": map[string]any{"name": pod.namespace}}) {
+			refused = append(refused, fmt.Sprintf("%s in %q", pod.where, pod.namespace))
+		}
+	}
+
+	slices.Sort(refused)
+	assert.Empty(t, refused, "a pod the kit renders would stop at its next restart")
+	assert.Equal(t, policySkips(t, podPolicy(t, "mitstack-require-app-label")), skipped, "the digest policy skips other namespaces than the label policy and Kyverno's webhooks")
+}
+
 func TestManifests_EveryNamespaceTheNewPolicySkipsBeyondTheLabelPolicysHoldsAPodTheyWouldRefuse(t *testing.T) {
 	label := policySkips(t, podPolicy(t, "mitstack-require-app-label"))
 	refusedIn := map[string][]string{}
@@ -377,7 +399,7 @@ func TestManifests_NoCiliumContainerRunsPrivilegedOrAddsACapabilityBeyondTheRead
 }
 
 func TestManifests_EveryRefusalOpensWithTheNameOfTheRuleThePlatformLooksFor(t *testing.T) {
-	for _, name := range podRefusingPolicies {
+	for _, name := range append(slices.Clone(podRefusingPolicies), digestPolicy) {
 		for _, v := range testutil.Field(t, podPolicy(t, name), "spec", "validations").([]any) {
 			assert.True(t, strings.HasPrefix(testutil.Field(t, v, "message").(string), name+": "), "%s refuses with a message that does not open with its name", name)
 		}
@@ -510,6 +532,15 @@ func TestManifests_PodPoliciesJudgeWhatAPodMountsSetsAndPulls(t *testing.T) {
 		{"the same sidecar at another digest is refused", "mitstack-restrict-image-registries", with(pod(container(postgres, limits)), "initContainers", []any{container(sidecarTag+zero, limits)}), false},
 		{"the plugin's own image, which runs only in the operator's namespace, is refused in an app namespace", "mitstack-restrict-image-registries", pod(container(strings.Replace(sidecar, "-sidecar:", ":", 1), limits)), false},
 		{"a Postgres pod whose sidecar sets no limits is refused", "mitstack-require-resource-limits", with(pod(container(postgres, limits)), "initContainers", []any{container(sidecar, map[string]any{})}), false},
+		{"an image named by its digest alone is admitted by the digest rule", digestPolicy, pod(container(mitstack, limits)), true},
+		{"an image named by its tag and its digest is admitted", digestPolicy, pod(container(busybox, limits)), true},
+		{"the tools image this release pins is admitted", digestPolicy, pod(container(tools.Image, limits)), true},
+		{"an image named by its tag alone is refused", digestPolicy, pod(container(busyboxTag, limits)), false},
+		{"an image named with neither tag nor digest is refused", digestPolicy, pod(container("ghcr.io/mitstack-eu/app", limits)), false},
+		{"an image whose digest is cut short is refused", digestPolicy, pod(container("ghcr.io/mitstack-eu/app@sha256:00000000", limits)), false},
+		{"an image whose tag only reads like a digest is refused", digestPolicy, pod(container("ghcr.io/mitstack-eu/app:sha256-0000000000000000000000000000000000000000000000000000000000000000", limits)), false},
+		{"an init container named by its tag is refused by the digest rule", digestPolicy, with(pod(container(mitstack, limits)), "initContainers", []any{container(busyboxTag, limits)}), false},
+		{"an ephemeral container named by its tag is refused by the digest rule", digestPolicy, with(pod(container(mitstack, limits)), "ephemeralContainers", []any{container(busyboxTag, limits)}), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, testutil.Admits(t, podPolicy(t, tc.policy), tc.pod, namespace))

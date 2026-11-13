@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -81,6 +82,39 @@ func TestCI_ThePollingCheckRunsAtTheReleaseTheCIModuleRequires(t *testing.T) {
 		require.NoError(t, err)
 		assert.NotContains(t, string(body), pollingCheckTool+"@", "%s names no version of checkpolls, which ci/go.mod alone holds", path)
 	}
+}
+
+func TestCI_ComponentsJobJudgesTheSignaturePolicyReachingOnlyTheHostsItsEgressLimitAdmitsAndAgainWithoutSigstore(t *testing.T) {
+	const (
+		tests  = "components/admission/tests/mitstack-verify-image-signatures"
+		proxy  = "HTTPS_PROXY=http://127.0.0.1:9"
+		hosts  = "sed -n 's/^ *- matchName: //p' " + tests + "/egress.yaml"
+		system = "kyverno apply " + tests + "/policy.yaml --resource " + tests + "/system.yaml"
+	)
+	raw, err := os.ReadFile(".github/workflows/ci.yml")
+	require.NoError(t, err)
+	var ci struct {
+		Jobs map[string]struct {
+			Steps []ciStep `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	require.NoError(t, yaml.Unmarshal(raw, &ci))
+	var admitted, unreachable, systemPods int
+	for _, step := range ci.Jobs["components"].Steps {
+		behindTheProxy := strings.Contains(step.Run, proxy) && strings.Contains(step.Run, hosts) && strings.Contains(step.Run, `NO_PROXY="$hosts"`)
+		switch {
+		case behindTheProxy && strings.Contains(step.Run, "grep -v sigstore") && strings.Contains(step.Run, "kyverno test "+tests+" -f sigstore-unreachable.yaml"):
+			unreachable++
+		case behindTheProxy && strings.HasSuffix(strings.TrimSpace(step.Run), "kyverno test "+tests):
+			admitted++
+		case strings.Contains(step.Run, system) && strings.Contains(step.Run, "pass: 0, fail: 0, warn: 0, error: 0, skip: 0"):
+			systemPods++
+		}
+	}
+
+	assert.Equal(t, 1, admitted, "steps that run the signature policy's test behind a proxy no host answers, with only the egress limit's hosts exempt")
+	assert.Equal(t, 1, unreachable, "steps that run it again with Sigstore's host no longer exempt, against sigstore-unreachable.yaml")
+	assert.Equal(t, 1, systemPods, "steps that apply the policy to the pods in mitstack-node and kube-system and want no result")
 }
 
 // The record delivery job runs only on a push to main, so a pin that moved or stopped naming a release fails here first.

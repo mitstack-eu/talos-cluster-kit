@@ -1,0 +1,17 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Value
+metadata:
+  name: values
+namespaceSelector:
+- name: app-shop
+  labels:
+    kubernetes.io/metadata.name: app-shop
+- name: traefik
+  labels:
+    kubernetes.io/metadata.name: traefik
+- name: mitstack-node
+  labels:
+    kubernetes.io/metadata.name: mitstack-node
+- name: kube-system
+  labels:
+    kubernetes.io/metadata.name: kube-system

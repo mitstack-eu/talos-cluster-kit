@@ -1,0 +1,32 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: mitstack-verify-image-signatures-with-sigstore-unreachable
+policies:
+- policy.yaml
+resources:
+- resources.yaml
+variables: values.yaml
+results:
+- isImageValidatingPolicy: true
+  policy: mitstack-verify-image-signatures
+  kind: Pod
+  resources:
+  - admitted-from-a-repository-the-list-does-not-name
+  - admitted-from-a-repository-whose-name-only-begins-with-a-listed-one
+  result: pass
+- isImageValidatingPolicy: true
+  policy: mitstack-verify-image-signatures
+  kind: Pod
+  resources:
+  - admitted-signed-by-the-listed-identity
+  - refused-unsigned
+  - refused-signed-by-another-identity
+  - refused-for-its-init-container
+  result: fail
+- isImageValidatingPolicy: true
+  policy: mitstack-verify-image-signatures
+  kind: Deployment
+  resources:
+  - refused-unsigned-in-a-deployment
+  result: fail

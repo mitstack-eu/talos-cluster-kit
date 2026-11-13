@@ -59,6 +59,9 @@ configs:
   # Argo CD 3 keeps object health off the Application unless this is "true", and the node report reads it there.
   params:
     controller.resource.health.persist: "true"
+    # A retry keeps the retry settings its operation began with, so one that began before retry.refresh reached its
+    # Application retries its first commit without end. An hour ends it, and the next sync takes the newest commit.
+    controller.sync.timeout.seconds: "3600"
   cm:
     # Nothing signs in as the local admin, and Argo CD generates its password only while the account is on.
     admin.enabled: false

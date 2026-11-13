@@ -67,10 +67,7 @@ type Plane struct {
 	// Removals is the cluster repository a replaced node's member removal is written to; nil refuses an upgrade that
 	// names a node.
 	Removals *Removals
-	// Signers are the repositories whose images the cluster starts only with their signer's keyless signature; none
-	// admits every image on its digest alone. A build with signers orders a serving server, where its builder fetches
-	// their policy, and every release carries the policy too.
-	Signers []components.Signer
+	Signers  []components.Signer
 }
 
 // Refusal is a request the plane will not carry out, which no retry of the same call fixes. Class is

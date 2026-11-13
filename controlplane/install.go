@@ -181,8 +181,7 @@ func (p Plane) buildSet(ctx context.Context, now time.Time, token string) (set, 
 	return set, base, err
 }
 
-// renderNodes renders the cluster under the plane's gateway CA, and the user data of the builder, the worker builder and
-// the serving server of a build whose builder fetches manifests.
+// renderNodes renders the cluster under the plane's gateway CA, and the user data of each short-lived server of the build.
 func (p Plane) renderNodes(ctx context.Context, apiAddr netip.Addr, now time.Time, secrets *nodeconfig.Secrets, token, bucket string) (installation, components.Set, error) {
 	set, base, err := p.buildSet(ctx, now, token)
 	if err != nil {

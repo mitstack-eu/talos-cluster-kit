@@ -14,14 +14,12 @@ import (
 
 // Signer is a repository whose images a cluster starts only with the keyless signature of Issuer and Subject.
 type Signer struct {
-	// Repository is a registry and a path, with no tag, digest or pattern, so it covers that one repository. Kyverno
-	// reads its signatures with no login, so a private repository has every image refused.
+	// Repository is a registry and a path with no tag, digest or pattern, and public, since Kyverno reads it with no login.
 	Repository string
 	Issuer     string
 	Subject    string
 }
 
-// SignaturePolicyName names the manifest and its policy, and opens each of the policy's refusals.
 const SignaturePolicyName = "mitstack-verify-image-signatures"
 
 // The limits keep the longest list's policy within the serving server's user data, where a build with signers fetches it.
@@ -32,11 +30,9 @@ const (
 	SignerSubjectLimit    = 256
 )
 
-// sigstoreTrustRoot serves the keys a keyless signature and its log entry are checked against.
 const sigstoreTrustRoot = "tuf-repo-cdn.sigstore.dev"
 
-// registryHosts are the hosts Kyverno reads a signature from, by registry. A registry joins only with hosts a test
-// proves sufficient and a credential Kyverno holds, since a check that cannot read a signature refuses every image.
+// registryHosts joins a registry only with hosts a test proves sufficient, since a check that cannot read a signature refuses every image.
 var registryHosts = map[string][]string{"ghcr.io": {"ghcr.io", "pkg-containers.githubusercontent.com"}}
 
 // The patterns admit no quote, space or line break, so each value sits whole inside the policy's quoted strings.
@@ -51,8 +47,7 @@ var signaturePolicyTemplate string
 
 var signaturePolicy = tmpl.Must("the signature policy", signaturePolicyTemplate)
 
-// SignaturePolicy renders the policy that checks each signer's images and the egress limit on Kyverno's admission
-// controller that the checks need, as one manifest, and none for an empty list.
+// SignaturePolicy renders the policy and the egress limit its checks need as one manifest, and none for an empty list.
 func SignaturePolicy(signers []Signer) ([]Manifest, error) {
 	if len(signers) == 0 {
 		return nil, nil
@@ -68,7 +63,6 @@ func SignaturePolicy(signers []Signer) ([]Manifest, error) {
 	return []Manifest{{Name: SignaturePolicyName, Path: "components/admission/" + SignaturePolicyName + ".yaml", Bytes: out}}, nil
 }
 
-// signatureHosts are the hosts the list's checks reach, and an error naming each signer Kyverno could not check.
 func signatureHosts(signers []Signer) ([]string, error) {
 	var errs []error
 	if len(signers) > SignerLimit {

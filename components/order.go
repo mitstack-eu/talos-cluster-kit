@@ -19,8 +19,7 @@ var (
 		"mitstack-require-strict-mtls", "mitstack-restrict-image-registries", "mitstack-sealed-secrets-key", "mitstack-strict-mtls", "openbao", "sealed-secrets", "traefik",
 	}
 	webhookValidated = []string{"external-secrets", "trust-manager", "mitstack-hosting-tls", "plugin-barman-cloud"}
-	// appended holds each later manifest in the order it joined, at the end, the one place a new manifest changes no
-	// other manifest's TalosName and so no gateway's list.
+	// appended holds each later manifest at the end, where it changes no other manifest's TalosName and no gateway's list.
 	appended = []string{"mitstack-node-topology", "mitstack-require-image-digest", SignaturePolicyName}
 )
 

@@ -253,7 +253,9 @@ as the cluster needs:
 2. It powers a stopped gateway back on, once. A gateway that still does not
    serve is never powered on again.
 3. It replaces one gateway built from an earlier list, once the upgrade's own
-   call, with `Upgrading` set, has marked the network. It takes first a gateway
+   call, with `Upgrading` set, has marked the network. That call marks it
+   before any other step, in the one write that also records each node the
+   upgrade names. It takes first a gateway
    that does not serve, since replacing it takes nothing from those that do. It
    moves the route off the old gateway to one that serves, leaving it where it
    is when none does, and labels the old gateway with the time its
@@ -2865,15 +2867,19 @@ replaces, and how its user confirms that, is the block's to decide:
 talos-cluster-kit takes the locations as given. The plane records each named
 location on the Hetzner network, under the label
 `mitstack.dev/node-replace-<location>`, with the id Hetzner gives the node's
-server and the time of that call. Every later call reads the label and
+server and the time of that call. The upgrade's call writes the label before
+any other step, since the calls after it name no node. When the upgrade also
+replaces the gateways, the same write marks the network for that, as
+[the section on the gateways](#how-the-gateways-are-kept) describes. Every
+later call reads the label and
 carries the replacement on, whether or not it names a node, so a replacement
 stopped part way resumes where it stood. Once a server with another id than
 the recorded one stands in that location, the plane takes it for the node's
 successor. It compares the two ids and no times. A call that is no upgrade
 records nothing.
 
-The upgrade's call refuses before any change in four cases, each with its own
-class:
+The upgrade's call refuses before any change in four cases, whatever other
+step is due, each with its own class:
 
 | Class | What the upgrade named |
 |---|---|
@@ -2889,7 +2895,11 @@ a second case, which step 2 below gives: a node report that carries no health
 of what Argo CD applied.
 
 The plane replaces one node at a time, in the order `fsn1`, `nbg1`, `hel1`.
-Each call takes one of these changes:
+A replacement begins only once the upgrade has replaced every gateway it
+replaces. Every node fetches each served manifest from the first location's
+gateway, and the gateways' replacement takes each gateway away for a while.
+Until then, `Problems` names the node and says its replacement begins once the
+upgrade has replaced every gateway. Each call takes one of these changes:
 
 1. It labels the node's Hetzner server with the time its replacement began,
    under `mitstack.dev/removal-began` and `mitstack.dev/removal-for`, so only

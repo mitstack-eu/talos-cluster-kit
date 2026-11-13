@@ -156,14 +156,14 @@ func (p Plane) neverStartedStep(ctx context.Context, st State) (Step, bool, erro
 
 // builtGatewayStep keeps the gateways of a cluster whose nodes exist, building a missing location's gateway, moving the
 // route and powering a stopped gateway back on before it replaces one, since a replacement takes a location's gateway
-// away and waits while any location lacks one.
+// away and waits while any location lacks one. A cluster built with one gateway keeps it as it stands, and only its
+// route moves.
 func (p Plane) builtGatewayStep(ctx context.Context, st State, s site) (Step, bool, error) {
 	if st.SingleGateway() {
-		return p.singleGatewayStep(ctx, st, s)
+		return p.routeStep(ctx, st, s)
 	}
 	for _, next := range []gatewayStep{
 		p.keptListStep,
-		p.upgradeMarkStep,
 		p.zoneStep,
 		func(ctx context.Context, st State, _ site) (Step, bool, error) { return p.neverStartedStep(ctx, st) },
 		p.routeStep,
@@ -190,16 +190,6 @@ func onceEveryLocationHasItsGateway(next gatewayStep) gatewayStep {
 		}
 		return next(ctx, st, s)
 	}
-}
-
-// singleGatewayStep keeps a cluster built before a gateway ran in each location as it stands and refuses the upgrade
-// that would replace its gateway, since no kept key can sign a gateway its nodes trust.
-func (p Plane) singleGatewayStep(ctx context.Context, st State, s site) (Step, bool, error) {
-	if p.Upgrading {
-		return Step{}, false, refuse("gateway-predates-zones",
-			"the cluster's one gateway predates per-zone gateways and its CA key was never kept, so the upgrade cannot replace it; unsubscribe and subscribe again to rebuild the cluster")
-	}
-	return p.routeStep(ctx, st, s)
 }
 
 func runsAtItsAddress(gw Server, network Network) bool {
@@ -550,14 +540,27 @@ func missedDeadline(gw Server) string {
 		gatewayDeadline(gw).UTC().Format(time.RFC3339), gateway.Deadline)
 }
 
-// upgradeMarkStep marks the network on the upgrade's own call, before any other step, since the re-drives that carry
-// the replacement on are no upgrade.
-func (p Plane) upgradeMarkStep(_ context.Context, st State, s site) (Step, bool, error) {
-	r, err := p.replacement(st, s.network)
-	if err != nil || !p.Upgrading || len(r.stale) == 0 || s.network.Labels[KeyGatewayUpgrade] == r.digest {
-		return Step{}, false, err
+// recordGatewayList records the list the upgrade replaces the gateways with, once nodes exist, as builtGatewayStep keeps
+// only such a cluster's gateways. It refuses the upgrade of a cluster built with one gateway, since no kept key can
+// sign a gateway its nodes trust, and one whose replacement keptListStep refuses.
+func (p Plane) recordGatewayList(ctx context.Context, st State, network Network, rec *upgradeRecord) error {
+	if len(st.Servers[RoleNode]) == 0 {
+		return nil
 	}
-	return p.markStep(s.network, r.digest), true, nil
+	if st.SingleGateway() {
+		return refuse("gateway-predates-zones",
+			"the cluster's one gateway predates per-zone gateways and its CA key was never kept, so the upgrade cannot replace it; unsubscribe and subscribe again to rebuild the cluster")
+	}
+	if _, _, err := p.keptListStep(ctx, st, site{network: network}); err != nil {
+		return err
+	}
+	r, err := p.replacement(st, network)
+	if err != nil || len(r.stale) == 0 || network.Labels[KeyGatewayUpgrade] == r.digest {
+		return err
+	}
+	rec.labels[KeyGatewayUpgrade] = r.digest
+	rec.replaces = append(rec.replaces, "the gateways with this release's list")
+	return nil
 }
 
 // nextToReplace is the gateway built from an earlier list that an upgrade replaces next.
@@ -602,7 +605,7 @@ func (p Plane) replaceStep(ctx context.Context, st State, s site) (Step, bool, e
 		if !marked {
 			return Step{}, false, nil
 		}
-		return p.markStep(s.network, ""), true, nil
+		return p.unmarkStep(s.network), true, nil
 	}
 	old, err := p.nextToReplace(ctx, r, s.network)
 	if err != nil {
@@ -708,22 +711,10 @@ func describeServing(set redundant.Set, details map[string]string, removed strin
 	return strings.Join(parts, "; ")
 }
 
-// markStep sets the network's upgrade mark to digest, or takes it off when digest is empty, once every gateway is built
-// from this release's list and serves.
-func (p Plane) markStep(network Network, digest string) Step {
-	what := "mark the network as replacing its gateways with this release's list"
-	if digest == "" {
-		what = "take the upgrade's mark off the network, since every gateway is built from this release's list and serves"
-	}
-	return Step{what, func(ctx context.Context) error {
+func (p Plane) unmarkStep(network Network) Step {
+	return Step{"take the upgrade's mark off the network, since every gateway is built from this release's list and serves", func(ctx context.Context) error {
 		labels := maps.Clone(network.Labels)
-		if labels == nil {
-			labels = map[string]string{}
-		}
-		labels[KeyGatewayUpgrade] = digest
-		if digest == "" {
-			delete(labels, KeyGatewayUpgrade)
-		}
+		delete(labels, KeyGatewayUpgrade)
 		return p.API.SetNetworkLabels(ctx, network.ID, labels)
 	}}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/netip"
 	"slices"
 	"strings"
@@ -40,9 +41,12 @@ func (p Plane) EnsureNetwork(ctx context.Context, st State) (Network, error) {
 	return n, nil
 }
 
-// NextStep is the first step the plane lacks, each in the order it depends on the one before, and none while only
-// Hetzner or the nodes can finish the work in flight.
+// NextStep is the first step the plane lacks: on an upgrade's own call what the upgrade records, then each step in the
+// order it depends on the one before, and none while only Hetzner or the nodes can finish the work in flight.
 func (p Plane) NextStep(ctx context.Context, st State, network Network) (Step, bool, error) {
+	if step, ok, err := p.recordUpgradeStep(ctx, st, network); err != nil || ok {
+		return step, ok, err
+	}
 	firewall, ok := st.Firewall()
 	if !ok {
 		return Step{"create the firewall", func(ctx context.Context) error { return p.createFirewall(ctx) }}, true, nil
@@ -59,6 +63,36 @@ func (p Plane) NextStep(ctx context.Context, st State, network Network) (Step, b
 		}
 	}
 	return p.nodeStep(ctx, st, site{network: network, firewall: firewall})
+}
+
+// upgradeRecord is the network's labels with what an upgrade's own call records, and what each record replaces.
+type upgradeRecord struct {
+	labels   map[string]string
+	replaces []string
+}
+
+// recordUpgradeStep writes everything an upgrade asks for to the network in one write, ahead of any other step, since
+// the calls after the upgrade's own carry on only what the network records. Each refusal comes before the write, so a
+// refused upgrade records nothing.
+func (p Plane) recordUpgradeStep(ctx context.Context, st State, network Network) (Step, bool, error) {
+	if !p.Upgrading {
+		return Step{}, false, nil
+	}
+	rec := upgradeRecord{labels: maps.Clone(network.Labels)}
+	if rec.labels == nil {
+		rec.labels = map[string]string{}
+	}
+	for _, record := range []func(context.Context, State, Network, *upgradeRecord) error{p.recordGatewayList, p.recordReplacements} {
+		if err := record(ctx, st, network, &rec); err != nil {
+			return Step{}, false, err
+		}
+	}
+	if len(rec.replaces) == 0 {
+		return Step{}, false, nil
+	}
+	return Step{"record that the upgrade replaces " + strings.Join(rec.replaces, " and "), func(ctx context.Context) error {
+		return p.API.SetNetworkLabels(ctx, network.ID, rec.labels)
+	}}, true, nil
 }
 
 type site struct {

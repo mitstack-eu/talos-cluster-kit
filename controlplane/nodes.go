@@ -101,12 +101,9 @@ func waitsOn(format string, args ...any) (progress, error) {
 	return progress{waits: fmt.Sprintf(format, args...)}, nil
 }
 
-// replaceNodeStep records the nodes an upgrade names, then carries the first location's replacement on, so no second
-// node goes before a report reads the first one's successor serving.
+// replaceNodeStep carries the first recorded location's replacement on, so no second node goes before a report reads
+// the first one's successor serving.
 func (p Plane) replaceNodeStep(ctx context.Context, st State, s site) (Step, bool, error) {
-	if step, ok, err := p.recordReplacementsStep(ctx, st, s.network); err != nil || ok {
-		return step, ok, err
-	}
 	asked, err := nodeReplacements(s.network)
 	if err != nil || len(asked) == 0 {
 		return Step{}, false, err
@@ -159,42 +156,37 @@ func (p Plane) strayRemovalStep(ctx context.Context, st State, network Network) 
 	return g.step, true, err
 }
 
-// recordReplacementsStep refuses before it records anything, so an upgrade never leaves a part of what it named.
-func (p Plane) recordReplacementsStep(ctx context.Context, st State, network Network) (Step, bool, error) {
-	if !p.Upgrading || len(p.ReplaceNodes) == 0 {
-		return Step{}, false, nil
+// recordReplacements records each node the upgrade names that the network does not record yet, and refuses before
+// recordUpgradeStep writes anything, so an upgrade never leaves a part of what it named.
+func (p Plane) recordReplacements(ctx context.Context, st State, _ Network, rec *upgradeRecord) error {
+	if len(p.ReplaceNodes) == 0 {
+		return nil
 	}
 	if class, what := p.lacks(); class != "" {
-		return Step{}, false, refuse(class, "the upgrade names a node to replace, and the block passes %s, so nothing was changed", what)
-	}
-	labels := maps.Clone(network.Labels)
-	if labels == nil {
-		labels = map[string]string{}
+		return refuse(class, "the upgrade names a node to replace, and the block passes %s, so nothing was changed", what)
 	}
 	orderable := &OrderableTypes{API: p.API}
-	var asked []string
+	var named []string
 	for _, loc := range p.ReplaceNodes {
 		node, ok := st.NodeIn(loc)
 		if !ok {
-			return Step{}, false, refuse("node-replacement-unknown",
+			return refuse("node-replacement-unknown",
 				"the upgrade names the node in %q to replace, and the cluster runs no single node there, so nothing was changed; it runs one in each of %s",
 				loc, strings.Join(Locations, ", "))
 		}
-		if _, recorded := labels[KeyNodeReplace+loc]; recorded {
+		if _, recorded := rec.labels[KeyNodeReplace+loc]; recorded {
 			continue
 		}
 		if _, err := orderable.First(ctx, nodeWhat, p.ServerTypes, loc); err != nil {
-			return Step{}, false, err
+			return err
 		}
-		labels[KeyNodeReplace+loc] = nodeReplacement{loc: loc, old: node.ID, asked: p.now()}.record()
-		asked = append(asked, loc)
+		rec.labels[KeyNodeReplace+loc] = nodeReplacement{loc: loc, old: node.ID, asked: p.now()}.record()
+		named = append(named, loc)
 	}
-	if len(asked) == 0 {
-		return Step{}, false, nil
+	if len(named) > 0 {
+		rec.replaces = append(rec.replaces, "the node in "+strings.Join(named, ", "))
 	}
-	return Step{"record that the upgrade replaces the node in " + strings.Join(asked, ", "), func(ctx context.Context) error {
-		return p.API.SetNetworkLabels(ctx, network.ID, labels)
-	}}, true, nil
+	return nil
 }
 
 // endNodeReplacementStep takes r's record off the network once a node report reads the successor serving, so the next
@@ -273,7 +265,7 @@ func (p Plane) replacementDetail(ctx context.Context, st State, network Network,
 	case err != nil:
 		return "it cannot go on, since " + err.Error()
 	case g.step.Run != nil:
-		return "the next call will " + g.step.What
+		return "its next step is to " + g.step.What
 	default:
 		return g.waits
 	}
@@ -340,26 +332,20 @@ func (p Plane) lacks() (class, what string) {
 func (p Plane) replaceNode(ctx context.Context, st State, network Network, r nodeReplacement, node Server) (progress, error) {
 	switch node.Status {
 	case ServerRunning:
-		return p.powerOffNode(ctx, network, r, node)
+		return p.powerOffNode(ctx, st, network, r, node)
 	case ServerOff:
 		return p.removeOffNode(ctx, st, network, r, node)
 	}
 	return waitsOn("Hetzner reads it neither running nor off")
 }
 
-func (p Plane) powerOffNode(ctx context.Context, network Network, r nodeReplacement, node Server) (progress, error) {
+func (p Plane) powerOffNode(ctx context.Context, st State, network Network, r nodeReplacement, node Server) (progress, error) {
 	if _, err := (&OrderableTypes{API: p.API}).First(ctx, nodeWhat, p.ServerTypes, r.loc); err != nil {
 		return p.refused(network, r, err)
 	}
 	began, begun := RemovalBegan(node, r.plan())
 	if !begun {
-		return next("begin replacing the node in "+r.loc+", so only a node report read after now judges the other members", func(ctx context.Context) error {
-			if err := p.API.SetServerLabels(ctx, node.ID, BeginRemoval(node, p.now(), r.plan())); err != nil {
-				return err
-			}
-			p.notify(ctx, "began replacing node %d in %s, which the upgrade named", node.ID, r.loc)
-			return nil
-		})
+		return p.beginNodeReplacement(st, network, r, node)
 	}
 	read, err := p.ReadReport(ctx, began)
 	switch {
@@ -377,6 +363,25 @@ func (p Plane) powerOffNode(ctx context.Context, network Network, r nodeReplacem
 		}
 		p.notify(ctx, "powered off node %d in %s, since the node report read at %s reads the other etcd and OpenBao members serving",
 			node.ID, r.loc, read.At.UTC().Format(time.RFC3339))
+		return nil
+	})
+}
+
+// beginNodeReplacement holds a replacement while the upgrade replaces the gateways, so no successor boots while a gateway
+// it names is away: every node fetches each served manifest from the first location's gateway.
+func (p Plane) beginNodeReplacement(st State, network Network, r nodeReplacement, node Server) (progress, error) {
+	gateways, err := p.replacement(st, network)
+	switch {
+	case err != nil:
+		return progress{}, err
+	case gateways.active:
+		return waitsOn("it begins once the upgrade has replaced every gateway")
+	}
+	return next("begin replacing the node in "+r.loc+", so only a node report read after now judges the other members", func(ctx context.Context) error {
+		if err := p.API.SetServerLabels(ctx, node.ID, BeginRemoval(node, p.now(), r.plan())); err != nil {
+			return err
+		}
+		p.notify(ctx, "began replacing node %d in %s, which the upgrade named", node.ID, r.loc)
 		return nil
 	})
 }

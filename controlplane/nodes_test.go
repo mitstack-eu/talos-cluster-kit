@@ -209,8 +209,8 @@ func (h *harness) upgradeCall(locs ...string) error {
 	return h.ensure()
 }
 
-// replace re-drives the plane as a block does, naming no node after the upgrade's own call, until a call fails or no
-// replacement of a node or of the gateways is left.
+// replace re-drives the plane as a block does, naming no node after the upgrade's own call, and stops at a call that
+// fails, when until reports true, or once no replacement of a node or of the gateways is left.
 func (h *harness) replace(c *cluster, until func() bool, locs ...string) error {
 	h.t.Helper()
 	call := h.ensure
@@ -592,12 +592,12 @@ func TestPlane_ReplacesTheNodesAnUpgradeNamesOneAtATimeAndNoneOnACallThatIsNoUpg
 	}
 }
 
-func (h *harness) standingOf(ids []int64) []int64 {
+func (h *harness) stillStanding(ids []int64) []int64 {
 	return slices.DeleteFunc(h.gatewayIDs(), func(id int64) bool { return !slices.Contains(ids, id) })
 }
 
-// touched reports whether the replacement of node has begun: its removal is labelled, or it is off or gone.
-func (h *harness) touched(node controlplane.Server) bool {
+// replacementBegan reports whether the replacement of node has begun: its removal is labelled, or it is off or gone.
+func (h *harness) replacementBegan(node controlplane.Server) bool {
 	now, stands := h.cloud.Servers[node.ID]
 	return !stands || now.Status != controlplane.ServerRunning || now.Labels[controlplane.KeyRemovalBegan] != ""
 }
@@ -625,8 +625,8 @@ func TestPlane_AnUpgradeNamingTheNodeInFsn1WhileANewGatewayListIsDueReplacesEver
 	var began bool
 	var standingAtBegin []int64
 	watch := func() bool {
-		if !began && h.touched(old) {
-			began, standingAtBegin = true, h.standingOf(earlier)
+		if !began && h.replacementBegan(old) {
+			began, standingAtBegin = true, h.stillStanding(earlier)
 		}
 		return false
 	}
@@ -639,7 +639,7 @@ func TestPlane_AnUpgradeNamingTheNodeInFsn1WhileANewGatewayListIsDueReplacesEver
 	assert.Contains(t, waiting, fmt.Sprintf("node %d in fsn1 still runs for the replacement the upgrade asked for at %s: it begins once the upgrade has replaced every gateway",
 		old.ID, asked.Format(time.RFC3339)), "the plane's problems once the upgrade's own call ended")
 	assert.Len(t, h.deletedGateways(from), len(controlplane.Locations), "the gateways the upgrade deleted: %v", h.events[from:])
-	assert.Empty(t, h.standingOf(earlier), "the gateways of the earlier list once no step is left")
+	assert.Empty(t, h.stillStanding(earlier), "the gateways of the earlier list once no step is left")
 	assert.NotEqual(t, old.ID, h.nodeIn("fsn1").ID, "the node in fsn1 once no step is left")
 	assert.Equal(t, kept, map[string]int64{"nbg1": h.nodeIn("nbg1").ID, "hel1": h.nodeIn("hel1").ID}, "the nodes the upgrade did not name")
 	assert.Equal(t, []string{"write " + path, "delete " + path}, c.commits, "the removal's commits to the cluster repository")
@@ -748,7 +748,7 @@ func TestPlane_AnUpgradeNamingTwoLocationsWhileANewGatewayListIsDueRecordsBothIn
 		assert.Contains(t, labels, key, "the network's labels once the upgrade's own call ended")
 	}
 	assert.Equal(t, 1, mostDown, "the most locations without a running node that holds an etcd member at once")
-	assert.Empty(t, h.standingOf(earlier), "the gateways of the earlier list once no step is left")
+	assert.Empty(t, h.stillStanding(earlier), "the gateways of the earlier list once no step is left")
 	after := h.byRole(controlplane.RoleNode)
 	require.Len(t, after, len(controlplane.Locations), "the cluster's nodes")
 	for _, node := range after {
@@ -772,7 +772,7 @@ func TestPlane_KeepsAnUpgradesRecordThroughAGatewayStepThatFailsPartWayAndCarrie
 	assert.Contains(t, err.Error(), "the default route via "+controlplane.GatewayAddress+" is deleted", "the step that failed part way")
 	assert.Contains(t, labels, controlplane.KeyNodeReplace+"fsn1", "the network's labels after the failed call")
 	assert.Contains(t, labels, controlplane.KeyGatewayUpgrade, "the network's labels after the failed call")
-	assert.Empty(t, h.standingOf(earlier), "the gateways of the earlier list once no step is left")
+	assert.Empty(t, h.stillStanding(earlier), "the gateways of the earlier list once no step is left")
 	assert.NotEqual(t, old.ID, h.nodeIn("fsn1").ID, "the node in fsn1 once no step is left")
 }
 

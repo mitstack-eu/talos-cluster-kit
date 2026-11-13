@@ -93,7 +93,6 @@ func (f *fakes) commit(name, content string) {
 	git(f.t, work, "push", "--quiet", "origin", "HEAD:"+defaultBranch)
 }
 
-// file is the init file on the default branch, and whether there is one.
 func (f *fakes) file() (string, bool) {
 	out, err := exec.Command("git", "--git-dir", f.repo, "show", defaultBranch+":"+openbaoinit.InitFile).Output()
 	return string(out), err == nil
@@ -212,19 +211,16 @@ func rendered(t *testing.T) ([]map[string]any, map[string]any) {
 const fakeSSH = `service=${*: -1}
 exec ${service%% *} "$FAKE_REPO"`
 
-// forbidden is a fake curl that answers every call 403, the status after the body as the script asks curl to print it.
+// forbidden prints the status on the line after the body, which is how the script asks curl to print an answer.
 const forbidden = `printf '{"errors":["permission denied"]}\n403'`
 
-// refusedTwice is a fake curl that fails to connect on its first two calls and hands each later one to the real curl.
 const refusedTwice = `[ "$(grep -c '^curl ' "$(dirname "$0")/calls.log")" -le 2 ] || PATH=${PATH#*:} exec curl "$@"
 echo 'curl: (7) Failed to connect' >&2
 exit 7`
 
-// failsCommitOnce is a fake git whose first commit fails, and which hands every other call to the real git.
 const failsCommitOnce = `case " $* " in *" commit "*) [ -e "$0.failed" ] || { touch "$0.failed"; exit 1; } ;; esac
 exec "$(PATH=${PATH#*:} command -v git)" "$@"`
 
-// run runs the Job's own script with the Job's own environment, pointed at the fakes.
 func (f *fakes) run(t *testing.T, recipient []byte) (string, error) {
 	t.Helper()
 	_, pod := rendered(t)
@@ -386,8 +382,7 @@ func TestInit_ChangesNothingOnAStoreItCannotInitialiseOrThatHoldsItsFileAlready(
 	}
 }
 
-// landsLate is a fake curl whose first write to kv gets no answer and lands just before the next one, as OpenBao 2.7.1
-// then answers that next write 400 "path is already in use".
+// landsLate is a fake curl whose first kv write gets no answer and lands just before the next try's write.
 const landsLate = `cat > "$0.in"; case " $* " in *" POST "*/v1/sys/mounts/kv" "*) [ -e "$0.sent" ] || { touch "$0.sent"; exit 28; }
 [ -e "$0.landed" ] || { touch "$0.landed"; PATH=${PATH#*:} curl "$@" < "$0.in" > /dev/null; } ;; esac
 PATH=${PATH#*:} exec curl "$@" < "$0.in"`

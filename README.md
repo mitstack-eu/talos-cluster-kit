@@ -1240,7 +1240,7 @@ change `report/scripts/report.sh`.
 | `systemVolumes` | How each node's `STATE` and `EPHEMERAL` volumes are encrypted | `talosctl get volumestatus` |
 | `argocd` | Each Application's health, sync, `revision`, the `operation` of its last sync and its applied objects, each object with Argo CD's health of it, as [the section on the revision](#how-the-report-names-the-revision-each-application-was-compared-against) and [the section on object health](#how-the-report-shows-each-objects-health-and-each-containers-state) describe, under `routes` the answer each of 17 routes gives a caller with no session, and the `argocd` namespace's Services and Ingresses. The settings route's entry also says [whether any account can sign in with a password](#how-the-report-shows-whether-a-password-signs-in-to-argo-cd) | The Applications, `ARGOCD_URL` and the Ingress read |
 | `kubernetes.argocdPods` | Each pod in `argocd` with its containers' images | The pod read |
-| `pods` | Every pod's namespace, name, node or `null`, phase, and `containers`, each init and app container with its state and reason, as [the section below](#how-the-report-shows-each-objects-health-and-each-containers-state) describes | `kubectl get pods -A` |
+| `pods` | Every pod's namespace, name, node or `null`, phase, and `containers`, each init and app container with its state and reason. The newest failed pod of each Job the kit renders also gives each container that exited non-zero its `message`, as [the section below](#how-the-report-shows-each-objects-health-and-each-containers-state) describes | `kubectl get pods -A`, and the Jobs of the workload read |
 | `images` | Each image reference a pod or the pod template of a Deployment, StatefulSet, DaemonSet, Job or CronJob names, once, as `image` with the `digest` it names or that a pod's status reports it runs by, and otherwise `null`. A failed read leaves `{exitStatus, stderr}` with `read` naming `pods` or `workloads`, in place of a partial list | The pod read and `kubectl get deployments,statefulsets,daemonsets,jobs,cronjobs -A` |
 | `cloudNativePG` | Each Cluster with its phase, instance counts and `currentPrimary`, and each Database and DatabaseRole with whether it applied. A Cluster also carries `continuousArchiving` and `lastBackup`, its conditions `ContinuousArchiving` and `LastBackupSucceeded`, each as `{status, reason, message}` with the message cut to 256 characters, or `null` while the Cluster holds no such condition. The report cuts no entry from this list: it holds every object the read returned, or the read's failure in the list's place | CloudNativePG's objects |
 | `cloudNativePGPlugins` | The name of each plugin CloudNativePG can find, sorted: the `cnpg.io/pluginName` label of each Service in `cnpg-system`. A cluster with no plugin carries an empty list | The read of claims, StorageClasses and Services |
@@ -1351,6 +1351,53 @@ log. One Application and one pod read like this:
 `applied` and `container` in `report/scripts/report.sh` build these entries.
 The report's ClusterRole grants no new right for them, since both come from the
 Application and pod reads the report already makes.
+
+### How the report carries the reason a kit Job failed
+
+A Job the kit runs, such as a component's handover, says why it failed only in
+its own output. No route mitstack serves reads a pod's log, so the report
+carries that reason for the kit's own Jobs. You then read it in the next report,
+while the Job still fails.
+
+Every container of each Job and CronJob the kit writes runs with
+`terminationMessagePolicy: FallbackToLogsOnError`. When such a container exits
+with an error and wrote no termination log, Kubernetes keeps the end of its
+output as its message, at most 80 lines or 2,048 bytes. Each of these Jobs
+carries the label `mitstack.dev/rendered-by: talos-cluster-kit`. A CronJob sets
+the label in its Job template, so each Job it starts carries it.
+
+The report finds the labelled Jobs in its workload read. For each one it takes
+the newest pod whose phase is `Failed`, by creation time and then by the greater
+name. In that pod, each container that exited with a code other than 0 carries
+`message`, cut to its first 256 bytes and never inside a character. A container
+killed before it printed anything, such as one that reads `OOMKilled`, carries
+`"message": null`. No other container carries a `message`: not one of an older
+failed pod, not one that exited 0, and not one of a Job without the label, whose
+output is whatever its app wrote. A workload read that fails gives no pod a
+message. A failed handover pod reads like this:
+
+```json
+{"namespace": "argocd", "name": "component-traefik-handover-9xw7d", "node": "poc-talos4-cp2", "phase": "Failed", "containers": [
+  {"name": "handover", "state": "terminated", "reason": "Error",
+    "message": "handover: waiting up to 120s for Argo CD to apply each object the component states\nhandover: Argo CD has not applied CustomResourceDefinition ingressroutes.traefik.io, ..."}
+]}
+```
+
+The bound keeps the body inside the platform's 256 KiB. Each Job adds the
+messages of one pod, at most 256 bytes for each container that failed, and a kit
+Job's pod runs one container, or two for the security scan. Forty failed
+handover Jobs add about 12 KiB.
+
+The kit's scripts write what they refuse and why, and write a key or a token
+only to a file, so a message holds neither. The Argo CD chart's
+`argocd-redis-secret-init` Job keeps the chart's own pod spec, since the chart
+has no value for the policy. Its pod restarts in place under `restartPolicy:
+OnFailure`, and a release carries no component's Job to a running cluster.
+
+`failed_message`, `kit_jobs` and `newest_failed` in `report/scripts/report.sh`
+build the messages. `TestPlane_EveryJobAndCronJobTheKitWritesLabelsItsJobsAsTheKitsAndRunsEachContainerWithFallbackToLogsOnError`
+in `controlplane/release_test.go` fails a Job the kit adds without the policy or
+the label.
 
 ### How the report shows whether a password signs in to Argo CD
 

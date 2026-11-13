@@ -84,6 +84,8 @@ kind: Job
 metadata:
   name: mitstack-enrolment
   namespace: {{ .Namespace }}
+  labels:
+    mitstack.dev/rendered-by: talos-cluster-kit
 spec:
   backoffLimit: 10
   template:
@@ -99,6 +101,7 @@ spec:
       containers:
         - name: enrol
           image: {{ .Image }}
+          terminationMessagePolicy: FallbackToLogsOnError
           command: [bash, {{ .Script }}, enrol]
           env:
             - name: PLATFORM_URL
@@ -142,6 +145,9 @@ spec:
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 3
   jobTemplate:
+    metadata:
+      labels:
+        mitstack.dev/rendered-by: talos-cluster-kit
     spec:
       backoffLimit: 2
       template:
@@ -157,6 +163,7 @@ spec:
           containers:
             - name: renew
               image: {{ .Image }}
+              terminationMessagePolicy: FallbackToLogsOnError
               command: [bash, {{ .Script }}, renew]
               env:
                 - name: PLATFORM_URL

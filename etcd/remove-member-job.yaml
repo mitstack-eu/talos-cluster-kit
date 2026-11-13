@@ -44,6 +44,8 @@ kind: Job
 metadata:
   name: {{ .Name }}
   namespace: {{ .Namespace }}
+  labels:
+    mitstack.dev/rendered-by: talos-cluster-kit
 spec:
   backoffLimit: 3
   ttlSecondsAfterFinished: 86400
@@ -65,6 +67,7 @@ spec:
       containers:
         - name: remove-member
           image: {{ .Image }}
+          terminationMessagePolicy: FallbackToLogsOnError
           command:
             - bash
             - -c

@@ -153,6 +153,9 @@ spec:
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 3
   jobTemplate:
+    metadata:
+      labels:
+        mitstack.dev/rendered-by: talos-cluster-kit
     spec:
       backoffLimit: 0
       activeDeadlineSeconds: 280
@@ -178,6 +181,7 @@ spec:
           containers:
             - name: report
               image: {{ .Image }}
+              terminationMessagePolicy: FallbackToLogsOnError
               command: [bash, {{ .Script }}]
               env:
                 - name: REPORT_URL

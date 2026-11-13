@@ -109,6 +109,9 @@ spec:
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 3
   jobTemplate:
+    metadata:
+      labels:
+        mitstack.dev/rendered-by: talos-cluster-kit
     spec:
       backoffLimit: 0
       activeDeadlineSeconds: 120
@@ -128,6 +131,7 @@ spec:
           containers:
             - name: probe
               image: {{ .Image }}
+              terminationMessagePolicy: FallbackToLogsOnError
               command: [bash, {{ .Script }}]
               env:
                 - name: MESH_PROBE_HOST

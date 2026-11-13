@@ -427,7 +427,7 @@ body() {
         | select(.metadata.annotations["storageclass.kubernetes.io/is-default-class"] == "true") | .metadata.name]
     };
     # A container carries its state with the reason Kubernetes gives, and the message only while it waits, since a
-    # terminated container's message is whatever the app wrote.
+    # terminated container's message is whatever the app wrote; failed_message adds it for a kit Job's own pod.
     def container: (.state // {}) as $s | {name: .name}
       + if $s.waiting then
           {state: "waiting", reason: ($s.waiting.reason // null), message: ($s.waiting.message // null | at_most_256)}

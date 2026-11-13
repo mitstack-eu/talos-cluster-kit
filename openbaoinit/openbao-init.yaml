@@ -24,7 +24,19 @@ metadata:
   name: mitstack-openbao-init
   namespace: {{ .Namespace }}
 spec:
+  # No activeDeadlineSeconds, since a deadline could end the pod while it holds the one copy of the root token.
   backoffLimit: 3
+  # The script's own exit fails the Job, since a new pod after the commit would find the file and end the Job as complete.
+  podFailurePolicy:
+    rules:
+      - action: Ignore
+        onPodConditions:
+          - type: DisruptionTarget
+      - action: FailJob
+        onExitCodes:
+          containerName: init
+          operator: NotIn
+          values: [0]
   template:
     metadata:
       labels:

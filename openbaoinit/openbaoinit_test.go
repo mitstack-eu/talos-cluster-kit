@@ -54,11 +54,17 @@ type fakes struct {
 	bao          *httptest.Server
 	// repo is the bare repository the fake ssh serves as the cluster repository.
 	repo string
+	// OpenBao answers the call refuse names, as "GET sys/init", with status, and its next sealed calls that carry the root token with 503.
+	refuse         string
+	status, sealed int
+	// tools maps a command, as "curl", to the body of a fake that stands in front of the real one.
+	tools    map[string]string
+	patience time.Duration
 }
 
 func newFakes(t *testing.T) *fakes {
 	t.Helper()
-	f := &fakes{t: t, enabled: map[string]bool{}, repo: filepath.Join(t.TempDir(), "shop-cluster.git")}
+	f := &fakes{t: t, enabled: map[string]bool{}, repo: filepath.Join(t.TempDir(), "shop-cluster.git"), patience: time.Minute}
 	git(t, "", "init", "--quiet", "--bare", "--initial-branch="+defaultBranch, f.repo)
 	f.commit("README.md", "# shop-cluster\n")
 	f.bao = httptest.NewTLSServer(http.HandlerFunc(f.serveOpenBao))
@@ -87,7 +93,6 @@ func (f *fakes) commit(name, content string) {
 	git(f.t, work, "push", "--quiet", "origin", "HEAD:"+defaultBranch)
 }
 
-// file is the init file on the default branch, and whether there is one.
 func (f *fakes) file() (string, bool) {
 	out, err := exec.Command("git", "--git-dir", f.repo, "show", defaultBranch+":"+openbaoinit.InitFile).Output()
 	return string(out), err == nil
@@ -120,6 +125,11 @@ func (f *fakes) serveOpenBao(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	switch {
+	case f.refuse == c.method+" "+strings.TrimPrefix(c.path, "/v1/"):
+		reply(w, f.status, `{"errors":["refused"]}`)
+	case c.root && f.sealed > 0:
+		f.sealed--
+		reply(w, http.StatusServiceUnavailable, `{"errors":["Vault is sealed"]}`)
 	case c.path == "/v1/sys/init" && c.method == http.MethodGet:
 		reply(w, http.StatusOK, fmt.Sprintf(`{"initialized":%t}`, f.initialised))
 	case c.path == "/v1/sys/init":
@@ -135,6 +145,8 @@ func (f *fakes) serveOpenBao(w http.ResponseWriter, r *http.Request) {
 		}
 		data, _ := json.Marshal(map[string]any{"data": listed})
 		reply(w, http.StatusOK, string(data))
+	case c.method == http.MethodPost && f.enabled[c.path] && (strings.HasPrefix(c.path, "/v1/sys/mounts/") || strings.HasPrefix(c.path, "/v1/sys/auth/")):
+		reply(w, http.StatusBadRequest, `{"errors":["path is already in use"]}`)
 	case c.method == http.MethodPost:
 		f.enabled[c.path] = true
 		w.WriteHeader(http.StatusNoContent)
@@ -199,12 +211,23 @@ func rendered(t *testing.T) ([]map[string]any, map[string]any) {
 const fakeSSH = `service=${*: -1}
 exec ${service%% *} "$FAKE_REPO"`
 
-// run runs the Job's own script with the Job's own environment, pointed at the fakes.
+// forbidden prints the status on the line after the body, which is how the script asks curl to print an answer.
+const forbidden = `printf '{"errors":["permission denied"]}\n403'`
+
+const refusedTwice = `[ "$(grep -c '^curl ' "$(dirname "$0")/calls.log")" -le 2 ] || PATH=${PATH#*:} exec curl "$@"
+echo 'curl: (7) Failed to connect' >&2
+exit 7`
+
+const failsCommitOnce = `case " $* " in *" commit "*) [ -e "$0.failed" ] || { touch "$0.failed"; exit 1; } ;; esac
+exec "$(PATH=${PATH#*:} command -v git)" "$@"`
+
 func (f *fakes) run(t *testing.T, recipient []byte) (string, error) {
 	t.Helper()
 	_, pod := rendered(t)
 	container := testutil.Field(t, pod, "spec", "containers", "0")
-	tools := testutil.NewTools(t, map[string]string{"ssh": fakeSSH})
+	commands := map[string]string{"ssh": fakeSSH}
+	maps.Copy(commands, f.tools)
+	tools := testutil.NewTools(t, commands)
 	dir := t.TempDir()
 	env := testutil.ContainerEnv(t, container)
 	maps.Copy(env, map[string]string{
@@ -216,14 +239,15 @@ func (f *fakes) run(t *testing.T, recipient []byte) (string, error) {
 		"MITSTACK_KNOWN_HOSTS_FILE": writeFile(t, dir, "known_hosts", []byte(testutil.GitHubKnownHosts)),
 		"MITSTACK_RETRY_SECONDS":    "0.05", "KUBERNETES_SERVICE_HOST": "10.96.0.1", "KUBERNETES_SERVICE_PORT": "443",
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), f.patience)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "bash", "-c", testutil.Field(t, container, "command", "2").(string), "openbao-init")
+	cmd.WaitDelay = time.Second // a subshell that outlives the script killed at the deadline holds its output open
 	for k, v := range env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
 	out, err := cmd.CombinedOutput()
-	require.NoError(t, ctx.Err(), "the init script ran past a minute:\n%s", out)
+	require.NoError(t, ctx.Err(), "the init script ran past %s:\n%s", f.patience, out)
 	return string(out) + strings.Join(tools.Calls(t), "\n"), err
 }
 
@@ -358,6 +382,46 @@ func TestInit_ChangesNothingOnAStoreItCannotInitialiseOrThatHoldsItsFileAlready(
 	}
 }
 
+// landsLate is a fake curl whose first kv write gets no answer and lands just before the next try's write.
+const landsLate = `cat > "$0.in"; case " $* " in *" POST "*/v1/sys/mounts/kv" "*) [ -e "$0.sent" ] || { touch "$0.sent"; exit 28; }
+[ -e "$0.landed" ] || { touch "$0.landed"; PATH=${PATH#*:} curl "$@" < "$0.in" > /dev/null; } ;; esac
+PATH=${PATH#*:} exec curl "$@" < "$0.in"`
+
+func TestInit_EndsNamingTheMethodThePathAndTheStatusOnAnAnswerWaitingCannotChangeAndKeepsWaitingOnAnyOther(t *testing.T) {
+	_, recipient := testutil.Recipient(t)
+	cases := map[string]struct {
+		tools           map[string]string
+		refuse          string
+		status, sealed  int
+		said            string
+		times           int
+		ends, committed bool
+	}{
+		"OpenBao answering 403 to the first read, through a fake curl, ends the Job naming GET sys/init and 403": {tools: map[string]string{"curl": forbidden}, said: "OpenBao answered 403 to GET sys/init", times: 1, ends: true},
+		"an init answered 400 ends the Job with nothing committed":                                               {refuse: "PUT sys/init", status: 400, said: "OpenBao answered 400 to PUT sys/init", times: 1, ends: true},
+		"a write answered 404 after the commit ends the Job":                                                     {refuse: "POST auth/kubernetes/config", status: 404, said: "OpenBao answered 404 to POST auth/kubernetes/config", times: 1, ends: true, committed: true},
+		"a write answered 405 after the commit ends the Job":                                                     {refuse: "POST sys/policies/acl/app-secrets-reader", status: 405, said: "OpenBao answered 405 to POST sys/policies/acl/app-secrets-reader", times: 1, ends: true, committed: true},
+		"OpenBao refusing the connection twice, then answering, has the Job wait and finish initialised":         {tools: map[string]string{"curl": refusedTwice}, said: "OpenBao did not answer GET sys/init", times: 2, committed: true},
+		"a commit that git refuses once is made again, and the Job finishes with the file committed":             {tools: map[string]string{"git": failsCommitOnce}, said: "committing " + openbaoinit.InitFile + " failed", times: 1, committed: true},
+		"OpenBao sealed for three answers to the root token has the Job keep waiting until it finishes":          {sealed: 3, said: "OpenBao answered 503 to GET sys/mounts", times: 3, committed: true},
+		"a kv write lost while it lands, then refused as in use, has the Job finish once the list shows kv":      {tools: map[string]string{"curl": landsLate}, said: "OpenBao answered 400 to POST sys/mounts/kv", times: 1, committed: true},
+		"an enable of Kubernetes auth answered 400 while the list never shows it ends the Job":                   {refuse: "POST sys/auth/kubernetes", status: 400, said: "OpenBao answered 400 to POST sys/auth/kubernetes", times: 1, ends: true, committed: true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newFakes(t)
+			f.tools, f.refuse, f.status, f.sealed, f.patience = tc.tools, tc.refuse, tc.status, tc.sealed, 20*time.Second
+
+			out, err := f.run(t, recipient)
+
+			assert.Equal(t, tc.ends, err != nil, "whether the script exited non-zero:\n%s", out)
+			assert.Equal(t, tc.times, strings.Count(out, tc.said), "how often the script said %q:\n%s", tc.said, out)
+			_, committed := f.file()
+			assert.Equal(t, tc.committed, committed, "whether %s is committed when the script ends:\n%s", openbaoinit.InitFile, out)
+		})
+	}
+}
+
 func TestManifests_RunsTheScriptAsAJobInTheDeployKeysNamespaceThatMountsTheKeyTheHostKeysTheRecipientAndOpenBaosAuthority(t *testing.T) {
 	docs, pod := rendered(t)
 
@@ -365,6 +429,10 @@ func TestManifests_RunsTheScriptAsAJobInTheDeployKeysNamespaceThatMountsTheKeyTh
 	env := testutil.ContainerEnv(t, container)
 
 	assert.Equal(t, openbaoinit.DeployKeyNamespace, testutil.Field(t, testutil.Kind(docs, "Job")[0], "metadata", "namespace"))
+	assert.Equal(t, []any{
+		map[string]any{"action": "Ignore", "onPodConditions": []any{map[string]any{"type": "DisruptionTarget"}}},
+		map[string]any{"action": "FailJob", "onExitCodes": map[string]any{"containerName": container["name"], "operator": "NotIn", "values": []any{0}}},
+	}, testutil.Field(t, testutil.Kind(docs, "Job")[0], "spec", "podFailurePolicy", "rules"), "a pod Kubernetes disrupts is replaced, and the script's own exit fails the Job")
 	assert.NotEmpty(t, testutil.Field(t, pod, "metadata", "labels", "mitstack.dev/app"), "the admission policy refuses a pod without mitstack.dev/app")
 	assert.Equal(t, testutil.ToolsImage, container["image"])
 	assert.Equal(t, "ssh://git@ssh.github.com:443/"+testutil.InitRepository+".git", env["MITSTACK_REPOSITORY_URL"])

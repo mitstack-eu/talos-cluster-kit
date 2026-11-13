@@ -1369,7 +1369,8 @@ the label in its Job template, so each Job it starts carries it.
 The report finds the labelled Jobs in its workload read. For each one it takes
 the newest pod whose phase is `Failed`, by creation time and then by the greater
 name. In that pod, each container that exited with a code other than 0 carries
-`message`, cut to its first 256 bytes and never inside a character. A container
+`message`, cut to its last 256 bytes and never inside a character. The cut keeps
+the end, because a kit script prints why it gave up last. A container
 killed before it printed anything, such as one that reads `OOMKilled`, carries
 `"message": null`. No other container carries a `message`: not one of an older
 failed pod, not one that exited 0, and not one of a Job without the label, whose
@@ -1379,14 +1380,14 @@ message. A failed handover pod reads like this:
 ```json
 {"namespace": "argocd", "name": "component-traefik-handover-9xw7d", "node": "poc-talos4-cp2", "phase": "Failed", "containers": [
   {"name": "handover", "state": "terminated", "reason": "Error",
-    "message": "handover: waiting up to 120s for Argo CD to apply each object the component states\nhandover: Argo CD has not applied CustomResourceDefinition ingressroutes.traefik.io, ..."}
+    "message": "andover: Argo CD has not applied CustomResourceDefinition ingressroutes.traefik.io, ... within 120s, so giving up talos's fields could take every field away\n"}
 ]}
 ```
 
 The bound keeps the body inside the platform's 256 KiB. Each Job adds the
 messages of one pod, at most 256 bytes for each container that failed, and a kit
 Job's pod runs one container, or two for the security scan. Forty failed kit
-Jobs whose messages each fill 256 bytes add about 11 KB to the `pods` member.
+Jobs whose messages each fill the cut add about 11 KB to the `pods` member.
 
 The kit's scripts write what they refuse and why, and write a key or a token
 only to a file, so a message holds neither. The Argo CD chart's
@@ -1394,8 +1395,14 @@ only to a file, so a message holds neither. The Argo CD chart's
 has no value for the policy. Its pod restarts in place under `restartPolicy:
 OnFailure`, and a release carries no component's Job to a running cluster.
 
-`failed_message`, `kit_jobs` and `newest_failed` in `report/scripts/report.sh`
-build the messages. `TestPlane_EveryJobAndCronJobTheKitWritesLabelsItsJobsAsTheKitsAndRunsEachContainerWithFallbackToLogsOnError`
+The label is a convention, and nothing on a cluster enforces it. An app could
+set `mitstack.dev/rendered-by: talos-cluster-kit` on a Job of its own, and
+nothing would refuse it. The report would then carry that Job's own output to
+mitstack, as the app chose. It never carries another tenant's output, since a
+message comes only from the containers of the labelled Job's own pod.
+
+`last_256_bytes`, `failed_message`, `kit_jobs` and `newest_failed` in
+`report/scripts/report.sh` build the messages. `TestPlane_EveryJobAndCronJobTheKitWritesLabelsItsJobsAsTheKitsAndRunsEachContainerWithFallbackToLogsOnError`
 in `controlplane/release_test.go` fails a Job the kit adds without the policy or
 the label.
 

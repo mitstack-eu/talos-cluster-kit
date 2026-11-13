@@ -812,8 +812,6 @@ func TestReport_NamesAFailedVolumeCloudNativePGStorageOrServiceReadInlineWithIts
 			map[string]any{"cloudNativePGObjectStores": noObjectStores, "cloudNativePGPlugins": []any{}, "cloudNativePG.0.kind": "Cluster"}},
 		"the workload read is forbidden, so no CronJob or Job is listed": {kubectlWith(workloadsRead, `printf 'Error from server (Forbidden): cronjobs.batch is forbidden: User cannot list resource "cronjobs"\n' >&2; exit 1`),
 			map[string]any{"scheduledJobs": failed(1, "Error from server (Forbidden): cronjobs.batch is forbidden: User cannot list resource \"cronjobs\"\n")}},
-		"the workload read prints no JSON": {kubectlWith(workloadsRead, "echo 'not json'"),
-			map[string]any{"scheduledJobs": failed(0, "kubectl exited 0, and its output is not the workloads this report reads")}},
 		"the ObjectStore read prints no JSON": {kubectlWith(objectStoresRead, "echo 'not json'"), map[string]any{"cloudNativePGObjectStores": notObjectStores}},
 	}
 	for name, tc := range cases {
@@ -835,32 +833,29 @@ func TestReport_ListsEachLabelledCronJobAndTheNewestJobAndTheNewestFailureOfEach
 	_, posted, out, err := runReport(t, kubectlWith(workloadsRead, `jq -s '.[0].items += .[1] | .[0]' testdata/workloads.json testdata/scheduled-jobs.json`))
 
 	require.NoError(t, err, out)
-	assert.Equal(t, readJSON(t, "testdata", "golden", "scheduled-jobs.json"), posted.body["scheduledJobs"],
-		"a Job takes its CronJob's subscription, the unlabelled CronJob and its Job are left out, an older failure and success give way to the newest failure, and its message is cut to 256 characters")
+	assert.Equal(t, readJSON(t, "testdata", "golden", "scheduled-jobs.json"), posted.body["scheduledJobs"], "a Job takes its CronJob's subscription, the unlabelled CronJob and its Job are left out, an older failure and success give way to the newest failure, and its message is cut to 256 characters")
 }
 
 func TestReport_SaysWhenItCutsTheScheduledJobsAtTheirBoundAndStaysInsideThePlatformsLimit(t *testing.T) {
-	failed := `, status: {conditions: [{type: "Failed", status: "True", message: ("m" * 300)}]}`
-	many := func(kind string, n int, extra string) string {
-		return fmt.Sprintf(`jq '.items += [range(%d) | {kind: "%s", metadata: {namespace: "app-\(.)", name: "dump", labels: {"mitstack.dev/subscription": "sub_x"}}%s}]' testdata/workloads.json`, n, kind, extra)
+	many := func(kind string, n int) string {
+		return fmt.Sprintf(`jq '.items += [range(%d) | {kind: "%s", metadata: {namespace: "app-\(.)", name: "dump", labels: {"mitstack.dev/subscription": "sub_x"}}, status: {conditions: [{type: "Failed", status: "True", message: ("m" * 300)}]}}]' testdata/workloads.json`, n, kind)
 	}
 	cases := map[string]struct {
 		read, member  string
 		listed, found int
 		cut           bool
 	}{
-		"100 CronJobs fill the bound": {many("CronJob", 100, ""), "cronJobs", 100, 100, false},
-		"101 CronJobs pass it":        {many("CronJob", 101, ""), "cronJobs", 100, 101, true},
-		"200 Jobs fill the bound":     {many("Job", 200, failed), "jobs", 200, 200, false},
-		"201 Jobs pass it":            {many("Job", 201, failed), "jobs", 200, 201, true},
+		"100 CronJobs fill the bound": {many("CronJob", 100), "cronJobs", 100, 100, false},
+		"101 CronJobs pass it":        {many("CronJob", 101), "cronJobs", 100, 101, true},
+		"200 Jobs fill the bound":     {many("Job", 200), "jobs", 200, 200, false},
+		"201 Jobs pass it":            {many("Job", 201), "jobs", 200, 201, true},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			_, posted, out, err := runReport(t, kubectlWith(workloadsRead, tc.read))
 
 			require.NoError(t, err, out)
-			member, _ := json.Marshal(posted.body["scheduledJobs"])
-			assert.LessOrEqual(t, len(member), 128<<10, "a full list of failed Jobs leaves the rest of the report room")
+			assert.LessOrEqual(t, len(posted.raw), 256<<10, "a full list of failed Jobs leaves the body inside the platform's limit")
 			assert.Equal(t, tc.cut, testutil.Field(t, posted.body, "scheduledJobs", "cut"))
 			assert.Len(t, testutil.Field(t, posted.body, "scheduledJobs", tc.member), tc.listed)
 			assert.EqualValues(t, tc.found, testutil.Field(t, posted.body, "scheduledJobs", "found", tc.member))

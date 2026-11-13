@@ -425,6 +425,30 @@ func TestManifests_RestrictImageRegistriesNamesExactlyTheImagesTheKitPinsForPods
 	assert.ElementsMatch(t, want, got, "the images the kit pins for pods in an app namespace differ from the policy's exact list")
 }
 
+func barmanCloudPlugin(t *testing.T) (operator, service, deployment map[string]any) {
+	t.Helper()
+	hosting, err := components.Hosting(testutil.HostingInputs(t))
+	require.NoError(t, err)
+	plugin := testutil.Documents(t, testutil.Manifest(t, "plugin-barman-cloud", hosting.Served).Bytes)
+	operator = testutil.Kind(testutil.Documents(t, testutil.Manifest(t, "cloudnative-pg", hosting.Served).Bytes), "Deployment")[0]
+	return operator, testutil.Kind(plugin, "Service")[0], testutil.Kind(plugin, "Deployment")[0]
+}
+
+func TestManifests_TheBarmanCloudPluginServesInTheOperatorsNamespaceUnderTheNameAClusterAsksForItBy(t *testing.T) {
+	operator, service, _ := barmanCloudPlugin(t)
+
+	assert.Equal(t, testutil.Field(t, operator, "metadata", "namespace"), testutil.Field(t, service, "metadata", "namespace"), "CloudNativePG reads a plugin's Service only in the namespace its operator runs in")
+	assert.Equal(t, "barman-cloud.cloudnative-pg.io", testutil.Field(t, service, "metadata", "labels", "cnpg.io/pluginName"), "the name a Cluster asks for the plugin by, which the node report lists")
+}
+
+func TestManifests_TheBarmanCloudPluginsPodSetsTheLimitsThePolicyAsksOfAnAppsPodThoughItsNamespaceIsSkipped(t *testing.T) {
+	_, _, deployment := barmanCloudPlugin(t)
+
+	pod := map[string]any{"spec": testutil.Field(t, deployment, "spec", "template", "spec")}
+
+	assert.True(t, testutil.Admits(t, podPolicy(t, "mitstack-require-resource-limits"), pod, map[string]any{"metadata": map[string]any{"name": "app-shop"}}), "the plugin's container sets no CPU or no memory limit")
+}
+
 func TestManifests_PodPoliciesJudgeWhatAPodMountsSetsAndPulls(t *testing.T) {
 	const (
 		mitstack = "ghcr.io/mitstack-eu/app@sha256:0000000000000000000000000000000000000000000000000000000000000000"

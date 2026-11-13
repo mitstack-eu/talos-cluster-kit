@@ -26,6 +26,17 @@ metadata:
 spec:
   # No activeDeadlineSeconds, since a deadline could end the pod while it holds the one copy of the root token.
   backoffLimit: 3
+  # The script's own exit fails the Job, since a new pod would find the file committed and end the Job as complete.
+  podFailurePolicy:
+    rules:
+      - action: Ignore
+        onPodConditions:
+          - type: DisruptionTarget
+      - action: FailJob
+        onExitCodes:
+          containerName: init
+          operator: NotIn
+          values: [0]
   template:
     metadata:
       labels:

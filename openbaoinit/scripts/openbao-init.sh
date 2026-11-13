@@ -163,6 +163,17 @@ seal_root() {
   printf '%s' "$root" | encrypt
 }
 
+# push_init_file stops at its first failing step, since bash ignores set -e in a function a loop tests, and a push
+# after a failed commit succeeds with nothing to send.
+push_init_file() {
+  local messages=$1 repository=$2
+  printf '%s' "$messages" > "$repository/$INIT_FILE" &&
+    git -C "$repository" add "$INIT_FILE" &&
+    git -C "$repository" -c user.name="mitstack OpenBao init" -c user.email=openbao-init@mitstack.dev commit --quiet \
+      -m "Record OpenBao's root token and recovery key, each a PGP message to the cluster's recipient key" &&
+    git -C "$repository" push --quiet origin HEAD
+}
+
 # commit pushes openbao-init.asc holding messages, and succeeds too when a lost answer hid that an earlier push landed.
 commit() {
   local messages=$1 repository=$work/repository
@@ -172,12 +183,8 @@ commit() {
     say "the cluster repository holds another $INIT_FILE, which this Job does not replace"
     return 1
   fi
-  printf '%s' "$messages" > "$repository/$INIT_FILE"
-  git -C "$repository" add "$INIT_FILE"
-  git -C "$repository" -c user.name="mitstack OpenBao init" -c user.email=openbao-init@mitstack.dev commit --quiet \
-    -m "Record OpenBao's root token and recovery key, each a PGP message to the cluster's recipient key"
-  if ! git -C "$repository" push --quiet origin HEAD 2> "$work/git.log"; then
-    say "pushing $INIT_FILE failed: $(tail -n 3 "$work/git.log")"
+  if ! push_init_file "$messages" "$repository" 2> "$work/git.log"; then
+    say "committing and pushing $INIT_FILE failed: $(tail -n 3 "$work/git.log")"
     return 1
   fi
 }

@@ -60,11 +60,12 @@ type Plane struct {
 	WorkerAddresses []string
 	// Hosting makes the cluster host the platform; nil builds one that hosts none.
 	Hosting *Hosting
-	// ReplaceNodes are the locations whose control-plane node a confirmed upgrade replaces. The upgrade's own call
-	// records each on the network, so the calls after it carry the replacement on and name none.
+	// ReplaceNodes are the locations whose control-plane node a confirmed upgrade replaces, which the upgrade's own call
+	// records on the network, so the calls after it carry the replacement on and name none.
 	ReplaceNodes []string
-	// Removals is the cluster repository a replaced node's member removal is written to; nil replaces no node.
-	Removals Removals
+	// Removals is the cluster repository a replaced node's member removal is written to; nil refuses an upgrade that
+	// names a node.
+	Removals *Removals
 }
 
 // Refusal is a request the plane will not carry out, which no retry of the same call fixes. Class is

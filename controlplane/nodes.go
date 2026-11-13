@@ -1,9 +1,5 @@
 package controlplane
 
-// A control-plane node is replaced only when a confirmed upgrade names its location. The node is powered off, as a lost
-// one stops, so its etcd member and Node object go while its server still stands, and the cluster's snapshot then
-// builds its successor under the same name.
-
 import (
 	"context"
 	"encoding/json"
@@ -35,15 +31,15 @@ const (
 
 // Removals is the cluster repository as the plane writes a member removal to it: a file the cluster's own Application
 // applies while main holds it, and whose Job that Application prunes once main does not.
-type Removals interface {
+type Removals struct {
 	// Held lists each removal file main holds, by its path.
-	Held(ctx context.Context) ([]string, error)
+	Held func(ctx context.Context) ([]string, error)
 	// Commit writes content at path on main, and takes the file out when content is nil.
-	Commit(ctx context.Context, path string, content []byte) error
+	Commit func(ctx context.Context, path string, content []byte) error
 }
 
-// nodeReplacement is one location's replacement as the network records it: the server the upgrade named, by Hetzner's
-// id, and when it asked.
+func (r *Removals) writable() bool { return r != nil && r.Held != nil && r.Commit != nil }
+
 type nodeReplacement struct {
 	loc   string
 	old   int64
@@ -57,11 +53,10 @@ func (r nodeReplacement) record() string {
 
 func (r nodeReplacement) plan() string { return nodeReplacePlan + r.record() }
 
-// succeededBy reports whether node is another server than the one r names. It compares ids and no times, so a clock
-// that differs from Hetzner's never reads the successor as the node to replace.
+// succeededBy reports whether node is another server than the one r names, by id and by no time, so a clock that
+// differs from Hetzner's never reads the successor as the node to replace.
 func (r nodeReplacement) succeededBy(node Server) bool { return node.ID != r.old }
 
-// nodeReplacements reads the replacements the network records, in location order.
 func nodeReplacements(network Network) ([]nodeReplacement, error) {
 	var asked []nodeReplacement
 	for _, loc := range Locations {
@@ -86,7 +81,6 @@ func withoutReplacement(network Network, loc string) map[string]string {
 	return labels
 }
 
-// progress is the next step of a node's replacement, or what it waits on while it has none to take.
 type progress struct {
 	step  Step
 	waits string
@@ -116,22 +110,57 @@ func (p Plane) replaceNodeStep(ctx context.Context, st State, s site) (Step, boo
 	case !ok:
 		return Step{}, false, nil
 	case r.succeededBy(node):
-		return p.endNodeReplacementStep(ctx, s.network, r, node)
+		step, ok, err := p.endNodeReplacementStep(ctx, s.network, r, node)
+		return step, ok, r.named(err)
 	}
 	g, err := p.replaceNode(ctx, st, s.network, r, node)
-	return g.step, g.step.Run != nil, err
+	return g.step, g.step.Run != nil, r.named(err)
 }
 
-// recordReplacementsStep records on the upgrade's own call each location it names that has no replacement under way.
-// It refuses before any change a location with no node, one Hetzner can order no successor in, and a plane with no
-// repository to write the removal to.
+// named says which replacement err stopped, and leaves a refusal as it is, since its message already says.
+func (r nodeReplacement) named(err error) error {
+	var refusal *Refusal
+	if err == nil || errors.As(err, &refusal) {
+		return err
+	}
+	return fmt.Errorf("replacing the node in %s: %w", r.loc, err)
+}
+
+// strayRemovalStep takes out a removal main still holds once the node the upgrade replaces is gone, so no Job removes
+// the member of a successor of the same name.
+func (p Plane) strayRemovalStep(ctx context.Context, st State, network Network) (Step, bool, error) {
+	asked, err := nodeReplacements(network)
+	if err != nil || len(asked) == 0 || !p.Removals.writable() {
+		// replaceNodeStep answers a record it cannot read, once the rest of the control plane has no step left.
+		return Step{}, false, nil
+	}
+	r := asked[0]
+	if node, ok := st.NodeIn(r.loc); ok && !r.succeededBy(node) {
+		return Step{}, false, nil
+	}
+	held, err := p.Removals.Held(ctx)
+	if err != nil {
+		return Step{}, false, r.named(fmt.Errorf("listing the removals the cluster repository holds: %w", err))
+	}
+	if len(held) == 0 {
+		return Step{}, false, nil
+	}
+	g, err := p.takeOut(held[0], "since the node in "+r.loc+" that the upgrade replaces is gone")
+	return g.step, true, err
+}
+
+// recordReplacementsStep refuses before it records anything, so an upgrade never leaves a part of what it named.
 func (p Plane) recordReplacementsStep(ctx context.Context, st State, network Network) (Step, bool, error) {
 	if !p.Upgrading || len(p.ReplaceNodes) == 0 {
 		return Step{}, false, nil
 	}
-	if p.Removals == nil {
+	if !p.Removals.writable() {
 		return Step{}, false, refuse("node-removal-unwritable",
 			"the upgrade names a node to replace, and the block passes no cluster repository to write its etcd member's removal to, so nothing was changed")
+	}
+	if p.ReadReport == nil || p.Guard == nil {
+		return Step{}, false, refuse("node-replacement-unjudged",
+			"the upgrade names a node to replace, and the block passes no node report read or no redundancy guard to judge the other members by, so nothing was changed")
 	}
 	labels := maps.Clone(network.Labels)
 	if labels == nil {
@@ -179,8 +208,6 @@ func (p Plane) endNodeReplacementStep(ctx context.Context, network Network, r no
 	}}, true, nil
 }
 
-// successorServes reports whether a node report received since successor's creation reads its etcd member healthy and
-// its Node object Ready.
 func (p Plane) successorServes(ctx context.Context, successor Server) (bool, error) {
 	read, err := p.readReport(ctx, successor.Created)
 	if err != nil || read == nil {
@@ -262,7 +289,7 @@ func (p Plane) refused(network Network, r nodeReplacement, err error) (progress,
 	if !errors.As(err, &refusal) {
 		return progress{}, err
 	}
-	return next("withdraw the refused replacement of the node in "+r.loc+", which still runs", func(ctx context.Context) error {
+	return next("withdraw the replacement of the node in "+r.loc+", which still runs, since it is refused: "+refusal.Message, func(ctx context.Context) error {
 		if werr := p.API.SetNetworkLabels(ctx, network.ID, withoutReplacement(network, r.loc)); werr != nil {
 			return errors.Join(err, fmt.Errorf("withdrawing the refused replacement of the node in %s: %w", r.loc, werr))
 		}
@@ -271,10 +298,27 @@ func (p Plane) refused(network Network, r nodeReplacement, err error) (progress,
 	})
 }
 
-// replaceNode takes the old node of r one step on: it begins, powers the node off once Hetzner can order a successor
-// and the guard reads the other members serving since it began, and then removes its member.
+// backOn powers node on again and withdraws r when err refuses the removal of its member, which no step has written
+// yet, so a second member that stopped serving meanwhile gets the node's member back.
+func (p Plane) backOn(network Network, r nodeReplacement, node Server, err error) (progress, error) {
+	var refusal *Refusal
+	if !errors.As(err, &refusal) {
+		return progress{}, err
+	}
+	return next("power the node in "+r.loc+" back on and withdraw its replacement, since it is refused: "+refusal.Message, func(ctx context.Context) error {
+		if perr := p.API.PowerOnServer(ctx, node.ID); perr != nil {
+			return errors.Join(err, fmt.Errorf("powering node %d in %s back on: %w", node.ID, r.loc, perr))
+		}
+		if werr := p.API.SetNetworkLabels(ctx, network.ID, withoutReplacement(network, r.loc)); werr != nil {
+			return errors.Join(err, fmt.Errorf("withdrawing the refused replacement of the node in %s: %w", r.loc, werr))
+		}
+		p.notify(ctx, "powered node %d in %s back on and withdrew its replacement: %s", node.ID, r.loc, refusal.Message)
+		return err
+	})
+}
+
 func (p Plane) replaceNode(ctx context.Context, st State, network Network, r nodeReplacement, node Server) (progress, error) {
-	if p.Removals == nil {
+	if !p.Removals.writable() {
 		return progress{}, refuse("node-removal-unwritable",
 			"the replacement of the node in %s is under way, and the block passes no cluster repository to write its etcd member's removal to", r.loc)
 	}
@@ -304,7 +348,7 @@ func (p Plane) replaceNode(ctx context.Context, st State, network Network, r nod
 	case read == nil:
 		return waitsOn("no node report was received since its replacement began at %s", began.UTC().Format(time.RFC3339))
 	case !running:
-		return p.removeMember(ctx, st, node, began, *read)
+		return p.removeMember(ctx, st, network, r, node, began, *read)
 	}
 	if err := p.allowNodeRemoval(*read, node, began); err != nil {
 		return p.refused(network, r, err)
@@ -326,8 +370,6 @@ func (p Plane) readReport(ctx context.Context, since time.Time) (*report.Read, e
 	return p.ReadReport(ctx, since)
 }
 
-// allowNodeRemoval asks the guard whether etcd and OpenBao each keep a majority serving without node's member, and
-// answers its refusal as the plane's own, which names each member's reading.
 func (p Plane) allowNodeRemoval(read report.Read, node Server, began time.Time) error {
 	members, err := read.EtcdMembers()
 	if err != nil {
@@ -346,7 +388,6 @@ func (p Plane) allowNodeRemoval(read report.Read, node Server, began time.Time) 
 	return nil
 }
 
-// belowMinimum answers the guard's refusal of a set below its minimum as a Refusal of the same class.
 func belowMinimum(err error) error {
 	if !redundant.Held(err) {
 		return err
@@ -354,10 +395,9 @@ func belowMinimum(err error) error {
 	return &Refusal{Class: redundant.ClassBelowMinimum, Message: strings.TrimPrefix(err.Error(), "refused:"+redundant.ClassBelowMinimum+": ")}
 }
 
-// removeMember takes a powered-off node's removal one step on. The server goes only once a report lists neither its
-// member nor its Node object and main holds no removal, since Argo CD would run a removal main still held again once
-// its Job's day is over, against the successor of the same name.
-func (p Plane) removeMember(ctx context.Context, st State, node Server, began time.Time, read report.Read) (progress, error) {
+// removeMember deletes the server only once main holds no removal, since Argo CD would run a held removal again, a day
+// after its Job finished, against the successor of the same name.
+func (p Plane) removeMember(ctx context.Context, st State, network Network, r nodeReplacement, node Server, began time.Time, read report.Read) (progress, error) {
 	held, err := p.Removals.Held(ctx)
 	if err != nil {
 		return progress{}, fmt.Errorf("listing the removals the cluster repository holds: %w", err)
@@ -386,12 +426,18 @@ func (p Plane) removeMember(ctx context.Context, st State, node Server, began ti
 		return progress{}, err
 	case job == jobUnread:
 		return waitsOn("the node report read at %s carries no objects of the Application %s, so its removal Job cannot be read", at, removalApplication)
-	case holds && job == jobFinished:
-		return p.takeOut(path, "whose Job finished and left the member of "+node.Name)
+	case holds && job == jobFailed:
+		return p.takeOut(path, "whose Job failed and left the member of "+node.Name)
+	case holds && job == jobCompleted:
+		return p.takeOut(path, "whose Job completed in a report that still lists the member of "+node.Name)
 	case holds:
 		return waitsOn("its removal Job %s has not finished in the node report read at %s", name, at)
 	case job == jobAbsent:
-		return p.writeRemoval(node, began, read, path)
+		g, err := p.writeRemoval(node, began, read, path)
+		if err != nil {
+			return p.backOn(network, r, node, err)
+		}
+		return g, nil
 	}
 	return waitsOn("Argo CD still holds the removal Job %s in the node report read at %s, and prunes it now that the cluster repository no longer holds its file", name, at)
 }
@@ -417,7 +463,6 @@ func memberGone(read report.Read, st State, hostname string) (bool, error) {
 		slices.ContainsFunc(members, otherListed) && slices.ContainsFunc(nodes, otherListed), nil
 }
 
-// jobState is how Argo CD holds a removal Job in the newest report.
 type jobState int
 
 const (
@@ -425,7 +470,8 @@ const (
 	jobUnread jobState = iota
 	jobAbsent
 	jobPending
-	jobFinished
+	jobCompleted
+	jobFailed
 )
 
 // appliedJob reads the Job named name among the objects the cluster's own Application applied, which Argo CD reads
@@ -454,8 +500,11 @@ func appliedJob(read report.Read, name string) (jobState, error) {
 			if r.Kind != jobKind || r.Name != name {
 				continue
 			}
-			if r.Health == "Healthy" || r.Health == "Degraded" {
-				return jobFinished, nil
+			switch r.Health {
+			case "Healthy":
+				return jobCompleted, nil
+			case "Degraded":
+				return jobFailed, nil
 			}
 			return jobPending, nil
 		}

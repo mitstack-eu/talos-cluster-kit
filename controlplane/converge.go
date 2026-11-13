@@ -69,9 +69,11 @@ type site struct {
 	ingressAddress string
 }
 
-// nodeStep builds the worker image beside the cluster's own, and deletes the worker builder of a cluster refused. It
-// replaces a node only once neither has a step left, so a replacement it refuses deletes no builder.
+// nodeStep builds the worker image beside the cluster's own, and deletes the worker builder of a cluster refused.
 func (p Plane) nodeStep(ctx context.Context, st State, s site) (Step, bool, error) {
+	if step, ok, err := p.strayRemovalStep(ctx, st, s.network); err != nil || ok {
+		return step, ok, err
+	}
 	step, ok, err := p.controlPlaneStep(ctx, st, s)
 	var refused *Refusal
 	if worker, has := st.Server(RoleWorkerBuilder); has && errors.As(err, &refused) {

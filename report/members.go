@@ -137,7 +137,6 @@ func (r Read) OpenBaoMembers() ([]Member, map[string]string, error) {
 	return out, nodes, nil
 }
 
-// Removal is a redundant set with the member a step removes from it.
 type Removal struct {
 	redundant.Set
 	Removed string

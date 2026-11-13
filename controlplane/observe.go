@@ -33,7 +33,7 @@ func (p Plane) Problems(ctx context.Context, st State) []string {
 		missing = append(missing, fmt.Sprintf("snapshot %d of the cluster's image is %s", snap.ID, snap.Status))
 	}
 	if serving, ok := st.Server(RoleServing); ok {
-		missing = append(missing, fmt.Sprintf("serving server %d still holds the hosting set", serving.ID))
+		missing = append(missing, fmt.Sprintf("serving server %d still holds the manifests the builder fetches", serving.ID))
 	}
 	if builder, ok := st.Server(RoleWorkerBuilder); ok {
 		missing = append(missing, p.buildDetail(ctx, builder, workerImage))

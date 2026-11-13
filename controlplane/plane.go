@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/gateway"
 	"github.com/mitstack-eu/talos-cluster-kit/nodeconfig"
 	"github.com/mitstack-eu/talos-cluster-kit/redundant"
@@ -66,6 +67,7 @@ type Plane struct {
 	// Removals is the cluster repository a replaced node's member removal is written to; nil refuses an upgrade that
 	// names a node.
 	Removals *Removals
+	Signers  []components.Signer
 }
 
 // Refusal is a request the plane will not carry out, which no retry of the same call fixes. Class is

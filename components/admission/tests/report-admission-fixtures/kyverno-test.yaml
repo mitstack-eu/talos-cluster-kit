@@ -5,6 +5,7 @@ metadata:
 policies:
 - ../../policies/mitstack-disallow-host-path.yaml
 - ../../policies/mitstack-require-app-label.yaml
+- ../../policies/mitstack-require-image-digest.yaml
 - ../../policies/mitstack-require-mesh.yaml
 - ../../policies/mitstack-require-resource-limits.yaml
 - ../../policies/mitstack-restrict-image-registries.yaml
@@ -112,6 +113,27 @@ results:
   result: pass
 - isValidatingPolicy: true
   policy: mitstack-restrict-image-registries
+  kind: Pod
+  resources:
+  - pod-security-restricted
+  result: pass
+- isValidatingPolicy: true
+  policy: mitstack-require-image-digest
+  kind: Deployment
+  resources:
+  - refused-require-image-digest
+  result: fail
+- isValidatingPolicy: true
+  policy: mitstack-require-image-digest
+  kind: Deployment
+  resources:
+  - refused-disallow-host-path
+  - refused-require-app-label
+  - refused-require-resource-limits
+  - refused-restrict-image-registries
+  result: pass
+- isValidatingPolicy: true
+  policy: mitstack-require-image-digest
   kind: Pod
   resources:
   - pod-security-restricted

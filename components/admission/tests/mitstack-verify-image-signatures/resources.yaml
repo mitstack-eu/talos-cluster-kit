@@ -1,0 +1,83 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: admitted-signed-by-the-listed-identity
+  namespace: app-shop
+spec:
+  containers:
+  - name: app
+    image: ghcr.io/mitstack-eu/talos-cluster-kit-tools:v0.63.0@sha256:ebcb46e14c40ab32879d54bc452b64790549956a2e2f307881f0dd4c6458b7be
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: admitted-from-a-repository-the-list-does-not-name
+  namespace: app-shop
+spec:
+  containers:
+  - name: app
+    image: ghcr.io/cloudnative-pg/postgresql:16.15-system-trixie@sha256:8ca5699981c25db72e549e9fa69561bac233df15b9b1e3a6282847b0629bb5ea
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: admitted-from-a-repository-whose-name-only-begins-with-a-listed-one
+  namespace: app-shop
+spec:
+  containers:
+  - name: app
+    image: ghcr.io/mitstack-eu/talos-cluster-kit-tools-fork@sha256:ebcb46e14c40ab32879d54bc452b64790549956a2e2f307881f0dd4c6458b7be
+---
+# The digest is the v0.63.0 signature's own object, which the tools repository holds and nothing signed.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: refused-unsigned
+  namespace: app-shop
+spec:
+  containers:
+  - name: app
+    image: ghcr.io/mitstack-eu/talos-cluster-kit-tools@sha256:a44ec3d0346ad35195e4d59c51c31ffe8831cf4be4fe372fe3250bf6c50575d4
+---
+# Kyverno's release pipeline signed this image, and the list names the kit's pipeline for its repository.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: refused-signed-by-another-identity
+  namespace: app-shop
+spec:
+  containers:
+  - name: app
+    image: ghcr.io/kyverno/kyverno:v1.19.1@sha256:b31d8511ae5fd6010e2a01ea72ebae08eb82fa51d91af14a1d9fe989949b4edb
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: refused-for-its-init-container
+  namespace: app-shop
+spec:
+  initContainers:
+  - name: migrate
+    image: ghcr.io/mitstack-eu/talos-cluster-kit-tools@sha256:a44ec3d0346ad35195e4d59c51c31ffe8831cf4be4fe372fe3250bf6c50575d4
+  containers:
+  - name: app
+    image: ghcr.io/mitstack-eu/talos-cluster-kit-tools:v0.63.0@sha256:ebcb46e14c40ab32879d54bc452b64790549956a2e2f307881f0dd4c6458b7be
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: refused-unsigned-in-a-deployment
+  namespace: app-shop
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      mitstack.dev/app: shop
+  template:
+    metadata:
+      labels:
+        mitstack.dev/app: shop
+    spec:
+      containers:
+      - name: app
+        image: ghcr.io/mitstack-eu/talos-cluster-kit-tools@sha256:a44ec3d0346ad35195e4d59c51c31ffe8831cf4be4fe372fe3250bf6c50575d4

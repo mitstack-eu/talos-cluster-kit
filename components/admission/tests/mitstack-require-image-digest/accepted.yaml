@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: accepted-by-tag-and-digest
+  namespace: app-shop
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      mitstack.dev/app: shop
+  template:
+    metadata:
+      labels:
+        mitstack.dev/app: shop
+    spec:
+      initContainers:
+      - name: migrate
+        image: ghcr.io/mitstack-eu/probe:1.0.0@sha256:0000000000000000000000000000000000000000000000000000000000000000
+      containers:
+      - name: app
+        image: ghcr.io/mitstack-eu/probe:1.0.0@sha256:0000000000000000000000000000000000000000000000000000000000000000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: accepted-by-digest-alone
+  namespace: app-shop
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      mitstack.dev/app: shop
+  template:
+    metadata:
+      labels:
+        mitstack.dev/app: shop
+    spec:
+      containers:
+      - name: app
+        image: ghcr.io/mitstack-eu/probe@sha256:0000000000000000000000000000000000000000000000000000000000000000

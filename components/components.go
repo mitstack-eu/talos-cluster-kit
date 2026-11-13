@@ -78,6 +78,7 @@ func Default() Set {
 			defaultManifest("mitstack-disallow-host-path", "admission/policies/mitstack-disallow-host-path.yaml"),
 			defaultManifest("mitstack-require-resource-limits", "admission/policies/mitstack-require-resource-limits.yaml"),
 			defaultManifest("mitstack-restrict-image-registries", "admission/policies/mitstack-restrict-image-registries.yaml"),
+			defaultManifest("mitstack-require-image-digest", "admission/policies/mitstack-require-image-digest.yaml"),
 		},
 		TalosImages: pinnedTalosImages,
 		UserVolumes: []string{LocalPathVolume},

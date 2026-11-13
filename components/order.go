@@ -19,12 +19,12 @@ var (
 		"mitstack-require-strict-mtls", "mitstack-restrict-image-registries", "mitstack-sealed-secrets-key", "mitstack-strict-mtls", "openbao", "sealed-secrets", "traefik",
 	}
 	webhookValidated = []string{"external-secrets", "trust-manager", "mitstack-hosting-tls", "plugin-barman-cloud"}
-	// nodeLabelling comes last, the one place a new manifest changes no other manifest's TalosName.
-	nodeLabelling = []string{"mitstack-node-topology"}
+	// appended holds each later manifest at the end, where it changes no other manifest's TalosName and no gateway's list.
+	appended = []string{"mitstack-node-topology", "mitstack-require-image-digest", SignaturePolicyName}
 )
 
 // applyOrder puts each webhook's pod and the mesh it runs in before what it validates, since Talos abandons a pass there.
-var applyOrder = slices.Concat(meshDataplane, clusterReporting, componentsAndPolicies, webhookValidated, nodeLabelling)
+var applyOrder = slices.Concat(meshDataplane, clusterReporting, componentsAndPolicies, webhookValidated, appended)
 
 // TalosName is the name a node applies m under and the gateway serves it at, its place in applyOrder first.
 func (m Manifest) TalosName() string {

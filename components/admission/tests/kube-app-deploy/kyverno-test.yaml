@@ -4,6 +4,7 @@ metadata:
   name: kube-app-deploy
 policies:
 - ../../policies/mitstack-disallow-host-path.yaml
+- ../../policies/mitstack-require-image-digest.yaml
 - ../../policies/mitstack-require-resource-limits.yaml
 - ../../policies/mitstack-restrict-image-registries.yaml
 resources:
@@ -66,4 +67,33 @@ results:
   - secrets-import-other-digest
   - secrets-import-tag-only
   - secrets-import-other-docker-hub-image
+  result: fail
+- isValidatingPolicy: true
+  policy: mitstack-require-image-digest
+  kind: Deployment
+  resources:
+  - control-plane-slice
+  - builder-app-without-limits
+  - builder-app-with-host-path
+  result: pass
+- isValidatingPolicy: true
+  policy: mitstack-require-image-digest
+  kind: Deployment
+  resources:
+  - builder-app-from-docker-hub
+  result: fail
+- isValidatingPolicy: true
+  policy: mitstack-require-image-digest
+  kind: Job
+  resources:
+  - secrets-import-admitted
+  - secrets-import-other-tag
+  - secrets-import-other-digest
+  - secrets-import-other-docker-hub-image
+  result: pass
+- isValidatingPolicy: true
+  policy: mitstack-require-image-digest
+  kind: Job
+  resources:
+  - secrets-import-tag-only
   result: fail

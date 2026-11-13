@@ -92,6 +92,29 @@ jobs:
       - name: Test the admission policies
         run: kyverno test components/admission/tests
 
+      # The proxy answers nothing, so the checks reach only the hosts the rendered egress limit names.
+      - name: Test the signature policy reaching only the hosts its egress limit admits
+        run: |
+          set -euo pipefail
+          hosts=$(sed -n 's/^ *- matchName: //p' components/admission/tests/mitstack-verify-image-signatures/egress.yaml | paste -sd, -)
+          HTTPS_PROXY=http://127.0.0.1:9 NO_PROXY="$hosts" TUF_ROOT="$RUNNER_TEMP/tuf-admitted" \
+            kyverno test components/admission/tests/mitstack-verify-image-signatures
+
+      - name: Test the signature policy with Sigstore out of reach
+        run: |
+          set -euo pipefail
+          hosts=$(sed -n 's/^ *- matchName: //p' components/admission/tests/mitstack-verify-image-signatures/egress.yaml | grep -v sigstore | paste -sd, -)
+          HTTPS_PROXY=http://127.0.0.1:9 NO_PROXY="$hosts" TUF_ROOT="$RUNNER_TEMP/tuf-unreachable" \
+            kyverno test components/admission/tests/mitstack-verify-image-signatures -f sigstore-unreachable.yaml
+
+      # kyverno test has no result to name for a pod an image policy leaves alone, so this reads the summary of an apply.
+      - name: Check the signature policy leaves pods in mitstack-node and kube-system alone
+        run: |
+          set -euo pipefail
+          kyverno apply components/admission/tests/mitstack-verify-image-signatures/policy.yaml --resource components/admission/tests/mitstack-verify-image-signatures/system.yaml \
+            -f components/admission/tests/mitstack-verify-image-signatures/values.yaml | tee "$RUNNER_TEMP/system-pods.txt"
+          grep -qF 'pass: 0, fail: 0, warn: 0, error: 0, skip: 0' "$RUNNER_TEMP/system-pods.txt"
+
       - name: shellcheck
         run: shellcheck -x scripts/*.sh scripts/lib/*.sh etcd/scripts/*.sh gateway/scripts/*.sh report/scripts/*.sh topology/scripts/*.sh openbaoinit/scripts/*.sh controlplane/scripts/*.sh rollout/scripts/*.sh
 

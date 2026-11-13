@@ -1,0 +1,41 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: mitstack-require-image-digest
+policies:
+- ../../policies/mitstack-require-image-digest.yaml
+resources:
+- accepted.yaml
+- refused.yaml
+- system.yaml
+variables: values.yaml
+results:
+- isValidatingPolicy: true
+  policy: mitstack-require-image-digest
+  kind: Deployment
+  resources:
+  - accepted-by-tag-and-digest
+  - accepted-by-digest-alone
+  result: pass
+- isValidatingPolicy: true
+  policy: mitstack-require-image-digest
+  kind: Deployment
+  resources:
+  - refused-by-tag
+  - refused-with-no-tag
+  - refused-by-a-shortened-digest
+  - refused-for-its-init-container
+  result: fail
+- isValidatingPolicy: true
+  policy: mitstack-require-image-digest
+  kind: Pod
+  resources:
+  - refused-in-a-namespace-the-other-pod-policies-skip
+  result: fail
+- isValidatingPolicy: true
+  policy: mitstack-require-image-digest
+  kind: Pod
+  resources:
+  - left-alone-in-mitstack-node
+  - left-alone-in-kube-system
+  result: skip

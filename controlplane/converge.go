@@ -107,7 +107,7 @@ func (p Plane) controlPlaneStep(ctx context.Context, st State, s site) (Step, bo
 		return Step{}, false, refuse("gateway-lost",
 			"the cluster's nodes are running, but no gateway carries this subscription's labels, so no node can pull an image and nothing was changed; the enrolment and issuer labels are gone with them, so unsubscribe and subscribe again to rebuild the cluster")
 	case hasServing && (!hasBuilder || hasSnapshot || p.overdue(builder)):
-		return Step{"delete the serving server, whose file holds the hosting set's keys, once the builder is done with it", func(ctx context.Context) error {
+		return Step{"delete the serving server, whose file may hold a hosting set's keys, once the builder is done with it", func(ctx context.Context) error {
 			return p.API.DeleteServer(ctx, serving.ID)
 		}}, true, nil
 	case hasBuilder && (hasNode || imaged):

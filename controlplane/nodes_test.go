@@ -34,13 +34,16 @@ type cluster struct {
 	jobs             map[string]string
 	// unhealthy names the nodes whose etcd member reads unhealthy, and sealed those whose OpenBao member reads sealed.
 	unhealthy, sealed []string
-	// failJobs is how many removal Jobs fail before one removes its member, and overwrote names each removal written
-	// while Argo CD still held a Job of its name.
+	// failJobs is how many removal Jobs fail before one removes its member, halfway has a failing Job remove the etcd
+	// member first, and overwrote names each removal written while Argo CD still held a Job of its name.
 	failJobs  int
+	halfway   bool
 	overwrote []string
 	// joinTakes is how long a node runs before it holds an etcd member and a Node object.
 	joinTakes time.Duration
-	synced    time.Time
+	// reported is the last report's body, which reads the cluster as it stood when that report was received at synced.
+	reported []byte
+	synced   time.Time
 	// unread is what a node report leaves out of each Application: its "resources", or the "health" of each of them.
 	unread string
 }
@@ -71,9 +74,6 @@ func (c *cluster) Commit(_ context.Context, path string, content []byte) error {
 }
 
 func (c *cluster) sync(received time.Time) {
-	if !received.After(c.synced) {
-		return
-	}
 	c.synced = received
 	for _, node := range c.h.byRole(controlplane.RoleNode) {
 		if node.Status == controlplane.ServerRunning && !received.Before(node.Created.Add(c.joinTakes)) {
@@ -94,6 +94,9 @@ func (c *cluster) sync(received time.Time) {
 		if c.failJobs > 0 {
 			c.failJobs--
 			c.jobs[job] = "Degraded"
+			if c.halfway {
+				delete(c.members, hostname)
+			}
 			continue
 		}
 		delete(c.members, hostname)
@@ -128,6 +131,9 @@ func (c *cluster) body() []byte {
 		for _, r := range app["resources"].([]any) {
 			if r := r.(map[string]any); c.unread != "health" {
 				r["health"] = c.health(r)
+				if r["health"] == "Degraded" {
+					r["message"] = "Job has reached the specified backoff limit"
+				}
 			}
 		}
 	}
@@ -160,8 +166,11 @@ func withCluster(t *testing.T, opts ...func(*harness)) (*harness, *cluster) {
 		if !received.After(since) {
 			return nil, nil
 		}
-		c.sync(received)
-		return &report.Read{Body: c.body(), At: received}, nil
+		if received.After(c.synced) {
+			c.sync(received)
+			c.reported = c.body()
+		}
+		return &report.Read{Body: c.reported, At: received}, nil
 	}
 	h.built()
 	return h, c
@@ -320,6 +329,53 @@ func TestPlane_PowersTheNodeBackOnAndWithdrawsWhenASecondMemberStopsServingBefor
 	assert.Len(t, h.eventsNaming("back on"), 1, "the events of the power-on: %v", h.events)
 }
 
+func TestPlane_PowersTheNodeBackOnAndWithdrawsWhenItsRemovalJobFailedAndLeftItsEtcdMember(t *testing.T) {
+	h, c := withCluster(t)
+	old := h.nodeIn("fsn1")
+	path := etcd.RemovalPath(old.Name)
+	c.failJobs = 1
+
+	err := h.replace(c, nil, "fsn1")
+
+	require.Error(t, err, "the replacement of the node in fsn1, whose removal Job failed with its etcd member still listed")
+	assert.Equal(t, "node-removal-failed", refusalClass(t, err), "the refusal's class")
+	assert.Contains(t, err.Error(), "Job has reached the specified backoff limit", "the message Argo CD gives of the failed Job")
+	assert.Equal(t, controlplane.ServerRunning, h.nodeIn("fsn1").Status, "the node in fsn1 after the refusal")
+	assert.Equal(t, old.ID, h.nodeIn("fsn1").ID, "the node in fsn1 after the refusal")
+	assert.Equal(t, []string{"write " + path, "delete " + path}, c.commits, "the commits to the cluster repository")
+	assert.False(t, h.replacing(), "the network still carries the refused replacement's mark: %v", h.network().Labels)
+
+	require.NoError(t, h.replace(c, nil, "fsn1"), "a later upgrade that names the node again")
+	assert.NotEqual(t, old.ID, h.nodeIn("fsn1").ID, "the node in fsn1 after the later upgrade")
+	assert.Empty(t, c.overwrote, "the removals written while Argo CD still held a Job of their name")
+}
+
+func TestPlane_RefusesToCarryAReplacementOnWhenALaterCallPassesNoRepositoryNoReportReadOrNoGuard(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		unset func(h *harness)
+		class string
+	}{
+		{"no cluster repository", func(h *harness) { h.plane.Removals = nil }, "node-removal-unwritable"},
+		{"no node report read", func(h *harness) { h.plane.ReadReport = nil }, "node-replacement-unjudged"},
+		{"no redundancy guard", func(h *harness) { h.plane.Guard = nil }, "node-replacement-unjudged"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, c := withCluster(t)
+			old := h.nodeIn("fsn1")
+			require.NoError(t, h.replace(c, func() bool { return h.cloud.Servers[old.ID].Status == controlplane.ServerOff }, "fsn1"))
+			tc.unset(h)
+
+			err := h.replace(c, nil)
+
+			require.Error(t, err, "the call that passes %s with the node in fsn1 off", tc.name)
+			assert.Equal(t, tc.class, refusalClass(t, err), "the refusal's class")
+			assert.True(t, h.replacing(), "the record of the replacement under way")
+			assert.Empty(t, c.commits, "the commits of the refused call")
+		})
+	}
+}
+
 func TestPlane_TakesAHeldRemovalOutBeforeItCreatesASuccessorForANodeWhoseServerWentMeanwhile(t *testing.T) {
 	h, c := withCluster(t)
 	old := h.nodeIn("fsn1")
@@ -343,16 +399,17 @@ func TestPlane_TakesAHeldRemovalOutBeforeItCreatesASuccessorForANodeWhoseServerW
 }
 
 func TestPlane_DeletesAFinishedRemovalJobBeforeItAppliesOne(t *testing.T) {
-	t.Run("a Job that failed and left its member is pruned before it is applied again", func(t *testing.T) {
+	t.Run("a Job that removed the etcd member and then failed is pruned before it is applied again", func(t *testing.T) {
 		h, c := withCluster(t)
 		old := h.nodeIn("fsn1")
 		path := etcd.RemovalPath(old.Name)
-		c.failJobs = 1
+		c.failJobs, c.halfway = 1, true
 
 		require.NoError(t, h.replace(c, nil, "fsn1"))
 
 		assert.Equal(t, []string{"write " + path, "delete " + path, "write " + path, "delete " + path}, c.commits, "the commits to the cluster repository")
 		assert.Len(t, h.eventsNaming("whose Job failed"), 1, "the events naming the failed Job: %v", h.events)
+		assert.Empty(t, h.eventsNaming("back on"), "the events of a power-on, for a node whose etcd member is gone")
 		assert.Empty(t, c.overwrote, "the removals written while Argo CD still held a Job of their name")
 		assert.NotEqual(t, old.ID, h.nodeIn("fsn1").ID, "the node in fsn1 after its replacement")
 	})
@@ -395,7 +452,7 @@ func TestPlane_RefusesANodeReplacementWhileItsNodeRunsWhenTheNodeReportCarriesNo
 	}
 }
 
-func TestPlane_NamesARemovalJobWhoseHealthNoNodeReportCarriesAndCarriesOnOnceAReportDoes(t *testing.T) {
+func TestPlane_NamesARemovalJobWhoseHealthNoNodeReportCarriesAndActsOnItsFailureOnceAReportDoes(t *testing.T) {
 	for _, unread := range []string{"resources", "health"} {
 		t.Run("a report without the "+unread+" of the cluster's own Application", func(t *testing.T) {
 			h, c := withCluster(t)
@@ -411,9 +468,10 @@ func TestPlane_NamesARemovalJobWhoseHealthNoNodeReportCarriesAndCarriesOnOnceARe
 			assert.Len(t, c.commits, 1, "the commits while no report carried the failed Job's health: %v", c.commits)
 
 			c.unread = ""
-			require.NoError(t, h.replace(c, nil))
-			assert.Len(t, h.eventsNaming("whose Job failed"), 1, "the events naming the failed Job: %v", h.events)
-			assert.NotEqual(t, old.ID, h.nodeIn("fsn1").ID, "the node in fsn1 once a report carried the Job's health")
+			err := h.replace(c, nil)
+			require.Error(t, err, "the replacement once a report carried the failed Job's health")
+			assert.Equal(t, "node-removal-failed", refusalClass(t, err), "the refusal's class")
+			assert.Equal(t, controlplane.ServerRunning, h.nodeIn("fsn1").Status, "the node in fsn1 once a report carried the Job's health")
 		})
 	}
 }

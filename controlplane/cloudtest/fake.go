@@ -281,7 +281,6 @@ func (f *Fake) PowerOnServer(_ context.Context, id int64) error {
 	return nil
 }
 
-// PowerOffServer records the stop_server action Hetzner runs for a power-off.
 func (f *Fake) PowerOffServer(_ context.Context, id int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

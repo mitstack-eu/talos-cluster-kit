@@ -59,8 +59,6 @@ func (c *cluster) Commit(_ context.Context, path string, content []byte) error {
 	return nil
 }
 
-// sync lets a report interval pass in the cluster: each node running for joinTakes joins, Argo CD prunes each Job whose
-// file is gone, and each Job not yet run removes its node's member and Node object, or fails.
 func (c *cluster) sync(received time.Time) {
 	if !received.After(c.synced) {
 		return
@@ -93,8 +91,6 @@ func (c *cluster) sync(received time.Time) {
 	}
 }
 
-// body is the node report: each Node object and etcd member, an OpenBao member on each node, and the cluster
-// Application's removal Jobs.
 func (c *cluster) body() []byte {
 	running := map[string]bool{}
 	for _, node := range c.h.byRole(controlplane.RoleNode) {
@@ -122,7 +118,6 @@ func (c *cluster) body() []byte {
 	return data
 }
 
-// withCluster builds the cluster with gateways that serve, a cluster repository and node reports every five minutes.
 func withCluster(t *testing.T, opts ...func(*harness)) (*harness, *cluster) {
 	t.Helper()
 	h := newHarness(t, append([]func(*harness){withReports}, opts...)...)
@@ -140,7 +135,6 @@ func withCluster(t *testing.T, opts ...func(*harness)) (*harness, *cluster) {
 	return h, c
 }
 
-// joinsSlowly makes each node created from now on take longer than two report intervals to join the nodes that stand.
 func (c *cluster) joinsSlowly() {
 	for _, node := range c.h.byRole(controlplane.RoleNode) {
 		c.members[node.Name], c.objects[node.Name] = true, true
@@ -161,8 +155,8 @@ func (h *harness) replacing() bool {
 	})
 }
 
-// replace asks an upgrade to replace the nodes in locs, then calls the plane as a block's re-drives do, naming none,
-// with a minute after each call that changed nothing, until until reads true, a call fails or no replacement is left.
+// replace re-drives the plane as a block does, naming no node after the upgrade's own call, until a call fails or no
+// replacement is left.
 func (h *harness) replace(c *cluster, until func() bool, locs ...string) error {
 	h.t.Helper()
 	h.plane.ReplaceNodes, h.plane.Upgrading = locs, len(locs) > 0

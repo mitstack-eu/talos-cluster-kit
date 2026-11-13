@@ -779,7 +779,6 @@ func TestReport_NamesAFailedVolumeCloudNativePGStorageOrServiceReadInlineWithIts
 	notIngresses := failed(0, "kubectl exited 0, and its output is not the Ingresses this report reads")
 	noObjectStores := failed(1, "error: the server doesn't have a resource type \"objectstores\"\n")
 	notObjectStores := failed(0, "kubectl exited 0, and its output is not the ObjectStores this report reads")
-	workloadsForbidden := failed(1, "Error from server (Forbidden): cronjobs.batch is forbidden: User cannot list resource \"cronjobs\"\n")
 	cases := map[string]struct {
 		fakes map[string]string
 		want  map[string]any
@@ -812,7 +811,7 @@ func TestReport_NamesAFailedVolumeCloudNativePGStorageOrServiceReadInlineWithIts
 				storageRead:      `jq 'del(.items[] | select(.metadata.labels["cnpg.io/pluginName"]))' testdata/storage-and-services.json`})},
 			map[string]any{"cloudNativePGObjectStores": noObjectStores, "cloudNativePGPlugins": []any{}, "cloudNativePG.0.kind": "Cluster"}},
 		"the workload read is forbidden, so no CronJob or Job is listed": {kubectlWith(workloadsRead, `printf 'Error from server (Forbidden): cronjobs.batch is forbidden: User cannot list resource "cronjobs"\n' >&2; exit 1`),
-			map[string]any{"scheduledJobs": workloadsForbidden}},
+			map[string]any{"scheduledJobs": failed(1, "Error from server (Forbidden): cronjobs.batch is forbidden: User cannot list resource \"cronjobs\"\n")}},
 		"the workload read times out": {kubectlWith(workloadsRead, "sleep 10"), map[string]any{"scheduledJobs": timedOut}},
 		"the workload read prints no JSON": {kubectlWith(workloadsRead, "echo 'not json'"),
 			map[string]any{"scheduledJobs": failed(0, "kubectl exited 0, and its output is not the workloads this report reads")}},
@@ -833,47 +832,18 @@ func TestReport_NamesAFailedVolumeCloudNativePGStorageOrServiceReadInlineWithIts
 	}
 }
 
-const dumpSubscription = "sub_dump01234567"
-
-func labelled(kind, ns, name, extra string) string {
-	return `{kind: "` + kind + `", metadata: {namespace: "` + ns + `", name: "` + name + `", labels: {"mitstack.dev/subscription": "` + dumpSubscription + `"}}` + extra + `}`
-}
-
 func TestReport_ListsEachLabelledCronJobAndTheNewestJobAndTheNewestFailureOfEachWithItsFailureCondition(t *testing.T) {
-	long := strings.Repeat("m", 300)
-	owned := func(name, created, status string) string {
-		return `{kind: "Job", metadata: {namespace: "app-shop", name: "` + name + `", creationTimestamp: "` + created + `", ownerReferences: [{kind: "CronJob", name: "dump-shop"}]}, status: {startTime: "` + created + `"` + status + `}}`
-	}
-	failure := func(at string) string {
-		return `, conditions: [{type: "Failed", status: "True", reason: "BackoffLimitExceeded", message: "` + long + `", lastTransitionTime: "` + at + `"}]`
-	}
-	added := []string{
-		labelled("CronJob", "app-shop", "dump-shop", `, spec: {schedule: "0 2 * * *"}, status: {lastScheduleTime: "2026-11-13T02:00:00Z", lastSuccessfulTime: "2026-11-11T02:00:31Z"}`),
-		owned("dump-shop-1", "2026-11-11T02:00:00Z", `, completionTime: "2026-11-11T02:00:31Z", conditions: [{type: "Complete", status: "True", lastTransitionTime: "2026-11-11T02:00:31Z"}]`),
-		owned("dump-shop-2", "2026-11-12T02:00:00Z", failure("2026-11-12T02:10:00Z")),
-		owned("dump-shop-3", "2026-11-13T02:00:00Z", failure("2026-11-13T02:10:00Z")),
-		labelled("Job", "app-shop", "first-dump", `, status: {startTime: "2026-11-10T09:00:00Z", completionTime: "2026-11-10T09:00:20Z", conditions: [{type: "Complete", status: "True", lastTransitionTime: "2026-11-10T09:00:20Z"}]}`),
-		`{kind: "Job", metadata: {namespace: "app-shop", name: "cleanup-1", ownerReferences: [{kind: "CronJob", name: "cleanup"}]}}`,
-	}
-
-	_, posted, out, err := runReport(t, kubectlWith(workloadsRead, `jq '.items += [`+strings.Join(added, ", ")+`]' testdata/workloads.json`))
+	_, posted, out, err := runReport(t, kubectlWith(workloadsRead, `jq -s '.[0].items += .[1] | .[0]' testdata/workloads.json testdata/scheduled-jobs.json`))
 
 	require.NoError(t, err, out)
-	assert.Equal(t, map[string]any{"cut": false, "found": map[string]any{"cronJobs": float64(1), "jobs": float64(2)},
-		"cronJobs": []any{map[string]any{"namespace": "app-shop", "name": "dump-shop", "subscription": dumpSubscription, "schedule": "0 2 * * *",
-			"suspended": false, "lastScheduleTime": "2026-11-13T02:00:00Z", "lastSuccessfulTime": "2026-11-11T02:00:31Z"}},
-		"jobs": []any{
-			map[string]any{"namespace": "app-shop", "name": "dump-shop-3", "subscription": dumpSubscription, "cronJob": "dump-shop", "createdAt": "2026-11-13T02:00:00Z",
-				"startTime": "2026-11-13T02:00:00Z", "completionTime": nil, "condition": map[string]any{"type": "Failed", "reason": "BackoffLimitExceeded", "message": long[:256], "at": "2026-11-13T02:10:00Z"}},
-			map[string]any{"namespace": "app-shop", "name": "first-dump", "subscription": dumpSubscription, "cronJob": nil, "createdAt": nil,
-				"startTime": "2026-11-10T09:00:00Z", "completionTime": "2026-11-10T09:00:20Z", "condition": map[string]any{"type": "Complete", "reason": nil, "message": nil, "at": "2026-11-10T09:00:20Z"}},
-		}}, posted.body["scheduledJobs"], "a Job takes its CronJob's subscription, the unlabelled CronJob and its Job are left out, and an older failure and success give way to the newest failure")
+	assert.Equal(t, readJSON(t, "testdata", "golden", "scheduled-jobs.json"), posted.body["scheduledJobs"],
+		"a Job takes its CronJob's subscription, the unlabelled CronJob and its Job are left out, an older failure and success give way to the newest failure, and its message is cut to 256 characters")
 }
 
 func TestReport_SaysWhenItCutsTheScheduledJobsAtTheirBoundAndStaysInsideThePlatformsLimit(t *testing.T) {
-	failed := `, status: {startTime: "2026-11-13T02:00:00Z", conditions: [{type: "Failed", status: "True", reason: "BackoffLimitExceeded", message: ("m" * 300), lastTransitionTime: "2026-11-13T02:10:00Z"}]}`
+	failed := `, status: {conditions: [{type: "Failed", status: "True", message: ("m" * 300)}]}`
 	many := func(kind string, n int, extra string) string {
-		return `jq '.items += [range(` + fmt.Sprint(n) + `) | ` + labelled(kind, `app-\(.)`, "dump", extra) + `]' testdata/workloads.json`
+		return fmt.Sprintf(`jq '.items += [range(%d) | {kind: "%s", metadata: {namespace: "app-\(.)", name: "dump", labels: {"mitstack.dev/subscription": "sub_x"}}%s}]' testdata/workloads.json`, n, kind, extra)
 	}
 	cases := map[string]struct {
 		read          string

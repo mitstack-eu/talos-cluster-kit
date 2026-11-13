@@ -77,7 +77,7 @@ func builderUserData(what string, machineConfig, gatewayCA []byte, fetch *servin
 	if err != nil {
 		return "", err
 	}
-	script, err := serve.Gzipped([]byte(buildImageScript))
+	script, err := serve.Gzipped([]byte(withoutCommentLines(buildImageScript)))
 	if err != nil {
 		return "", err
 	}
@@ -100,6 +100,18 @@ func builderUserData(what string, machineConfig, gatewayCA []byte, fetch *servin
 		return "", fmt.Errorf("the %s's user data is %d bytes, over Hetzner's %d", what, len(out), gateway.UserDataLimit)
 	}
 	return out, nil
+}
+
+// withoutCommentLines drops every comment-only line after the first to save user data, and would drop one inside a heredoc.
+func withoutCommentLines(script string) string {
+	lines := strings.SplitAfter(script, "\n")
+	kept := []string{lines[0]}
+	for _, line := range lines[1:] {
+		if !strings.HasPrefix(strings.TrimLeft(line, " \t"), "#") {
+			kept = append(kept, line)
+		}
+	}
+	return strings.Join(kept, "")
 }
 
 // firstNodeBootstrap is the gateway's one etcd bootstrap: an admin talosconfig and the time it expires.

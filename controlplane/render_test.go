@@ -22,6 +22,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/cryptotest"
 	"text/template"
 	"time"
 
@@ -645,6 +646,22 @@ func TestBuilder_UserDataIsOneCloudConfigDocumentWithinHetznersLimit(t *testing.
 	assert.Len(t, docs, 1, "YAML documents in the builder's user data")
 }
 
+func TestWithoutCommentLines_LeavesOutEachLineButTheFirstThatHoldsOnlyAComment(t *testing.T) {
+	script := "#!/usr/bin/env bash\n# Builds the image.\nset -euo pipefail\n\n  # an indented comment\n\t# a tabbed comment\n" +
+		"echo '# a quoted hash'\nrun # a trailing comment\n"
+
+	got := controlplane.WithoutCommentLines(script)
+
+	assert.Equal(t, "#!/usr/bin/env bash\nset -euo pipefail\n\necho '# a quoted hash'\nrun # a trailing comment\n", got,
+		"WithoutCommentLines(%q)", script)
+}
+
+func TestBuilder_CarriesTheBuildScriptWithItsCommentLinesLeftOut(t *testing.T) {
+	shipped := shippedBuildImageScript(t)
+
+	assert.Equal(t, controlplane.WithoutCommentLines(controlplane.BuildImageScript), shipped, "the build script the builder's user data carries")
+}
+
 func TestBuilder_UserDataOverHetznersLimitFailsTheRender(t *testing.T) {
 	incompressible := make([]byte, 2*cloudtest.UserDataLimit)
 	_, err := rand.Read(incompressible)
@@ -657,8 +674,15 @@ func TestBuilder_UserDataOverHetznersLimitFailsTheRender(t *testing.T) {
 }
 
 // userDataReserve is the room each server of an install keeps under Hetzner's limit, for the names and URLs a block
-// passes and the minted keys' varying size, which no test holds at their largest.
+// passes and for minted keys that gzip shortens less than the ones the reserve test holds.
 const userDataReserve = 1024
+
+// heldKeySeed fixes the cluster's key bundle and heldDrawSeed every other minted value, the only inputs that move the
+// builder's size between runs, each at the seed that gave the largest builder of those measured.
+const (
+	heldKeySeed  = 82
+	heldDrawSeed = 9
+)
 
 // longestProofScript gives the plane a proof script at the report's limit, of random printable text, which gzip shortens
 // by about a sixth.
@@ -672,13 +696,26 @@ func longestProofScript(h *harness) {
 }
 
 func TestPlane_EveryServerOfAnInstallKeepsTheUserDataReserveWithTheLongestProofScriptUnderEachOptionOfThePlane(t *testing.T) {
-	for name, opts := range map[string][]func(*harness){
-		"a cluster":                           {},
-		"a cluster whose apps run on workers": {appsOnWorkers},
-		"a cluster that hosts the platform":   {hosting},
-		"a cluster that hosts the platform and runs its apps on workers": {hosting, appsOnWorkers},
+	cryptotest.SetGlobalRandom(t, heldKeySeed)
+	keys, err := nodeconfig.NewSecrets(testStart)
+	require.NoError(t, err)
+	controlplane.SwapMintedSecrets(t, keys)
+	// The hosting fixtures mint their keys on first use in the binary, which would shift the first hosting install's draws.
+	testutil.Recipient(t)
+	testutil.WriteKey(t)
+	testutil.ReadKey(t)
+	for _, tc := range []struct {
+		name string
+		opts []func(*harness)
+	}{
+		{"a cluster", nil},
+		{"a cluster whose apps run on workers", []func(*harness){appsOnWorkers}},
+		{"a cluster that hosts the platform", []func(*harness){hosting}},
+		{"a cluster that hosts the platform and runs its apps on workers", []func(*harness){hosting, appsOnWorkers}},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
+			cryptotest.SetGlobalRandom(t, heldDrawSeed)
+			opts := append([]func(*harness){sequential}, tc.opts...)
 			h := newHarness(t, append(opts, longestProofScript, longestSignerList)...)
 
 			require.NoError(t, h.converge())

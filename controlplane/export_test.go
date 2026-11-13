@@ -28,6 +28,7 @@ var (
 	BootstrapFirstNodeScript = bootstrapFirstNodeScript
 	ServingFile              = servingFile
 	GatewayAddrs             = gatewayAddrs
+	WithoutCommentLines      = withoutCommentLines
 )
 
 func SwapToolsImage(t testing.TB, image string) {
@@ -65,6 +66,14 @@ func (p Plane) ClusterComponents(enrolmentToken string) (components.Set, error) 
 func (p Plane) BuildSet(ctx context.Context, now time.Time, enrolmentToken string) (components.Set, error) {
 	set, _, err := p.buildSet(ctx, now, enrolmentToken)
 	return set, err
+}
+
+// SwapMintedSecrets makes every install mint s, so a test holds the cluster's keys at one draw.
+func SwapMintedSecrets(t testing.TB, s *nodeconfig.Secrets) {
+	t.Helper()
+	old := mintSecrets
+	mintSecrets = func(time.Time) (*nodeconfig.Secrets, error) { return s, nil }
+	t.Cleanup(func() { mintSecrets = old })
 }
 
 // ShareMintedSecrets makes every install in the test binary read one bundle per start time, minted on first use and

@@ -1998,7 +1998,7 @@ everything a control-plane node boots with.
 | The machine configuration with the cluster's keys | In the builder's user data, gzipped |
 | The default set's inline manifests | Inside the machine configuration |
 | The node report, the topology labeller, the cluster tokens and the cluster's Application, each rendered for one cluster | Inside the machine configuration |
-| `controlplane/scripts/build-image.sh` and the gateway CA's certificate | In the builder's user data |
+| `controlplane/scripts/build-image.sh` without its comment lines, and the gateway CA's certificate | In the builder's user data |
 | The node report's, its outside probe's, the security scan's, the labeller's and the cluster tokens' scripts | In the tools image at `tools.ScriptDir`, where each command names its script's path |
 | Each served manifest | From the gateway, which copies it out of the tools image |
 | The hosting set's inline manifests, and the signature policy of a cluster that has a signer list | From the serving server, where the builder fetches them |
@@ -2007,7 +2007,7 @@ A script in the tools image costs no server any user data, because the
 gateway mirrors that image whole. A served manifest does cost some. The
 gateway's user data has the same limit, and it names each served manifest with
 its sha256 and its path, about 75 bytes once gzipped. The gateway of a cluster
-that hosts the platform takes about 31,300 bytes when it keeps 300 images.
+that hosts the platform takes about 31,500 bytes when it keeps 300 images.
 
 `TestPlane_EveryServerOfAnInstallKeepsTheUserDataReserveWithTheLongestProofScriptUnderEachOptionOfThePlane`
 in `controlplane/render_test.go` keeps room free. It installs a cluster four
@@ -2015,26 +2015,33 @@ ways: with and without the platform, and with apps on the control plane or on
 workers. Each plane takes a proof script of `report.ProofScriptLimit` bytes of
 random printable text, which gzip shortens by about a sixth. Each also takes
 a signer list of `components.SignerLimit` entries, with every field at its
-limit and of random text, which the serving server carries. The test fails
-when any server's user data leaves less than 1,024 bytes of the limit, and it
-logs each size.
+limit and of random text, which the serving server carries. Every install in
+the test takes one set of the cluster's keys and one draw of every other value
+an install mints, each from a fixed seed, so the builder logs the same size on
+every run. The serving server of a cluster that hosts the platform keeps one
+size within a test process, but moved by up to 8 bytes between the processes
+measured. The test fails when any server's user data leaves less than 1,024
+bytes of the limit, and it logs each size.
 
 The reserve covers what the test does not hold at its largest. A block's names
 and URLs come first. An app name and a subscription id of 63 characters, a
 repository URL of 159 and a platform host of 75 add 544 bytes when they
-compress poorly. The builder's size also moves from one test run to the next,
-by up to 224 bytes with the same settings. Inside one run, where every install
-shares one set of minted keys, it moves by 40 at most. The two sum to 768
-bytes, and the reserve is a third more.
+compress poorly. The minted keys come second. Their length barely changes from
+one set to the next, but gzip shortens some sets more than others, and across
+100 sets the builder's size spans 240 bytes. The other minted values move it
+by 32 bytes more across 40 draws. The seeds hold the set of keys and the draw
+whose builder came out largest of those measured. The names leave 480 bytes
+of the reserve, 1,024 less 544, and a set that gzip shortens less than the
+held one takes from those.
 
-With that proof script and signer list the builder takes about 31,100 bytes,
-or about 31,200 on a cluster that hosts the platform. The signer list costs
-the builder only the address and key of the serving server. The serving
-server carries the policy, and takes about 10,500 bytes, or about 29,400 on a
-cluster that hosts the platform. With a one-line proof script and no signer
-list, as the tests in `controlplane/render_test.go` and
-`controlplane/hosting_test.go` log it, the builder takes about 28,400 and
-28,600 bytes.
+With that proof script, that signer list and the seeds' keys, the builder
+takes 30,204 bytes, or 30,280 on a cluster that hosts the platform. The signer
+list costs the builder only the address and key of the serving server. The
+serving server carries the policy, and takes about 10,900 bytes, or about
+30,600 on a cluster that hosts the platform, which leaves it at least 2,169
+bytes free. With a one-line proof script and no signer list, as the tests in
+`controlplane/render_test.go` and `controlplane/hosting_test.go` log it, the
+builder takes about 27,400 and 27,500 bytes.
 
 ### How Argo CD reads the cluster repository
 

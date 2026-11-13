@@ -207,8 +207,16 @@ func runBuildAgainst(t *testing.T, mirror *gatewayMirror, imagerExit int, config
 		"BUILD_PROC=" + filepath.Join(dir, "proc"), "BUILD_PULL_ATTEMPTS=1", "BUILD_NET_CLASS=" + filepath.Join(dir, "net"),
 		"BUILD_ADDRESS_WAIT=5", "BUILD_MIRROR_DELAY=1"}, extraEnv...)...)
 	args := append([]string{testImager, configPath, controlplane.RouterAddress, mirror.server.URL + "/v2/", caPath}, fetch...)
-	out, err := testutil.RunBash(t, controlplane.BuildImageScript, env, args...)
+	out, err := testutil.RunBash(t, shippedBuildImageScript(t), env, args...)
 	return scriptRun{out: out, err: err, tools: tools, dir: dir}
+}
+
+// shippedBuildImageScript is the build script as the builder's user data carries it, which is what the builder runs.
+func shippedBuildImageScript(t *testing.T) string {
+	t.Helper()
+	data, err := controlplane.BuilderUserData([]byte("machine: {}"))
+	require.NoError(t, err)
+	return decodeCloudConfig(t, data).file(t, controlplane.BuilderScriptPath).Content
 }
 
 // loaderRun is one program the build ran through the loader, with the directory it took the libraries from, and its

@@ -24,6 +24,7 @@ metadata:
   name: mitstack-openbao-init
   namespace: {{ .Namespace }}
 spec:
+  # No activeDeadlineSeconds, since a deadline could end the pod while it holds the one copy of the root token.
   backoffLimit: 3
   template:
     metadata:

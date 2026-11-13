@@ -2403,8 +2403,9 @@ OpenBao recovery key:
 -----END PGP MESSAGE-----
 ```
 
-No answer OpenBao gives to the init can stop the script before the commit,
-since the commit is the only copy of the root token. A recovery key in the
+Once the init has returned the root token, no answer OpenBao gives can stop
+the script before the commit, since the commit is the only copy of the root
+token. A recovery key in the
 answer that is missing, or is not one base64 PGP message, is replaced by a line
 saying it is lost. The script then commits the root token alone, finishes the
 setup, and exits 1 naming the lost recovery key. A pod killed between the init
@@ -2453,11 +2454,38 @@ that renders slices.
 
 The root token lives in the script's memory alone. The script hands curl each
 header that carries a token on curl's standard input, through the shell's
-builtin `printf`, and never prints a token. The script retries each step while
-its pod lives. A pod lost after the commit may leave the mount, the auth method,
-its configuration, a policy or a role unwritten, and a new pod finds the file
-and changes nothing. The owner then decrypts the root token from
-`openbao-init.asc` and writes whichever is missing.
+builtin `printf`, and never prints a token.
+
+The script sorts each answer OpenBao gives a call. It tries again while waiting
+can change the answer, and it ends the Job when waiting cannot:
+
+| What OpenBao answers | What the script does |
+|---|---|
+| Nothing, because the connection is refused, times out or fails its TLS check | Waits and tries again |
+| 429, 500 or 503, which OpenBao's documentation gives for a standby member, an internal error, and a store that is sealed or down for maintenance | Waits and tries again |
+| 400, 403, 404 or 405, which the documentation describes as a fault in the request | Exits 1 and names the method, the path and the status |
+| Any other status | Waits and tries again, since the documentation does not say whether waiting changes it |
+
+For example, a store that refuses the script's first read ends the Job with
+these two lines:
+
+```text
+openbao-init: OpenBao answered 403 to GET sys/init
+openbao-init: reading OpenBao's init state met an answer that waiting cannot change, so this Job ends
+```
+
+The script holds the root token uncommitted only between the init's answer and
+the commit, and it sends OpenBao nothing in that time. It retries the two steps
+in between, encrypting the token and pushing the commit, without limit. The
+Job sets no `activeDeadlineSeconds`, because Kubernetes ends a Job's running
+pod once that deadline passes, whatever the pod holds. Its `backoffLimit` of 3
+lets Kubernetes replace a pod it loses before the init.
+
+A pod lost after the commit, or a Job ended after it by one of the four
+statuses, may leave the mount, the auth method, its configuration, a policy or
+a role unwritten, and a new pod finds the file and changes nothing. The owner
+then decrypts the root token from `openbao-init.asc` and writes whichever is
+missing.
 
 ### The documentation the hosting set follows
 
@@ -2471,7 +2499,8 @@ and changes nothing. The owner then decrypts the root token from
 | [OpenBao: Integrated Storage (Raft)](https://openbao.org/docs/configuration/storage/raft/) | `path`, `retry_join` with `leader_ca_cert_file`, and the node ID from `BAO_RAFT_NODE_ID` |
 | [OpenBao: static seal](https://openbao.org/docs/configuration/seal/static/) | The key is 32 bytes, read through `file://` |
 | [OpenBao: `/sys/init`](https://openbao.org/api-docs/system/init/) | `recovery_shares`, `recovery_threshold` and `recovery_pgp_keys`, each key the base64 of its binary form, apply to an auto-unseal such as the static seal |
-| [OpenBao: HTTP API](https://openbao.org/api-docs/) | OpenBao treats `PUT` and `POST` as synonyms |
+| [OpenBao: HTTP API](https://openbao.org/docs/api/) | OpenBao treats `PUT` and `POST` as synonyms. Its list of HTTP status codes describes 400, 403, 404 and 405 as a fault in the request, and says to try again later on 500 and 503 |
+| [Kubernetes: Jobs](https://kubernetes.io/docs/concepts/workloads/controllers/job/#job-termination-and-cleanup) | Once a Job reaches `activeDeadlineSeconds`, Kubernetes ends all of its running pods |
 | [OpenBao: HA with Raft on Kubernetes](https://openbao.org/docs/platform/k8s/helm/examples/ha-with-raft/) | You initialise `openbao-0`, and the other members join it |
 | [OpenBao: Kubernetes auth API](https://openbao.org/api-docs/auth/kubernetes/) and [its login check at v2.7.1](https://github.com/openbao/openbao/blob/v2.7.1/internal/builtin/credential/kubernetes/path_login.go#L361-L369) | A role binds service account names and namespaces, and a login matches each against the role's list as a glob, so `app-*` admits every slice namespace |
 | [External Secrets: PushSecret to Vault at v2.11.0](https://github.com/external-secrets/external-secrets/blob/v2.11.0/providers/v1/vault/client_push.go) | A push reads the path and its metadata, then writes the metadata and the path |

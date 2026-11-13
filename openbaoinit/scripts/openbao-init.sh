@@ -8,6 +8,8 @@
 set -euo pipefail
 
 readonly INIT_FILE=openbao-init.asc
+# FINAL is what bao returns for a status OpenBao's documentation calls a fault in the request, which no wait changes.
+readonly FINAL=120
 WAIT=${MITSTACK_RETRY_SECONDS:-10}
 root=""
 recovery_lost=""
@@ -22,11 +24,21 @@ fail() {
   exit 1
 }
 
-# retry runs its command until it succeeds, since this pod may hold the one copy of the root token.
+# forever keeps a step waiting whatever it returns, since this pod may hold the one copy of the root token.
+forever() {
+  return 0
+}
+
+unless_final() {
+  [ "$1" -ne "$FINAL" ]
+}
+
+# retry runs its command until it succeeds, or ends the Job once its test says the failure cannot change.
 retry() {
-  local what=$1
-  shift
+  local can_change=$1 what=$2
+  shift 2
   until "$@"; do
+    "$can_change" "$?" || fail "$what met an answer that waiting cannot change, so this Job ends"
     say "$what failed; retrying in ${WAIT}s"
     sleep "$WAIT"
   done
@@ -48,7 +60,7 @@ token_header() {
 
 # bao hands curl the root token, once there is one, as a header on stdin, and prints the body of a 2xx answer.
 bao() {
-  local method=$1 path=$2 data=${3-} answer
+  local method=$1 path=$2 data=${3-} answer code
   local args=(-sS --proto '=https' --tlsv1.2 --cacert "$MITSTACK_OPENBAO_CA" --connect-timeout 5 --max-time 30
     -X "$method" -H @- -w '\n%{http_code}')
   if [ -n "$data" ]; then
@@ -58,9 +70,11 @@ bao() {
     say "OpenBao did not answer $method $path"
     return 1
   fi
-  case $(status "$answer") in
+  code=$(status "$answer")
+  case $code in
     2??) body "$answer" ;;
-    *) say "OpenBao answered $(status "$answer") to $method $path"; return 1 ;;
+    400 | 403 | 404 | 405) say "OpenBao answered $code to $method $path"; return "$FINAL" ;;
+    *) say "OpenBao answered $code to $method $path"; return 1 ;;
   esac
 }
 
@@ -91,7 +105,9 @@ init_file_state() {
 }
 
 init_state() {
-  bao GET sys/init | jq -er '.initialized | tostring'
+  local answer
+  answer=$(bao GET sys/init) || return
+  printf '%s' "$answer" | jq -er '.initialized | tostring' || return 1
 }
 
 encrypt() {
@@ -107,20 +123,23 @@ armor() {
 
 # initialise sets root and messages; it stops if a failed init left OpenBao initialised, since that root token is lost.
 initialise() {
-  local recipient request answer token_message recovery_message
+  local recipient request answer refused initialised token_message recovery_message
   recipient=$(gpg --batch --quiet --dearmor < "$MITSTACK_RECIPIENT_FILE" | openssl base64 -A) ||
     fail "gpg cannot read the recipient key, so OpenBao was left uninitialised"
   request=$(jq -cn --arg key "$recipient" '{recovery_shares: 1, recovery_threshold: 1, recovery_pgp_keys: [$key]}')
   until answer=$(bao PUT sys/init "$request"); do
-    if [ "$(retry "reading OpenBao's init state" init_state)" = true ]; then
+    refused=$?
+    initialised=$(retry unless_final "reading OpenBao's init state" init_state) || exit 1
+    if [ "$initialised" = true ]; then
       fail "OpenBao is initialised, and the answer to its init was lost, so its root token and recovery key are lost"
     fi
+    unless_final "$refused" || fail "the init met an answer that waiting cannot change, so OpenBao was left uninitialised"
     say "retrying the init in ${WAIT}s"
     sleep "$WAIT"
   done
   root=$(printf '%s' "$answer" | jq -er .root_token) ||
     fail "the answer to the init holds no root token, so the root token and recovery key are lost"
-  token_message=$(retry "encrypting the root token" seal_root)
+  token_message=$(retry forever "encrypting the root token" seal_root)
   messages="OpenBao root token:"$'\n'"$token_message"$'\n'
   if recovery_message=$(printf '%s' "$answer" | recovery_message); then
     messages+="OpenBao recovery key:"$'\n'"$recovery_message"$'\n'
@@ -166,7 +185,7 @@ commit() {
 # enable enables a secrets engine or auth method unless sys/<kind> lists it, since a lost answer may hide an earlier try.
 enable() {
   local kind=$1 path=$2 request=$3 listed
-  listed=$(bao GET "sys/$kind") || return 1
+  listed=$(bao GET "sys/$kind") || return
   if printf '%s' "$listed" | jq -e --arg path "$path/" '(.data // .) | has($path)' > /dev/null; then
     return 0
   fi
@@ -174,7 +193,10 @@ enable() {
 }
 
 kubernetes_accessor() {
-  bao GET sys/auth | jq -er '(.data // .)["kubernetes/"].accessor // empty | select(test("^[A-Za-z0-9_-]+$"))'
+  local listed
+  listed=$(bao GET sys/auth) || return
+  printf '%s' "$listed" |
+    jq -er '(.data // .)["kubernetes/"].accessor // empty | select(test("^[A-Za-z0-9_-]+$"))' || return 1
 }
 
 # namespace_policy prints a policy granting its two capability lists on the data and the metadata of the apps path
@@ -195,18 +217,18 @@ slice_role() {
 set_up() {
   local host=$KUBERNETES_SERVICE_HOST accessor
   case $host in *:*) host="[$host]" ;; esac
-  retry "enabling kv" enable mounts kv '{"type":"kv","options":{"version":"2"}}'
-  retry "enabling Kubernetes auth" enable auth kubernetes '{"type":"kubernetes"}'
-  retry "configuring Kubernetes auth" bao POST auth/kubernetes/config \
+  retry unless_final "enabling kv" enable mounts kv '{"type":"kv","options":{"version":"2"}}'
+  retry unless_final "enabling Kubernetes auth" enable auth kubernetes '{"type":"kubernetes"}'
+  retry unless_final "configuring Kubernetes auth" bao POST auth/kubernetes/config \
     "$(jq -cn --arg host "https://$host:${KUBERNETES_SERVICE_PORT:-443}" '{kubernetes_host: $host}')" > /dev/null
-  accessor=$(retry "reading the Kubernetes auth accessor" kubernetes_accessor)
-  retry "writing the policy app-secrets-reader" bao POST sys/policies/acl/app-secrets-reader \
+  accessor=$(retry unless_final "reading the Kubernetes auth accessor" kubernetes_accessor) || exit 1
+  retry unless_final "writing the policy app-secrets-reader" bao POST sys/policies/acl/app-secrets-reader \
     "$(namespace_policy "$accessor" '"read"' '"read", "list"')" > /dev/null
   # External Secrets' PushSecret reads a path and its metadata before it writes them.
-  retry "writing the policy app-secrets-writer" bao POST sys/policies/acl/app-secrets-writer \
+  retry unless_final "writing the policy app-secrets-writer" bao POST sys/policies/acl/app-secrets-writer \
     "$(namespace_policy "$accessor" '"create", "read", "update"' '"create", "read", "update"')" > /dev/null
-  retry "writing the role app-secrets-reader" bao POST auth/kubernetes/role/app-secrets-reader "$(slice_role app-secrets-reader 15m)" > /dev/null
-  retry "writing the role app-secrets-writer" bao POST auth/kubernetes/role/app-secrets-writer "$(slice_role app-secrets-writer 5m)" > /dev/null
+  retry unless_final "writing the role app-secrets-reader" bao POST auth/kubernetes/role/app-secrets-reader "$(slice_role app-secrets-reader 15m)" > /dev/null
+  retry unless_final "writing the role app-secrets-writer" bao POST auth/kubernetes/role/app-secrets-writer "$(slice_role app-secrets-writer 5m)" > /dev/null
 }
 
 main() {
@@ -222,8 +244,8 @@ main() {
   trap 'rm -rf "$work"' EXIT
   use_deploy_key
 
-  initialised=$(retry "reading OpenBao's init state" init_state)
-  file=$(retry "reading $INIT_FILE" init_file_state)
+  initialised=$(retry unless_final "reading OpenBao's init state" init_state) || exit 1
+  file=$(retry forever "reading $INIT_FILE" init_file_state)
   if [ "$initialised" = true ]; then
     [ "$file" = committed ] ||
       fail "OpenBao is initialised, and the cluster repository holds no $INIT_FILE, so its root token and recovery key are lost"
@@ -234,7 +256,7 @@ main() {
     fail "OpenBao is uninitialised, and the cluster repository already holds $INIT_FILE, so OpenBao was left uninitialised rather than lose the store that file opens"
 
   initialise
-  retry "committing $INIT_FILE" commit "$messages"
+  retry forever "committing $INIT_FILE" commit "$messages"
   say "committed $INIT_FILE to the cluster repository"
   set_up
   say "enabled kv and Kubernetes auth, and wrote the policies and roles app-secrets-reader and app-secrets-writer"

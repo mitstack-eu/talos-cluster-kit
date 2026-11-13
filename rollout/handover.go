@@ -17,8 +17,7 @@ const (
 	handoverScript = tools.ScriptDir + "/handover.sh"
 	// ArgoCDController is the account of Argo CD's application controller, which applies every component.
 	ArgoCDController = "argocd-application-controller"
-	// ArgoCDManager is the field manager Argo CD's application controller applies under, which names an apply on each
-	// object it applied, a CustomResourceDefinition included.
+	// ArgoCDManager is the field manager Argo CD's application controller applies under.
 	ArgoCDManager = "argocd-controller"
 	// syncWaveAnnotation names the wave of a sync Argo CD applies a document in, each wave after the one before it
 	// is applied and reads Healthy.

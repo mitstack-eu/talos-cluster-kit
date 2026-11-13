@@ -129,6 +129,9 @@ spec:
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 3
   jobTemplate:
+    metadata:
+      labels:
+        mitstack.dev/rendered-by: talos-cluster-kit
     spec:
       backoffLimit: 2
       activeDeadlineSeconds: 3600
@@ -150,6 +153,7 @@ spec:
           initContainers:
             - name: kube-bench
               image: {{ .Image }}
+              terminationMessagePolicy: FallbackToLogsOnError
               command: [bash, {{ .Script }}, bench]
               env:
                 - name: SCAN_RESULTS
@@ -189,6 +193,7 @@ spec:
           containers:
             - name: scan
               image: {{ .Image }}
+              terminationMessagePolicy: FallbackToLogsOnError
               command: [bash, {{ .Script }}]
               env:
                 - name: SCAN_RESULTS

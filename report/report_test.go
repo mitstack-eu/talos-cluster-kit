@@ -720,6 +720,29 @@ func TestReport_NamesEachAppliedObjectsArgoCDHealthAndEachContainersStateButNoTe
 	}
 }
 
+func TestReport_CarriesEachFailedContainersMessageCutTo256BytesFromTheNewestFailedPodOfEachJobTheKitRendersAndNoneOfAnAppsJob(t *testing.T) {
+	_, posted, out, err := runReport(t, map[string]string{"kubectl": kubectlAnswering(map[string]string{podsRead: "cat testdata/failed-job-pods.json", workloadsRead: "cat testdata/failed-jobs.json"})})
+
+	require.NoError(t, err, out)
+	assert.Equal(t, readJSON(t, "testdata", "golden", "failed-job-pods.json"), posted.body["pods"], "the newest failed pod of a kit Job carries the message of each container that exited non-zero, cut to 256 bytes, or null for one killed before it printed, while its older pod, a container that exited 0 and an app's own Job carry none")
+	assert.NotContains(t, string(posted.raw), "app-job-message-fixture", "an app's own Job's message is whatever the app wrote")
+}
+
+func TestReport_CarriesOneMessageOfAtMost256BytesForEachOf40FailedKitJobsInsideThePlatformsLimit(t *testing.T) {
+	_, posted, out, err := runReport(t, map[string]string{"kubectl": kubectlAnswering(map[string]string{workloadsRead: "jq -n -f testdata/forty-kit-jobs.jq", podsRead: "jq -n -f testdata/forty-kit-job-pods.jq"})})
+
+	require.NoError(t, err, out)
+	assert.LessOrEqual(t, len(posted.raw), 256<<10, "the body fits the platform's limit")
+	carried := 0
+	for _, pod := range posted.body["pods"].([]any) {
+		if message, ok := testutil.Field(t, pod, "containers", "0", "message").(string); ok {
+			carried++
+			assert.True(t, len(message) == 255 && utf8.ValidString(message) && strings.HasSuffix(message, "."), "a message is the end of its log in whole characters, not %q", message)
+		}
+	}
+	assert.Equal(t, 40, carried, "one message for each Job, from its newest failed pod")
+}
+
 func TestReport_AsksEachArgoCDRouteWithoutASessionAndKeepsItsStatusItsSizeAndOneBooleanOfUserinfoAndOfSettings(t *testing.T) {
 	signedIn, noJSON := `{"loggedIn":true,"username":"admin","iss":"argocd"}`, "signed out at https://argocd.example"
 	cases := map[string]struct {

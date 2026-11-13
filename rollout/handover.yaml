@@ -7,6 +7,8 @@ kind: Job
 metadata:
   name: {{ .Name }}
   namespace: {{ .Namespace }}
+  labels:
+    mitstack.dev/rendered-by: talos-cluster-kit
   annotations:
     argocd.argoproj.io/hook: Sync
     argocd.argoproj.io/sync-wave: {{ printf "%q" .Wave }}
@@ -26,6 +28,7 @@ spec:
       containers:
         - name: handover
           image: {{ .Image }}
+          terminationMessagePolicy: FallbackToLogsOnError
           command: [bash, {{ .Script }}]
           env:
             - name: HANDOVER_OBJECTS

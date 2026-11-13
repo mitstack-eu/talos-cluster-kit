@@ -5,9 +5,10 @@
 # Services, Ingresses and pod images, every Ingress with its class and the addresses its status holds, CloudNativePG's
 # objects with each cluster's primary, archiving and last backup, the plugins it finds and each ObjectStore's recovery
 # windows, each CronJob a block labels with its last success and newest failure since, every pod's node, phase and
-# container states, each image reference the pods and the workloads' pod templates name, each OpenBao member's seal
-# state and the active one, each claim with its size and the default storage classes, every Service's type, each
-# default-deny NetworkPolicy, the objects labelled mitstack.dev/subscription, the API server's key set, the mesh probe's
+# container states with the message of each failed container in the newest failed pod of each Job the kit renders, each
+# image reference the pods and the workloads' pod templates name, each OpenBao member's seal state and the active one,
+# each claim with its size and the default storage classes, every Service's type, each default-deny NetworkPolicy,
+# the objects labelled mitstack.dev/subscription, the API server's key set, the mesh probe's
 # results, the outside probe's reading of each gateway's mirror, whether a TLS connection to Let's Encrypt's ACME API
 # opens through the network's default route, each repository credential Argo CD's SealedSecrets declare with each
 # AppProject's source repositories, the API server's answer to a dry run of each admission fixture, the security scan's
@@ -426,16 +427,32 @@ body() {
         | select(.metadata.annotations["storageclass.kubernetes.io/is-default-class"] == "true") | .metadata.name]
     };
     # A container carries its state with the reason Kubernetes gives, and the message only while it waits, since a
-    # terminated container's message is whatever the app wrote.
+    # terminated container's message is whatever the app wrote; failed_message adds it for a kit Job's own pod.
     def container: (.state // {}) as $s | {name: .name}
       + if $s.waiting then
           {state: "waiting", reason: ($s.waiting.reason // null), message: ($s.waiting.message // null | at_most_256)}
         elif $s.terminated then {state: "terminated", reason: ($s.terminated.reason // null)}
         elif $s.running then {state: "running"}
         else {state: null} end;
-    def pod: {
+    # A kit Job's script writes only its own refusal, which FallbackToLogsOnError makes a failed container's message.
+    # last_256_bytes keeps a message's end, where a script says why it failed, and never cuts inside a character.
+    def last_256_bytes: if type == "string" and utf8bytelength > 256 then .[-256:] | until(utf8bytelength <= 256; .[1:]) else . end;
+    def failed_message: .state.terminated as $t
+      | if $t != null and ($t.exitCode // 0) != 0 then {message: ($t.message // null | last_256_bytes)} else {} end;
+    def qualified_name: "\(.metadata.namespace)/\(.metadata.name)";
+    # kit_jobs names each Job the kit labels as its own, and none when the workload read failed.
+    def kit_jobs: if $workloads_status != 0 then {} else
+      try ([$workloads | fromjson | .items[]
+        | select(.kind == "Job" and .metadata.labels["mitstack.dev/rendered-by"] == "talos-cluster-kit")
+        | {key: qualified_name, value: true}] | from_entries) catch {} end;
+    def job_of: .metadata.namespace as $ns | [.metadata.ownerReferences[]? | select(.kind == "Job") | "\($ns)/\(.name)"] | .[0];
+    # newest_failed($jobs) names the newest failed pod of each of $jobs, the greater name on a tie.
+    def newest_failed($jobs): [.items[] | select(.status.phase == "Failed")
+      | {job: job_of, at: .metadata.creationTimestamp, name: .metadata.name, key: qualified_name} | select(.job != null and $jobs[.job])]
+      | group_by(.job) | map(sort_by([.at, .name]) | last | {key, value: true}) | from_entries;
+    def pod($carried): $carried[qualified_name] as $carries | {
       namespace: .metadata.namespace, name: .metadata.name, node: (.spec.nodeName // null), phase: (.status.phase // null),
-      containers: [(.status.initContainerStatuses // []) + (.status.containerStatuses // []) | .[] | container]
+      containers: [(.status.initContainerStatuses // []) + (.status.containerStatuses // []) | .[] | container + if $carries then failed_message else {} end]
     };
     def etcd_status_rows: [$etcd_status | split("\n") | .[1:][] | sub("\\s+$"; "") | select(test("\\S"))
       | [splits("\\s{2,}")] | {member: .[1], leader: .[4], errors: (.[11] // "")}];
@@ -687,7 +704,7 @@ body() {
       scheduledJobs: beside($workloads_status; $workloads_err; "kubectl exited 0, and its output is not the workloads this report reads";
         $workloads | fromjson | scheduled_jobs),
       pods: beside($pods_status; $pods_err; "kubectl exited 0, and its output is not the pods this report reads";
-        $pods | fromjson | [.items[] | pod]),
+        $pods | fromjson | newest_failed(kit_jobs) as $carried | [.items[] | pod($carried)]),
       images: image_list,
       openbao: {members: $openbao, leader: ([$openbao[] | select(.active == true) | .name] | .[0])},
       storage: beside($storage_status; $storage_err;

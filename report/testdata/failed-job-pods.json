@@ -1,0 +1,247 @@
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "metadata": {
+        "namespace": "argocd",
+        "name": "component-traefik-handover-4kq2m",
+        "creationTimestamp": "2026-11-13T10:30:12Z",
+        "ownerReferences": [
+          {
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "name": "component-traefik-handover",
+            "controller": true
+          }
+        ]
+      },
+      "spec": {
+        "nodeName": "poc-talos4-cp1"
+      },
+      "status": {
+        "phase": "Failed",
+        "containerStatuses": [
+          {
+            "name": "handover",
+            "state": {
+              "terminated": {
+                "exitCode": 1,
+                "reason": "Error",
+                "message": "handover: an older refusal the report leaves out\n"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "metadata": {
+        "namespace": "argocd",
+        "name": "component-traefik-handover-9xw7d",
+        "creationTimestamp": "2026-11-13T10:50:40Z",
+        "ownerReferences": [
+          {
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "name": "component-traefik-handover",
+            "controller": true
+          }
+        ]
+      },
+      "spec": {
+        "nodeName": "poc-talos4-cp2"
+      },
+      "status": {
+        "phase": "Failed",
+        "containerStatuses": [
+          {
+            "name": "handover",
+            "state": {
+              "terminated": {
+                "exitCode": 1,
+                "reason": "Error",
+                "message": "handover: waiting up to 120s for Argo CD to apply each object the component states\nhandover: Argo CD has not applied CustomResourceDefinition ingressroutes.traefik.io, CustomResourceDefinition middlewares.traefik.io, CustomResourceDefinition serverstransports.traefik.io within 120s, so giving up talos's fields could take every field away\n"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "metadata": {
+        "namespace": "app-shop",
+        "name": "migrate-z8r5t",
+        "creationTimestamp": "2026-11-13T10:40:00Z",
+        "ownerReferences": [
+          {
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "name": "migrate",
+            "controller": true
+          }
+        ]
+      },
+      "spec": {
+        "nodeName": "poc-talos4-cp2"
+      },
+      "status": {
+        "phase": "Failed",
+        "containerStatuses": [
+          {
+            "name": "migrate",
+            "state": {
+              "terminated": {
+                "exitCode": 1,
+                "reason": "Error",
+                "message": "app-job-message-fixture: DATABASE_URL=postgres://shop:secret@shop-db-rw/shop\n"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "metadata": {
+        "namespace": "mitstack-node",
+        "name": "mitstack-node-report-29381250-h2v6c",
+        "creationTimestamp": "2026-11-13T10:50:00Z",
+        "ownerReferences": [
+          {
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "name": "mitstack-node-report-29381250",
+            "controller": true
+          }
+        ]
+      },
+      "spec": {
+        "nodeName": "poc-talos4-cp1"
+      },
+      "status": {
+        "phase": "Failed",
+        "containerStatuses": [
+          {
+            "name": "report",
+            "state": {
+              "terminated": {
+                "exitCode": 137,
+                "reason": "OOMKilled"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "metadata": {
+        "namespace": "kube-system",
+        "name": "mitstack-security-scan-29381000-p5n8s",
+        "creationTimestamp": "2026-11-13T03:17:00Z",
+        "ownerReferences": [
+          {
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "name": "mitstack-security-scan-29381000",
+            "controller": true
+          }
+        ]
+      },
+      "spec": {
+        "nodeName": "poc-talos4-cp3"
+      },
+      "status": {
+        "phase": "Failed",
+        "initContainerStatuses": [
+          {
+            "name": "kube-bench",
+            "state": {
+              "terminated": {
+                "exitCode": 0,
+                "reason": "Completed"
+              }
+            }
+          }
+        ],
+        "containerStatuses": [
+          {
+            "name": "scan",
+            "state": {
+              "terminated": {
+                "exitCode": 1,
+                "reason": "Error",
+                "message": "security-scan: kubescape ended with exit status 1: failed to pull the NSA framework\n"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "metadata": {
+        "namespace": "mitstack-node",
+        "name": "mitstack-node-topology-29381250-q2w4e",
+        "creationTimestamp": "2026-11-13T10:50:00Z",
+        "ownerReferences": [
+          {
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "name": "mitstack-node-topology-29381250",
+            "controller": true
+          }
+        ]
+      },
+      "spec": {
+        "nodeName": "poc-talos4-cp2"
+      },
+      "status": {
+        "phase": "Failed",
+        "containerStatuses": [
+          {
+            "name": "label-nodes",
+            "state": {
+              "terminated": {
+                "exitCode": 1,
+                "reason": "Error",
+                "message": "label-nodes: the API server refused the zone label on poc-talos4-cp2 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "metadata": {
+        "namespace": "mitstack-node",
+        "name": "mitstack-enrolment-7hd2k",
+        "creationTimestamp": "2026-11-13T09:02:11Z",
+        "ownerReferences": [
+          {
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "name": "mitstack-enrolment",
+            "controller": true
+          }
+        ]
+      },
+      "spec": {
+        "nodeName": "poc-talos4-cp2"
+      },
+      "status": {
+        "phase": "Failed",
+        "containerStatuses": [
+          {
+            "name": "enrol",
+            "state": {
+              "terminated": {
+                "exitCode": 1,
+                "reason": "Error",
+                "message": "cluster-tokens: the platform answered 503 to the enrolment xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

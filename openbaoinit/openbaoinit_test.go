@@ -57,8 +57,8 @@ type fakes struct {
 	// OpenBao answers the call refuse names, as "GET sys/init", with status, and its next sealed calls that carry the root token with 503.
 	refuse         string
 	status, sealed int
-	// curl is a fake curl's body, which stands in front of the real curl when set.
-	curl     string
+	// tools maps a command, as "curl", to the body of a fake that stands in front of the real one.
+	tools    map[string]string
 	patience time.Duration
 }
 
@@ -218,15 +218,17 @@ const refusedTwice = `[ "$(grep -c '^curl ' "$(dirname "$0")/calls.log")" -le 2 
 echo 'curl: (7) Failed to connect' >&2
 exit 7`
 
+// failsCommitOnce is a fake git whose first commit fails, and which hands every other call to the real git.
+const failsCommitOnce = `case " $* " in *" commit "*) [ -e "$0.failed" ] || { touch "$0.failed"; exit 1; } ;; esac
+exec "$(PATH=${PATH#*:} command -v git)" "$@"`
+
 // run runs the Job's own script with the Job's own environment, pointed at the fakes.
 func (f *fakes) run(t *testing.T, recipient []byte) (string, error) {
 	t.Helper()
 	_, pod := rendered(t)
 	container := testutil.Field(t, pod, "spec", "containers", "0")
 	commands := map[string]string{"ssh": fakeSSH}
-	if f.curl != "" {
-		commands["curl"] = f.curl
-	}
+	maps.Copy(commands, f.tools)
 	tools := testutil.NewTools(t, commands)
 	dir := t.TempDir()
 	env := testutil.ContainerEnv(t, container)
@@ -385,23 +387,25 @@ func TestInit_ChangesNothingOnAStoreItCannotInitialiseOrThatHoldsItsFileAlready(
 func TestInit_EndsNamingTheMethodThePathAndTheStatusOnAnAnswerWaitingCannotChangeAndKeepsWaitingOnAnyOther(t *testing.T) {
 	_, recipient := testutil.Recipient(t)
 	cases := map[string]struct {
-		curl, refuse    string
+		tools           map[string]string
+		refuse          string
 		status, sealed  int
 		said            string
 		times           int
 		ends, committed bool
 	}{
-		"OpenBao answering 403 to the first read, through a fake curl, ends the Job naming GET sys/init and 403": {curl: forbidden, said: "OpenBao answered 403 to GET sys/init", times: 1, ends: true},
+		"OpenBao answering 403 to the first read, through a fake curl, ends the Job naming GET sys/init and 403": {tools: map[string]string{"curl": forbidden}, said: "OpenBao answered 403 to GET sys/init", times: 1, ends: true},
 		"an init answered 400 ends the Job with nothing committed":                                               {refuse: "PUT sys/init", status: 400, said: "OpenBao answered 400 to PUT sys/init", times: 1, ends: true},
 		"a write answered 404 after the commit ends the Job":                                                     {refuse: "POST auth/kubernetes/config", status: 404, said: "OpenBao answered 404 to POST auth/kubernetes/config", times: 1, ends: true, committed: true},
 		"a write answered 405 after the commit ends the Job":                                                     {refuse: "POST sys/policies/acl/app-secrets-reader", status: 405, said: "OpenBao answered 405 to POST sys/policies/acl/app-secrets-reader", times: 1, ends: true, committed: true},
-		"OpenBao refusing the connection twice, then answering, has the Job wait and finish initialised":         {curl: refusedTwice, said: "OpenBao did not answer GET sys/init", times: 2, committed: true},
+		"OpenBao refusing the connection twice, then answering, has the Job wait and finish initialised":         {tools: map[string]string{"curl": refusedTwice}, said: "OpenBao did not answer GET sys/init", times: 2, committed: true},
+		"a commit that git refuses once is made again, and the Job finishes with the file committed":             {tools: map[string]string{"git": failsCommitOnce}, said: "committing " + openbaoinit.InitFile + " failed", times: 1, committed: true},
 		"OpenBao sealed for three answers to the root token has the Job keep waiting until it finishes":          {sealed: 3, said: "OpenBao answered 503 to GET sys/mounts", times: 3, committed: true},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			f := newFakes(t)
-			f.curl, f.refuse, f.status, f.sealed, f.patience = tc.curl, tc.refuse, tc.status, tc.sealed, 20*time.Second
+			f.tools, f.refuse, f.status, f.sealed, f.patience = tc.tools, tc.refuse, tc.status, tc.sealed, 20*time.Second
 
 			out, err := f.run(t, recipient)
 
@@ -420,6 +424,10 @@ func TestManifests_RunsTheScriptAsAJobInTheDeployKeysNamespaceThatMountsTheKeyTh
 	env := testutil.ContainerEnv(t, container)
 
 	assert.Equal(t, openbaoinit.DeployKeyNamespace, testutil.Field(t, testutil.Kind(docs, "Job")[0], "metadata", "namespace"))
+	assert.Equal(t, []any{
+		map[string]any{"action": "Ignore", "onPodConditions": []any{map[string]any{"type": "DisruptionTarget"}}},
+		map[string]any{"action": "FailJob", "onExitCodes": map[string]any{"containerName": container["name"], "operator": "NotIn", "values": []any{0}}},
+	}, testutil.Field(t, testutil.Kind(docs, "Job")[0], "spec", "podFailurePolicy", "rules"), "a pod Kubernetes disrupts is replaced, and the script's own exit fails the Job")
 	assert.NotEmpty(t, testutil.Field(t, pod, "metadata", "labels", "mitstack.dev/app"), "the admission policy refuses a pod without mitstack.dev/app")
 	assert.Equal(t, testutil.ToolsImage, container["image"])
 	assert.Equal(t, "ssh://git@ssh.github.com:443/"+testutil.InitRepository+".git", env["MITSTACK_REPOSITORY_URL"])

@@ -675,7 +675,7 @@ func TestBuilder_UserDataOverHetznersLimitFailsTheRender(t *testing.T) {
 const userDataReserve = 1024
 
 // heldKeySeed fixes the cluster's key bundle and heldDrawSeed every other value an install mints, such as the gateway CA,
-// the enrolment token and the issuer bucket, since only their bytes move a server's size between runs, through how far
+// the enrolment token and the issuer bucket, since only those bytes move the builder's size between runs, through how far
 // gzip shortens them. Each is the seed whose builder came out largest of those measured.
 const (
 	heldKeySeed  = 82

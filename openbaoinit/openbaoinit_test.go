@@ -146,6 +146,8 @@ func (f *fakes) serveOpenBao(w http.ResponseWriter, r *http.Request) {
 		}
 		data, _ := json.Marshal(map[string]any{"data": listed})
 		reply(w, http.StatusOK, string(data))
+	case c.method == http.MethodPost && f.enabled[c.path] && (strings.HasPrefix(c.path, "/v1/sys/mounts/") || strings.HasPrefix(c.path, "/v1/sys/auth/")):
+		reply(w, http.StatusBadRequest, `{"errors":["path is already in use"]}`)
 	case c.method == http.MethodPost:
 		f.enabled[c.path] = true
 		w.WriteHeader(http.StatusNoContent)
@@ -384,6 +386,12 @@ func TestInit_ChangesNothingOnAStoreItCannotInitialiseOrThatHoldsItsFileAlready(
 	}
 }
 
+// landsLate is a fake curl whose first write to kv gets no answer and lands just before the next one, as OpenBao 2.7.1
+// then answers that next write 400 "path is already in use".
+const landsLate = `cat > "$0.in"; case " $* " in *" POST "*/v1/sys/mounts/kv" "*) [ -e "$0.sent" ] || { touch "$0.sent"; exit 28; }
+[ -e "$0.landed" ] || { touch "$0.landed"; PATH=${PATH#*:} curl "$@" < "$0.in" > /dev/null; } ;; esac
+PATH=${PATH#*:} exec curl "$@" < "$0.in"`
+
 func TestInit_EndsNamingTheMethodThePathAndTheStatusOnAnAnswerWaitingCannotChangeAndKeepsWaitingOnAnyOther(t *testing.T) {
 	_, recipient := testutil.Recipient(t)
 	cases := map[string]struct {
@@ -401,6 +409,8 @@ func TestInit_EndsNamingTheMethodThePathAndTheStatusOnAnAnswerWaitingCannotChang
 		"OpenBao refusing the connection twice, then answering, has the Job wait and finish initialised":         {tools: map[string]string{"curl": refusedTwice}, said: "OpenBao did not answer GET sys/init", times: 2, committed: true},
 		"a commit that git refuses once is made again, and the Job finishes with the file committed":             {tools: map[string]string{"git": failsCommitOnce}, said: "committing " + openbaoinit.InitFile + " failed", times: 1, committed: true},
 		"OpenBao sealed for three answers to the root token has the Job keep waiting until it finishes":          {sealed: 3, said: "OpenBao answered 503 to GET sys/mounts", times: 3, committed: true},
+		"a kv write lost while it lands, then refused as in use, has the Job finish once the list shows kv":      {tools: map[string]string{"curl": landsLate}, said: "OpenBao answered 400 to POST sys/mounts/kv", times: 1, committed: true},
+		"an enable of Kubernetes auth answered 400 while the list never shows it ends the Job":                   {refuse: "POST sys/auth/kubernetes", status: 400, said: "OpenBao answered 400 to POST sys/auth/kubernetes", times: 1, ends: true, committed: true},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

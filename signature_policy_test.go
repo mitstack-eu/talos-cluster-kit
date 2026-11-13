@@ -26,16 +26,18 @@ var testedSigners = []components.Signer{
 	{Repository: "ghcr.io/kyverno/kyverno", Issuer: githubIssuer, Subject: kitPipeline},
 }
 
-// signatureDocuments renders the list and splits its one manifest into the policy and the egress limit.
+// signatureDocuments renders the list and splits its one manifest into the image policies and the egress limit, which
+// comes last.
 func signatureDocuments(t *testing.T, signers []components.Signer) (policy, egress []byte) {
 	t.Helper()
 	manifests, err := components.SignaturePolicy(signers)
 	require.NoError(t, err)
 	require.Len(t, manifests, 1, "the manifests a signer list renders")
 	require.Equal(t, components.SignaturePolicyName, manifests[0].Name)
-	policy, egress, found := bytes.Cut(manifests[0].Bytes, []byte("\n---\n"))
-	require.True(t, found, "the manifest holds two documents")
-	return append(policy, '\n'), egress
+	separator := []byte("\n---\n")
+	last := bytes.LastIndex(manifests[0].Bytes, separator)
+	require.GreaterOrEqual(t, last, 0, "the manifest holds the image policies and the egress limit")
+	return manifests[0].Bytes[:last+1], manifests[0].Bytes[last+len(separator):]
 }
 
 func TestSignaturePolicy_AnEmptySignerListRendersNoPolicyAndNoEgressLimit(t *testing.T) {
@@ -67,6 +69,14 @@ func TestSignaturePolicy_JudgesEveryNamespaceTheLabelPolicyJudgesAndNamesItselfI
 		assert.Contains(t, message, testedSigners[i].Repository, "the refusal names the repository")
 		assert.Contains(t, message, testedSigners[i].Subject, "the refusal names the identity whose signature it wants")
 	}
+}
+
+func TestSignaturePolicy_JudgesTheUpdateKubectlDebugAddsAnEphemeralContainerThroughAndKeepsTheRuleAutogenNeeds(t *testing.T) {
+	rendered, _ := signatureDocuments(t, testedSigners)
+	docs := testutil.Documents(t, rendered)
+
+	require.Len(t, docs, 2, "the image policy and its twin")
+	judgesAsItsTwin(t, docs[0], docs[1], "validationActions", "failurePolicy", "evaluation", "validationConfigurations", "matchImageReferences", "attestors", "variables", "validations")
 }
 
 func TestSignaturePolicy_LimitsKyvernosAdmissionControllerToTheAPIServerDNSAndTheHostsItsChecksTake(t *testing.T) {

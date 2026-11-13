@@ -406,6 +406,40 @@ func TestManifests_EveryRefusalOpensWithTheNameOfTheRuleThePlatformLooksFor(t *t
 	}
 }
 
+// judgesAsItsTwin holds policy to the one pods rule Kyverno's CanAutoGen needs to extend it to the controllers that
+// make pods, and twin to the same checks of the update of pods/ephemeralcontainers that kubectl debug sends.
+func judgesAsItsTwin(t *testing.T, policy, twin map[string]any, checks ...string) {
+	t.Helper()
+	rule := func(resource string, operations ...any) []any {
+		return []any{map[string]any{"apiGroups": []any{""}, "apiVersions": []any{"v1"}, "operations": operations, "resources": []any{resource}}}
+	}
+	assert.Equal(t, rule("pods", "CREATE", "UPDATE"), testutil.Field(t, policy, "spec", "matchConstraints", "resourceRules"), "the policy's resource rules")
+	assert.Equal(t, rule("pods/ephemeralcontainers", "UPDATE"), testutil.Field(t, twin, "spec", "matchConstraints", "resourceRules"), "the twin's resource rules")
+	assert.Equal(t, policy["kind"], twin["kind"])
+	assert.Equal(t, false, testutil.Field(t, twin, "spec", "evaluation", "background", "enabled"), "a background scan leaves the twin not ready")
+	assert.Equal(t, policySkips(t, policy), policySkips(t, twin), "the namespaces the twin skips")
+	for _, field := range checks {
+		assert.Equal(t, testutil.Field(t, policy, "spec", field), testutil.Field(t, twin, "spec", field), "the twin's %s", field)
+	}
+}
+
+func TestManifests_APodPolicyThatReadsEphemeralContainersJudgesTheUpdateKubectlDebugAddsThemThrough(t *testing.T) {
+	var judged []string
+	for _, m := range components.Default().Inline {
+		docs := testutil.Documents(t, m.Bytes)
+		if len(docs) == 0 || docs[0]["kind"] != "ValidatingPolicy" || !strings.Contains(string(m.Bytes), "ephemeralContainers") {
+			continue
+		}
+		judged = append(judged, m.Name)
+		t.Run(m.Name, func(t *testing.T) {
+			require.Len(t, docs, 2, "the policy and its twin")
+			judgesAsItsTwin(t, docs[0], docs[1], "validationActions", "variables", "validations")
+		})
+	}
+
+	assert.ElementsMatch(t, []string{digestPolicy, "mitstack-restrict-image-registries"}, judged, "the pod policies that read ephemeral containers")
+}
+
 // pinnedBusybox is the one busybox reference the local path provisioner and the mesh probe both pin.
 func pinnedBusybox(t *testing.T) string {
 	t.Helper()

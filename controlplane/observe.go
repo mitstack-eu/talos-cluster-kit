@@ -53,6 +53,7 @@ func (p Plane) Problems(ctx context.Context, st State) []string {
 	}
 	missing = append(missing, gateways...)
 	missing = append(missing, st.nodeProblems(network, firewall)...)
+	missing = append(missing, p.nodeReplacementProblems(ctx, st, network)...)
 	missing = append(missing, p.loadBalancerProblems(st, network)...)
 	return missing
 }

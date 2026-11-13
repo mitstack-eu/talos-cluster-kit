@@ -136,3 +136,25 @@ func (r Read) OpenBaoMembers() ([]Member, map[string]string, error) {
 	}
 	return out, nodes, nil
 }
+
+// Removal is a redundant set with the member of it that a node's removal takes away.
+type Removal struct {
+	redundant.Set
+	Removed string
+}
+
+// OpenBaoRemovals are OpenBao's members, a majority of which must stay unsealed, once for each member whose pod runs
+// on node.
+func (r Read) OpenBaoRemovals(node string) ([]Removal, error) {
+	openBao, nodes, err := r.OpenBaoMembers()
+	if err != nil {
+		return nil, err
+	}
+	var removals []Removal
+	for _, m := range openBao {
+		if nodes[m.Name] == node {
+			removals = append(removals, Removal{Set: redundant.Set{Name: "OpenBao members", Members: openBao, Minimum: redundant.Majority}, Removed: m.Name})
+		}
+	}
+	return removals, nil
+}

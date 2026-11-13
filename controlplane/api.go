@@ -28,6 +28,8 @@ type API interface {
 	// AttachServerToNetwork with an empty ip lets Hetzner give the server the network's first free address.
 	AttachServerToNetwork(ctx context.Context, serverID, networkID int64, ip string) error
 	PowerOnServer(ctx context.Context, id int64) error
+	// PowerOffServer cuts the server's power as a lost server stops, and returns once Hetzner's action has finished.
+	PowerOffServer(ctx context.Context, id int64) error
 	DeleteServer(ctx context.Context, id int64) error
 	ListNetworks(ctx context.Context, labelSelector string) ([]Network, error)
 	CreateNetwork(ctx context.Context, spec NetworkSpec) (Network, error)
@@ -337,6 +339,14 @@ func (a *hcloudAPI) PowerOnServer(ctx context.Context, id int64) error {
 		return fmt.Errorf("powering on server %d: %w", id, err)
 	}
 	return a.wait(ctx, action, fmt.Sprintf("server %d to power on", id))
+}
+
+func (a *hcloudAPI) PowerOffServer(ctx context.Context, id int64) error {
+	action, _, err := a.client.Server.Poweroff(ctx, &hcloud.Server{ID: id})
+	if err != nil {
+		return fmt.Errorf("powering off server %d: %w", id, err)
+	}
+	return a.wait(ctx, action, fmt.Sprintf("server %d to power off", id))
 }
 
 func (a *hcloudAPI) DeleteServer(ctx context.Context, id int64) error {

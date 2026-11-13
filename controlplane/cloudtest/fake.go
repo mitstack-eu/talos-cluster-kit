@@ -281,6 +281,19 @@ func (f *Fake) PowerOnServer(_ context.Context, id int64) error {
 	return nil
 }
 
+func (f *Fake) PowerOffServer(_ context.Context, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s, ok := f.Servers[id]
+	if !ok {
+		return fmt.Errorf("powering off server %d: server not found (not_found)", id)
+	}
+	f.write(true)
+	s.Status = controlplane.ServerOff
+	f.powerActions[id] = append(f.powerActions[id], powerAction{controlplane.StopServerCommand, f.now()})
+	return nil
+}
+
 func (f *Fake) SetServerLabels(_ context.Context, id int64, labels map[string]string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

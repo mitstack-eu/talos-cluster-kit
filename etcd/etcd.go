@@ -6,6 +6,8 @@ import (
 	_ "embed"
 	"fmt"
 	"net/netip"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/mitstack-eu/talos-cluster-kit/internal/check"
@@ -32,12 +34,29 @@ const (
 	maxLabelLength = 63
 )
 
+// removalDir is the directory of the cluster repository that the cluster's own Application applies and prunes.
+const removalDir = "cluster/"
+
+// JobName is the name of the Job that removes hostname's member, by which Argo CD lists it.
+func JobName(hostname string) string { return jobNamePrefix + hostname }
+
+// RemovalPath is where the cluster repository holds hostname's removal, so the cluster's own Application applies it
+// while main holds the file and prunes its Job once main does not.
+func RemovalPath(hostname string) string { return removalDir + JobName(hostname) + ".yaml" }
+
+// IsRemovalPath reports whether path is one RemovalPath gives, by which a block lists the removals main holds.
+func IsRemovalPath(path string) bool {
+	name, inDir := strings.CutPrefix(path, removalDir+jobNamePrefix)
+	hostname, isYAML := strings.CutSuffix(name, ".yaml")
+	return inDir && isYAML && check.DNS1123Label(hostname) == nil
+}
+
 // RemoveMember names the lost node whose etcd member and Node object go.
 type RemoveMember struct {
 	Hostname string
 	// ToolsImage is the image built from tools/Dockerfile, by digest, which carries bash, talosctl and kubectl.
 	ToolsImage string
-	// Report is the newest node report, whose etcd members, the lost one among them, must show a majority serving without it.
+	// Report is the newest node report, whose etcd members must show a majority serving without the lost one.
 	Report report.Read
 	// StepStart is when the lost node's replacement began, so a report read before then proves nothing.
 	StepStart time.Time
@@ -61,12 +80,17 @@ func RemoveMemberJob(r RemoveMember) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(members) > 0 && !slices.ContainsFunc(members, func(m redundant.Member) bool { return m.Name == r.Hostname }) {
+		// A member the report no longer lists is removed already and only the Node object is left, so the guard judges
+		// the others as it would with that member unread.
+		members = append(members, redundant.Member{Name: r.Hostname})
+	}
 	set := redundant.Set{Name: "etcd members", Members: members, Minimum: redundant.Majority}
 	if err := r.Guard.Allow(set, r.Hostname, r.StepStart); err != nil {
 		return nil, err
 	}
 	return tmpl.Execute(removeMemberJob, map[string]string{
-		"Name":      jobNamePrefix + r.Hostname,
+		"Name":      JobName(r.Hostname),
 		"Namespace": nodeconfig.TalosAPINamespace,
 		"Hostname":  r.Hostname,
 		"Image":     r.ToolsImage,

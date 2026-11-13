@@ -174,6 +174,16 @@ func TestHetznerAdapter_StartsTheSnapshotWithoutWaitingForItsAction(t *testing.T
 	assert.Equal(t, "creating", snap.Status)
 }
 
+func TestHetznerAdapter_PowersAServerOffAndFailsWhenHetznerRefusesTheAction(t *testing.T) {
+	api, bodies := recordHetzner(t, map[string]string{"POST /servers/7/actions/poweroff": `{"action": ` + finishedAction + `}`})
+
+	require.NoError(t, api.PowerOffServer(context.Background(), 7))
+	err := api.PowerOffServer(context.Background(), 8)
+
+	assert.Contains(t, bodies, "POST /servers/7/actions/poweroff", "the action sent for server 7")
+	assert.ErrorContains(t, err, "powering off server 8", "PowerOffServer(8), a server Hetzner does not hold")
+}
+
 func TestHetznerAdapter_AServerHasStartedOnceItsStartActionSucceeded(t *testing.T) {
 	for command, want := range map[string]bool{"start_server": true, "create_server": false} {
 		api, _ := recordHetzner(t, map[string]string{

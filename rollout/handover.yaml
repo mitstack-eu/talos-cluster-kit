@@ -34,8 +34,6 @@ spec:
               value: {{ printf "%q" .TalosManager }}
             - name: HANDOVER_ARGOCD_MANAGER
               value: {{ printf "%q" .ArgoCDManager }}
-            - name: HANDOVER_ARGOCD_ANNOTATION
-              value: {{ printf "%q" .ArgoCDAnnotation }}
             - name: HANDOVER_ADOPTION_TIMEOUT
               value: {{ printf "%q" .AdoptionTimeout }}
             - name: HOME

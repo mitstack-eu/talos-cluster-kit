@@ -22,8 +22,6 @@ const (
 	// syncWaveAnnotation names the wave of a sync Argo CD applies a document in, each wave after the one before it
 	// is applied and reads Healthy.
 	syncWaveAnnotation = "argocd.argoproj.io/sync-wave"
-	// ArgoCDTrackingAnnotation is the annotation Argo CD gives each object it applies, naming the Application.
-	ArgoCDTrackingAnnotation = "argocd.argoproj.io/tracking-id"
 	// adoptionTimeout bounds the Job's wait for Argo CD to apply each object, which its own sync does within the same
 	// pass that creates the Job.
 	adoptionTimeout = "120s"
@@ -88,6 +86,6 @@ func (c carried) renderHandover(heads []documentHead, wave int, toolsImage strin
 		"Name": job.Name, "Namespace": job.Namespace, "Wave": strconv.Itoa(wave), "ServiceAccount": ArgoCDController,
 		"Image": toolsImage, "Script": handoverScript, "Objects": string(objects),
 		"TalosManager": constants.KubernetesFieldManagerName, "ArgoCDManager": ArgoCDManager,
-		"ArgoCDAnnotation": ArgoCDTrackingAnnotation, "AdoptionTimeout": adoptionTimeout,
+		"AdoptionTimeout": adoptionTimeout,
 	})
 }

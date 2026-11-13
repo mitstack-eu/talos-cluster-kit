@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -56,6 +57,9 @@ func (r nodeReplacement) record() string {
 
 func (r nodeReplacement) plan() string { return nodeReplacePlan + r.record() }
 
+// offPlan is the plan the node's removal labels name from the call that found it powered off.
+func (r nodeReplacement) offPlan() string { return nodeReplacePlan + "off-" + r.record() }
+
 // succeededBy reports whether node is another server than the one r names, by id and by no time, so a clock that
 // differs from Hetzner's never reads the successor as the node to replace.
 func (r nodeReplacement) succeededBy(node Server) bool { return node.ID != r.old }
@@ -108,6 +112,9 @@ func (p Plane) replaceNodeStep(ctx context.Context, st State, s site) (Step, boo
 		return Step{}, false, err
 	}
 	r := asked[0]
+	if class, what := p.lacks(); class != "" {
+		return Step{}, false, refuse(class, "the replacement of the node in %s is under way, and the block passes %s", r.loc, what)
+	}
 	node, ok := st.NodeIn(r.loc)
 	switch {
 	case !ok:
@@ -129,8 +136,8 @@ func (r nodeReplacement) named(err error) error {
 	return fmt.Errorf("replacing the node in %s: %w", r.loc, err)
 }
 
-// strayRemovalStep takes out a removal main still holds once the node the upgrade replaces is gone, so no Job removes
-// the member of a successor of the same name.
+// strayRemovalStep takes out each removal main still holds once the node the upgrade replaces is gone, whichever node
+// it names, since the plane writes one removal at a time and a held one could run again against a node that serves.
 func (p Plane) strayRemovalStep(ctx context.Context, st State, network Network) (Step, bool, error) {
 	asked, err := nodeReplacements(network)
 	if err != nil || len(asked) == 0 || !p.Removals.writable() {
@@ -157,13 +164,8 @@ func (p Plane) recordReplacementsStep(ctx context.Context, st State, network Net
 	if !p.Upgrading || len(p.ReplaceNodes) == 0 {
 		return Step{}, false, nil
 	}
-	if !p.Removals.writable() {
-		return Step{}, false, refuse("node-removal-unwritable",
-			"the upgrade names a node to replace, and the block passes no cluster repository to write its etcd member's removal to, so nothing was changed")
-	}
-	if p.ReadReport == nil || p.Guard == nil {
-		return Step{}, false, refuse("node-replacement-unjudged",
-			"the upgrade names a node to replace, and the block passes no node report read or no redundancy guard to judge the other members by, so nothing was changed")
+	if class, what := p.lacks(); class != "" {
+		return Step{}, false, refuse(class, "the upgrade names a node to replace, and the block passes %s, so nothing was changed", what)
 	}
 	labels := maps.Clone(network.Labels)
 	if labels == nil {
@@ -212,7 +214,7 @@ func (p Plane) endNodeReplacementStep(ctx context.Context, network Network, r no
 }
 
 func (p Plane) successorServes(ctx context.Context, successor Server) (bool, error) {
-	read, err := p.readReport(ctx, successor.Created)
+	read, err := p.ReadReport(ctx, successor.Created)
 	if err != nil || read == nil {
 		return false, err
 	}
@@ -234,6 +236,9 @@ func (p Plane) nodeReplacementProblems(ctx context.Context, st State, network Ne
 	recorded, err := nodeReplacements(network)
 	if err != nil {
 		return []string{err.Error()}
+	}
+	if _, what := p.lacks(); what != "" && len(recorded) > 0 {
+		return []string{fmt.Sprintf("the replacement of the node in %s cannot go on, since the block passes %s", recorded[0].loc, what)}
 	}
 	var out []string
 	for i, r := range recorded {
@@ -301,38 +306,50 @@ func (p Plane) refused(network Network, r nodeReplacement, err error) (progress,
 	})
 }
 
-// backOn powers node on again and withdraws r when err refuses the removal of its member, which no step has written
-// yet, so a second member that stopped serving meanwhile gets the node's member back.
-func (p Plane) backOn(network Network, r nodeReplacement, node Server, err error) (progress, error) {
-	var refusal *Refusal
-	if !errors.As(err, &refusal) {
-		return progress{}, err
-	}
+// backOn powers node on again and withdraws r, so its etcd member, which the report still lists, serves again; it takes
+// the removal at held out first, when there is one, so no removal stands beside a node that runs.
+func (p Plane) backOn(network Network, r nodeReplacement, node Server, held string, refusal *Refusal) (progress, error) {
 	return next("power the node in "+r.loc+" back on and withdraw its replacement, since it is refused: "+refusal.Message, func(ctx context.Context) error {
-		if perr := p.API.PowerOnServer(ctx, node.ID); perr != nil {
-			return errors.Join(err, fmt.Errorf("powering node %d in %s back on: %w", node.ID, r.loc, perr))
+		if held != "" {
+			if err := p.Removals.Commit(ctx, held, nil); err != nil {
+				return errors.Join(refusal, fmt.Errorf("taking %s out of the cluster repository: %w", held, err))
+			}
 		}
-		if werr := p.API.SetNetworkLabels(ctx, network.ID, withoutReplacement(network, r.loc)); werr != nil {
-			return errors.Join(err, fmt.Errorf("withdrawing the refused replacement of the node in %s: %w", r.loc, werr))
+		if err := p.API.PowerOnServer(ctx, node.ID); err != nil {
+			return errors.Join(refusal, fmt.Errorf("powering node %d in %s back on: %w", node.ID, r.loc, err))
+		}
+		if err := p.API.SetNetworkLabels(ctx, network.ID, withoutReplacement(network, r.loc)); err != nil {
+			return errors.Join(refusal, fmt.Errorf("withdrawing the refused replacement of the node in %s: %w", r.loc, err))
 		}
 		p.notify(ctx, "powered node %d in %s back on and withdrew its replacement: %s", node.ID, r.loc, refusal.Message)
-		return err
+		return refusal
 	})
 }
 
+// lacks names what a node replacement needs on every call and the block does not pass, with the class that refuses it.
+func (p Plane) lacks() (class, what string) {
+	switch {
+	case !p.Removals.writable():
+		return "node-removal-unwritable", "no cluster repository to write its etcd member's removal to"
+	case p.ReadReport == nil || p.Guard == nil:
+		return "node-replacement-unjudged", "no node report read or no redundancy guard to judge the other members by"
+	}
+	return "", ""
+}
+
 func (p Plane) replaceNode(ctx context.Context, st State, network Network, r nodeReplacement, node Server) (progress, error) {
-	if !p.Removals.writable() {
-		return progress{}, refuse("node-removal-unwritable",
-			"the replacement of the node in %s is under way, and the block passes no cluster repository to write its etcd member's removal to", r.loc)
+	switch node.Status {
+	case ServerRunning:
+		return p.powerOffNode(ctx, network, r, node)
+	case ServerOff:
+		return p.removeOffNode(ctx, st, network, r, node)
 	}
-	running := node.Status == ServerRunning
-	if !running && node.Status != ServerOff {
-		return waitsOn("Hetzner reads it neither running nor off")
-	}
-	if running {
-		if _, err := (&OrderableTypes{API: p.API}).First(ctx, nodeWhat, p.ServerTypes, r.loc); err != nil {
-			return p.refused(network, r, err)
-		}
+	return waitsOn("Hetzner reads it neither running nor off")
+}
+
+func (p Plane) powerOffNode(ctx context.Context, network Network, r nodeReplacement, node Server) (progress, error) {
+	if _, err := (&OrderableTypes{API: p.API}).First(ctx, nodeWhat, p.ServerTypes, r.loc); err != nil {
+		return p.refused(network, r, err)
 	}
 	began, begun := RemovalBegan(node, r.plan())
 	if !begun {
@@ -344,14 +361,12 @@ func (p Plane) replaceNode(ctx context.Context, st State, network Network, r nod
 			return nil
 		})
 	}
-	read, err := p.readReport(ctx, began)
+	read, err := p.ReadReport(ctx, began)
 	switch {
 	case err != nil:
 		return progress{}, err
 	case read == nil:
 		return waitsOn("no node report was received since its replacement began at %s", began.UTC().Format(time.RFC3339))
-	case !running:
-		return p.removeMember(ctx, st, network, r, node, began, *read)
 	}
 	if err := p.allowNodeRemoval(*read, node, began); err != nil {
 		return p.refused(network, r, err)
@@ -366,11 +381,23 @@ func (p Plane) replaceNode(ctx context.Context, st State, network Network, r nod
 	})
 }
 
-func (p Plane) readReport(ctx context.Context, since time.Time) (*report.Read, error) {
-	if p.ReadReport == nil {
-		return nil, nil
+// removeOffNode judges the member's removal only by a node report read since the node was found off, so the report
+// that allowed the power-off never allows the removal too.
+func (p Plane) removeOffNode(ctx context.Context, st State, network Network, r nodeReplacement, node Server) (progress, error) {
+	off, marked := RemovalBegan(node, r.offPlan())
+	if !marked {
+		return next("record when the node in "+r.loc+" was found off, so only a node report read after now judges its member's removal", func(ctx context.Context) error {
+			return p.API.SetServerLabels(ctx, node.ID, BeginRemoval(node, p.now(), r.offPlan()))
+		})
 	}
-	return p.ReadReport(ctx, since)
+	read, err := p.ReadReport(ctx, off)
+	switch {
+	case err != nil:
+		return progress{}, err
+	case read == nil:
+		return waitsOn("no node report was received since it was found off at %s", off.UTC().Format(time.RFC3339))
+	}
+	return p.removeMember(ctx, st, network, r, node, off, *read)
 }
 
 func (p Plane) allowNodeRemoval(read report.Read, node Server, began time.Time) error {
@@ -403,23 +430,23 @@ func belowMinimum(err error) error {
 	return &Refusal{Class: redundant.ClassBelowMinimum, Message: strings.TrimPrefix(err.Error(), "refused:"+redundant.ClassBelowMinimum+": ")}
 }
 
-// removeMember deletes the server only once main holds no removal, since Argo CD would run a held removal again, a day
-// after its Job finished, against the successor of the same name.
-func (p Plane) removeMember(ctx context.Context, st State, network Network, r nodeReplacement, node Server, began time.Time, read report.Read) (progress, error) {
+// removeMember deletes the server only once main holds no removal, since self-heal applies what main holds and the
+// cluster lacks, so a held removal could run again against the successor of the same name once its Job is deleted.
+func (p Plane) removeMember(ctx context.Context, st State, network Network, r nodeReplacement, node Server, off time.Time, read report.Read) (progress, error) {
 	held, err := p.Removals.Held(ctx)
 	if err != nil {
 		return progress{}, fmt.Errorf("listing the removals the cluster repository holds: %w", err)
 	}
-	gone, err := memberGone(read, st, node.Name)
+	left, err := leftOf(read, st, node.Name)
 	if err != nil {
 		return progress{}, err
 	}
 	path := etcd.RemovalPath(node.Name)
 	holds := slices.Contains(held, path)
 	switch {
-	case gone && holds:
+	case left.nothing() && holds:
 		return p.takeOut(path, "whose Job removed the member of "+node.Name)
-	case gone:
+	case left.nothing():
 		return p.deleteNode(node, read)
 	}
 	for _, other := range held {
@@ -429,34 +456,43 @@ func (p Plane) removeMember(ctx context.Context, st State, network Network, r no
 	}
 	name, at := etcd.JobName(node.Name), read.At.UTC().Format(time.RFC3339)
 	jobs, readable, err := appliedJobs(read)
-	health, applied := jobs[name]
+	job, applied := jobs[name]
 	switch {
 	case err != nil:
 		return progress{}, err
 	case !readable:
 		return waitsOn("%s, so its removal Job %s cannot be read", unreadJobs(read), name)
-	case holds && health == jobFailed:
-		return p.takeOut(path, "whose Job failed and left the member of "+node.Name)
-	case holds && health == jobCompleted:
+	case holds && job.health == jobFailed && left.member:
+		return p.backOn(network, r, node, path, &Refusal{Class: "node-removal-failed", Message: fmt.Sprintf(
+			"the removal Job %s of the node in %s failed and left its etcd member, in the node report read at %s: %s",
+			name, r.loc, at, cmp.Or(job.message, "Argo CD gives no message of it"))})
+	case holds && job.health == jobFailed:
+		return p.takeOut(path, "whose Job failed once the member of "+node.Name+" was gone and left its Node object")
+	case holds && job.health == jobCompleted:
 		return p.takeOut(path, "whose Job completed in a report that still lists the member of "+node.Name)
 	case holds:
 		return waitsOn("its removal Job %s has not finished in the node report read at %s", name, at)
 	case !applied:
-		g, err := p.writeRemoval(node, began, read, path)
-		if err != nil {
-			return p.backOn(network, r, node, err)
+		g, err := p.writeRemoval(node, off, read, path)
+		var refusal *Refusal
+		if errors.As(err, &refusal) && left.member {
+			return p.backOn(network, r, node, "", refusal)
 		}
-		return g, nil
+		return g, err
 	}
 	return waitsOn("Argo CD still holds the removal Job %s in the node report read at %s, and prunes it now that the cluster repository no longer holds its file", name, at)
 }
 
-// memberGone reports whether read lists neither an etcd member nor a Node object named hostname while it lists both
-// for another node, since a report whose read of either failed lists none and proves nothing.
-func memberGone(read report.Read, st State, hostname string) (bool, error) {
+// remains is what a node report still lists of a node: its etcd member and its Node object, proven only when the
+// report lists both for another node, since a report whose read of either failed lists none and proves nothing.
+type remains struct{ member, object, proven bool }
+
+func (l remains) nothing() bool { return l.proven && !l.member && !l.object }
+
+func leftOf(read report.Read, st State, hostname string) (remains, error) {
 	members, err := read.EtcdMembers()
 	if err != nil {
-		return false, err
+		return remains{}, err
 	}
 	names := make([]string, 0, len(st.Servers[RoleNode]))
 	for _, node := range st.Servers[RoleNode] {
@@ -464,18 +500,22 @@ func memberGone(read report.Read, st State, hostname string) (bool, error) {
 	}
 	nodes, err := read.Nodes(names)
 	if err != nil {
-		return false, err
+		return remains{}, err
 	}
 	listed := func(m report.Member) bool { return m.Name == hostname && m.Reading != nil }
 	otherListed := func(m report.Member) bool { return m.Name != hostname && m.Reading != nil }
-	return !slices.ContainsFunc(members, listed) && !slices.ContainsFunc(nodes, listed) &&
-		slices.ContainsFunc(members, otherListed) && slices.ContainsFunc(nodes, otherListed), nil
+	return remains{
+		member: slices.ContainsFunc(members, listed), object: slices.ContainsFunc(nodes, listed),
+		proven: slices.ContainsFunc(members, otherListed) && slices.ContainsFunc(nodes, otherListed),
+	}, nil
 }
+
+type appliedJob struct{ health, message string }
 
 // appliedJobs reads the health Argo CD keeps of each Job the cluster's own Application applied, and false when read
 // carries none: a body near its size limit drops the objects, and an Argo CD that keeps health off the Application
 // leaves each object without one.
-func appliedJobs(read report.Read) (map[string]string, bool, error) {
+func appliedJobs(read report.Read) (map[string]appliedJob, bool, error) {
 	var body struct {
 		ArgoCD struct {
 			Applications []struct {
@@ -491,14 +531,17 @@ func appliedJobs(read report.Read) (map[string]string, bool, error) {
 		if app.Name != removalApplication || app.Resources == nil {
 			continue
 		}
-		jobs := map[string]string{}
+		jobs := map[string]appliedJob{}
 		for _, r := range *app.Resources {
 			health, kept := r["health"]
 			if !kept {
 				return nil, false, nil
 			}
-			if name, _ := r["name"].(string); r["kind"] == jobKind {
-				jobs[name], _ = health.(string)
+			if r["kind"] == jobKind {
+				name, _ := r["name"].(string)
+				status, _ := health.(string)
+				message, _ := r["message"].(string)
+				jobs[name] = appliedJob{health: status, message: message}
 			}
 		}
 		return jobs, true, nil

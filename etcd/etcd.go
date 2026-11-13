@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strings"
 	"time"
 
@@ -55,7 +56,7 @@ type RemoveMember struct {
 	Hostname string
 	// ToolsImage is the image built from tools/Dockerfile, by digest, which carries bash, talosctl and kubectl.
 	ToolsImage string
-	// Report is the newest node report, whose etcd members, the lost one among them, must show a majority serving without it.
+	// Report is the newest node report, whose etcd members must show a majority serving without the lost one.
 	Report report.Read
 	// StepStart is when the lost node's replacement began, so a report read before then proves nothing.
 	StepStart time.Time
@@ -78,6 +79,11 @@ func RemoveMemberJob(r RemoveMember) ([]byte, error) {
 	members, err := r.Report.EtcdMembers()
 	if err != nil {
 		return nil, err
+	}
+	if len(members) > 0 && !slices.ContainsFunc(members, func(m redundant.Member) bool { return m.Name == r.Hostname }) {
+		// A member the report no longer lists is removed already and only the Node object is left, so the guard judges
+		// the others as it would with that member unread.
+		members = append(members, redundant.Member{Name: r.Hostname})
 	}
 	set := redundant.Set{Name: "etcd members", Members: members, Minimum: redundant.Majority}
 	if err := r.Guard.Allow(set, r.Hostname, r.StepStart); err != nil {

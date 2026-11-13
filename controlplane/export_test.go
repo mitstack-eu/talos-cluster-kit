@@ -67,6 +67,14 @@ func (p Plane) BuildSet(ctx context.Context, now time.Time, enrolmentToken strin
 	return set, err
 }
 
+// SwapMintedSecrets makes every install mint s, so a test holds the cluster's keys at one draw.
+func SwapMintedSecrets(t testing.TB, s *nodeconfig.Secrets) {
+	t.Helper()
+	old := mintSecrets
+	mintSecrets = func(time.Time) (*nodeconfig.Secrets, error) { return s, nil }
+	t.Cleanup(func() { mintSecrets = old })
+}
+
 // ShareMintedSecrets makes every install in the test binary read one bundle per start time, minted on first use and
 // never written, since minting a bundle's RSA keys dominates a render under the race detector.
 func ShareMintedSecrets() {

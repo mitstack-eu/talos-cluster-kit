@@ -2896,10 +2896,11 @@ of what Argo CD applied.
 
 The plane replaces one node at a time, in the order `fsn1`, `nbg1`, `hel1`.
 A replacement begins only once the upgrade has replaced every gateway it
-replaces. Every node fetches each served manifest from the first location's
-gateway, and the gateways' replacement takes each gateway away for a while.
-Until then, `Problems` names the node and says its replacement begins once the
-upgrade has replaced every gateway. Each call takes one of these changes:
+replaces. A control-plane node fetches each served manifest from the first
+location's gateway, and the gateways' replacement takes each gateway away for
+a while. Until then, `Problems` names the node and says its replacement begins
+once the upgrade has replaced every gateway. Each call takes one of these
+changes:
 
 1. It labels the node's Hetzner server with the time its replacement began,
    under `mitstack.dev/removal-began` and `mitstack.dev/removal-for`, so only

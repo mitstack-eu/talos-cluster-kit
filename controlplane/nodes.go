@@ -368,7 +368,7 @@ func (p Plane) powerOffNode(ctx context.Context, st State, network Network, r no
 }
 
 // beginNodeReplacement holds a replacement while the upgrade replaces the gateways, so no successor boots while a gateway
-// it names is away: every node fetches each served manifest from the first location's gateway.
+// it names is away: a control-plane node fetches each served manifest from the first location's gateway.
 func (p Plane) beginNodeReplacement(st State, network Network, r nodeReplacement, node Server) (progress, error) {
 	gateways, err := p.replacement(st, network)
 	switch {

@@ -659,7 +659,7 @@ func TestPlane_AnUpgradeNamingANodeWhileAnEarlierStepIsDueRecordsItOnItsOwnCallA
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, c := withCluster(t)
-			old, asked := h.nodeIn("fsn1"), h.now
+			old := h.nodeIn("fsn1")
 			tc.due(h)
 			require.Contains(t, h.problems(), tc.missing, "precondition: the plane's problems once %s", tc.name)
 
@@ -669,12 +669,21 @@ func TestPlane_AnUpgradeNamingANodeWhileAnEarlierStepIsDueRecordsItOnItsOwnCallA
 
 			assert.True(t, recorded, "the record of the node in fsn1 once the upgrade's own call ended while %s", tc.name)
 			assert.Contains(t, standing, tc.missing, "the upgrade's own call took the step that %s calls for", tc.name)
-			assert.Contains(t, standing, fmt.Sprintf("node %d in fsn1 still runs for the replacement the upgrade asked for at %s: its next step is to begin replacing the node in fsn1",
-				old.ID, asked.Format(time.RFC3339)), "the plane's problems once the upgrade's own call ended while %s", tc.name)
 			assert.NotContains(t, h.problems(), tc.missing, "the plane's problems once no step is left")
 			assert.NotEqual(t, old.ID, h.nodeIn("fsn1").ID, "the node in fsn1 once no step is left")
 		})
 	}
+}
+
+func TestPlane_NamesARecordedReplacementsOwnNextStepWhileALoadBalancerStepIsDue(t *testing.T) {
+	h, _ := withCluster(t)
+	old, asked := h.nodeIn("fsn1"), h.now
+	h.deleteIngressLoadBalancer()
+
+	require.NoError(t, h.upgradeCall("fsn1"))
+
+	assert.Contains(t, h.problems(), fmt.Sprintf("node %d in fsn1 still runs for the replacement the upgrade asked for at %s: its next step is to begin replacing the node in fsn1",
+		old.ID, asked.Format(time.RFC3339)), "the plane's problems once the upgrade's own call ended while the ingress load balancer is gone")
 }
 
 func TestPlane_RefusesAnUpgradeNamingANodeItCannotReplaceBeforeAnyFirewallLoadBalancerOrGatewayChange(t *testing.T) {

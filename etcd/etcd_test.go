@@ -112,6 +112,33 @@ func TestRemoveMemberJob_RendersNoRemovalWhileASecondEtcdMemberReadsUnhealthy(t 
 	assert.Contains(t, err.Error(), `"poc-talos4-cp2" read not serving at 2026-11-08T09:01:00Z`, "the refusal names the second unhealthy member")
 }
 
+func TestRemoveMemberJob_RendersTheRemovalOfANodeWhoseMemberIsGoneOnlyWhileEveryOtherMemberServes(t *testing.T) {
+	for name, tc := range map[string]struct {
+		secondHealthy bool
+		refusal       string
+	}{
+		"both other members read healthy":  {true, ""},
+		"one other member reads unhealthy": {false, `"poc-talos4-cp2" read not serving at 2026-11-08T09:01:00Z`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			body := fmt.Sprintf(`{"etcd":{"members":[{"hostname":"poc-talos4-cp1","healthy":true},{"hostname":"poc-talos4-cp2","healthy":%t}]}}`, tc.secondHealthy)
+			read := report.Read{Body: []byte(body), At: replacementBegan.Add(time.Minute)}
+
+			rendered, err := etcd.RemoveMemberJob(etcd.RemoveMember{Hostname: "poc-talos4-cp3", ToolsImage: testutil.ToolsImage, Report: read, StepStart: replacementBegan, Guard: redundanttest.Guard})
+
+			if tc.refusal == "" {
+				require.NoError(t, err, "rendering the removal of a node whose etcd member the report no longer lists")
+				assert.Len(t, testutil.Kind(testutil.Documents(t, rendered), "Job"), 1, "the Jobs rendered, which have the Node object left to delete")
+				return
+			}
+			require.Error(t, err)
+			assert.Empty(t, rendered, "the removal Job rendered")
+			assert.Contains(t, err.Error(), "refused:redundancy-below-minimum")
+			assert.Contains(t, err.Error(), tc.refusal, "the member the refusal names")
+		})
+	}
+}
+
 func TestRemoveMemberJob_RendersNoRemovalOnAReportReadBeforeTheReplacementBegan(t *testing.T) {
 	read := etcdReport("poc-talos4-cp3")
 	read.At = replacementBegan.Add(-time.Minute)

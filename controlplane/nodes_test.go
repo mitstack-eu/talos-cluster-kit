@@ -7,6 +7,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -196,13 +197,27 @@ func (h *harness) replacing() bool {
 	})
 }
 
+func (h *harness) upgradingGateways() bool {
+	_, marked := h.network().Labels[controlplane.KeyGatewayUpgrade]
+	return marked
+}
+
+// upgradeCall is the upgrade's own call, the one call that names the nodes it replaces.
+func (h *harness) upgradeCall(locs ...string) error {
+	h.plane.ReplaceNodes, h.plane.Upgrading = locs, true
+	defer func() { h.plane.ReplaceNodes, h.plane.Upgrading = nil, false }()
+	return h.ensure()
+}
+
 // replace re-drives the plane as a block does, naming no node after the upgrade's own call, until a call fails or no
-// replacement is left.
+// replacement of a node or of the gateways is left.
 func (h *harness) replace(c *cluster, until func() bool, locs ...string) error {
 	h.t.Helper()
-	h.plane.ReplaceNodes, h.plane.Upgrading = locs, len(locs) > 0
-	err := h.ensure()
-	h.plane.ReplaceNodes, h.plane.Upgrading = nil, false
+	call := h.ensure
+	if len(locs) > 0 {
+		call = func() error { return h.upgradeCall(locs...) }
+	}
+	err := call()
 	for calls := 0; err == nil; calls++ {
 		require.Less(h.t, calls, 400, "the replacement did not finish within 400 calls")
 		if until != nil && until() {
@@ -212,7 +227,7 @@ func (h *harness) replace(c *cluster, until func() bool, locs ...string) error {
 		if err = h.ensure(); err != nil || h.cloud.Writes()+len(c.commits) > before {
 			continue
 		}
-		if !h.replacing() {
+		if !h.replacing() && !h.upgradingGateways() {
 			return nil
 		}
 		h.now = h.now.Add(time.Minute)
@@ -574,5 +589,211 @@ func TestPlane_ReplacesTheNodesAnUpgradeNamesOneAtATimeAndNoneOnACallThatIsNoUpg
 	for _, node := range after {
 		replaced := !slices.ContainsFunc(before, func(b controlplane.Server) bool { return b.ID == node.ID })
 		assert.Equal(t, node.Location != "hel1", replaced, "whether the node in %s was replaced", node.Location)
+	}
+}
+
+func (h *harness) standingOf(ids []int64) []int64 {
+	return slices.DeleteFunc(h.gatewayIDs(), func(id int64) bool { return !slices.Contains(ids, id) })
+}
+
+// touched reports whether the replacement of node has begun: its removal is labelled, or it is off or gone.
+func (h *harness) touched(node controlplane.Server) bool {
+	now, stands := h.cloud.Servers[node.ID]
+	return !stands || now.Status != controlplane.ServerRunning || now.Labels[controlplane.KeyRemovalBegan] != ""
+}
+
+func (h *harness) deleteFirewall() {
+	h.t.Helper()
+	firewall, ok := h.read().Firewall()
+	require.True(h.t, ok, "the cluster has no single firewall")
+	require.NoError(h.t, h.cloud.DeleteFirewall(context.Background(), firewall.ID))
+}
+
+func (h *harness) deleteIngressLoadBalancer() {
+	h.t.Helper()
+	require.NoError(h.t, h.cloud.DeleteLoadBalancer(context.Background(), h.loadBalancer(controlplane.RoleIngress).ID))
+}
+
+func TestPlane_AnUpgradeNamingTheNodeInFsn1WhileANewGatewayListIsDueReplacesEveryGatewayAndThenTheNodeWithNoSecondUpgrade(t *testing.T) {
+	h, c := withCluster(t)
+	old := h.nodeIn("fsn1")
+	path := etcd.RemovalPath(old.Name)
+	kept := map[string]int64{"nbg1": h.nodeIn("nbg1").ID, "hel1": h.nodeIn("hel1").ID}
+	earlier := h.gatewayIDs()
+	h.relabelGateways("an-earlier-list")
+	asked, from := h.now, len(h.events)
+	var began bool
+	var standingAtBegin []int64
+	watch := func() bool {
+		if !began && h.touched(old) {
+			began, standingAtBegin = true, h.standingOf(earlier)
+		}
+		return false
+	}
+
+	require.NoError(t, h.upgradeCall("fsn1"))
+	recorded, waiting := maps.Clone(h.network().Labels), h.problems()
+	require.NoError(t, h.replace(c, watch))
+
+	assert.Contains(t, recorded, controlplane.KeyNodeReplace+"fsn1", "the network's labels once the upgrade's own call ended")
+	assert.Contains(t, waiting, fmt.Sprintf("node %d in fsn1 still runs for the replacement the upgrade asked for at %s: it begins once the upgrade has replaced every gateway",
+		old.ID, asked.Format(time.RFC3339)), "the plane's problems once the upgrade's own call ended")
+	assert.Len(t, h.deletedGateways(from), len(controlplane.Locations), "the gateways the upgrade deleted: %v", h.events[from:])
+	assert.Empty(t, h.standingOf(earlier), "the gateways of the earlier list once no step is left")
+	assert.NotEqual(t, old.ID, h.nodeIn("fsn1").ID, "the node in fsn1 once no step is left")
+	assert.Equal(t, kept, map[string]int64{"nbg1": h.nodeIn("nbg1").ID, "hel1": h.nodeIn("hel1").ID}, "the nodes the upgrade did not name")
+	assert.Equal(t, []string{"write " + path, "delete " + path}, c.commits, "the removal's commits to the cluster repository")
+	assert.True(t, began, "the replacement of the node in fsn1 never began")
+	assert.Empty(t, standingAtBegin, "the gateways of the earlier list that stood when the node in fsn1's replacement began")
+	assert.Empty(t, h.problems(), "the plane's problems once no step is left")
+}
+
+func TestPlane_AnUpgradeNamingANodeWhileAnEarlierStepIsDueRecordsItOnItsOwnCallAndReplacesItOnceThatStepIsDone(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		due     func(h *harness)
+		missing string
+	}{
+		{"the firewall is gone", (*harness).deleteFirewall, "no firewall carries this subscription's labels"},
+		{"the ingress load balancer is gone", (*harness).deleteIngressLoadBalancer, "no ingress load balancer in fsn1 carries this subscription's labels"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, c := withCluster(t)
+			old := h.nodeIn("fsn1")
+			tc.due(h)
+			require.Contains(t, h.problems(), tc.missing, "precondition: the plane's problems once %s", tc.name)
+
+			require.NoError(t, h.upgradeCall("fsn1"))
+			recorded, stillMissing := h.replacing(), strings.Contains(h.problems(), tc.missing)
+			require.NoError(t, h.replace(c, nil))
+
+			assert.True(t, recorded, "the record of the node in fsn1 once the upgrade's own call ended while %s", tc.name)
+			assert.True(t, stillMissing, "the upgrade's own call took the step that %s calls for", tc.name)
+			assert.NotContains(t, h.problems(), tc.missing, "the plane's problems once no step is left")
+			assert.NotEqual(t, old.ID, h.nodeIn("fsn1").ID, "the node in fsn1 once no step is left")
+		})
+	}
+}
+
+func TestPlane_RefusesAnUpgradeNamingANodeItCannotReplaceBeforeAnyFirewallLoadBalancerOrGatewayChange(t *testing.T) {
+	soldOut := func(h *harness) { h.cloud.SoldOutIn = map[string][]string{"fsn1": h.plane.ServerTypes} }
+	for _, due := range []struct {
+		name string
+		set  func(h *harness)
+	}{
+		{"the firewall is gone", (*harness).deleteFirewall},
+		{"the ingress load balancer is gone", (*harness).deleteIngressLoadBalancer},
+		{"a new gateway list is due", func(h *harness) { h.relabelGateways("an-earlier-list") }},
+	} {
+		for _, refused := range []struct {
+			name, loc, class string
+			set              func(h *harness)
+		}{
+			{"names a location the cluster runs no node in", "ash", "node-replacement-unknown", func(*harness) {}},
+			{"names a node whose location can order none of its server types", "fsn1", "server-unavailable", soldOut},
+		} {
+			t.Run("an upgrade that "+refused.name+" while "+due.name, func(t *testing.T) {
+				h, c := withCluster(t)
+				due.set(h)
+				refused.set(h)
+				writes, labels := h.cloud.Writes(), h.network().Labels
+
+				err := h.upgradeCall(refused.loc)
+
+				require.Error(t, err, "the upgrade that %s while %s", refused.name, due.name)
+				assert.Equal(t, refused.class, refusalClass(t, err), "the refusal's class")
+				assert.Equal(t, writes, h.cloud.Writes(), "the writes of the refused upgrade")
+				assert.Equal(t, labels, h.network().Labels, "the network's labels after the refused upgrade")
+				assert.Empty(t, c.commits, "the commits of the refused upgrade")
+			})
+		}
+	}
+}
+
+func TestPlane_AnUpgradeNamingTwoLocationsWhileANewGatewayListIsDueRecordsBothInItsOneWriteAndReplacesThemOneAtATime(t *testing.T) {
+	h, c := withCluster(t)
+	c.joinsSlowly()
+	before, earlier := h.byRole(controlplane.RoleNode), h.gatewayIDs()
+	h.relabelGateways("an-earlier-list")
+	writes := h.cloud.Writes()
+	var mostDown int
+	watch := func() bool {
+		down := len(controlplane.Locations)
+		for _, node := range h.byRole(controlplane.RoleNode) {
+			if node.Status == controlplane.ServerRunning && c.members[node.Name] {
+				down--
+			}
+		}
+		mostDown = max(mostDown, down)
+		return false
+	}
+
+	require.NoError(t, h.upgradeCall("fsn1", "nbg1"))
+	labels, written := h.network().Labels, h.cloud.Writes()-writes
+	require.NoError(t, h.replace(c, watch))
+
+	assert.Equal(t, 1, written, "the writes of the upgrade's own call")
+	for _, key := range []string{controlplane.KeyGatewayUpgrade, controlplane.KeyNodeReplace + "fsn1", controlplane.KeyNodeReplace + "nbg1"} {
+		assert.Contains(t, labels, key, "the network's labels once the upgrade's own call ended")
+	}
+	assert.Equal(t, 1, mostDown, "the most locations without a running node that holds an etcd member at once")
+	assert.Empty(t, h.standingOf(earlier), "the gateways of the earlier list once no step is left")
+	after := h.byRole(controlplane.RoleNode)
+	require.Len(t, after, len(controlplane.Locations), "the cluster's nodes")
+	for _, node := range after {
+		replaced := !slices.ContainsFunc(before, func(b controlplane.Server) bool { return b.ID == node.ID })
+		assert.Equal(t, node.Location != "hel1", replaced, "whether the node in %s was replaced", node.Location)
+	}
+}
+
+func TestPlane_KeepsAnUpgradesRecordThroughAGatewayStepThatFailsPartWayAndCarriesTheGatewaysAndThenTheNodeOn(t *testing.T) {
+	h, c := withCluster(t)
+	old, earlier := h.nodeIn("fsn1"), h.gatewayIDs()
+	h.relabelGateways("an-earlier-list")
+	require.NoError(t, h.upgradeCall("fsn1"))
+	h.cloud.FailRoute["add"] = errors.New("server error (server_error)")
+
+	err := h.ensure()
+	labels := h.network().Labels
+	require.NoError(t, h.replace(c, nil))
+
+	require.Error(t, err, "the call after the upgrade's own, whose route add fails")
+	assert.Contains(t, err.Error(), "the default route via "+controlplane.GatewayAddress+" is deleted", "the step that failed part way")
+	assert.Contains(t, labels, controlplane.KeyNodeReplace+"fsn1", "the network's labels after the failed call")
+	assert.Contains(t, labels, controlplane.KeyGatewayUpgrade, "the network's labels after the failed call")
+	assert.Empty(t, h.standingOf(earlier), "the gateways of the earlier list once no step is left")
+	assert.NotEqual(t, old.ID, h.nodeIn("fsn1").ID, "the node in fsn1 once no step is left")
+}
+
+func TestPlane_ALaterCallRecordsNoNodeAnewAndCarriesTheUpgradesRecordOn(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		call func(h *harness) error
+	}{
+		{"a second upgrade naming the node in fsn1 again", func(h *harness) error { return h.upgradeCall("fsn1") }},
+		{"a subscribe call naming the node in nbg1", func(h *harness) error {
+			h.plane.ReplaceNodes = []string{"nbg1"}
+			defer func() { h.plane.ReplaceNodes = nil }()
+			return h.ensure()
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, c := withCluster(t)
+			old, nbg1 := h.nodeIn("fsn1"), h.nodeIn("nbg1")
+			h.relabelGateways("an-earlier-list")
+			require.NoError(t, h.upgradeCall("fsn1"))
+			recorded := h.network().Labels[controlplane.KeyNodeReplace+"fsn1"]
+			h.now = h.now.Add(time.Minute)
+
+			require.NoError(t, tc.call(h))
+			labels := h.network().Labels
+			require.NoError(t, h.replace(c, nil))
+
+			require.NotEmpty(t, recorded, "the record of the node in fsn1 once the upgrade's own call ended")
+			assert.Equal(t, recorded, labels[controlplane.KeyNodeReplace+"fsn1"], "the record of the node in fsn1 after %s", tc.name)
+			assert.NotContains(t, labels, controlplane.KeyNodeReplace+"nbg1", "the network's labels after %s", tc.name)
+			assert.NotEqual(t, old.ID, h.nodeIn("fsn1").ID, "the node in fsn1 once no step is left")
+			assert.Equal(t, nbg1.ID, h.nodeIn("nbg1").ID, "the node in nbg1 once no step is left")
+		})
 	}
 }

@@ -1,7 +1,6 @@
 package controlplane_test
 
 import (
-	"context"
 	"fmt"
 	mathrand "math/rand/v2"
 	"slices"
@@ -12,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
+	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane/cloudtest"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 )
@@ -53,31 +53,39 @@ func signaturePolicy(t *testing.T, signers []components.Signer) components.Manif
 	return manifests[0]
 }
 
-func TestSigners_AHostingBuildAppliesTheListsPolicyFetchedFromTheServingServer(t *testing.T) {
-	h := newHarness(t, hosting, signed)
-	want := signaturePolicy(t, h.plane.Signers)
+func TestSigners_ABuildAppliesTheListsPolicyWhichItsBuilderFetchesFromTheServingServer(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts []func(*harness)
+		want []string
+	}{
+		{"a cluster that hosts the platform", []func(*harness){hosting, signed}, append(slices.Clone(hostingInline), components.SignaturePolicyName)},
+		{"a cluster that hosts none", []func(*harness){signed}, []string{components.SignaturePolicyName}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, tc.opts...)
+			want := signaturePolicy(t, h.plane.Signers)
+
+			require.NoError(t, h.converge())
+
+			served := servingFile(t, h)
+			assert.ElementsMatch(t, tc.want, names(served), "the inline manifests the serving server holds")
+			at := slices.Index(names(served), components.SignaturePolicyName)
+			require.GreaterOrEqual(t, at, 0, "the serving server holds %v", names(served))
+			assert.Equal(t, string(want.Bytes), testutil.Kind(served, "KubeInlineManifestConfig")[at]["manifest"], "the policy the builder fetches")
+			assert.NotContains(t, names(builderConfiguration(t, h)), components.SignaturePolicyName, "the builder's user data carries the policy, which it has no room for")
+		})
+	}
+}
+
+func TestSigners_ABuildWithNoListAndNoPlatformOrdersNoServingServer(t *testing.T) {
+	h := newHarness(t)
 
 	require.NoError(t, h.converge())
 
-	served := servingFile(t, h)
-	at := slices.Index(names(served), components.SignaturePolicyName)
-	require.GreaterOrEqual(t, at, 0, "the serving server holds %v", names(served))
-	assert.Equal(t, string(want.Bytes), testutil.Kind(served, "KubeInlineManifestConfig")[at]["manifest"], "the policy the builder fetches")
-	assert.NotContains(t, names(builderConfiguration(t, h)), components.SignaturePolicyName, "the builder's user data carries the policy, which it has no room for")
-}
-
-func TestSigners_ABuildThatHostsNoPlatformLeavesTheListsPolicyToItsFirstRelease(t *testing.T) {
-	h := newHarness(t, signed)
-	plane, err := h.plane.WithGatewayCA()
-	require.NoError(t, err)
-
-	built, err := plane.BuildSet(context.Background(), testStart, "enrolment-token")
-	require.NoError(t, err)
-	release, err := plane.Release(h.read())
-	require.NoError(t, err)
-
-	assert.NotContains(t, manifestNames(built.Inline), components.SignaturePolicyName, "the builder's user data has no room for the policy")
-	assert.Equal(t, string(signaturePolicy(t, h.plane.Signers).Bytes), string(testutil.Manifest(t, components.SignaturePolicyName, release.Components).Bytes), "the policy the release carries")
+	for _, spec := range h.cloud.ServerSpecs {
+		assert.NotEqual(t, h.plane.Name(controlplane.RoleServing), spec.Name, "a server that would serve the builder nothing")
+	}
 }
 
 func TestSigners_EveryReleaseCarriesThePolicyOfThePlanesListAndNoneWithoutAList(t *testing.T) {
@@ -87,6 +95,7 @@ func TestSigners_EveryReleaseCarriesThePolicyOfThePlanesListAndNoneWithoutAList(
 		signed bool
 	}{
 		{"a cluster that hosts the platform under a signer list", []func(*harness){hosting, signed}, true},
+		{"a cluster that hosts no platform under a signer list", []func(*harness){signed}, true},
 		{"a cluster that hosts the platform under no list", []func(*harness){hosting}, false},
 		{"a cluster that hosts no platform under no list", nil, false},
 	} {
@@ -128,9 +137,11 @@ func TestSigners_ASignerKyvernoCouldNotCheckStopsTheInstallBeforeAnyServerAndThe
 	}
 }
 
-func TestSigners_EveryServerOfAHostingInstallKeepsTheUserDataReserveUnderTheLongestSignerListAndProofScript(t *testing.T) {
+func TestSigners_EveryServerOfAnInstallKeepsTheUserDataReserveUnderTheLongestSignerListAndProofScript(t *testing.T) {
 	for name, opts := range map[string][]func(*harness){
-		"a cluster that hosts the platform":                              {hosting},
+		"a cluster":                           {},
+		"a cluster whose apps run on workers": {appsOnWorkers},
+		"a cluster that hosts the platform":   {hosting},
 		"a cluster that hosts the platform and runs its apps on workers": {hosting, appsOnWorkers},
 	} {
 		t.Run(name, func(t *testing.T) {

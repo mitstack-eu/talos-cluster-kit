@@ -834,11 +834,11 @@ func TestReport_ListsEachLabelledCronJobWithItsNewestFailureSinceItsLastSuccessA
 	_, posted, out, err := runReport(t, kubectlWith(workloadsRead, `jq -s '.[0].items += .[1] | .[0]' testdata/workloads.json testdata/scheduled-jobs.json`))
 
 	require.NoError(t, err, out)
-	assert.Equal(t, readJSON(t, "testdata", "golden", "scheduled-jobs.json"), posted.body["scheduledJobs"],
-		"a failure older than or at the last success gives no field, a newer one gives it, a CronJob with no success yet gives its one failure, an older failure shows beside a running Job, a failed counter alone and a same-named CronJob in another namespace name nothing, a tie goes to the greater Job name, and two CronJobs of one namespace keep their own Jobs")
+	assert.Equal(t, readJSON(t, "testdata", "golden", "scheduled-jobs.json"), posted.body["scheduledJobs"], "a failure older than or at the last success gives no field, a newer one gives it, a CronJob with no success yet gives its one failure, an older failure shows beside a running Job, a failed counter alone and a same-named CronJob in another namespace name nothing, a tie goes to the greater Job name, and two CronJobs of one namespace keep their own Jobs")
 	for _, c := range posted.body["scheduledJobs"].(map[string]any)["cronJobs"].([]any) {
-		m, _ := c.(map[string]any)["failedSinceSuccess"].(map[string]any)["message"].(string)
-		assert.True(t, len(m) <= 256 && utf8.ValidString(m), "a message is at most 256 bytes and whole characters")
+		failure, _ := c.(map[string]any)["failedSinceSuccess"].(map[string]any)
+		message, _ := failure["message"].(string)
+		assert.True(t, len(message) <= 256 && utf8.ValidString(message), "a message is at most 256 bytes and whole characters")
 	}
 }
 

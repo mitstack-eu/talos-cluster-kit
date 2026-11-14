@@ -4,7 +4,9 @@
 # GitHub expires within an hour. Their identity may write only the Secrets
 # they fill, and each app slice's Role lets it patch that slice's repository
 # Secret. A cluster that reads its repository with a deploy key takes no
-# repository token, and runs no renewal.
+# repository token, and runs no renewal. A cluster that requires an OTLP
+# backend also runs a CronJob that leases the telemetry Collector's push token
+# into the one Secret its identity may read and patch.
 apiVersion: v1
 kind: Secret
 metadata:
@@ -194,4 +196,101 @@ spec:
                 defaultMode: 0440
             - name: tmp
               emptyDir: {}
+{{- end }}
+{{- if .LeaseResource }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mitstack-telemetry-token
+  namespace: kube-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mitstack-telemetry-lease
+  namespace: {{ .Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mitstack-telemetry-lease
+  namespace: kube-system
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [mitstack-telemetry-token]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mitstack-telemetry-lease
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mitstack-telemetry-lease
+subjects:
+  - kind: ServiceAccount
+    name: mitstack-telemetry-lease
+    namespace: {{ .Namespace }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: mitstack-telemetry-lease
+  namespace: {{ .Namespace }}
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata:
+      labels:
+        mitstack.dev/rendered-by: talos-cluster-kit
+    spec:
+      backoffLimit: 0
+      template:
+        spec:
+          serviceAccountName: mitstack-telemetry-lease
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            fsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: lease
+              image: {{ .Image }}
+              terminationMessagePolicy: FallbackToLogsOnError
+              command: [bash, {{ .Script }}, lease]
+              env:
+                - name: PLATFORM_URL
+                  value: {{ printf "%q" .PlatformURL }}
+                - name: LEASE_RESOURCE
+                  value: {{ printf "%q" .LeaseResource }}
+                - name: HOME
+                  value: /tmp
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              volumeMounts:
+                - name: token
+                  mountPath: /var/run/mitstack
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: token
+              secret:
+                secretName: mitstack-report-token
+                defaultMode: 0440
+            - name: tmp
+              emptyDir:
+                medium: Memory
 {{- end }}

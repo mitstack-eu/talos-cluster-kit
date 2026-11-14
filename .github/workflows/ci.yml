@@ -163,6 +163,12 @@ jobs:
       - name: Write each CronJob's ConfigMap through a real API server
         run: TOOLS_IMAGE=talos-tools:ci go test -tags apiserver -count=1 -run '^TestAPIServer_' .
 
+      # The pinned Collector runs on the node copy's rendered configuration against that API server, so a mask, a tag or
+      # a right the render lacks fails here before a release ships it.
+      - name: Ship a container log line through the pinned Collector
+        if: ${{ !cancelled() }}
+        run: TOOLS_IMAGE=talos-tools:ci go test -tags apiserver,collector -count=1 -run '^TestCollector_' .
+
       # A gateway copies talosctl, kubectl and every manifest it serves out of this image, so one the Dockerfile left a
       # file out of, or holding other bytes than the pins, fails here before a release publishes it.
       - name: Copy the tools and the served manifests out of it as a gateway does

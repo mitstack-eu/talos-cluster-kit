@@ -38,7 +38,11 @@ func (p Plane) Release(st State) (rollout.Release, error) {
 	if err != nil {
 		return rollout.Release{}, err
 	}
-	return rollout.Release{Components: slices.Concat(set.Served, set.Inline, own, signatures), ToolsImage: toolsImage()}, nil
+	telemetry, err := components.TelemetryCollector(p.Telemetry, p.Subscription)
+	if err != nil {
+		return rollout.Release{}, err
+	}
+	return rollout.Release{Components: slices.Concat(set.Served, set.Inline, own, signatures, telemetry), ToolsImage: toolsImage()}, nil
 }
 
 // The gateways serve the set without an address, since one tools image is built for every cluster.

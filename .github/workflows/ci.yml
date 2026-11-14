@@ -116,7 +116,7 @@ jobs:
           grep -qF 'pass: 0, fail: 0, warn: 0, error: 0, skip: 0' "$RUNNER_TEMP/system-pods.txt"
 
       - name: shellcheck
-        run: shellcheck -x scripts/*.sh scripts/lib/*.sh etcd/scripts/*.sh gateway/scripts/*.sh report/scripts/*.sh topology/scripts/*.sh openbaoinit/scripts/*.sh controlplane/scripts/*.sh rollout/scripts/*.sh
+        run: shellcheck -x scripts/*.sh scripts/lib/*.sh etcd/scripts/*.sh gateway/scripts/*.sh report/scripts/*.sh topology/scripts/*.sh openbaoinit/scripts/*.sh controlplane/scripts/*.sh pools/scripts/*.sh rollout/scripts/*.sh
 
   tools-image:
     name: tools image

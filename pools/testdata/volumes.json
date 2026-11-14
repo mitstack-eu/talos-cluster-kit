@@ -1,0 +1,14 @@
+{"items": [
+  {"metadata": {"name": "pvc-db-0"}, "status": {"phase": "Bound"},
+   "spec": {"local": {"path": "/var/mnt/local-path-provisioner/pvc-db-0"}, "claimRef": {"namespace": "shop", "name": "data-db-0", "uid": "uid-of-data-db-0"},
+    "nodeAffinity": {"required": {"nodeSelectorTerms": [{"matchExpressions": [{"key": "kubernetes.io/hostname", "operator": "In", "values": ["shop-cloud-worker-fsn1-1"]}]}]}}}},
+  {"metadata": {"name": "pvc-db-1"}, "status": {"phase": "Bound"},
+   "spec": {"local": {"path": "/var/mnt/local-path-provisioner/pvc-db-1"}, "claimRef": {"namespace": "shop", "name": "data-db-1", "uid": "uid-of-data-db-1"},
+    "nodeAffinity": {"required": {"nodeSelectorTerms": [{"matchExpressions": [{"key": "kubernetes.io/hostname", "operator": "In", "values": ["robot-3041839"]}]}]}}}},
+  {"metadata": {"name": "pvc-cache-0"}, "status": {"phase": "Released"},
+   "spec": {"hostPath": {"path": "/var/mnt/local-path-provisioner/pvc-cache-0"}, "claimRef": {"namespace": "shop", "name": "cache-0", "uid": "uid-of-an-earlier-claim"},
+    "nodeAffinity": {"required": {"nodeSelectorTerms": [{"matchExpressions": [{"key": "kubernetes.io/hostname", "operator": "In", "values": ["shop-cloud-worker-fsn1-1"]}]}]}}}},
+  {"metadata": {"name": "pvc-files"}, "status": {"phase": "Bound"},
+   "spec": {"csi": {"driver": "csi.hetzner.cloud", "volumeHandle": "1234"}, "claimRef": {"namespace": "shop", "name": "files", "uid": "uid-of-files"},
+    "nodeAffinity": {"required": {"nodeSelectorTerms": [{"matchExpressions": [{"key": "kubernetes.io/hostname", "operator": "In", "values": ["shop-cloud-worker-fsn1-1"]}]}]}}}}
+]}

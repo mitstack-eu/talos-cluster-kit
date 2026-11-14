@@ -49,7 +49,7 @@ type Plane struct {
 	ReadGateway func(ctx context.Context, address string, since time.Time) (GatewayReading, error)
 	// ReadReport reads the newest node report received after since, nil when none was; a nil ReadReport reads none.
 	ReadReport func(ctx context.Context, since time.Time) (*report.Read, error)
-	// Guard is block-kit's redundancy guard, which judges every removal of a gateway or a Cloud worker; nil removes none.
+	// Guard is block-kit's redundancy guard, which judges every removal of a gateway, node or Cloud worker; nil removes none.
 	Guard redundant.Guard
 	// Notify receives each event a step records: a certificate issued, a route moved, a gateway deleted or powered on.
 	Notify func(ctx context.Context, detail string)
@@ -64,11 +64,15 @@ type Plane struct {
 	// ReplaceNodes are the locations whose control-plane node a confirmed upgrade replaces, which the upgrade's own call
 	// records on the network, so the calls after it carry the replacement on and name none.
 	ReplaceNodes []string
-	// Removals is the cluster repository a replaced node's member removal is written to; nil refuses an upgrade that
-	// names a node.
+	// Removals is the cluster repository a replaced node's or Cloud worker's removal is written to; nil refuses an
+	// upgrade that names either.
 	Removals *Removals
+	Records  []Record
 	Signers  []components.Signer
 }
+
+// Record adds to the network's labels what an upgrade asks of a part beside the plane, inside the upgrade's one write.
+type Record func(ctx context.Context, p Plane, st State, labels map[string]string) (replaces string, err error)
 
 // Refusal is a request the plane will not carry out, which no retry of the same call fixes. Class is
 // machine-readable, and the block answers it as its own framework's refusal.

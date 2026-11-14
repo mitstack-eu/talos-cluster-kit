@@ -163,6 +163,7 @@ plane := controlplane.Plane{
 	Notify:            emitEvent,                              // receives each certificate, route move, power-on and deletion
 	ReplaceNodes:      replace,                                // the locations whose node a confirmed upgrade replaces
 	Removals:          removals,                               // the block's two functions that list and write a member removal in the cluster repository
+	Records:           records,                                // what the upgrade's call records beside the plane, such as pools.ReplaceWorkers
 	AppsOnWorkers:     true,
 	WorkerAddresses:   []string{"10.0.1.2"}, // the Robot worker's address in the network's vSwitch subnet
 }
@@ -2973,16 +2974,17 @@ repository, and the block writes both:
 
 ```go
 removals := &controlplane.Removals{
-	// Held lists each path on the default branch that etcd.IsRemovalPath reads as a removal.
+	// Held lists each path on the default branch that etcd.IsRemovalPath or pools.IsRemovalPath reads as a removal.
 	Held: func(ctx context.Context) ([]string, error) { return listRemovals(ctx) },
 	// Commit writes content at path on the default branch, and takes the file out when content is nil.
 	Commit: func(ctx context.Context, path string, content []byte) error { return commit(ctx, path, content) },
 }
 ```
 
-`etcd.IsRemovalPath` exists for the block's `Held`, and talos-cluster-kit
-itself calls it nowhere. `listRemovals` and `commit` stand for the block's own
-code.
+`etcd.IsRemovalPath` and `pools.IsRemovalPath` exist for the block's `Held`.
+The plane acts only on the paths `etcd.IsRemovalPath` reads, so a node
+replacement never takes out a file that a Cloud worker's replacement holds.
+`listRemovals` and `commit` stand for the block's own code.
 
 The plane reads the Job's outcome from the node report, among the objects of
 the Application named `cluster`. Argo CD v3.5.5, which talos-cluster-kit
@@ -3117,6 +3119,171 @@ and that only a control-plane node holds. The block makes the Robot calls that
 adopt, install, firewall and release a server, since
 [ADR 0103](https://github.com/mitstack-eu/mitstack/blob/main/docs/adr/0103-mitstack-offers-five-hetzner-capacity-blocks-and-keeps-the-k3s-block.md)
 keeps Robot API code out of this module.
+
+## How a Cloud worker is replaced
+
+A Cloud worker keeps its server for as long as it runs. To move one onto a new
+server, a block names the worker's member key on an upgrade's call. The member
+key is the worker's location and sequence number, such as `fsn1-1`, which its
+server carries in the label `mitstack.dev/member`. Which workers an upgrade replaces, and how its user confirms
+that, is the block's to decide. This section is for the author of a block on
+the node pools, and for whoever reads the events a replacement records.
+
+The block hands the plane a record of the upgrade, and on every later call it
+asks the pool for the replacement's next step:
+
+```go
+plane.Records = []controlplane.Record{pools.ReplaceWorkers(p.Cloud, keys)} // keys: the member keys the upgrade names
+step, ok, err := pools.ReplaceStep(ctx, plane, p.Cloud)                    // once plane.NextStep has no step left
+```
+
+A `controlplane.Record` is a function that adds a part's own labels to the
+network's before the upgrade writes them. The plane runs each of
+`Plane.Records` inside the upgrade's one network write, so the record joins the
+labels a node replacement and a gateway list set.
+`ReplaceWorkers` labels the network with `mitstack.dev/worker-replace-<key>`,
+holding the id Hetzner gives the worker's server and the time of that call. A
+key already recorded keeps its first record. Every later call reads the label,
+so a replacement stopped part way resumes where it stood. Once a server of
+another id holds the key, `ReplaceStep` takes it for the worker's successor.
+
+`ReplaceStep` returns the next change with `ok` true, and the block runs it
+with `Step.Take`, as it runs a change of `NextStep`. With `ok` false and no
+error, the replacement waits on a node report or on Hetzner, and the block
+answers that the subscription is still converging. `pools.ReplacementProblems`
+returns one sentence per recorded replacement saying where it stands and what
+it waits for. The block adds them to its own problems, so a cluster with a
+replacement under way never reads as complete.
+
+The upgrade's call refuses before any change in these cases, each with its own
+class:
+
+| Class | What the upgrade named |
+|---|---|
+| `worker-replacement-unknown` | A key no member of the pool holds |
+| `no-server-type-available` | A worker whose location offers none of the pool's `ServerTypes` now |
+| `worker-image-missing` | A worker, while the cluster has no available worker image to boot its successor from |
+| `worker-removal-unwritable` | A worker, on a plane whose block passes no `Removals` |
+| `worker-replacement-unjudged` | A worker, on a plane whose block passes no `ReadReport` or no `Guard` |
+
+`pools.PlanCloud` plans nothing while the network records a replacement,
+since the replacement creates the successor itself. Without that, the pool
+would fill the gap the deleted server leaves with a worker of a new key.
+
+### The stages of a replacement
+
+The pool replaces one worker at a time, in the order of the keys. Each call
+takes one of these changes:
+
+1. It waits while the network carries the gateways' upgrade mark or a node
+   replacement's label, so no worker goes while the control plane is short of
+   a member. It then labels the worker's server with the time its replacement
+   began, under `mitstack.dev/removal-began` and `mitstack.dev/removal-for`.
+2. On a node report received since then, it asks block-kit's redundancy guard
+   whether every other worker the report lists still reads Ready. The control
+   plane's nodes are no workers, and the Robot workers are. Where an OpenBao
+   member's pod runs on the worker, a majority of OpenBao's members must stay
+   unsealed without it. It also reads again whether Hetzner can order a
+   successor, and whether the report carries Argo CD's health of what the
+   Application named `cluster` applied.
+3. It writes the drain Job to the cluster repository at
+   `cluster/mitstack-drain-<key>.yaml`, and the cluster's own Application
+   applies it.
+4. Once a node report reads the drain Job `Healthy`, it powers the worker off,
+   so no kubelet registers its Node object again. A worker whose Node object
+   reads not Ready, or that the report does not list, is powered off with no
+   drain, since none of its pods would end.
+5. It takes the drain file out and writes the removal Job at
+   `cluster/mitstack-remove-node-<key>.yaml`. That Job releases each claim on
+   a local volume of the worker, then deletes its Node object. A removal Job
+   that fails is taken out and written again, and the event names its last
+   words.
+6. Once a node report reads the removal Job `Healthy` and lists no Node object
+   of the worker, it deletes the server.
+7. In one step it takes the removal file out and creates the successor in the
+   same location, under the same key and name, from the worker image with no
+   user data. The successor takes the first of the pool's `ServerTypes` its
+   location can order, and the event names the type and the ones Hetzner could
+   not order when it is not the list's first.
+8. Once a node report received since the successor's creation reads its Node
+   object Ready, it takes the label off the network, and the next named
+   worker begins.
+
+A refusal in step 2 takes the label off the network, since the worker still
+runs untouched. The guard's class `redundancy-below-minimum` names the worker
+and each other worker with its reading. A worker whose server is already gone
+skips steps 1 to 6 but still gets its removal Job before its successor. The pool takes out a drain
+file first, and creates the successor only in the step that takes the removal
+file out, since Argo CD would run a held Job again against the new server of
+the same name.
+
+### How the drain waits on a disruption budget
+
+The drain Job runs `kubectl drain` with `--ignore-daemonsets`,
+`--delete-emptydir-data`, `--force` and a timeout of ten minutes. kubectl
+evicts each pod through the Eviction API, which honours every pod's
+disruption budget, and retries an eviction the budget refuses until the
+timeout. kubectl waits for each evicted pod by its uid, so a StatefulSet pod
+that comes back under the same name does not hold the drain.
+
+The API names the refusing budget only in the causes of its answer, which
+kubectl does not print. So an attempt that times out asks the API again with a
+dry-run eviction of each pod left on the worker, and ends with one line per
+budget:
+
+```text
+drain: pod shop/web-0 waits on a disruption budget in namespace shop: The disruption budget web needs 1 healthy pods and has 1 currently
+```
+
+Any other answer to the dry-run eviction, such as the API refusing the Job's
+own request, ends the attempt with that answer instead. An attempt that cannot
+read its Job's count of failed attempts takes itself for the last.
+
+The node report carries that line as the failed attempt's message, as
+[the report's own section](#how-the-report-carries-the-reason-a-kit-job-failed)
+describes. While the Job has attempts left, `ReplacementProblems` names that
+line and says the worker's server is kept. The Job runs six attempts of ten
+minutes each, about an hour with the Job controller's backoff between them,
+and its last failed attempt uncordons the worker, so the scheduler places pods
+on it again. The pool then takes the drain file out, takes
+the label off the network and refuses with the class `worker-drain-failed`,
+naming the same line. The worker serves on.
+
+### What happens to a claim on the worker's local volume
+
+The cluster's default storage class, `local-path`, keeps a volume's data in a
+directory on the node's own disk. Its volume is pinned to that node by the
+`kubernetes.io/hostname` label. That data goes when the server is deleted. The
+successor carries the same name, so a claim left bound would still match it.
+The kit's class makes `local` volumes, as
+[Where a claim keeps its data](#where-a-claim-keeps-its-data) describes, and a
+pod cannot mount a `local` volume whose directory is gone. The pod would wait
+on the successor and never start.
+
+The removal Job therefore releases each such claim before it deletes the Node
+object. It reads every volume of type `local` or `hostPath` whose node
+affinity names only this worker. It deletes the volume's claim when the
+claim's uid is still the one the volume records. It then deletes each pod that
+mounts the claim and runs on this worker or waits unscheduled. A claim made anew under
+the same name belongs to the workload's new copy, so the Job leaves it alone. A
+volume the worker reaches over the network keeps its claim.
+
+The workload's own controller then makes a new claim on another worker and
+fills it from its own copies. CloudNativePG builds a new replica from its
+primary, as its
+[storage documentation](https://cloudnative-pg.io/docs/current/storage)
+does when you delete an instance's claim and pod. Its documentation on
+[node maintenance](https://cloudnative-pg.io/docs/current/kubernetes_upgrade)
+also says a switchover happens ahead of a drain of the node holding the
+primary, and the primary's disruption budget holds the drain until then. A
+workload with no other copy of a volume loses its data with the server, and
+talos-cluster-kit takes no snapshot of a local volume.
+
+The removal Job's own rights let it list every volume and delete any claim and
+any pod in the cluster, since the claims it releases are known only once the
+worker is off. Its script, which
+the kit renders and pins with the tools image, deletes only those the rules
+above name.
 
 ## How a release is versioned
 

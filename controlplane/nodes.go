@@ -3,7 +3,6 @@ package controlplane
 import (
 	"cmp"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -23,12 +22,8 @@ const (
 	KeyNodeReplace = "mitstack.dev/node-replace-"
 	// nodeReplacePlan, followed by that record, is the plan a replaced node's removal labels name.
 	nodeReplacePlan = "node-replace-"
-	// removalApplication is the Application of the cluster repository that applies and prunes each removal file.
-	removalApplication = "cluster"
-	jobKind            = "Job"
-	// jobCompleted and jobFailed are the health Argo CD reads of a Job that completed and of one that failed.
-	jobCompleted = "Healthy"
-	jobFailed    = "Degraded"
+	// RemovalApplication is the Application of the cluster repository that applies and prunes each removal file.
+	RemovalApplication = "cluster"
 	// nodeWhat names a control-plane node in the refusal of a location that can order none of its types.
 	nodeWhat = "control-plane node"
 )
@@ -36,7 +31,7 @@ const (
 // Removals is the cluster repository as the plane writes a member removal to it: a file the cluster's own Application
 // applies while main holds it, and whose Job that Application prunes once main does not.
 type Removals struct {
-	// Held lists each removal file main holds, by its path.
+	// Held lists each removal file main holds, by its path, the plane's and those of each other part that writes one.
 	Held func(ctx context.Context) ([]string, error)
 	// Commit writes content at path on main, and takes the file out when content is nil.
 	Commit func(ctx context.Context, path string, content []byte) error
@@ -44,13 +39,21 @@ type Removals struct {
 
 func (r *Removals) writable() bool { return r != nil && r.Held != nil && r.Commit != nil }
 
+func (r *Removals) held(ctx context.Context) ([]string, error) {
+	paths, err := r.Held(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing the removals the cluster repository holds: %w", err)
+	}
+	return slices.DeleteFunc(paths, func(path string) bool { return !etcd.IsRemovalPath(path) }), nil
+}
+
 type nodeReplacement struct {
 	loc   string
 	old   int64
 	asked time.Time
 }
 
-// record is the label value that holds r, which is also the plan its node's removal labels name.
+// record is the label value that holds r, which nodeReplacePlan prefixes to give the plan its node's removal labels name.
 func (r nodeReplacement) record() string {
 	return strconv.FormatInt(r.old, 10) + "-" + strconv.FormatInt(r.asked.Unix(), 10)
 }
@@ -145,9 +148,9 @@ func (p Plane) strayRemovalStep(ctx context.Context, st State, network Network) 
 	if node, ok := st.NodeIn(r.loc); ok && !r.succeededBy(node) {
 		return Step{}, false, nil
 	}
-	held, err := p.Removals.Held(ctx)
+	held, err := p.Removals.held(ctx)
 	if err != nil {
-		return Step{}, false, r.named(fmt.Errorf("listing the removals the cluster repository holds: %w", err))
+		return Step{}, false, r.named(err)
 	}
 	if len(held) == 0 {
 		return Step{}, false, nil
@@ -406,10 +409,10 @@ func (p Plane) removeOffNode(ctx context.Context, st State, network Network, r n
 }
 
 func (p Plane) allowNodeRemoval(read report.Read, node Server, began time.Time) error {
-	if _, readable, err := appliedJobs(read); err != nil {
+	if _, readable, err := read.AppliedJobs(RemovalApplication); err != nil {
 		return err
 	} else if !readable {
-		return refuse("node-replacement-unjudged", "%s, so no report could show a removal Job that failed", unreadJobs(read))
+		return refuse("node-replacement-unjudged", "%s, so no report could show a removal Job that failed", read.UnreadJobs(RemovalApplication))
 	}
 	members, err := read.EtcdMembers()
 	if err != nil {
@@ -422,25 +425,26 @@ func (p Plane) allowNodeRemoval(read report.Read, node Server, began time.Time) 
 	}
 	for _, s := range append(sets, openBao...) {
 		if err := p.Guard.Allow(s.Set, s.Removed, began); err != nil {
-			return belowMinimum(err)
+			return BelowMinimum(err)
 		}
 	}
 	return nil
 }
 
-func belowMinimum(err error) error {
+// BelowMinimum answers the redundancy guard's refusal of a set below its minimum as a Refusal, and any other error as it is.
+func BelowMinimum(err error) error {
 	if !redundant.Held(err) {
 		return err
 	}
 	return &Refusal{Class: redundant.ClassBelowMinimum, Message: strings.TrimPrefix(err.Error(), "refused:"+redundant.ClassBelowMinimum+": ")}
 }
 
-// removeMember deletes the server only once main holds no removal, since self-heal applies what main holds and the
+// removeMember deletes the server only once main holds no removal of it, since self-heal applies what main holds and the
 // cluster lacks, so a held removal could run again against the successor of the same name once its Job is deleted.
 func (p Plane) removeMember(ctx context.Context, st State, network Network, r nodeReplacement, node Server, off time.Time, read report.Read) (progress, error) {
-	held, err := p.Removals.Held(ctx)
+	held, err := p.Removals.held(ctx)
 	if err != nil {
-		return progress{}, fmt.Errorf("listing the removals the cluster repository holds: %w", err)
+		return progress{}, err
 	}
 	left, err := leftOf(read, st, node.Name)
 	if err != nil {
@@ -460,20 +464,20 @@ func (p Plane) removeMember(ctx context.Context, st State, network Network, r no
 		}
 	}
 	name, at := etcd.JobName(node.Name), read.At.UTC().Format(time.RFC3339)
-	jobs, readable, err := appliedJobs(read)
+	jobs, readable, err := read.AppliedJobs(RemovalApplication)
 	job, applied := jobs[name]
 	switch {
 	case err != nil:
 		return progress{}, err
 	case !readable:
-		return waitsOn("%s, so its removal Job %s cannot be read", unreadJobs(read), name)
-	case holds && job.health == jobFailed && left.member:
+		return waitsOn("%s, so its removal Job %s cannot be read", read.UnreadJobs(RemovalApplication), name)
+	case holds && job.Health == report.JobFailed && left.member:
 		return p.backOn(network, r, node, path, &Refusal{Class: "node-removal-failed", Message: fmt.Sprintf(
 			"the removal Job %s of the node in %s failed and left its etcd member, in the node report read at %s: %s",
-			name, r.loc, at, cmp.Or(job.message, "Argo CD gives no message of it"))})
-	case holds && job.health == jobFailed:
+			name, r.loc, at, cmp.Or(job.Message, "Argo CD gives no message of it"))})
+	case holds && job.Health == report.JobFailed:
 		return p.takeOut(path, "whose Job failed once the member of "+node.Name+" was gone and left its Node object")
-	case holds && job.health == jobCompleted:
+	case holds && job.Health == report.JobCompleted:
 		return p.takeOut(path, "whose Job completed in a report that still lists the member of "+node.Name)
 	case holds:
 		return waitsOn("its removal Job %s has not finished in the node report read at %s", name, at)
@@ -515,49 +519,6 @@ func leftOf(read report.Read, st State, hostname string) (remains, error) {
 	}, nil
 }
 
-type appliedJob struct{ health, message string }
-
-// appliedJobs reads the health Argo CD keeps of each Job the cluster's own Application applied, and false when read
-// carries none: a body near its size limit drops the objects, and an Argo CD that keeps health off the Application
-// leaves each object without one.
-func appliedJobs(read report.Read) (map[string]appliedJob, bool, error) {
-	var body struct {
-		ArgoCD struct {
-			Applications []struct {
-				Name      string            `json:"name"`
-				Resources *[]map[string]any `json:"resources"`
-			} `json:"applications"`
-		} `json:"argocd"`
-	}
-	if err := json.Unmarshal(read.Body, &body); err != nil {
-		return nil, false, fmt.Errorf("the node report read at %s cannot be read: %w", read.At.UTC().Format(time.RFC3339), err)
-	}
-	for _, app := range body.ArgoCD.Applications {
-		if app.Name != removalApplication || app.Resources == nil {
-			continue
-		}
-		jobs := map[string]appliedJob{}
-		for _, r := range *app.Resources {
-			health, kept := r["health"]
-			if !kept {
-				return nil, false, nil
-			}
-			if r["kind"] == jobKind {
-				name, _ := r["name"].(string)
-				status, _ := health.(string)
-				message, _ := r["message"].(string)
-				jobs[name] = appliedJob{health: status, message: message}
-			}
-		}
-		return jobs, true, nil
-	}
-	return nil, false, nil
-}
-
-func unreadJobs(read report.Read) string {
-	return fmt.Sprintf("the node report read at %s carries no health of what the Application %s applied", read.At.UTC().Format(time.RFC3339), removalApplication)
-}
-
 func (p Plane) takeOut(path, why string) (progress, error) {
 	return next("take "+path+" out of the cluster repository, "+why, func(ctx context.Context) error {
 		if err := p.Removals.Commit(ctx, path, nil); err != nil {
@@ -573,7 +534,7 @@ func (p Plane) takeOut(path, why string) (progress, error) {
 func (p Plane) writeRemoval(node Server, began time.Time, read report.Read, path string) (progress, error) {
 	job, err := etcd.RemoveMemberJob(etcd.RemoveMember{Hostname: node.Name, ToolsImage: toolsImage(), Report: read, StepStart: began, Guard: p.Guard})
 	if err != nil {
-		return progress{}, belowMinimum(err)
+		return progress{}, BelowMinimum(err)
 	}
 	return next("write the removal of "+node.Name+"'s etcd member and Node object to the cluster repository", func(ctx context.Context) error {
 		if err := p.Removals.Commit(ctx, path, job); err != nil {

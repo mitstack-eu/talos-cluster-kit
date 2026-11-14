@@ -47,6 +47,8 @@ type cluster struct {
 	synced   time.Time
 	// unread is what a node report leaves out of each Application: its "resources", or the "health" of each of them.
 	unread string
+	// others are the removals of another kind main holds, which a block lists beside the etcd member removals.
+	others []string
 }
 
 func removalJob(name string) testutil.ObjectRef {
@@ -54,7 +56,7 @@ func removalJob(name string) testutil.ObjectRef {
 }
 
 func (c *cluster) Held(context.Context) ([]string, error) {
-	return slices.DeleteFunc(c.argo.Files(), func(path string) bool { return !etcd.IsRemovalPath(path) }), nil
+	return slices.DeleteFunc(c.argo.Files(), func(path string) bool { return !etcd.IsRemovalPath(path) && !slices.Contains(c.others, path) }), nil
 }
 
 func (c *cluster) holds(path string) bool { return slices.Contains(c.argo.Files(), path) }
@@ -807,4 +809,49 @@ func TestPlane_ALaterCallRecordsNoNodeAnewAndCarriesTheUpgradesRecordOn(t *testi
 			assert.Equal(t, nbg1.ID, h.nodeIn("nbg1").ID, "the node in nbg1 once no step is left")
 		})
 	}
+}
+
+func TestPlane_ABlocksRecordsJoinTheUpgradesOneWriteAndOneThatRefusesLeavesTheNetworkAsItWas(t *testing.T) {
+	const key = "mitstack.dev/worker-replace-fsn1-1"
+	record := func(replaces string, err error) controlplane.Record {
+		return func(_ context.Context, _ controlplane.Plane, _ controlplane.State, labels map[string]string) (string, error) {
+			labels[key] = "7-1794605517"
+			return replaces, err
+		}
+	}
+	t.Run("a record that replaces", func(t *testing.T) {
+		h, _ := withCluster(t)
+		h.plane.Records = []controlplane.Record{record("the Cloud worker fsn1-1", nil)}
+		writes := h.cloud.Writes()
+
+		require.NoError(t, h.upgradeCall("fsn1"))
+
+		assert.Equal(t, 1, h.cloud.Writes()-writes, "the writes of the upgrade's own call")
+		assert.Contains(t, h.network().Labels, key, "the network's labels once the upgrade's own call ended")
+		assert.Contains(t, h.network().Labels, controlplane.KeyNodeReplace+"fsn1", "the network's labels once the upgrade's own call ended")
+	})
+	t.Run("a record that refuses", func(t *testing.T) {
+		h, _ := withCluster(t)
+		h.plane.Records = []controlplane.Record{record("", &controlplane.Refusal{Class: "worker-replacement-unknown", Message: "no such worker"})}
+		writes, labels := h.cloud.Writes(), h.network().Labels
+
+		err := h.upgradeCall("fsn1")
+
+		assert.Equal(t, "worker-replacement-unknown", refusalClass(t, err), "the refusal's class")
+		assert.Equal(t, writes, h.cloud.Writes(), "the writes of the refused upgrade")
+		assert.Equal(t, labels, h.network().Labels, "the network's labels after the refused upgrade")
+	})
+}
+
+func TestPlane_ANodeReplacementLeavesARemovalOfAnotherKindThatMainHoldsInPlace(t *testing.T) {
+	h, c := withCluster(t)
+	other := "cluster/mitstack-drain-fsn1-1.yaml"
+	c.others = []string{other}
+	c.argo.Commit(map[string][]byte{other: []byte("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: worker-drain\n  namespace: mitstack-node\n")})
+
+	require.NoError(t, h.replace(c, nil, "fsn1"))
+
+	assert.Contains(t, c.argo.Files(), other, "the cluster repository once the node replacement ended")
+	assert.Equal(t, []string{"write " + etcd.RemovalPath(h.nodeIn("fsn1").Name), "delete " + etcd.RemovalPath(h.nodeIn("fsn1").Name)}, c.commits,
+		"the commits of the node replacement")
 }

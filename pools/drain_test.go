@@ -24,7 +24,7 @@ const worker = "shop-cloud-worker-fsn1-1"
 const fakeKubectl = `
 case "$*" in
   drain*) exit "${FAKE_DRAIN_EXIT:-0}" ;;
-  "get job"*) printf '%s' "${FAKE_FAILED:-}" ;;
+  "get job"*) printf '%s' "${FAKE_FAILED:-}"; exit "${FAKE_JOB_EXIT:-0}" ;;
   "get pods -A"*) cat testdata/pods.json ;;
   "get pods -n"*) cat testdata/claim-pods.json ;;
   "get pv "*) cat testdata/volumes.json ;;
@@ -35,7 +35,9 @@ esac
 
 // fakeCurl answers a dry-run eviction of the pod FAKE_HELD names as the API does one a disruption budget refuses.
 const fakeCurl = `
-if [ "${*: -1}" = "https://10.96.0.1:443/api/v1/namespaces/shop/pods/${FAKE_HELD:-}/eviction?dryRun=All" ]; then
+if [ -n "${FAKE_ANSWER:-}" ]; then
+  printf '%s' "$FAKE_ANSWER"
+elif [ "${*: -1}" = "https://10.96.0.1:443/api/v1/namespaces/shop/pods/${FAKE_HELD:-}/eviction?dryRun=All" ]; then
   cat testdata/eviction-429.json
 else
   printf '{"kind":"Status","status":"Success","code":201}'
@@ -73,15 +75,17 @@ func TestWorkerJob_DrainsTheNodeUnderItsPodsDisruptionBudgets(t *testing.T) {
 
 func TestWorkerJob_ADrainADisruptionBudgetHoldsFailsNamingTheBudgetAndUncordonsOnlyOnItsLastAttempt(t *testing.T) {
 	for name, tc := range map[string]struct {
-		failed    string
-		uncordons bool
+		failed, jobExit string
+		uncordons       bool
 	}{
-		"its first attempt":      {"", false},
-		"an attempt before last": {"4", false},
-		"its last attempt":       {"5", true},
+		"its first attempt":                           {"", "0", false},
+		"an attempt before last":                      {"4", "0", false},
+		"its last attempt":                            {"5", "0", true},
+		"an attempt that cannot read its Job's count": {"", "1", true},
 	} {
 		t.Run(name, func(t *testing.T) {
-			out, err, calls := runWorkerJob(t, pools.DrainStep, "shop-node-hel1", "FAKE_DRAIN_EXIT=1", "FAKE_FAILED="+tc.failed, "FAKE_HELD=web-0")
+			out, err, calls := runWorkerJob(t, pools.DrainStep, "shop-node-hel1", "FAKE_DRAIN_EXIT=1", "FAKE_FAILED="+tc.failed,
+				"FAKE_JOB_EXIT="+tc.jobExit, "FAKE_HELD=web-0")
 
 			require.Error(t, err, "the drain of a node whose pod a budget holds")
 			lines := strings.Split(strings.TrimSpace(out), "\n")
@@ -91,6 +95,15 @@ func TestWorkerJob_ADrainADisruptionBudgetHoldsFailsNamingTheBudgetAndUncordonsO
 			assert.Equal(t, tc.uncordons, slices.Contains(calls, "kubectl uncordon "+worker), "the node given back to the scheduler: %v", calls)
 		})
 	}
+}
+
+func TestWorkerJob_ADrainWhoseDryRunEvictionTheAPIRefusesFailsNamingTheAPIsAnswer(t *testing.T) {
+	out, err, _ := runWorkerJob(t, pools.DrainStep, "shop-node-hel1", "FAKE_DRAIN_EXIT=1",
+		`FAKE_ANSWER={"kind":"Status","status":"Failure","reason":"Forbidden","message":"pods/eviction is forbidden","code":403}`)
+
+	require.Error(t, err, "the drain whose dry-run eviction the API refuses")
+	assert.Contains(t, out, "403", "the Job's last words")
+	assert.NotContains(t, out, "no disruption budget refuses", "the Job's last words")
 }
 
 func TestWorkerJob_RemoveNodeReleasesEachClaimOnALocalVolumeOfTheNodeAndThenDeletesItsNodeObject(t *testing.T) {

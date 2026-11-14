@@ -47,11 +47,13 @@ type workers struct {
 	objects, down map[string]bool
 	pods          map[string]string
 	// held names the pods a disruption budget allows no eviction of, attempts how often a drain Job runs before it
-	// fails, failed each Job's failed attempts and jobs each finished Job's health.
+	// fails, failed each Job's failed attempts, jobs each finished Job's health and failure each removal's message.
 	held     map[string]bool
 	attempts int
 	failed   map[string]int
 	jobs     map[string]string
+	failure  string
+	paused   bool
 	// removedWhileRunning reports whether a Node object went while its server ran, which a kubelet would undo.
 	removedWhileRunning bool
 }
@@ -100,7 +102,9 @@ func (w *workers) read(context.Context, time.Time) (*report.Read, error) {
 			w.objects[srv.Name] = true
 		}
 	}
-	w.argo.Sync()
+	if !w.paused {
+		w.argo.Sync()
+	}
 	for path, content := range w.files {
 		job := testutil.Kind(testutil.Documents(w.s.t, content), "Job")[0]
 		name := testutil.Field(w.s.t, job, "metadata", "name").(string)
@@ -117,6 +121,11 @@ func (w *workers) read(context.Context, time.Time) (*report.Read, error) {
 }
 
 func (w *workers) run(job, step, node string) {
+	if step == pools.RemoveNodeStep && w.failure != "" {
+		w.failed[job]++
+		w.jobs[job] = "Degraded"
+		return
+	}
 	if step == pools.RemoveNodeStep {
 		for _, srv := range w.s.members() {
 			w.removedWhileRunning = w.removedWhileRunning || srv.Name == node && srv.Status == controlplane.ServerRunning
@@ -172,7 +181,7 @@ func (w *workers) body() []byte {
 	}
 	for _, job := range slices.Sorted(maps.Keys(w.failed)) {
 		pods = append(pods, map[string]any{"namespace": "mitstack-node", "name": job + "-x7k2q", "node": "node", "phase": "Failed",
-			"containers": []any{map[string]any{"name": "worker", "state": "terminated", "reason": "Error", "message": budget}}})
+			"containers": []any{map[string]any{"name": "worker", "state": "terminated", "reason": "Error", "message": cmp.Or(w.failure, budget)}}})
 	}
 	var body map[string]any
 	require.NoError(w.s.t, json.Unmarshal(w.argo.Report(), &body))
@@ -497,13 +506,14 @@ func TestReplaceStep_TakesItsHeldDrainOutBeforeItCreatesASuccessorForAWorkerWhos
 	require.NoError(t, s.cloud.DeleteServer(context.Background(), old.ID))
 	var createdWhileHeld bool
 	watch := func() bool {
-		createdWhileHeld = createdWhileHeld || len(s.members()) == 2 && slices.Contains(w.argo.Files(), drainPath)
+		createdWhileHeld = createdWhileHeld || len(s.members()) == 2 && slices.ContainsFunc(w.argo.Files(), pools.IsRemovalPath)
 		return false
 	}
 
 	require.NoError(t, w.replace(pool2, watch))
 
-	assert.Equal(t, []string{"write " + drainPath, "delete " + drainPath}, w.commits, "the commits")
+	assert.Equal(t, []string{"write " + drainPath, "delete " + drainPath, "write " + removePath, "delete " + removePath}, w.commits,
+		"the commits, whose removal Job releases the claims on the gone worker's local volumes")
 	assert.False(t, createdWhileHeld, "the successor was created while the drain was held")
 	assert.NotEqual(t, old.ID, w.worker("fsn1-1").ID, "the worker in fsn1")
 }
@@ -524,4 +534,45 @@ func TestReplaceStep_PowersOffAWorkerWhoseNodeReadsNotReadyWithNoDrain(t *testin
 	assert.Equal(t, []string{"write " + removePath, "delete " + removePath}, w.commits, "the commits")
 	assert.Len(t, w.eventsNaming("with no drain"), 1, "the events: %v", w.events)
 	assert.NotEqual(t, old.ID, w.worker("fsn1-1").ID, "the worker in fsn1")
+}
+
+func TestReplaceStep_ReleasesTheLocalClaimsOfAnOffWorkerTheReportNoLongerListsBeforeItsServerGoes(t *testing.T) {
+	s, w := withWorkers(t)
+	old := w.worker("fsn1-1")
+	require.NoError(t, s.cloud.PowerOffServer(context.Background(), old.ID))
+	delete(w.objects, old.Name)
+	require.NoError(t, w.upgrade(pool2, "fsn1-1"))
+
+	require.NoError(t, w.replace(pool2, nil))
+
+	assert.Equal(t, []string{"write " + removePath, "delete " + removePath}, w.commits, "the commits")
+	wrote := slices.IndexFunc(w.events, func(event string) bool { return strings.HasPrefix(event, "wrote "+removePath) })
+	deleted := slices.IndexFunc(w.events, func(event string) bool { return strings.HasPrefix(event, "deleted Cloud worker") })
+	assert.True(t, wrote >= 0 && wrote < deleted, "the removal Job was written before the server went: %v", w.events)
+	assert.NotEqual(t, old.ID, w.worker("fsn1-1").ID, "the worker in fsn1")
+}
+
+func TestReplaceStep_WritesAFailedNodeRemovalAgainNamingWhyWithTheWorkerKept(t *testing.T) {
+	s, w := withWorkers(t)
+	old := w.worker("fsn1-1")
+	w.failure = "remove-node: the API refused deleting the claim shop/data-db-0"
+	require.NoError(t, w.upgrade(pool2, "fsn1-1"))
+
+	require.NoError(t, w.replace(pool2, func() bool { return len(w.commits) == 5 }))
+
+	assert.Equal(t, []string{"write " + drainPath, "delete " + drainPath, "write " + removePath, "delete " + removePath, "write " + removePath}, w.commits,
+		"the commits of a removal that failed once")
+	assert.Len(t, w.eventsNaming(w.failure), 1, "the events naming the removal's failure: %v", w.events)
+	assert.Equal(t, controlplane.ServerOff, s.cloud.Servers[old.ID].Status, "the worker whose Node object's removal failed")
+}
+
+func TestReplaceStep_NamesADrainJobArgoCDHasNotAppliedYet(t *testing.T) {
+	_, w := withWorkers(t)
+	w.paused = true
+	require.NoError(t, w.upgrade(pool2, "fsn1-1"))
+
+	require.NoError(t, w.replace(pool2, func() bool { return len(w.commits) == 1 }))
+
+	assert.Contains(t, w.problems(), "lists no Job mitstack-drain-fsn1-1, so the Application cluster has not applied its file", "where the replacement stands")
+	assert.NotContains(t, w.problems(), "has not finished", "where the replacement stands")
 }

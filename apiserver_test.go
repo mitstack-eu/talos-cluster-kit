@@ -327,10 +327,8 @@ wait`)
 
 func cronJobPod(t *testing.T, rendered []byte, name string) (job map[string]any, pod any) {
 	t.Helper()
-	jobs := testutil.Kind(testutil.Documents(t, rendered), "CronJob")
-	i := slices.IndexFunc(jobs, func(job map[string]any) bool { return testutil.Field(t, job, "metadata", "name") == name })
-	require.GreaterOrEqual(t, i, 0, "no CronJob %s", name)
-	return jobs[i], testutil.Field(t, jobs[i], "spec", "jobTemplate", "spec", "template", "spec")
+	job = testutil.Named(t, testutil.Documents(t, rendered), "CronJob", name)
+	return job, testutil.Field(t, job, "spec", "jobTemplate", "spec", "template", "spec")
 }
 
 // runCronJob runs the CronJob name's first container as its pod runs it, with its service account's token.

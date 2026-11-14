@@ -16,8 +16,8 @@ cgroup:
 bpf:
   autoMount:
     enabled: false
-# The chart drops envoy's BPF mount along with the auto-mount, and envoy reads Cilium's connection and address maps there.
 envoy:
+  # The chart drops envoy's BPF mount along with the auto-mount, and envoy reads Cilium's connection and address maps there.
   extraHostPathMounts:
     - name: bpf-maps
       mountPath: /sys/fs/bpf
@@ -25,6 +25,10 @@ envoy:
       hostPathType: DirectoryOrCreate
       readOnly: false
       mountPropagation: HostToContainer
+  # Envoy's starter needs NET_ADMIN and either SYS_ADMIN or BPF, and BPF is the narrower of the two.
+  securityContext:
+    capabilities:
+      envoy: [NET_ADMIN, BPF]
 securityContext:
   capabilities:
     ciliumAgent: [CHOWN, KILL, NET_ADMIN, NET_RAW, IPC_LOCK, SYS_ADMIN, SYS_RESOURCE, DAC_OVERRIDE, FOWNER, SETGID, SETUID]

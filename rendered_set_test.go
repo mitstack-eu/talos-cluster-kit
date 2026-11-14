@@ -398,6 +398,19 @@ func TestManifests_NoCiliumContainerRunsPrivilegedOrAddsACapabilityBeyondTheRead
 	}
 }
 
+// The scan's privileged-container control, C-0057, fails a container that adds SYS_ADMIN.
+func TestManifests_CiliumEnvoyAddsNetAdminAndBPFInPlaceOfSysAdmin(t *testing.T) {
+	added := map[string]any{}
+	for _, pod := range renderedPods(t) {
+		if envoy, ok := podContainers(t, pod)["cilium-envoy/cilium-envoy"]; ok {
+			added[pod.source] = testutil.Field(t, envoy, "securityContext", "capabilities", "add")
+		}
+	}
+
+	want := []any{"NET_ADMIN", "BPF"}
+	assert.Equal(t, map[string]any{"default/cilium": want, "hosting/cilium": want}, added, "the capabilities each set's cilium-envoy container adds")
+}
+
 func TestManifests_EveryRefusalOpensWithTheNameOfTheRuleThePlatformLooksFor(t *testing.T) {
 	for _, name := range append(slices.Clone(podRefusingPolicies), digestPolicy) {
 		for _, v := range testutil.Field(t, podPolicy(t, name), "spec", "validations").([]any) {

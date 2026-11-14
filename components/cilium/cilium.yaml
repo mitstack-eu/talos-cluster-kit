@@ -1430,7 +1430,7 @@ spec:
           capabilities:
             add:
               - NET_ADMIN
-              - SYS_ADMIN
+              - BPF
             drop:
               - ALL
         terminationMessagePolicy: FallbackToLogsOnError

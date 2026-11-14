@@ -825,7 +825,7 @@ the capabilities in its row of the table.
 | `cilium` | `clean-cilium-state` | `NET_ADMIN`, `SYS_ADMIN`, `SYS_RESOURCE` | Talos's guide |
 | `cilium` | `install-cni-binaries` | None | The chart's template |
 | `cilium` | `cilium-agent` | `CHOWN`, `KILL`, `NET_ADMIN`, `NET_RAW`, `IPC_LOCK`, `SYS_ADMIN`, `SYS_RESOURCE`, `DAC_OVERRIDE`, `FOWNER`, `SETGID`, `SETUID` | Talos's guide |
-| `cilium-envoy` | `cilium-envoy` | `NET_ADMIN`, `SYS_ADMIN` | The chart's default |
+| `cilium-envoy` | `cilium-envoy` | `NET_ADMIN`, `BPF` | Envoy's starter |
 | `cilium-operator` | `cilium-operator` | None | The chart's default |
 
 The lists for `cilium-agent` and `clean-cilium-state` are the ones
@@ -833,11 +833,27 @@ The lists for `cilium-agent` and `clean-cilium-state` are the ones
 and [Cilium's install page, under Talos Linux](https://docs.cilium.io/en/v1.19/installation/k8s-install-helm/)
 both give. They leave out `SYS_MODULE` of the chart's defaults, since Talos
 lets no Kubernetes workload load a kernel module, and `SYSLOG`, which neither
-page lists. The other lists are the chart's own.
+page lists. The lists from the chart's template and default are the chart's
+own.
 [The chart's values at v1.19.9](https://github.com/cilium/cilium/blob/v1.19.9/install/kubernetes/cilium/values.yaml#L347-L432)
 say what each capability is for, and
 [its envoy values](https://github.com/cilium/cilium/blob/v1.19.9/install/kubernetes/cilium/values.yaml#L2831-L2850)
 do the same for envoy, Cilium's proxy on each node.
+
+Envoy's list swaps the chart's `SYS_ADMIN` for `BPF`, which lets a process
+use the kernel's BPF calls without the rest of `SYS_ADMIN`. Envoy's starter is
+the wrapper that starts envoy, and the chart's comment says envoy itself runs
+with none of these capabilities. `main` in
+[the starter's source at the commit the chart pins](https://github.com/cilium/proxy/blob/00e749f11f69334c625e53fc1ce2fc6c7f34a51f/starter/main.cc#L112-L119)
+exits unless the starter holds `NET_ADMIN` and either `SYS_ADMIN` or `BPF`.
+The chart's comment says `BPF` needs Linux 5.8 or newer, and
+[Talos v1.14.4's release note](https://github.com/siderolabs/talos/releases/tag/v1.14.4)
+names Linux 6.18.57, so the nodes of the Talos release the kit pins meet it.
+
+[The security scan](#how-the-security-scan-runs) runs kubescape. Its
+privileged-container control, C-0057, fails a container that adds
+`SYS_ADMIN`, so envoy passes it. Its insecure-capabilities control, C-0046,
+counts both `NET_ADMIN` and `BPF` as insecure, so it still fails envoy.
 
 The chart's one privileged container is `mount-bpf-fs`, an init container that
 mounts the BPF filesystem, where Cilium keeps its kernel maps. Talos mounts

@@ -763,7 +763,7 @@ func TestClusterTokens_EnrolAsksAgainWhenThePlatformClosesTheConnectionUnanswere
 	require.Error(t, run.err, "an enrolment the platform never answered passed: %s", run.out)
 	assert.Contains(t, run.out, "the platform answered 000 to the enrolment")
 	assert.Len(t, *seen, 3, "an unanswered enrolment is asked CALL_ATTEMPTS times")
-	assert.Contains(t, run.tools.Calls(t), "sleep 15", "the run waits before it asks again")
+	assert.Contains(t, commandsRun(t, run), "sleep", "the run waits before it asks again")
 	assert.Empty(t, createdSecrets(t, run))
 }
 

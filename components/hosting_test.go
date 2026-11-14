@@ -494,7 +494,7 @@ func TestHosting_ServesOpenBaoACertificateForEveryAddressItsMembersAndClientsDia
 		hosts = append(hosts, m[1])
 	}
 	require.Len(t, hosts, 2+components.OpenBaoMembers)
-	for _, target := range testutil.Field(t, scrapeJobs(t, collectorDocs(t, set, testutil.TelemetryExport()))["openbao"], "static_configs").([]any) {
+	for _, target := range testutil.Field(t, testutil.ScrapeJobs(t, collectorDocs(t, set, testutil.TelemetryExport()))["openbao"], "static_configs").([]any) {
 		hosts = append(hosts, strings.Split(testutil.Field(t, target, "targets", "0").(string), ":")[0])
 	}
 	for _, host := range hosts {

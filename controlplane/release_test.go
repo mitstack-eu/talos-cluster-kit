@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/netip"
 	"slices"
 	"strings"
@@ -366,13 +367,8 @@ func TestRelease_TheCollectorOfAClusterThatHostsThePlatformScrapesEachOpenBaoMem
 			release, err := plane.Release(h.read())
 
 			require.NoError(t, err)
-			configMap := testutil.Named(t, testutil.Documents(t, testutil.Manifest(t, "mitstack-telemetry", release.Components).Bytes), "ConfigMap", "mitstack-telemetry-cluster")
-			config := testutil.Documents(t, []byte(testutil.Field(t, configMap, "data", "config.yaml").(string)))[0]
-			var jobs []string
-			for _, job := range testutil.Field(t, config, "receivers", "prometheus", "config", "scrape_configs").([]any) {
-				jobs = append(jobs, testutil.Field(t, job, "job_name").(string))
-			}
-			assert.Equal(t, tc.jobs, jobs, "the cluster copy's scrape jobs")
+			jobs := testutil.ScrapeJobs(t, testutil.Documents(t, testutil.Manifest(t, "mitstack-telemetry", release.Components).Bytes))
+			assert.Equal(t, tc.jobs, slices.Sorted(maps.Keys(jobs)), "the cluster copy's scrape jobs")
 		})
 	}
 }

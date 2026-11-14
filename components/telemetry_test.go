@@ -170,21 +170,11 @@ func TestTelemetryCollector_TheClusterCopyReadsClusterMetricsFromOneReplicaOnACo
 	assert.Equal(t, []any{map[string]any{"key": controlPlaneRole, "operator": "Exists", "effect": "NoSchedule"}}, pod["tolerations"])
 }
 
-// scrapeJobs is the cluster copy's Prometheus scrape configuration of each job, by the job's name.
-func scrapeJobs(t *testing.T, docs []map[string]any) map[string]any {
-	t.Helper()
-	jobs := map[string]any{}
-	for _, job := range testutil.Field(t, collectorConfig(t, docs, "cluster"), "receivers", "prometheus", "config", "scrape_configs").([]any) {
-		jobs[testutil.Field(t, job, "job_name").(string)] = job
-	}
-	return jobs
-}
-
 func TestTelemetryCollector_TheClusterCopyScrapesArgoCDsApplicationControllerThroughItsMetricsServiceAndNoOpenBaoWhereNoneRuns(t *testing.T) {
 	docs := telemetryDocs(t, testutil.TelemetryExport())
 	service := namedDocument(t, testutil.Manifest(t, "argocd", components.Default().Served), "Service", "argocd-application-controller-metrics")
 
-	jobs := scrapeJobs(t, docs)
+	jobs := testutil.ScrapeJobs(t, docs)
 
 	assert.Equal(t, map[string]any{"app.kubernetes.io/name": "argocd-application-controller", "app.kubernetes.io/instance": "argocd"},
 		testutil.Field(t, service, "spec", "selector"), "the Service the cluster copy scrapes selects the application controller")
@@ -200,7 +190,7 @@ func TestTelemetryCollector_OnAClusterThatHostsThePlatformTheClusterCopyScrapesE
 	set := components.HostingServed()
 	docs := collectorDocs(t, set, testutil.TelemetryExport())
 
-	openbao := scrapeJobs(t, docs)["openbao"]
+	openbao := testutil.ScrapeJobs(t, docs)["openbao"]
 
 	var targets []any
 	for i := range components.OpenBaoMembers {

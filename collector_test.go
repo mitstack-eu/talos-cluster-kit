@@ -96,7 +96,8 @@ func TestCollector_ThePinnedCollectorAcceptsEachCopysRenderedConfiguration(t *te
 }
 
 func TestCollector_AnOpenBaoMemberAnswersTheClusterCopysScrapeWithItsSealStateWithoutATokenAndServesNothingElseThere(t *testing.T) {
-	job := scrapeJob(t, testutil.Documents(t, renderedCollector(t, components.HostingServed(), testutil.TelemetryExport())), "openbao")
+	job := testutil.ScrapeJobs(t, testutil.Documents(t, renderedCollector(t, components.HostingServed(), testutil.TelemetryExport())))["openbao"]
+	require.NotNil(t, job, "the cluster copy's openbao scrape job")
 	_, port, err := net.SplitHostPort(testutil.Field(t, job, "static_configs", "0", "targets", "0").(string))
 	require.NoError(t, err)
 	address, client := startOpenBaoMember(t, port)
@@ -179,15 +180,6 @@ func collectorPod(t *testing.T, docs []map[string]any) map[string]any {
 func collectorConfig(t *testing.T, docs []map[string]any, which string) string {
 	t.Helper()
 	return testutil.Field(t, testutil.Named(t, docs, "ConfigMap", "mitstack-telemetry-"+which), "data", "config.yaml").(string)
-}
-
-func scrapeJob(t *testing.T, docs []map[string]any, name string) map[string]any {
-	t.Helper()
-	config := testutil.Documents(t, []byte(collectorConfig(t, docs, "cluster")))[0]
-	jobs := testutil.Field(t, config, "receivers", "prometheus", "config", "scrape_configs").([]any)
-	i := slices.IndexFunc(jobs, func(job any) bool { return testutil.Field(t, job, "job_name") == name })
-	require.GreaterOrEqual(t, i, 0, "the cluster copy holds no %s scrape job", name)
-	return jobs[i].(map[string]any)
 }
 
 // startOpenBaoMember runs the hosting set's OpenBao container on its rendered configuration, less the Kubernetes service

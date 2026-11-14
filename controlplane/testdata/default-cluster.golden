@@ -29,7 +29,7 @@ inline mitstack-restrict-image-registries components/admission/policies/mitstack
 inline mitstack-require-image-digest components/admission/policies/mitstack-require-image-digest.yaml 1f7141448de2b6a2a8eb80d799b0b9ea1e4e48b2adfc8d94f4782681b31e5b47
 inline mitstack-node-report report/report.yaml unrecorded
 inline mitstack-node-topology topology/topology.yaml f4e361ae4da97711453dec7dd1ea4b38a8011b8c49f9f7f665f1845a16fb78e2
-inline mitstack-cluster-tokens manifests/cluster-tokens.yaml cf225d81497fdfa79efb344464b3d1743ceddbfabc6a8a5f5bf70555e26d93ac
+inline mitstack-cluster-tokens manifests/cluster-tokens.yaml e06f4771fbbaf48a21b69b3c5eeedc5ed3f99a7debcc58f89f5ed736cbf778a8
 inline mitstack-cluster-application manifests/cluster-application.yaml 92e6347d03420f2609f3238107104fd76828f5957855013641259c78928a2aa6
 mirror docker.io/istio/install-cni:1.30.7-distroless@sha256:5d65fa948ff28fac54d99f272205a3f71ee84e609d7e46792eecd77db0501d79
 mirror docker.io/istio/pilot:1.30.7-distroless@sha256:337c5423c9b235855aadca8762f1ac3f0ce584833e49c50176382382099ff201

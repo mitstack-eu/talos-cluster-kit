@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
-	"slices"
 	"strings"
 	"testing"
 
@@ -25,10 +24,7 @@ func manifest(t *testing.T, name string) components.Manifest {
 
 func namedDocument(t *testing.T, m components.Manifest, kind, name string) map[string]any {
 	t.Helper()
-	docs := testutil.Kind(testutil.Documents(t, m.Bytes), kind)
-	i := slices.IndexFunc(docs, func(doc map[string]any) bool { return testutil.Field(t, doc, "metadata", "name") == name })
-	require.GreaterOrEqual(t, i, 0, "manifest %s has no %s %s", m.Name, kind, name)
-	return docs[i]
+	return testutil.Named(t, testutil.Documents(t, m.Bytes), kind, name)
 }
 
 func TestAdmission_ExemptsTheSameSystemNamespacesInEveryPolicyAndKyvernosWebhooks(t *testing.T) {

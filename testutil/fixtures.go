@@ -59,6 +59,16 @@ func LogExport(t *testing.T) components.LogExport {
 	return components.LogExport{Endpoint: "otlp.mitstack.dev:4317", CA: ReadTestdata(t, "logs-ca.pem")}
 }
 
+// TelemetryExport is what a block hands the kit for a required Scaleway Cockpit, as that resource's outputs name it.
+func TelemetryExport() components.TelemetryExport {
+	return components.TelemetryExport{
+		Resource:        "scaleway.cockpit",
+		MetricsEndpoint: "https://0f1e2d3c.metrics.cockpit.fr-par.scw.cloud/otlp/v1/metrics",
+		LogsEndpoint:    "https://0f1e2d3c.logs.cockpit.fr-par.scw.cloud/otlp/v1/logs",
+		TokenHeader:     "X-TOKEN",
+	}
+}
+
 type ClusterOption func(*nodeconfig.Cluster)
 
 func WithProfile(p nodeconfig.Profile) ClusterOption {

@@ -166,17 +166,6 @@ func inputs(url string) report.Inputs {
 	return report.Inputs{URL: url, SubscriptionID: "sub_0123456789ab", ToolsImage: testutil.ToolsImage, ProofScript: proofScript}
 }
 
-func named(t *testing.T, docs []map[string]any, kind, name string) map[string]any {
-	t.Helper()
-	for _, doc := range testutil.Kind(docs, kind) {
-		if testutil.Field(t, doc, "metadata", "name") == name {
-			return doc
-		}
-	}
-	require.FailNow(t, "no "+kind+" "+name)
-	return nil
-}
-
 const reportURL = "https://api.mitstack.dev/v1/cluster-reports"
 
 func manifests(t *testing.T, url string) []byte {
@@ -196,7 +185,7 @@ func stringMap(m any) map[string]string {
 
 func cronJob(t *testing.T, rendered []byte, name string) (job map[string]any, labels map[string]string, container any) {
 	t.Helper()
-	job = named(t, testutil.Documents(t, rendered), "CronJob", name)
+	job = testutil.Named(t, testutil.Documents(t, rendered), "CronJob", name)
 	pod := testutil.Field(t, job, "spec", "jobTemplate", "spec", "template")
 	return job, stringMap(testutil.Field(t, pod, "metadata", "labels")), testutil.Field(t, pod, "spec", "containers", "0")
 }
@@ -473,9 +462,9 @@ func TestManifests_PointsTheReportAtEachOpenBaoPodByANameItsCertificateHoldsTrus
 		want = append(want, fmt.Sprintf("%s=https://%s.%s:8200", pod, pod, domain))
 	}
 	assert.Equal(t, strings.Join(want, " "), env["OPENBAO_MEMBERS"])
-	assert.Contains(t, testutil.Field(t, named(t, tls, "Certificate", "openbao-tls"), "spec", "dnsNames"), "*."+domain)
+	assert.Contains(t, testutil.Field(t, testutil.Named(t, tls, "Certificate", "openbao-tls"), "spec", "dnsNames"), "*."+domain)
 
-	bundle := named(t, tls, "Bundle", "openbao-ca")
+	bundle := testutil.Named(t, tls, "Bundle", "openbao-ca")
 	assert.Contains(t, testutil.Field(t, job, "spec", "jobTemplate", "spec", "template", "spec", "volumes"),
 		map[string]any{"name": "openbao-ca", "configMap": map[string]any{"name": testutil.Field(t, bundle, "metadata", "name"), "optional": true}})
 	assert.Contains(t, testutil.Field(t, container, "volumeMounts"),
@@ -486,7 +475,7 @@ func TestManifests_PointsTheReportAtEachOpenBaoPodByANameItsCertificateHoldsTrus
 
 func TestManifests_PointsTheReportAtArgoCDsServerServiceOnItsHTTPSPort(t *testing.T) {
 	_, env := renderedScript(t, reportURL, "mitstack-node-report")
-	service := named(t, testutil.Documents(t, testutil.Manifest(t, "argocd", components.Default().Served).Bytes), "Service", "argocd-server")
+	service := testutil.Named(t, testutil.Documents(t, testutil.Manifest(t, "argocd", components.Default().Served).Bytes), "Service", "argocd-server")
 
 	assert.Equal(t, fmt.Sprintf("https://argocd-server.%s.svc", testutil.Field(t, service, "metadata", "namespace")), env["ARGOCD_URL"],
 		"curl asks port 443 of an https URL that names no port")
@@ -932,7 +921,7 @@ func TestManifests_LetsTheReportListPodsEachKindItReadsAndCloudNativePGsObjectsA
 	assert.Equal(t, testutil.Field(t, tokenRoles[0], "metadata", "name"), testutil.Field(t, bindings[0], "roleRef", "name"))
 	assert.Equal(t, []any{map[string]any{"kind": "ServiceAccount", "name": "mitstack-node-report", "namespace": "mitstack-node"}},
 		testutil.Field(t, bindings[0], "subjects"))
-	rules := testutil.Field(t, named(t, roles, "ClusterRole", "mitstack-node-report"), "rules").([]any)
+	rules := testutil.Field(t, testutil.Named(t, roles, "ClusterRole", "mitstack-node-report"), "rules").([]any)
 	assert.ElementsMatch(t, []any{
 		map[string]any{"apiGroups": []any{""}, "resources": []any{"nodes"}, "verbs": []any{"get", "list"}},
 		map[string]any{"apiGroups": []any{""}, "resources": []any{"pods"}, "verbs": []any{"list"}},

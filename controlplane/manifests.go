@@ -85,6 +85,7 @@ func (p Plane) ownComponents(enrolmentToken string, poolWorkers []Server) ([]com
 		"RepoURL":              p.RepoURL,
 		"EnrolmentToken":       enrolmentToken,
 		"RepositoryCredential": "platform-token",
+		"LeaseResource":        p.Telemetry.Resource,
 	}
 	if p.Hosting != nil {
 		data["RepoURL"] = components.RepositorySSHURL(p.Hosting.Repository)

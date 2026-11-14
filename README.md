@@ -41,7 +41,7 @@ the order a block uses them.
 
 | Package | What it does | Main entry points |
 |---|---|---|
-| `components` | Holds the pinned component set: Cilium, the custom resource definition (CRD) of Cilium's cluster-wide policy, Argo CD, the policy that keeps pods from Hetzner's metadata service at `169.254.169.254`, Istio's ambient mesh with its mesh-wide mutual TLS policy and the mesh probe's target, Kyverno with its four admission policies, the CloudNativePG operator with the database-slice policy, the local path provisioner behind the default StorageClass, and the node-local OpenTelemetry Collector. It also holds the boot set of a cluster that hosts the platform | `Default`, `Hosting`, `HostingServed`, `Set.PublishingIngress`, `Manifest` (whose `Name` is a component's name), `Set.Images`, `LogCollector`, `ParseImage` |
+| `components` | Holds the pinned component set: Cilium, the custom resource definition (CRD) of Cilium's cluster-wide policy, Argo CD, the policy that keeps pods from Hetzner's metadata service at `169.254.169.254`, Istio's ambient mesh with its mesh-wide mutual TLS policy and the mesh probe's target, Kyverno with its four admission policies, the CloudNativePG operator with the database-slice policy, the local path provisioner behind the default StorageClass, and the node-local OpenTelemetry Collector. It also holds the boot set of a cluster that hosts the platform, and the telemetry Collector of a cluster that requires an OTLP backend, which [ships its events, metrics and app logs](#how-a-cluster-ships-its-events-metrics-and-app-logs) | `Default`, `Hosting`, `HostingServed`, `Set.PublishingIngress`, `Manifest` (whose `Name` is a component's name), `Set.Images`, `LogCollector`, `TelemetryCollector`, `TelemetryExport`, `ParseImage` |
 | `nodeconfig` | Renders a control-plane node's or a worker node's machine configuration with Talos's own `machinery` module and validates it against Talos's schema | `Render`, `RenderWorker`, `Cluster`, `Node`, `NewSecrets`, `ParseSecrets`, `Secrets.AdminTalosconfig` |
 | `image` | Runs imager, Sidero Labs' open-source image builder, with the `hcloud` or the `metal` profile, and discards its output | `Run`, `Build` |
 | `mirror` | Lists every image the nodes pull, each by digest | `List`, `Render` |
@@ -618,7 +618,7 @@ The order runs in five groups.
 | Cluster reporting | The node report, the cluster tokens and the Collector | A component that never starts still leaves the platform its report |
 | Components and policies | Every other component, policy, key and volume | No object here waits on a webhook but Istio's, whose pod runs outside the mesh |
 | What a webhook validates | external-secrets and trust-manager, whose charts hold cert-manager objects, then `mitstack-hosting-tls` and the Barman Cloud plugin, which holds two Certificates and their Issuer | cert-manager's and trust-manager's webhooks answer only once their pods run |
-| Later manifests | The topology labeller, `mitstack-require-image-digest` and the signature policy, in the order they joined | At the end a new manifest changes no other manifest's `TalosName`, so no gateway's list changes for it |
+| Later manifests | The topology labeller, `mitstack-require-image-digest`, the signature policy and the telemetry Collector, in the order they joined | At the end a new manifest changes no other manifest's `TalosName`, so no gateway's list changes for it |
 
 A new manifest takes a place in `applyOrder`, since `TalosName` panics on one
 it leaves out. `TestBuilder_TalosAppliesEveryObjectAWebhookInterceptsAfterTheWebhookTheMeshAndTheNodeReport`
@@ -1649,6 +1649,85 @@ platform can tell the body came from this cluster unchanged. A report holding
 only an `error` goes unsigned. The report's service account holds no right on
 Secrets.
 
+## How a cluster ships its events, metrics and app logs
+
+This section is for a block author whose cluster requires an OTLP backend, such
+as Scaleway Cockpit, and for an engineer who changes the telemetry Collector.
+OTLP is OpenTelemetry's protocol for sending logs and metrics. The section says
+what the Collector reads, how it tags and masks each record, and how its push
+token stays fresh.
+
+### What the block hands the kit
+
+The block sets `Plane.Telemetry` to a `components.TelemetryExport` filled from
+the outputs of the resource it requires:
+
+```go
+plane.Telemetry = components.TelemetryExport{
+	Resource:        "scaleway.cockpit", // the required resource's type, whose push token the lease job leases
+	MetricsEndpoint: "https://0f1e2d3c.metrics.cockpit.fr-par.scw.cloud/otlp/v1/metrics",
+	LogsEndpoint:    "https://0f1e2d3c.logs.cockpit.fr-par.scw.cloud/otlp/v1/logs",
+	TokenHeader:     "X-TOKEN", // the header that carries the bare push token
+}
+```
+
+`Plane.Release` then carries the Collector, and the build renders the lease job
+and its empty Secret into the cluster tokens. `components.TelemetryCollector`
+refuses an export whose endpoint is not an https address with a host, whose
+header is no header name, or that names no resource. A plane that leaves
+`Telemetry` at zero runs no Collector, no lease job and no Secret, because a
+Collector with no exporter cannot start.
+
+### What the Collector reads
+
+The Collector runs from the image the gateways already mirror for the
+node-local Collector, in two copies:
+
+| Copy | How it runs | What it reads |
+|---|---|---|
+| `mitstack-telemetry-node` | A DaemonSet on every node, the control plane included | Each container's log under `/var/log/pods`, except its own, and the node, pod, container and volume metrics of its node's kubelet |
+| `mitstack-telemetry-cluster` | A Deployment of one replica on a control-plane node, since a second would send each event twice | The API server's events, and the cluster's metrics, among them each node's `Ready` condition |
+
+### How each record is tagged and masked
+
+Each copy tags every record with `mitstack.app`, the value of its namespace's
+`mitstack.dev/app` label, and with `mitstack.subscription.id`. Each data point
+of a metric carries both tags, and the names of the node, namespace, volume
+claim and pod its resource holds, so an alert rule can group by them and name
+what it reports.
+
+The `redaction` processor then replaces each part of a value that matches one
+of its patterns with `****`. The patterns catch tokens, keys and passwords,
+e-mail addresses, IP addresses and card numbers. Masking runs after the app
+tag and before the subscription tag and the data-point copies. It leaves the
+tags and the Kubernetes names untouched, so no pattern masks a name an alert
+rule groups by. `collector_test.go` proves both
+on the pinned Collector: a containerd log line from a pod in `app-shop`
+arrives at a stand-in backend tagged `mitstack.app=shop`, with its token,
+password and e-mail address masked.
+
+### How the push token stays fresh
+
+The CronJob `mitstack-telemetry-lease` in `mitstack-node` runs
+`cluster-tokens.sh lease` every 15 minutes, with the report token as its bearer:
+
+1. It reads the Secret `mitstack-telemetry-token` in `kube-system` and its
+   annotation `mitstack.dev/lease-expires-at`. When the Secret holds a token
+   with more than 11 hours left, the run ends there.
+2. Otherwise it makes one call to `POST /v1/cluster-leases`, with the body
+   `{"resource": "scaleway.cockpit", "want": {"signals": "metrics,logs"}}`.
+3. On a 200 answer it checks that the answer holds `credential.token` and an
+   `expiresAt` less than 24 hours ahead. It then writes both into the Secret in
+   one merge patch.
+4. Any other answer fails the run with the status and the platform's message,
+   and the run writes nothing. The next run, 15 minutes later, is the retry.
+
+The job's own account may read and patch that one Secret and create none. The
+Collector's account holds no right on Secrets, and each copy reads the token
+from the Secret mounted as a file and sends it under the export's header.
+Kubernetes starts no pod whose Secret lacks a key the pod names, so the
+Collector starts once the lease job's first run writes the token.
+
 ## Where a claim keeps its data
 
 Every cluster has a default StorageClass, `local-path`, so a claim that names
@@ -2019,6 +2098,7 @@ everything a control-plane node boots with.
 | The node report's, its outside probe's, the security scan's, the labeller's and the cluster tokens' scripts | In the tools image at `tools.ScriptDir`, where each command names its script's path |
 | Each served manifest | From the gateway, which copies it out of the tools image |
 | The hosting set's inline manifests, and the signature policy of a cluster that has a signer list | From the serving server, where the builder fetches them |
+| The telemetry Collector of a cluster that requires an OTLP backend | From the cluster repository, since only a release carries it |
 
 A script in the tools image costs no server any user data, because the
 gateway mirrors that image whole. A served manifest does cost some. The
@@ -2027,10 +2107,11 @@ its sha256 and its path, about 75 bytes once gzipped. The gateway of a cluster
 that hosts the platform takes about 31,500 bytes when it keeps 300 images.
 
 `TestPlane_EveryServerOfAnInstallKeepsTheUserDataReserveWithTheLongestProofScriptUnderEachOptionOfThePlane`
-in `controlplane/render_test.go` keeps room free. It installs a cluster four
-ways: with and without the platform, and with apps on the control plane or on
-workers. Each plane takes a proof script of `report.ProofScriptLimit` bytes of
-random printable text, which gzip shortens by about a sixth. Each also takes
+in `controlplane/render_test.go` keeps room free. It installs a cluster eight
+ways: with and without the platform, with apps on the control plane or on
+workers, and with and without the telemetry Collector's lease job. Each plane
+takes a proof script of `report.ProofScriptLimit` bytes of random printable
+text, which gzip shortens by about a sixth. Each also takes
 a signer list of `components.SignerLimit` entries, with every field at its
 limit and of random text, which the serving server carries. Every install in
 the test takes one set of the cluster's keys and one draw of every other value
@@ -2052,8 +2133,12 @@ of the reserve, 1,024 less 544, and a set that gzip shortens less than the
 held one takes from those.
 
 With that proof script, that signer list and the seeds' keys, the builder
-takes 30,204 bytes, or 30,280 on a cluster that hosts the platform. The signer
-list costs the builder only the address and key of the serving server. The
+takes 30,232 bytes, 30,248 when its apps run on workers, 30,312 on a cluster
+that hosts the platform and 30,328 when it does both. The lease job and its
+empty Secret add about 190 bytes, or about 250 on a cluster that hosts the
+platform, so the largest builder, on a cluster that does both, takes 30,576.
+The signer list costs the builder only the address and key of the serving
+server. The
 serving server carries the policy, and takes about 10,900 bytes, or about
 30,600 on a cluster that hosts the platform, which leaves it at least 2,169
 bytes free. With a one-line proof script and no signer list, as the tests in
@@ -2301,7 +2386,11 @@ the same plane it builds the cluster with, and from the state `Plane.Read`
 returns. It holds every manifest the build
 applies, with two exceptions. It leaves out the hosting set's inline
 manifests, since only an install's keys render them, and it leaves out the
-`cluster` Application, since the carriage runs through that Application. The block then commits the files
+`cluster` Application, since the carriage runs through that Application. It
+also holds one manifest the build never applies: the telemetry Collector,
+`mitstack-telemetry`, of a plane whose `Telemetry` names an OTLP backend. A
+builder's user data has no room for it, so a new cluster runs it from its
+first release. The block then commits the files
 `Release.Files` returns in one commit, and reads the result back with
 `Release.ReadBack`:
 

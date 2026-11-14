@@ -1,0 +1,284 @@
+# The cluster's telemetry Collector. The node copy reads each node's container
+# logs and its kubelet's metrics, and the one cluster copy reads the API
+# server's events and the cluster's metrics. Each tags a record with its
+# namespace's app and the subscription, masks secrets and personal data, and
+# pushes to the backend the block requires, under the token the lease job writes.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mitstack-telemetry
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mitstack-telemetry
+rules:
+  - apiGroups: [""]
+    resources: [events, namespaces, nodes, persistentvolumeclaims, persistentvolumes, pods, replicationcontrollers, resourcequotas, services]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [nodes/stats, nodes/pods]
+    verbs: [get]
+  - apiGroups: [events.k8s.io]
+    resources: [events]
+    verbs: [list, watch]
+  - apiGroups: [apps]
+    resources: [daemonsets, deployments, replicasets, statefulsets]
+    verbs: [get, list, watch]
+  - apiGroups: [batch]
+    resources: [cronjobs, jobs]
+    verbs: [get, list, watch]
+  - apiGroups: [autoscaling]
+    resources: [horizontalpodautoscalers]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mitstack-telemetry
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mitstack-telemetry
+subjects:
+  - kind: ServiceAccount
+    name: mitstack-telemetry
+    namespace: kube-system
+{{- define "shared" }}
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 80
+        spike_limit_percentage: 20
+      redaction:
+        allow_all_keys: true
+        redact_all_types: true
+        summary: info
+        ignored_keys: [mitstack.app, mitstack.subscription.id, k8s.namespace.name, k8s.pod.name, k8s.pod.uid, k8s.container.name, k8s.node.name, k8s.persistentvolumeclaim.name, k8s.volume.name, k8s.volume.type]
+        blocked_key_patterns: ['(?i)(token|secret|password|apikey|credential|private_key|authorization|cookie)']
+        blocked_values:
+          - '(?i)(token|secret|password|passwd|apikey|api_key|credential|private_key|privatekey)[a-z0-9_.-]*["'']?\s*[:=]\s*["'']?[^\s"'',}]+'
+          - '(?i)bearer\s+[A-Za-z0-9._~+/-]+=*'
+          - 'eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*'
+          - '-----BEGIN [A-Z ]*PRIVATE KEY-----'
+          - '^[A-Za-z0-9+/]{64}$'
+          - '(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]+'
+          - 'github_pat_[A-Za-z0-9_]+'
+          - '(AKIA|ASIA)[A-Z0-9]{12,}'
+          - '://[^/\s:@]+:[^/\s@]+@'
+          - '[a-zA-Z0-9.!#$%&''*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+'
+          - '(?:[0-9]{1,3}\.){3}[0-9]{1,3}'
+          - '(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}'
+          - '4[0-9]{12}(?:[0-9]{3})?'
+          - '5[1-5][0-9]{14}'
+      resource/subscription:
+        attributes:
+          - {key: mitstack.subscription.id, value: {{ printf "%q" .SubscriptionID }}, action: upsert}
+      transform/datapoints:
+        metric_statements:
+          - set(datapoint.attributes["mitstack.app"], resource.attributes["mitstack.app"]) where resource.attributes["mitstack.app"] != nil
+          - set(datapoint.attributes["k8s.node.name"], resource.attributes["k8s.node.name"]) where resource.attributes["k8s.node.name"] != nil
+          - set(datapoint.attributes["k8s.namespace.name"], resource.attributes["k8s.namespace.name"]) where resource.attributes["k8s.namespace.name"] != nil
+          - set(datapoint.attributes["k8s.persistentvolumeclaim.name"], resource.attributes["k8s.persistentvolumeclaim.name"]) where resource.attributes["k8s.persistentvolumeclaim.name"] != nil
+          - set(datapoint.attributes["k8s.pod.name"], resource.attributes["k8s.pod.name"]) where resource.attributes["k8s.pod.name"] != nil
+          - set(datapoint.attributes["mitstack.subscription.id"], resource.attributes["mitstack.subscription.id"])
+      batch: {}
+    extensions:
+      bearertokenauth:
+        header: {{ printf "%q" .TokenHeader }}
+        scheme: ""
+        filename: /var/run/mitstack-telemetry/token
+    exporters:
+      otlp_http/metrics:
+        metrics_endpoint: {{ printf "%q" .MetricsEndpoint }}
+        auth: {authenticator: bearertokenauth}
+      otlp_http/logs:
+        logs_endpoint: {{ printf "%q" .LogsEndpoint }}
+        auth: {authenticator: bearertokenauth}
+{{- end }}
+{{- define "container" }}
+      serviceAccountName: mitstack-telemetry
+      containers:
+        - name: collector
+          image: {{ .Image }}
+          args: [--config=/etc/mitstack-telemetry/config.yaml]
+          env:
+            - name: K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: K8S_NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {memory: 512Mi}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/mitstack-telemetry
+              readOnly: true
+            - name: token
+              mountPath: /var/run/mitstack-telemetry
+              readOnly: true
+{{- end }}
+{{- define "token" }}
+        - name: token
+          secret:
+            secretName: mitstack-telemetry-token
+            items:
+              - key: token
+                path: token
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mitstack-telemetry-node
+  namespace: kube-system
+data:
+  config.yaml: |
+    receivers:
+      file_log:
+        include: [/var/log/pods/*/*/*.log]
+        exclude: [/var/log/pods/kube-system_mitstack-telemetry-*/*/*.log]
+        include_file_path: true
+        operators:
+          - type: container
+      kubelet_stats:
+        auth_type: serviceAccount
+        endpoint: https://${env:K8S_NODE_IP}:10250
+        metric_groups: [node, pod, container, volume]
+        extra_metadata_labels: [k8s.volume.type]
+        metrics:
+          k8s.pod.volume.usage:
+            enabled: true
+    processors:
+      k8s_attributes:
+        auth_type: serviceAccount
+        wait_for_metadata: true
+        filter:
+          node_from_env_var: K8S_NODE_NAME
+        extract:
+          labels:
+            - {tag_name: mitstack.app, key: mitstack.dev/app, from: namespace}
+{{- template "shared" . }}
+    service:
+      extensions: [bearertokenauth]
+      pipelines:
+        logs:
+          receivers: [file_log]
+          processors: [memory_limiter, k8s_attributes, redaction, resource/subscription, batch]
+          exporters: [otlp_http/logs]
+        metrics:
+          receivers: [kubelet_stats]
+          processors: [memory_limiter, k8s_attributes, redaction, resource/subscription, transform/datapoints, batch]
+          exporters: [otlp_http/metrics]
+# Talos trims each document before it decodes it, so this line keeps the value above whole.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mitstack-telemetry-cluster
+  namespace: kube-system
+data:
+  config.yaml: |
+    receivers:
+      k8s_objects:
+        auth_type: serviceAccount
+        objects:
+          - {name: events, group: events.k8s.io, mode: watch}
+      k8s_cluster:
+        auth_type: serviceAccount
+    processors:
+      k8s_attributes:
+        auth_type: serviceAccount
+        wait_for_metadata: true
+        extract:
+          labels:
+            - {tag_name: mitstack.app, key: mitstack.dev/app, from: namespace}
+{{- template "shared" . }}
+    service:
+      extensions: [bearertokenauth]
+      pipelines:
+        logs:
+          receivers: [k8s_objects]
+          processors: [memory_limiter, k8s_attributes, redaction, resource/subscription, batch]
+          exporters: [otlp_http/logs]
+        metrics:
+          receivers: [k8s_cluster]
+          processors: [memory_limiter, k8s_attributes, redaction, resource/subscription, transform/datapoints, batch]
+          exporters: [otlp_http/metrics]
+# Talos trims each document before it decodes it, so this line keeps the value above whole.
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: mitstack-telemetry-node
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mitstack-telemetry-node
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mitstack-telemetry-node
+    spec:
+      priorityClassName: system-node-critical
+      tolerations:
+        - operator: Exists
+      securityContext:
+        supplementalGroups: [0]
+{{- template "container" . }}
+            - name: pods
+              mountPath: /var/log/pods
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: mitstack-telemetry-node
+{{- template "token" }}
+        - name: pods
+          hostPath:
+            path: /var/log/pods
+            type: Directory
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mitstack-telemetry-cluster
+  namespace: kube-system
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mitstack-telemetry-cluster
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mitstack-telemetry-cluster
+    spec:
+      priorityClassName: system-cluster-critical
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+{{- template "container" . }}
+      volumes:
+        - name: config
+          configMap:
+            name: mitstack-telemetry-cluster
+{{- template "token" }}

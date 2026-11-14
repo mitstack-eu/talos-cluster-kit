@@ -44,7 +44,7 @@ func reportRules(t *testing.T) map[string][]any {
 			}
 			roleKind, roleName := testutil.Field(t, binding, "roleRef", "kind").(string), testutil.Field(t, binding, "roleRef", "name").(string)
 			namespace, _ := testutil.Field(t, binding, "metadata", "namespace").(string)
-			role := named(t, docs, roleKind, roleName)
+			role := testutil.Named(t, docs, roleKind, roleName)
 			if roleKind == "Role" {
 				require.Equal(t, namespace, testutil.Field(t, role, "metadata", "namespace"), "binding %s names a Role of its own namespace", roleName)
 			}
@@ -79,7 +79,7 @@ func TestManifests_LetsTheReportListSealedSecretsInArgoCDAndDryRunFixturesInTheP
 func TestManifests_TheProbeNamespaceEnforcesPodSecurityRestrictedAndHoldsEachRulesFixtureUnderTheRulesName(t *testing.T) {
 	docs := testutil.Documents(t, manifests(t, reportURL))
 
-	namespace := named(t, docs, "Namespace", probeNamespace)
+	namespace := testutil.Named(t, docs, "Namespace", probeNamespace)
 	assert.Equal(t, map[string]string{"pod-security.kubernetes.io/enforce": "restricted", "pod-security.kubernetes.io/enforce-version": "latest"},
 		stringMap(testutil.Field(t, namespace, "metadata", "labels")))
 	fixtures := inNamespace(t, testutil.Kind(docs, "ConfigMap"), probeNamespace)
@@ -102,8 +102,8 @@ func TestManifests_TheProbeNamespaceEnforcesPodSecurityRestrictedAndHoldsEachRul
 func TestManifests_RefusesEveryRequestInTheProbeNamespaceThatIsNotADryRun(t *testing.T) {
 	docs := testutil.Documents(t, manifests(t, reportURL))
 
-	policy := named(t, docs, "ValidatingAdmissionPolicy", "mitstack-admission-probe-dry-run-only")
-	binding := named(t, docs, "ValidatingAdmissionPolicyBinding", "mitstack-admission-probe-dry-run-only")
+	policy := testutil.Named(t, docs, "ValidatingAdmissionPolicy", "mitstack-admission-probe-dry-run-only")
+	binding := testutil.Named(t, docs, "ValidatingAdmissionPolicyBinding", "mitstack-admission-probe-dry-run-only")
 	assert.Equal(t, "mitstack-admission-probe-dry-run-only", testutil.Field(t, binding, "spec", "policyName"))
 	assert.Equal(t, []any{"Deny"}, testutil.Field(t, binding, "spec", "validationActions"))
 	assert.Equal(t, map[string]any{"matchLabels": map[string]any{"kubernetes.io/metadata.name": probeNamespace}},

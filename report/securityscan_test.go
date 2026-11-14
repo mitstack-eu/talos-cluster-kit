@@ -202,8 +202,8 @@ func TestManifests_RunsKubeBenchAsRootOnTheHostsConfigWithNoTokenAndKubescapeAsN
 func TestManifests_LetsTheScanReadNoSecret(t *testing.T) {
 	docs := testutil.Documents(t, manifests(t, reportURL))
 
-	named(t, inNamespace(t, testutil.Kind(docs, "ConfigMap"), "kube-system"), "ConfigMap", "mitstack-security-scans")
-	cluster := named(t, docs, "ClusterRole", "mitstack-security-scan")
+	testutil.Named(t, inNamespace(t, testutil.Kind(docs, "ConfigMap"), "kube-system"), "ConfigMap", "mitstack-security-scans")
+	cluster := testutil.Named(t, docs, "ClusterRole", "mitstack-security-scan")
 	var resources []any
 	for _, rule := range testutil.Field(t, cluster, "rules").([]any) {
 		assert.Equal(t, []any{"get", "list"}, testutil.Field(t, rule, "verbs"), "the scan only reads: %v", rule)
@@ -215,5 +215,5 @@ func TestManifests_LetsTheScanReadNoSecret(t *testing.T) {
 		assert.Contains(t, resources, needed, "kubescape's NSA controls read %s", needed)
 	}
 	assert.Equal(t, []any{map[string]any{"kind": "ServiceAccount", "name": "mitstack-security-scan", "namespace": "kube-system"}},
-		testutil.Field(t, named(t, docs, "ClusterRoleBinding", "mitstack-security-scan"), "subjects"))
+		testutil.Field(t, testutil.Named(t, docs, "ClusterRoleBinding", "mitstack-security-scan"), "subjects"))
 }

@@ -281,7 +281,7 @@ func (w *workers) problems() string {
 func TestReplaceStep_AConfirmedUpgradeDrainsTheNamedWorkerRemovesItsNodeObjectAndBootsItsSuccessorFromTheWorkerImageInItsLocation(t *testing.T) {
 	s, w := withWorkers(t)
 	old, other, network := w.worker("fsn1-1"), w.worker("nbg1-1"), w.network()
-	var off, objectWentFirst bool
+	var off, deleted, objectWentFirst bool
 	var podsWhenOff []string
 	watch := func() bool {
 		srv, stands := s.cloud.Servers[old.ID]
@@ -293,8 +293,8 @@ func TestReplaceStep_AConfirmedUpgradeDrainsTheNamedWorkerRemovesItsNodeObjectAn
 				}
 			}
 		}
-		if stands {
-			objectWentFirst = !w.objects[old.Name]
+		if !stands && !deleted {
+			deleted, objectWentFirst = true, !w.objects[old.Name]
 		}
 		return false
 	}

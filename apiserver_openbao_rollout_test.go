@@ -28,14 +28,18 @@ const (
 	rolloutAccount     = "mitstack-openbao-rollout"
 	rolloutOldRevision = "openbao-5c4b3a291"
 	rolloutNewRevision = "openbao-7d9f8c6b5"
+	// otherBudget stands for each disruption budget in OpenBao's namespace but OpenBao's own.
+	otherBudget = "mitstack-apiserver-check-other"
 	// rolloutNode is the node each member is bound to, which no kubelet serves, so a member's deletion waits for a force.
 	rolloutNode = "shop-node-fsn1"
 )
 
 // standInKubelet answers kubectl's exec into a member, which the bare API server has no kubelet to run, once the API
-// server has authorized it, and passes every other call to the tools image's kubectl.
+// server has authorized it, runs kubectl's wait at the verbosity that logs when its watch holds the budget, and passes
+// every other call to the tools image's kubectl.
 const standInKubelet = `#!/usr/bin/env bash
 set -euo pipefail
+[ "$1" != wait ] || exec /usr/local/bin/kubectl -v=6 "$@"
 [ "$1" = exec ] || exec /usr/local/bin/kubectl "$@"
 if refusal=$(/usr/local/bin/kubectl "$@" 2>&1); then
   echo "stand-in kubelet: kubectl $* ran with no kubelet to run it" >&2
@@ -78,8 +82,8 @@ func (s *apiServer) budgetCounts(t *testing.T, healthy int) {
 
 type evictedMember struct {
 	Metadata struct {
+		Name              string
 		DeletionTimestamp string
-		Labels            map[string]string
 	}
 }
 
@@ -111,6 +115,7 @@ func TestAPIServer_OpenBaosRolloutEvictsEachOutdatedStandbyAndThenTheActiveMembe
 		server.admin(t, openBaoMember(t, statefulSet, name, rolloutOldRevision, name == "openbao-1"), "create", "-f", "-")
 		server.memberRuns(t, name)
 	}
+	server.admin(t, nil, "create", "poddisruptionbudget", otherBudget, "-n", "openbao", "--selector=app.kubernetes.io/name=none", "--min-available=1")
 
 	t.Run("the account may make each call the rollout makes in OpenBao's namespace and no other", func(t *testing.T) {
 		for _, tc := range []struct {
@@ -121,16 +126,37 @@ func TestAPIServer_OpenBaosRolloutEvictsEachOutdatedStandbyAndThenTheActiveMembe
 			{"watch", "pods", "", "openbao", "yes"},
 			{"create", "pods", "eviction", "openbao", "yes"},
 			{"create", "pods", "exec", "openbao", "yes"},
+			{"get", "poddisruptionbudgets.policy/openbao", "", "openbao", "yes"},
+			{"watch", "poddisruptionbudgets.policy/openbao", "", "openbao", "yes"},
 			{"delete", "pods", "", "openbao", "no"},
 			{"patch", "statefulsets.apps", "", "openbao", "no"},
 			{"get", "secrets", "", "openbao", "no"},
 			{"create", "pods", "eviction", "kube-system", "no"},
 			{"create", "pods", "exec", "kube-system", "no"},
+			{"get", "poddisruptionbudgets.policy/" + otherBudget, "", "openbao", "no"},
+			{"list", "poddisruptionbudgets.policy", "", "openbao", "no"},
+			{"watch", "poddisruptionbudgets.policy", "", "openbao", "no"},
+			{"patch", "poddisruptionbudgets.policy/openbao", "", "openbao", "no"},
 		} {
 			out, _ := server.asIn(t, "openbao", rolloutAccount, nil, "kubectl", "auth", "can-i", tc.verb, tc.resource, "--subresource="+tc.subresource, "-n", tc.namespace)
 
 			assert.Equal(t, tc.answer, strings.TrimSpace(out), "may the rollout's account %s %s %s in %s", tc.verb, tc.resource, tc.subresource, tc.namespace)
 		}
+	})
+
+	t.Run("the account waits on OpenBao's budget by name, which lists no budget, and on no other budget", func(t *testing.T) {
+		server.budgetCounts(t, 3)
+		wait := []string{"kubectl", "wait", "-v=6", "--for=jsonpath={.status.disruptionsAllowed}=1", "--timeout=3s", "-n", "openbao"}
+
+		waited, err := server.asIn(t, "openbao", rolloutAccount, nil, append(wait, "poddisruptionbudget/openbao")...)
+		other, otherErr := server.asIn(t, "openbao", rolloutAccount, nil, append(wait, "poddisruptionbudget/"+otherBudget)...)
+
+		require.NoError(t, err, waited)
+		assert.Contains(t, waited, "poddisruptionbudget.policy/openbao condition met")
+		assert.Regexp(t, `verb="GET" url="[^"]*/apis/policy/v1/namespaces/openbao/poddisruptionbudgets\?[^"]*fieldSelector=metadata\.name%3Dopenbao&[^"]*sendInitialEvents=true[^"]*watch=true" status="200 OK"`,
+			waited, "kubectl wait streams its first read of the budget as a watch by name, which the rule naming the budget holds")
+		require.Error(t, otherErr)
+		assert.Contains(t, other, `poddisruptionbudgets.policy "`+otherBudget+`" is forbidden`)
 	})
 
 	server.admin(t, stream(t, job), "apply", "--server-side", "--dry-run=server", "--field-manager="+rollout.ArgoCDManager, "--as="+argoCDUser, "-f", "-")
@@ -142,26 +168,37 @@ func TestAPIServer_OpenBaosRolloutEvictsEachOutdatedStandbyAndThenTheActiveMembe
 	container := testutil.Field(t, pod, "containers", "0")
 	args := append(containerArgs(t, job, pod, container, nil), "-v", standIn+":/stand-in:ro",
 		"-e", "PATH=/stand-in/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
-	rolloutJob := func() *exec.Cmd {
-		return server.asInCommand(t, "openbao", testutil.Field(t, pod, "serviceAccountName").(string), args, command(t, container)...)
+	rolloutJob := func(env ...string) *exec.Cmd {
+		over := slices.Clone(args)
+		for _, variable := range env {
+			over = append(over, "-e", variable)
+		}
+		return server.asInCommand(t, "openbao", testutil.Field(t, pod, "serviceAccountName").(string), over, command(t, container)...)
 	}
-
-	t.Run("an eviction the disruption budget refuses, as it does until it counts a returned member, fails the Job and evicts no member", func(t *testing.T) {
-		server.budgetCounts(t, 2)
-
-		out, err := rolloutJob().CombinedOutput()
-
-		require.Error(t, err, "the rollout printed:\n%s", out)
-		assert.Contains(t, string(out), "openbao-rollout: the API server refused to evict openbao-0")
+	deleting := func(t *testing.T) []string {
 		var members struct{ Items []evictedMember }
 		require.NoError(t, json.Unmarshal(server.admin(t, nil, "get", "pods", "-n", "openbao", "-o", "json"), &members))
 		require.Len(t, members.Items, 3)
+		var names []string
 		for _, m := range members.Items {
-			assert.Empty(t, m.Metadata.DeletionTimestamp, "a member's deletion after the refusal")
+			if m.Metadata.DeletionTimestamp != "" {
+				names = append(names, m.Metadata.Name)
+			}
 		}
+		return names
+	}
+
+	t.Run("a budget that allows no disruption within the bound fails the Job, which evicts no member", func(t *testing.T) {
+		server.budgetCounts(t, 2)
+
+		out, err := rolloutJob("ROLLOUT_CALL_TIMEOUT=3s").CombinedOutput()
+
+		require.Error(t, err, "the rollout printed:\n%s", out)
+		assert.Contains(t, string(out), "OpenBao's disruption budget openbao allowed no disruption within 3s, so openbao-0 is not evicted and no member moves")
+		assert.Empty(t, deleting(t), "the members being deleted after the run")
 	})
 
-	server.budgetCounts(t, 3)
+	server.budgetCounts(t, 2)
 	cmd := rolloutJob()
 	printed, err := cmd.StdoutPipe()
 	require.NoError(t, err)
@@ -169,20 +206,34 @@ func TestAPIServer_OpenBaosRolloutEvictsEachOutdatedStandbyAndThenTheActiveMembe
 	require.NoError(t, cmd.Start())
 
 	evictedLine := regexp.MustCompile(`^openbao-rollout: evicted (\S+) `)
+	waitingLine := regexp.MustCompile(`^openbao-rollout: waiting up to \S+ for OpenBao's disruption budget openbao to allow a disruption before evicting (\S+)$`)
+	watchHolds := regexp.MustCompile(`reflector\.go:\d+\] "Caches populated"`)
 	leader := "openbao-1"
 	var out strings.Builder
-	var order []string
+	var order, waited []string
+	freed := false
 	for lines := bufio.NewScanner(printed); lines.Scan(); {
 		out.WriteString(lines.Text() + "\n")
+		if m := waitingLine.FindStringSubmatch(lines.Text()); m != nil && len(order) == 0 {
+			waited = append(waited, m[1])
+			continue
+		}
+		if watchHolds.MatchString(lines.Text()) && len(order) == 0 && !freed {
+			var budget budgetStatus
+			require.NoError(t, json.Unmarshal(server.admin(t, nil, "get", "poddisruptionbudget", "openbao", "-n", "openbao", "-o", "json"), &budget))
+			assert.Equal(t, 0, budget.Status.DisruptionsAllowed, "the budget allows no disruption while the rollout's wait holds it")
+			assert.Empty(t, deleting(t), "the members being deleted while the rollout waits on the budget")
+			server.budgetCounts(t, 3)
+			freed = true
+			continue
+		}
 		m := evictedLine.FindStringSubmatch(lines.Text())
 		if m == nil {
 			continue
 		}
 		name := m[1]
 		order = append(order, name)
-		var evicted evictedMember
-		require.NoError(t, json.Unmarshal(server.admin(t, nil, "get", "pod", name, "-n", "openbao", "-o", "json"), &evicted))
-		assert.NotEmpty(t, evicted.Metadata.DeletionTimestamp, "the eviction of %s deletes its pod gracefully", name)
+		assert.Equal(t, []string{name}, deleting(t), "the eviction of %s deletes its pod gracefully, and no other", name)
 		var budget budgetStatus
 		require.NoError(t, json.Unmarshal(server.admin(t, nil, "get", "poddisruptionbudget", "openbao", "-n", "openbao", "-o", "json"), &budget))
 		assert.Equal(t, 0, budget.Status.DisruptionsAllowed, "the budget allows no other disruption while %s is down", name)
@@ -193,14 +244,15 @@ func TestAPIServer_OpenBaosRolloutEvictsEachOutdatedStandbyAndThenTheActiveMembe
 			server.admin(t, nil, "label", "pod", leader, "-n", "openbao", "--overwrite", "openbao-active=true")
 		}
 		server.admin(t, openBaoMember(t, statefulSet, name, rolloutNewRevision, name == leader), "create", "-f", "-")
-		// Each write of the stand-in runs a container, so it counts the member back before marking it Ready, and the
-		// rollout's next eviction cannot reach the budget before the count does.
-		server.budgetCounts(t, 3)
+		// The disruption controller counts a member back only once it reads Ready, so the stand-in does the same.
 		server.memberRuns(t, name)
+		server.budgetCounts(t, 3)
 	}
 	err = cmd.Wait()
 
 	require.NoError(t, err, "the rollout printed:\n%s", out.String())
+	assert.Equal(t, []string{"openbao-0"}, waited, "the rollout said it waits on the budget before its first eviction")
+	assert.True(t, freed, "the rollout's wait held the budget while it allowed no disruption, and evicted only once it allowed one")
 	assert.Equal(t, []string{"openbao-0", "openbao-2", "openbao-1"}, order, "the standbys in name order, then the active member, whatever its ordinal")
 	assert.Contains(t, out.String(), "the API server passed kubectl exec -n openbao openbao-1 -c openbao -- bao read -tls-skip-verify -format=json sys/leader on to the kubelet",
 		"the account's exec into a member passes the API server's authorization")

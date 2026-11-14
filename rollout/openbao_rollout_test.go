@@ -61,8 +61,8 @@ func TestRelease_RunsOpenBaosRolloutJobAfterEachSyncOfItsComponentUnderItsOwnAcc
 	assert.Nil(t, testutil.Field(t, job, "metadata", "annotations", "argocd.argoproj.io/sync-wave"), "a PostSync hook runs after every wave")
 	assert.Equal(t, "talos-cluster-kit", testutil.Field(t, job, "metadata", "labels", "mitstack.dev/rendered-by"))
 	assert.Equal(t, 0, testutil.Field(t, job, "spec", "backoffLimit"), "Argo CD's own retry runs a failed rollout again")
-	assert.Equal(t, 1230, testutil.Field(t, job, "spec", "activeDeadlineSeconds"),
-		"past the 300 seconds each of the three members may take to return and the 30 seconds each of its three calls may take")
+	assert.Equal(t, 1320, testutil.Field(t, job, "spec", "activeDeadlineSeconds"),
+		"past the 300 seconds each of the three members may take to return and the 30 seconds each of its four bounded calls may take")
 	assert.Equal(t, map[string]any{"app.kubernetes.io/name": "mitstack-openbao-rollout", "mitstack.dev/app": "openbao"},
 		testutil.Field(t, job, "spec", "template", "metadata", "labels"), "the label the hosting flows select the Job by, and the app label the admission policy asks for")
 	assert.Equal(t, "mitstack-openbao-rollout", testutil.Field(t, pod, "serviceAccountName"))
@@ -75,12 +75,15 @@ func TestRelease_RunsOpenBaosRolloutJobAfterEachSyncOfItsComponentUnderItsOwnAcc
 	assert.Equal(t, []any{
 		map[string]any{"name": "ROLLOUT_NAMESPACE", "valueFrom": map[string]any{"fieldRef": map[string]any{"fieldPath": "metadata.namespace"}}},
 		map[string]any{"name": "ROLLOUT_STATEFULSET", "value": "openbao"},
+		map[string]any{"name": "ROLLOUT_DISRUPTION_BUDGET", "value": "openbao"},
 		map[string]any{"name": "ROLLOUT_MEMBER_TIMEOUT", "value": "300s"},
 		map[string]any{"name": "ROLLOUT_CALL_TIMEOUT", "value": "30s"},
 		map[string]any{"name": "HOME", "value": "/tmp"},
 	}, testutil.Field(t, c, "env"))
 	assert.Equal(t, "openbao", testutil.Field(t, stated(t, file, testutil.ObjectRef{Kind: "StatefulSet", Name: "openbao"}), "metadata", "namespace"),
 		"the StatefulSet the Job moves sits in the Job's own namespace")
+	assert.Equal(t, "openbao", testutil.Field(t, stated(t, file, testutil.ObjectRef{Kind: "PodDisruptionBudget", Name: "openbao"}), "metadata", "namespace"),
+		"the disruption budget the Job waits on sits in the Job's own namespace")
 	assert.Equal(t, true, testutil.Field(t, pod, "securityContext", "runAsNonRoot"))
 	assert.Equal(t, true, testutil.Field(t, security, "readOnlyRootFilesystem"))
 	assert.Equal(t, false, testutil.Field(t, security, "allowPrivilegeEscalation"))
@@ -142,6 +145,13 @@ const fakeRolloutKubectl = `case "$1 $2" in
     ;;
   *) cat "$FAKE_DIR/pods.json" ;;
   esac
+  ;;
+"wait "*)
+  case ${FAKE_BUDGET:-allows} in
+  hold) exec tail -f /dev/null ;;
+  refuse) echo 'Error from server (Forbidden): poddisruptionbudgets.policy "openbao" is forbidden' >&2; exit 1 ;;
+  esac
+  echo poddisruptionbudget.policy/openbao condition met
   ;;
 "create --raw") exit "${FAKE_EVICT_EXIT:-0}" ;;
 "exec -n") cat "$FAKE_DIR/sys-leader-$4.json" ;;
@@ -249,7 +259,7 @@ func TestOpenBaoRollout_EvictsEachOutdatedStandbyOneAtATimeAndThenTheActiveMembe
 	}
 	var want []string
 	for _, name := range []string{"openbao-0", "openbao-2", "openbao-1"} {
-		want = append(want, read("openbao-1"), "evict "+name, "watch "+name, read(name))
+		want = append(want, read("openbao-1"), "budget", "evict "+name, "watch "+name, read(name))
 	}
 	var got []string
 	for _, call := range run.calls[2:] {
@@ -257,6 +267,10 @@ func TestOpenBaoRollout_EvictsEachOutdatedStandbyOneAtATimeAndThenTheActiveMembe
 		case strings.HasPrefix(call, "kubectl create --raw "):
 			assert.Regexp(t, `^kubectl create --raw /api/v1/namespaces/openbao/pods/\S+/eviction -f \S+$`, call, "an eviction through the Eviction API")
 			got = append(got, "evict "+regexp.MustCompile(`pods/(\S+)/eviction`).FindStringSubmatch(call)[1])
+		case strings.HasPrefix(call, "kubectl wait "):
+			assert.Equal(t, "kubectl wait --for=jsonpath={.status.disruptionsAllowed}=1 --timeout=-1s poddisruptionbudget/openbao -n openbao", call,
+				"a wait on OpenBao's one budget until it allows a disruption, which timeout alone bounds")
+			got = append(got, "budget")
 		case strings.Contains(call, " --watch "):
 			assert.Regexp(t, `^kubectl get pods -n openbao --field-selector=metadata\.name=\S+ --watch -o jsonpath=`, call, "a watch of one member's pod")
 			got = append(got, "watch "+regexp.MustCompile(`metadata\.name=(\S+)`).FindStringSubmatch(call)[1])
@@ -264,8 +278,38 @@ func TestOpenBaoRollout_EvictsEachOutdatedStandbyOneAtATimeAndThenTheActiveMembe
 			got = append(got, call)
 		}
 	}
-	assert.Equal(t, want, got, "for each member: the leader's commit, the eviction, the watch until the member returns, then the member's own index")
+	assert.Equal(t, want, got, "for each member: the leader's commit, the budget's allowance, the eviction, the watch until the member returns, then "+
+		"the member's own index")
 	assert.Contains(t, run.out, "openbao-1 runs revision "+newRevision+", unsealed, at Raft index 100")
+	for _, name := range []string{"openbao-0", "openbao-2", "openbao-1"} {
+		waiting := strings.Index(run.out, "openbao-rollout: waiting up to 30s for OpenBao's disruption budget openbao to allow a disruption before evicting "+name+"\n")
+		require.GreaterOrEqual(t, waiting, 0, "the rollout says it waits on the budget before evicting %s", name)
+		assert.Less(t, waiting, strings.Index(run.out, "evicted "+name), "it says so before the eviction of %s", name)
+	}
+}
+
+func TestOpenBaoRollout_EvictsNothingUnlessTheDisruptionBudgetAllowsADisruptionWithinItsBound(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  []string
+		says string
+	}{
+		{"a budget that allows no disruption within the bound", []string{"FAKE_BUDGET=hold", "ROLLOUT_CALL_TIMEOUT=1s"},
+			"OpenBao's disruption budget openbao allowed no disruption within 1s, so openbao-0 is not evicted and no member moves"},
+		{"a wait the API server refuses", []string{"FAKE_BUDGET=refuse"},
+			"kubectl could not wait on OpenBao's disruption budget openbao, so openbao-0 is not evicted and no member moves"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run := runRollout(t, rolloutCluster{
+				members: []map[string]any{standby("openbao-0", oldRevision), leader("openbao-1", oldRevision), standby("openbao-2", oldRevision)},
+				answers: caughtUp("openbao-0", "openbao-1", "openbao-2"),
+			}, tc.env...)
+
+			require.Error(t, run.err, run.out)
+			assert.Empty(t, run.evicted())
+			assert.Contains(t, run.out, tc.says)
+		})
+	}
 }
 
 func TestOpenBaoRollout_StopsAtAMemberThatReturnsBehindTheLeadersCommitAndEvictsNoOther(t *testing.T) {

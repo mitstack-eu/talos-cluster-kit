@@ -162,15 +162,17 @@ func TestHosting_KeepsOpenBaosMembersOnDeleteAndGivesEachPodTemplateTheChecksumO
 		"the pod template carries the checksum of the configuration the ConfigMap holds, so a new configuration is a new revision")
 }
 
-// rbacRules are a Role's rules as one "<group> <resource> <verb>" line for each right they grant.
+// rbacRules are a Role's rules as one "<group> <resource> <verb>" line for each right they grant, followed by the
+// names a rule limits the right to.
 func rbacRules(t *testing.T, role map[string]any) []string {
 	t.Helper()
 	var rights []string
 	for _, rule := range testutil.Field(t, role, "rules").([]any) {
+		names, _ := rule.(map[string]any)["resourceNames"].([]any)
 		for _, group := range testutil.Field(t, rule, "apiGroups").([]any) {
 			for _, resource := range testutil.Field(t, rule, "resources").([]any) {
 				for _, verb := range testutil.Field(t, rule, "verbs").([]any) {
-					rights = append(rights, fmt.Sprintf("%q %s %s", group, resource, verb))
+					rights = append(rights, strings.TrimSpace(fmt.Sprintf("%q %s %s %s", group, resource, verb, strings.TrimSpace(fmt.Sprintln(names...)))))
 				}
 			}
 		}
@@ -186,6 +188,9 @@ func TestHosting_GivesOpenBaosRolloutAnAccountThatMayReadTheMembersEvictOneAndRu
 
 	role := namedDocument(t, openBao, "Role", "mitstack-openbao-rollout")
 	binding := namedDocument(t, openBao, "RoleBinding", "mitstack-openbao-rollout")
+	budgets := testutil.Kind(testutil.Documents(t, openBao.Bytes), "PodDisruptionBudget")
+	require.Len(t, budgets, 1, "OpenBao's disruption budgets")
+	budget := testutil.Field(t, budgets[0], "metadata", "name")
 	var bound []string
 	for _, m := range slices.Concat(set.Served, set.Inline) {
 		for _, doc := range testutil.Documents(t, m.Bytes) {
@@ -199,7 +204,9 @@ func TestHosting_GivesOpenBaosRolloutAnAccountThatMayReadTheMembersEvictOneAndRu
 	assert.Equal(t, "openbao", testutil.Field(t, role, "metadata", "namespace"))
 	assert.Equal(t, []string{
 		`"" pods get`, `"" pods list`, `"" pods watch`, `"" pods/eviction create`, `"" pods/exec create`, `"apps" statefulsets get`,
-	}, rbacRules(t, role), "the rights the rollout uses: read and watch the members, read their StatefulSet, evict a member and read inside it")
+		`"policy" poddisruptionbudgets get ` + budget.(string), `"policy" poddisruptionbudgets watch ` + budget.(string),
+	}, rbacRules(t, role), "the rights the rollout uses: read and watch the members, read their StatefulSet, read and watch OpenBao's one "+
+		"disruption budget, evict a member and read inside it")
 	assert.Equal(t, map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": "mitstack-openbao-rollout"}, testutil.Field(t, binding, "roleRef"))
 	assert.Equal(t, []string{"RoleBinding openbao/mitstack-openbao-rollout"}, bound, "every binding that grants the account a right, so it holds none outside OpenBao's namespace")
 }

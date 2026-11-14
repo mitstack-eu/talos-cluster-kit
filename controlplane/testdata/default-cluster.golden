@@ -1,5 +1,5 @@
 versions v1.14.4 1.37.1
-served cilium components/cilium/cilium.yaml bc5f252af29a6b320b18210465c7f30649480b811ec165c8a9b9c53423a1054b
+served cilium components/cilium/cilium.yaml e163bf1be52ca349f6a2ad9f348beaa7b4a742626db61ada1b702cccdb42036e
 served cilium-policy-crd components/cilium/policy-crd.yaml 582273fd2b7d7238563ad2976ba36905ba818834ed71c58cad6e51bb4762088b
 served argocd components/argocd/argocd.yaml 6fad03e43bbba1f63c1de324e56a09b46389462b568d7b88370f353df735ae3a
 served kyverno components/kyverno/kyverno.yaml 8a091f0fb66ab28fe3464ee168969d8db575e07e4a26132616b53ca612928030

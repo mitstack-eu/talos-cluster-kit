@@ -1700,12 +1700,19 @@ configuration restarts that copy, and a release that leaves it alone does not.
 ### What the cluster copy scrapes
 
 The cluster copy also reads two Prometheus endpoints, each at a fixed address,
-and keeps only the one series of each that an alert rule reads:
+and keeps only the one series of each that an alert rule reads, beside the
+series the Collector adds about each scrape:
 
 | Job | Where it reads | What an alert rule reads from it |
 |---|---|---|
 | `argocd` | `argocd-application-controller-metrics.argocd.svc:8082`, the Service Argo CD's chart renders for its application controller | `argocd_app_info`, one series per Application, with its `name`, `namespace`, `dest_namespace`, `sync_status` and `health_status` |
 | `openbao` | Only on a cluster that hosts the platform: `/v1/sys/metrics` on `openbao-0`, `openbao-1` and `openbao-2`, each at `<member>.openbao-internal.openbao.svc:9101` over TLS, which the Collector checks against the `openbao-ca` ConfigMap | `vault_core_unsealed`, 1 while the member is unsealed and 0 while it is sealed, with the member's pod as `k8s_pod_name` |
+
+The filter judges only the series a target serves. On every scrape the
+Collector adds `up`, 1 when it read the target and 0 when it could not, and
+four series that time the scrape and count its samples. No filter drops them,
+so a target the Collector cannot reach reads `up` at 0 rather than going quiet,
+and the `openbao` job's `up` names the member as `k8s_pod_name`.
 
 Each scraped data point carries `mitstack.subscription.id` like every other
 metric, so a rule can group by it. Each OpenBao member serves its metrics on a
@@ -1731,10 +1738,12 @@ only once something deletes it, and each member copies its configuration when
 it starts. A release that changes that configuration
 therefore restarts no member, and each member opens 9101 at its next start.
 Until then the `openbao` job cannot reach that member, which then sends no
-`vault_core_unsealed`, so a rule that reads only that series stays quiet for
-it. `collector_test.go` starts OpenBao on its rendered configuration and sends the cluster copy's
+`vault_core_unsealed`, and its `up` reads 0, so only a rule that also reads
+`up` sees it. `collector_test.go` starts OpenBao on its rendered configuration and sends the cluster copy's
 request without a token: the sealed member answers with `vault_core_unsealed`
-at 0, and answers any other path on 9101 with 404.
+at 0, and answers any other path on 9101 with 404. It also runs the cluster
+copy where no target answers, and the backend receives `up` at 0 for Argo CD
+and for each member.
 
 ### How each record is tagged and masked
 

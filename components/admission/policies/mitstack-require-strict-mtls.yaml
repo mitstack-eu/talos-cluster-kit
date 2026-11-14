@@ -17,13 +17,13 @@ spec:
       - key: kubernetes.io/metadata.name
         operator: NotIn
         values: [kube-system, kube-public, kube-node-lease, argocd, kyverno, cnpg-system, mitstack-node, istio-system]
-  # The hosting set's own policies open only the ports the API server and outside web clients call.
+  # The hosting set's own policies open only the ports the API server, outside web clients and the telemetry Collector call.
   matchConditions:
   - name: not-one-of-the-hosting-sets-own
     expression: >-
       !(object.metadata.namespace + "/" + object.metadata.name in [
         "cert-manager/mitstack-cert-manager-webhook", "cert-manager/mitstack-trust-manager-webhook",
-        "external-secrets/mitstack-external-secrets-webhook", "traefik/mitstack-traefik-web"])
+        "external-secrets/mitstack-external-secrets-webhook", "traefik/mitstack-traefik-web", "openbao/mitstack-openbao-metrics"])
   variables:
   - name: plain
     expression: '["PERMISSIVE", "DISABLE"]'

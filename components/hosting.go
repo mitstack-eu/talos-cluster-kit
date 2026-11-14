@@ -28,6 +28,9 @@ const OpenBaoVolume = "openbao"
 // OpenBaoMembers is how many Raft members OpenBao runs, one per node, since a user volume's data is lost with its machine.
 const OpenBaoMembers = 3
 
+// openBaoName names OpenBao's component and its StatefulSet, whose pod for the member of ordinal i is openbao-i.
+const openBaoName = "openbao"
+
 const SealKeyBytes = 32
 
 // The write deploy key OpenBao's init Job pushes with.
@@ -139,7 +142,7 @@ func Hosting(in HostingInputs) (Set, error) {
 func HostingServed() Set {
 	set := Default()
 	set.Served = append(slices.Clone(set.Served),
-		Manifest{Name: "openbao", Path: "components/openbao/openbao.yaml", Bytes: openBaoManifest},
+		Manifest{Name: openBaoName, Path: "components/openbao/openbao.yaml", Bytes: openBaoManifest},
 		Manifest{Name: "cert-manager", Path: "components/cert-manager/cert-manager.yaml", Bytes: certManagerManifest},
 		Manifest{Name: "trust-manager", Path: "components/trust-manager/trust-manager.yaml", Bytes: trustManagerManifest},
 		Manifest{Name: "external-secrets", Path: "components/external-secrets/external-secrets.yaml", Bytes: externalSecretsManifest},

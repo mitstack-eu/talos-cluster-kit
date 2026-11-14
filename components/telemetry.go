@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"slices"
 
 	"github.com/mitstack-eu/talos-cluster-kit/internal/tmpl"
 )
@@ -51,23 +52,37 @@ var telemetryTemplate string
 
 var telemetryCollector = tmpl.Must("the telemetry Collector", telemetryTemplate)
 
-// TelemetryCollector renders the Collector pushing the cluster's events, metrics and app logs to e, tagged with subscription.
-func TelemetryCollector(e TelemetryExport, subscription string) ([]Manifest, error) {
+// TelemetryCollector renders the Collector pushing the cluster's events, metrics and app logs to e, tagged with
+// subscription, which also scrapes each OpenBao member the set runs.
+func (s Set) TelemetryCollector(e TelemetryExport, subscription string) ([]Manifest, error) {
 	if e.IsZero() {
 		return nil, nil
 	}
 	if err := e.validate(); err != nil {
 		return nil, err
 	}
-	out, err := tmpl.Execute(telemetryCollector, map[string]string{
+	out, err := tmpl.Execute(telemetryCollector, map[string]any{
 		"Image":           logCollectorImage.Ref(),
 		"SubscriptionID":  subscription,
 		"MetricsEndpoint": e.MetricsEndpoint,
 		"LogsEndpoint":    e.LogsEndpoint,
 		"TokenHeader":     e.TokenHeader,
+		"OpenBaoMembers":  s.openBaoMembers(),
 	})
 	if err != nil {
 		return nil, err
 	}
 	return []Manifest{{Name: TelemetryName, Path: "components/telemetry/collector.yaml", Bytes: out}}, nil
+}
+
+// openBaoMembers names the pod of each OpenBao member the set runs, or none for a set without OpenBao.
+func (s Set) openBaoMembers() []string {
+	if !slices.ContainsFunc(s.Served, func(m Manifest) bool { return m.Name == openBaoName }) {
+		return nil
+	}
+	members := make([]string, OpenBaoMembers)
+	for i := range members {
+		members[i] = fmt.Sprintf("%s-%d", openBaoName, i)
+	}
+	return members
 }

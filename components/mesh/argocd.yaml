@@ -61,3 +61,20 @@ spec:
     ports:
     - port: 15008
       protocol: TCP
+---
+# The telemetry Collector in kube-system holds no workload identity, so the application controller's metrics port alone
+# takes a call without one.
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: mitstack-argocd-controller-metrics
+  namespace: argocd
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-application-controller
+  mtls:
+    mode: STRICT
+  portLevelMtls:
+    8082:
+      mode: PERMISSIVE

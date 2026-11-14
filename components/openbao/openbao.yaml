@@ -62,6 +62,22 @@ data:
       tls_min_version = "tls13"
       tls_auto_reload = true
     }
+    listener "tcp" {
+      address = "[::]:9101"
+      cluster_address = "127.0.0.1:9102"
+      tls_cert_file = "/openbao/tls/tls.crt"
+      tls_key_file = "/openbao/tls/tls.key"
+      tls_min_version = "tls13"
+      tls_auto_reload = true
+      telemetry {
+        metrics_only = true
+        unauthenticated_metrics_access = true
+      }
+    }
+    telemetry {
+      disable_hostname = true
+      prometheus_retention_time = "24h"
+    }
     storage "raft" {
       path = "/openbao/data"
       retry_join {

@@ -41,7 +41,7 @@ the order a block uses them.
 
 | Package | What it does | Main entry points |
 |---|---|---|
-| `components` | Holds the pinned component set: Cilium, the custom resource definition (CRD) of Cilium's cluster-wide policy, Argo CD, the policy that keeps pods from Hetzner's metadata service at `169.254.169.254`, Istio's ambient mesh with its mesh-wide mutual TLS policy and the mesh probe's target, Kyverno with its four admission policies, the CloudNativePG operator with the database-slice policy, the local path provisioner behind the default StorageClass, and the node-local OpenTelemetry Collector. It also holds the boot set of a cluster that hosts the platform, and the telemetry Collector of a cluster that requires an OTLP backend, which [ships its events, metrics and app logs](#how-a-cluster-ships-its-events-metrics-and-app-logs) | `Default`, `Hosting`, `HostingServed`, `Set.PublishingIngress`, `Manifest` (whose `Name` is a component's name), `Set.Images`, `LogCollector`, `TelemetryCollector`, `TelemetryExport`, `ParseImage` |
+| `components` | Holds the pinned component set: Cilium, the custom resource definition (CRD) of Cilium's cluster-wide policy, Argo CD, the policy that keeps pods from Hetzner's metadata service at `169.254.169.254`, Istio's ambient mesh with its mesh-wide mutual TLS policy and the mesh probe's target, Kyverno with its four admission policies, the CloudNativePG operator with the database-slice policy, the local path provisioner behind the default StorageClass, and the node-local OpenTelemetry Collector. It also holds the boot set of a cluster that hosts the platform, and the telemetry Collector of a cluster that requires an OTLP backend, which [ships its events, metrics and app logs](#how-a-cluster-ships-its-events-metrics-and-app-logs) | `Default`, `Hosting`, `HostingServed`, `Set.PublishingIngress`, `Manifest` (whose `Name` is a component's name), `Set.Images`, `LogCollector`, `Set.TelemetryCollector`, `TelemetryExport`, `ParseImage` |
 | `nodeconfig` | Renders a control-plane node's or a worker node's machine configuration with Talos's own `machinery` module and validates it against Talos's schema | `Render`, `RenderWorker`, `Cluster`, `Node`, `NewSecrets`, `ParseSecrets`, `Secrets.AdminTalosconfig` |
 | `image` | Runs imager, Sidero Labs' open-source image builder, with the `hcloud` or the `metal` profile, and discards its output | `Run`, `Build` |
 | `mirror` | Lists every image the nodes pull, each by digest | `List`, `Render` |
@@ -906,7 +906,7 @@ explains.
 | `mitstack-require-app-label` | Refuses a pod without a non-empty `mitstack.dev/app` label, which an app's network policies select its pods by | `components/admission/policies/mitstack-require-app-label.yaml` |
 | `mitstack-generate-default-deny` | Gives each namespace, new or existing, the NetworkPolicy `mitstack-default-deny`, which blocks every connection its pods make or take until an app's own policy allows it | `components/admission/policies/mitstack-generate-default-deny.yaml` |
 | `mitstack-require-mesh` | Refuses a pod on the host network and a pod annotated `sidecar.istio.io/status`, the two kinds of pod the mesh leaves out. [The mesh section](#how-every-call-between-pods-proves-who-makes-it) explains the mesh | `components/admission/policies/mitstack-require-mesh.yaml` |
-| `mitstack-require-strict-mtls` | Refuses a PeerAuthentication, Istio's policy for which calls a pod takes, that lets a pod or one of its ports take a call with no workload identity. It admits by name only the four exceptions of the hosting set, the extra components a cluster that hosts the platform runs. The CloudNativePG operator's exception sits in `cnpg-system`, which the policy skips | `components/admission/policies/mitstack-require-strict-mtls.yaml` |
+| `mitstack-require-strict-mtls` | Refuses a PeerAuthentication, Istio's policy for which calls a pod takes, that lets a pod or one of its ports take a call with no workload identity. It admits by name only the five exceptions of the hosting set, the extra components a cluster that hosts the platform runs. The CloudNativePG operator's exception sits in `cnpg-system`, which the policy skips | `components/admission/policies/mitstack-require-strict-mtls.yaml` |
 | `mitstack-disallow-host-path` | Refuses a pod, or a Deployment or other controller whose template makes a pod, that mounts a host path, since a host path reaches the node's file system | `components/admission/policies/mitstack-disallow-host-path.yaml` |
 | `mitstack-require-resource-limits` | Refuses a pod, or a controller whose template makes one, with a container or init container that sets no CPU limit or no memory limit. A LimitRange fills limits only into the pod, after the controller has been admitted, so the template must carry them | `components/admission/policies/mitstack-require-resource-limits.yaml` |
 | `mitstack-restrict-image-registries` | Refuses a pod, or a controller whose template makes one, with a container, init container or ephemeral container whose image is outside `ghcr.io/mitstack-eu/` and mitstack's registry in Amazon ECR, `839001574838.dkr.ecr.eu-central-1.amazonaws.com/`. It admits by exact reference only the six images talos-cluster-kit pins for pods an operator or a block starts in an app namespace: cert-manager's ACME solver, the CloudNativePG operator, PgBouncer and Postgres 16 images, the sidecar image [the Barman Cloud plugin](#how-a-postgres-cluster-backs-up) adds to a Postgres pod, and `docker.io/library/busybox:1.37.0` at the digest the policy names, the image that the local path provisioner and the mesh probe run and the kube-app-deploy block runs in its `secrets-import` Job. Another busybox tag or digest is refused. Its second policy, `mitstack-restrict-image-registries-ephemeral-containers`, judges a debug container the same way | `components/admission/policies/mitstack-restrict-image-registries.yaml` |
@@ -1136,17 +1136,21 @@ matters, an AuthorizationPolicy, Istio's rule for which caller may reach which
 port, which ztunnel enforces, limits the ports again. One is
 `mitstack-database-instance-ports` for a Postgres instance.
 
-Two kinds of caller hold no workload identity. The API server calls each
-admission webhook, and a web client outside the cluster calls Traefik.
+Three kinds of caller hold no workload identity. The API server calls each
+admission webhook, a web client outside the cluster calls Traefik, and the
+telemetry Collector's cluster copy, which runs in `kube-system` outside the
+mesh, [scrapes Argo CD and OpenBao](#what-the-cluster-copy-scrapes).
 A PeerAuthentication with a port-level exception lets that port alone take a
 call without an identity, and the Cilium policies still decide who reaches it.
 
 | PeerAuthentication | Port that takes a call without an identity | Who calls it |
 |---|---|---|
 | `cnpg-system/mitstack-cloudnative-pg-webhook` | 9443 on the CloudNativePG operator | The API server |
+| `argocd/mitstack-argocd-controller-metrics` | 8082 on Argo CD's application controller, its metrics port | The telemetry Collector's cluster copy |
 | `cert-manager/mitstack-cert-manager-webhook` | 10250 on cert-manager's webhook, in the hosting set | The API server |
 | `cert-manager/mitstack-trust-manager-webhook` | 6443 on trust-manager, in the hosting set | The API server |
 | `external-secrets/mitstack-external-secrets-webhook` | 10250 on the External Secrets webhook, in the hosting set | The API server |
+| `openbao/mitstack-openbao-metrics` | 9101 on each OpenBao member, in the hosting set, the listener that serves its metrics alone | The telemetry Collector's cluster copy |
 | `traefik/mitstack-traefik-web` | 8000 and 8443 on Traefik, in the hosting set, the container ports behind its NodePorts 30080 and 30081 | Web clients, through the load balancers |
 
 Cilium's Istio page asks for two settings when Cilium replaces kube-proxy.
@@ -1672,7 +1676,7 @@ plane.Telemetry = components.TelemetryExport{
 ```
 
 `Plane.Release` then carries the Collector, and the build renders the lease job
-and its empty Secret into the cluster tokens. `components.TelemetryCollector`
+and its empty Secret into the cluster tokens. `Set.TelemetryCollector`
 refuses an export whose endpoint is not an https address with a host, whose
 header is no header name, or that names no resource. A plane that leaves
 `Telemetry` at zero runs no Collector, no lease job and no Secret, because a
@@ -1686,7 +1690,40 @@ node-local Collector, in two copies:
 | Copy | How it runs | What it reads |
 |---|---|---|
 | `mitstack-telemetry-node` | A DaemonSet on every node, the control plane included | Each container's log under `/var/log/pods`, except its own, and the node, pod, container and volume metrics of its node's kubelet |
-| `mitstack-telemetry-cluster` | A Deployment of one replica on a control-plane node, since a second would send each event twice | The API server's events, and the cluster's metrics, among them each node's `Ready` condition |
+| `mitstack-telemetry-cluster` | A Deployment of one replica on a control-plane node, since a second would send each event twice | The API server's events, the cluster's metrics, among them each node's `Ready` condition, and what it [scrapes from Argo CD and OpenBao](#what-the-cluster-copy-scrapes) |
+
+### What the cluster copy scrapes
+
+The cluster copy also reads two Prometheus endpoints, each at a fixed address:
+
+| Job | Where it reads | What an alert rule reads from it |
+|---|---|---|
+| `argocd` | `argocd-application-controller-metrics.argocd.svc:8082`, the Service Argo CD's chart renders for its application controller | `argocd_app_info`, one series per Application, with its `name`, `namespace`, `dest_namespace`, `sync_status` and `health_status` |
+| `openbao` | Only on a cluster that hosts the platform: `/v1/sys/metrics` on `openbao-0`, `openbao-1` and `openbao-2`, each at `<member>.openbao-internal.openbao.svc:9101` over TLS, which the Collector checks against the `openbao-ca` ConfigMap | `vault_core_unsealed`, 1 while the member is unsealed and 0 while it is sealed, with the member's pod as `k8s_pod_name` |
+
+Each scraped data point carries `mitstack.subscription.id` like every other
+metric, so a rule can group by it. Each OpenBao member serves its metrics on a
+listener of its own, port 9101, which answers the metrics path alone and asks
+for no token. The Collector therefore holds no OpenBao token and reaches no
+other part of OpenBao's API. OpenBao opens a cluster port beside every TCP
+listener, so that listener binds its cluster port, 9102, to the loopback
+address alone. The `telemetry` stanza of OpenBao's configuration keeps its
+Prometheus metrics for 24 hours and leaves the host name out of each name.
+
+`kube-system` is outside the mesh, so the Collector presents no workload
+identity. A port-level exception lets 8082 on Argo CD's application controller
+and 9101 on each OpenBao member take its call. On OpenBao the AuthorizationPolicy
+`mitstack-openbao-ports` refuses any caller inside the mesh on 9101, and the
+Cilium policy `mitstack-hosting-flows` admits the cluster copy alone. Argo CD's
+chart already admits a call to its metrics port from every namespace.
+
+OpenBao's StatefulSet updates `OnDelete`, and each member copies its
+configuration when it starts. A release that changes that configuration
+therefore restarts no member, and each member opens 9101 at its next start.
+Until then the `openbao` job reads that member as down. `collector_test.go`
+starts OpenBao on its rendered configuration and sends the cluster copy's
+request without a token: the sealed member answers with `vault_core_unsealed`
+at 0, and answers any other path on 9101 with 404.
 
 ### How each record is tagged and masked
 
@@ -2133,10 +2170,10 @@ of the reserve, 1,024 less 544, and a set that gzip shortens less than the
 held one takes from those.
 
 With that proof script, that signer list and the seeds' keys, the builder
-takes 30,232 bytes, 30,248 when its apps run on workers, 30,312 on a cluster
-that hosts the platform and 30,328 when it does both. The lease job and its
-empty Secret add about 190 bytes, or about 250 on a cluster that hosts the
-platform, so the largest builder, on a cluster that does both, takes 30,576.
+takes 30,356 bytes, 30,372 when its apps run on workers, 30,428 on a cluster
+that hosts the platform and 30,444 when it does both. The lease job and its
+empty Secret add about 185 bytes, or about 245 on a cluster that hosts the
+platform, so the largest builder, on a cluster that does both, takes 30,688.
 The signer list costs the builder only the address and key of the serving
 server. The
 serving server carries the policy, and takes about 10,900 bytes, or about
@@ -2296,7 +2333,7 @@ hosting set carries that label. The Cilium policy `mitstack-hosting-flows` in
 |---|---|
 | cert-manager and trust-manager | Calls to the API server, and the API server's calls to their webhooks |
 | External Secrets | Calls to the API server and to OpenBao on 8200, lookups through Cilium's DNS proxy, calls to `sts.amazonaws.com`, `sts.*.amazonaws.com` and `api.ecr.*.amazonaws.com` on 443, and the API server's calls to its webhook. The policy `mitstack-external-secrets-ssm` of its own adds calls to `ssm.*.amazonaws.com` on 443 |
-| OpenBao | Calls between members on 8200 and 8201, to the API server and to cluster DNS, and the calls of External Secrets and the init Job on 8200 |
+| OpenBao | Calls between members on 8200 and 8201, to the API server and to cluster DNS, the calls of External Secrets and the init Job on 8200, and the telemetry Collector's cluster copy's calls on 9101 |
 | OpenBao's init Job | Lookups through Cilium's DNS proxy, calls to OpenBao on 8200, and SSH to `ssh.github.com` on 443, which the gateway forwards |
 | Traefik | Web traffic from outside the cluster on its two ports, calls to the API server, and calls to the app slices |
 
@@ -2321,8 +2358,9 @@ so the Robot worker that runs apps cannot call a webhook.
 Each flow between two pods on a named port also admits port 15008, where the
 call arrives inside the mesh. The AuthorizationPolicy `mitstack-openbao-ports`
 in `components/hosting/mesh.yaml` keeps the ports themselves: OpenBao takes
-calls on 8200, and on 8201 from its own members alone. The same file holds the
-hosting set's four port-level exceptions that
+calls on 8200, on 8201 from its own members alone, and on 9101 only from a
+caller outside the mesh, which `mitstack-hosting-flows` narrows to the
+Collector's cluster copy. The same file holds the hosting set's five port-level exceptions that
 [the mesh section](#how-every-call-between-pods-proves-who-makes-it) lists.
 
 External Secrets reads SSM parameters, AWS's store of configuration values,

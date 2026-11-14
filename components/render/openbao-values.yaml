@@ -56,6 +56,9 @@ server:
     raft:
       enabled: true
       setNodeId: true
+      # The second listener serves the metrics path alone and without a token, so the telemetry Collector reads each
+      # member's seal state without reaching the API. OpenBao opens a cluster port beside every TCP listener, so that
+      # listener's binds the loopback address alone.
       config: |
         ui = false
         listener "tcp" {
@@ -65,6 +68,22 @@ server:
           tls_key_file = "/openbao/tls/tls.key"
           tls_min_version = "tls13"
           tls_auto_reload = true
+        }
+        listener "tcp" {
+          address = "[::]:9101"
+          cluster_address = "127.0.0.1:9102"
+          tls_cert_file = "/openbao/tls/tls.crt"
+          tls_key_file = "/openbao/tls/tls.key"
+          tls_min_version = "tls13"
+          tls_auto_reload = true
+          telemetry {
+            metrics_only = true
+            unauthenticated_metrics_access = true
+          }
+        }
+        telemetry {
+          disable_hostname = true
+          prometheus_retention_time = "24h"
         }
         storage "raft" {
           path = "/openbao/data"

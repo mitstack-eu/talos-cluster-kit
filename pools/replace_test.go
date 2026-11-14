@@ -116,7 +116,6 @@ func (w *workers) read(context.Context, time.Time) (*report.Read, error) {
 	return &report.Read{Body: w.body(), At: w.s.tick()}, nil
 }
 
-// run is one attempt of a worker Job: a drain moves each pod no budget holds to another Ready worker.
 func (w *workers) run(job, step, node string) {
 	if step == pools.RemoveNodeStep {
 		for _, srv := range w.s.members() {

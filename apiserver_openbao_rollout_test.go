@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -188,7 +189,7 @@ func TestAPIServer_OpenBaosRolloutEvictsEachOutdatedStandbyAndThenTheActiveMembe
 		assert.Contains(t, budget.Status.DisruptedPods, name, "the API server took the eviction of %s through the budget", name)
 		server.admin(t, nil, "delete", "pod", name, "-n", "openbao", "--grace-period=0", "--force")
 		if name == leader {
-			leader = "openbao-0"
+			leader = slices.DeleteFunc([]string{"openbao-0", "openbao-1", "openbao-2"}, func(m string) bool { return m == name })[0]
 			server.admin(t, nil, "label", "pod", leader, "-n", "openbao", "--overwrite", "openbao-active=true")
 		}
 		server.admin(t, openBaoMember(t, statefulSet, name, rolloutNewRevision, name == leader), "create", "-f", "-")

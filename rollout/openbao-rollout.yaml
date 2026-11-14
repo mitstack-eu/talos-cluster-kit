@@ -41,6 +41,8 @@ spec:
                   fieldPath: metadata.namespace
             - name: ROLLOUT_STATEFULSET
               value: {{ printf "%q" .StatefulSet }}
+            - name: ROLLOUT_DISRUPTION_BUDGET
+              value: {{ printf "%q" .DisruptionBudget }}
             - name: ROLLOUT_MEMBER_TIMEOUT
               value: {{ printf "%q" .MemberTimeout }}
             - name: ROLLOUT_CALL_TIMEOUT

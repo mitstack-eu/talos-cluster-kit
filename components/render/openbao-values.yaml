@@ -107,8 +107,8 @@ server:
           current_key = "file:///openbao/seal/key"
         }
         service_registration "kubernetes" {}
-# OpenBao's rollout Job runs under this account, which may read the members and their StatefulSet, evict a member and
-# run a command inside one, in this namespace alone.
+# OpenBao's rollout Job runs under this account, which may read the members and their StatefulSet, read and watch
+# OpenBao's own disruption budget by name, evict a member and run a command inside one, in this namespace alone.
 extraObjects:
   - apiVersion: v1
     kind: ServiceAccount
@@ -127,6 +127,10 @@ extraObjects:
       - apiGroups: [apps]
         resources: [statefulsets]
         verbs: [get]
+      - apiGroups: [policy]
+        resources: [poddisruptionbudgets]
+        resourceNames: ['{{ include "openbao.fullname" . }}']
+        verbs: [get, watch]
       - apiGroups: [""]
         resources: [pods/eviction, pods/exec]
         verbs: [create]

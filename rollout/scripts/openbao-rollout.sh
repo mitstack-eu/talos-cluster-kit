@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 # Moves each OpenBao member whose pod runs an older revision of its StatefulSet onto the current one, one member at a
 # time, the standbys first and the active member last, and stops at the first member that does not return caught up.
-# Usage: ROLLOUT_NAMESPACE=<namespace> ROLLOUT_STATEFULSET=<name> ROLLOUT_MEMBER_TIMEOUT=<seconds>s \
-#   ROLLOUT_CALL_TIMEOUT=<seconds>s openbao-rollout.sh
+# Usage: ROLLOUT_NAMESPACE=<namespace> ROLLOUT_STATEFULSET=<name> ROLLOUT_DISRUPTION_BUDGET=<name> \
+#   ROLLOUT_MEMBER_TIMEOUT=<seconds>s ROLLOUT_CALL_TIMEOUT=<seconds>s openbao-rollout.sh
 # It exists because OpenBao's StatefulSet updates OnDelete, as OpenBao requires so that no member fails over to an
 # older one, so nothing else replaces a member's pod once a release changes its configuration or its image.
 set -euo pipefail
 
 : "${ROLLOUT_NAMESPACE:?names the namespace OpenBao runs in}" "${ROLLOUT_STATEFULSET:?names the StatefulSet of the members}" \
+  "${ROLLOUT_DISRUPTION_BUDGET:?names the disruption budget that guards the members}" \
   "${ROLLOUT_MEMBER_TIMEOUT:?bounds the return of each member after its eviction}" \
-  "${ROLLOUT_CALL_TIMEOUT:?bounds each read inside a member and each eviction}"
+  "${ROLLOUT_CALL_TIMEOUT:?bounds each read inside a member, each wait for the budget and each eviction}"
 
-readonly namespace=$ROLLOUT_NAMESPACE statefulset=$ROLLOUT_STATEFULSET call_timeout=$ROLLOUT_CALL_TIMEOUT
+readonly namespace=$ROLLOUT_NAMESPACE statefulset=$ROLLOUT_STATEFULSET budget=$ROLLOUT_DISRUPTION_BUDGET
+readonly call_timeout=$ROLLOUT_CALL_TIMEOUT
 readonly timeout=$ROLLOUT_MEMBER_TIMEOUT member_seconds=${ROLLOUT_MEMBER_TIMEOUT%s}
 [[ $member_seconds =~ ^[0-9]+$ ]] || { echo "openbao-rollout: ROLLOUT_MEMBER_TIMEOUT is $timeout, not a number of seconds such as 300s" >&2; exit 1; }
 readonly outdated='.metadata.labels["controller-revision-hash"] != env.ROLLOUT_REVISION'
@@ -40,6 +42,21 @@ raft_index() {
   index=$(jq -r --arg field "$2" '.data[$field] // empty' <<<"$answer" 2> /dev/null) || index=""
   [[ $index =~ ^[0-9]+$ ]] || fail "$1 answered sys/leader without $2"
   echo "$index"
+}
+
+# await_budget <member> waits until OpenBao's disruption budget allows a disruption, so the eviction that follows meets
+# no refusal. The budget allows one once the disruption controller counts all three members Ready. timeout bounds the
+# wait as it bounds each call here, so kubectl's own bound, whose expiry exits as a refusal does, is set to its longest.
+await_budget() {
+  local status
+  echo "openbao-rollout: waiting up to $call_timeout for OpenBao's disruption budget $budget to allow a disruption before evicting $1"
+  if timeout "$call_timeout" kubectl wait --for='jsonpath={.status.disruptionsAllowed}=1' --timeout=-1s "poddisruptionbudget/$budget" -n "$namespace" > /dev/null; then
+    return 0
+  else
+    status=$?
+  fi
+  [ "$status" != 124 ] || fail "OpenBao's disruption budget $budget allowed no disruption within $call_timeout, so $1 is not evicted and no member moves"
+  fail "kubectl could not wait on OpenBao's disruption budget $budget, so $1 is not evicted and no member moves"
 }
 
 # evict <member> asks the API server to evict the member's pod, which it refuses while OpenBao's disruption budget
@@ -97,6 +114,7 @@ echo "openbao-rollout: moving ${order[*]} onto revision $revision one at a time,
 
 for member in "${order[@]}"; do
   committed=$(raft_index "${leader[0]}" raft_committed_index)
+  await_budget "$member"
   evict "$member"
   echo "openbao-rollout: evicted $member after ${leader[0]} committed Raft index $committed, and waiting up to $timeout for its return"
   await "$member"

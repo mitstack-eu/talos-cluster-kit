@@ -2989,10 +2989,10 @@ Each run of the Job takes one pass over the members:
    and exactly one carries `openbao-active=true`. OpenBao's Kubernetes service
    registration writes the labels `openbao-active` and `openbao-sealed`.
 3. It orders the outdated standbys by name and puts the active member last.
-4. For each member, it reads the leader's `raft_committed_index`. It then asks
-   the API server to evict the member's pod through the Eviction API, which
-   refuses while OpenBao's disruption budget, `maxUnavailable: 1`, allows no
-   disruption.
+4. For each member, it reads the leader's `raft_committed_index`. It waits
+   until OpenBao's disruption budget, `maxUnavailable: 1`, allows a
+   disruption. It then asks the API server to evict the member's pod through
+   the Eviction API.
 5. It watches the member's pod until the StatefulSet controller has created it
    again at the new revision, Ready and unsealed.
 6. It reads the member's `raft_applied_index`, and moves to the next member
@@ -3017,8 +3017,8 @@ Argo CD's retry of the failed sync, after 30 seconds and doubling to at most
 | Wait | Bound |
 |---|---|
 | A member's return after its eviction | 300 seconds, for its preStop hook and grace period, its start, a new image's pull and its unseal |
-| Each read inside a member, and each eviction | 30 seconds, under `timeout` |
-| The whole Job | An `activeDeadlineSeconds` of 1,230: 390 seconds for each of the three members, and 60 for the reads that open the run |
+| Each read inside a member, each wait for the disruption budget, and each eviction | 30 seconds, under `timeout` |
+| The whole Job | An `activeDeadlineSeconds` of 1,320: 420 seconds for each of the three members, which is 300 for its return and 30 for each of its four calls, and 60 for the reads that open the run |
 
 The script bounds each call with `timeout` rather than kubectl's
 `--request-timeout`. That flag takes kubectl off the pod's in-cluster
@@ -3028,10 +3028,18 @@ old pod's deletion and the new one's creation. One `kubectl get --watch`
 therefore spans both, as the handover's watch does.
 
 The API server takes an eviction only while the budget's status allows a
-disruption, and the disruption controller writes that status. Should the Job's
-next eviction come before the controller has counted the returned member, the
-API server refuses it. The Job then fails, and Argo CD's retry continues the
-rollout. How long the controller takes on a live cluster is not yet measured.
+disruption. The disruption controller writes that status once it has counted
+the members that read Ready, so a member that has just returned may not count
+yet. Before each eviction the Job therefore runs
+`kubectl wait --for=jsonpath='{.status.disruptionsAllowed}'=1` on the budget.
+Once the controller counts all three members, the budget, with
+`maxUnavailable: 1`, allows one disruption, which is what the wait reads for.
+Without the wait, an eviction the API server refused would fail the Job. The
+`openbao` application's sync would then read red until Argo CD's retry ran
+the Job again, though nothing is wrong. Should the budget still allow no disruption
+after 30 seconds, the Job fails and evicts nothing. `timeout` bounds the wait,
+so kubectl's own `--timeout` is negative, which kubectl reads as a week. Its
+expiry would otherwise exit with the status a refusal does.
 
 The Job runs in the `openbao` namespace under the ServiceAccount
 `mitstack-openbao-rollout`. The chart's `extraObjects`, in
@@ -3045,6 +3053,16 @@ rights in that namespace alone:
 | `statefulsets` | `get` |
 | `pods/eviction` | `create` |
 | `pods/exec` | `create` |
+| `poddisruptionbudgets`, the budget `openbao` alone | `get`, `watch` |
+
+The rule on the budget names it through the chart's own `openbao.fullname`
+template, so it follows the name the chart gives the budget. Kubernetes lets a
+rule that names a resource hold a watch of it when the request selects that
+name with a `metadata.name` field selector. `kubectl wait` at v1.37.1 reads the
+budget that way. client-go's `WatchListClient` gate, on by default since 1.35,
+makes its first read a watch with `sendInitialEvents=true` rather than a list.
+So the account may wait on its one budget, but may not list budgets or read
+another one.
 
 The Job does not use Argo CD's application controller's account, which may
 change every object. The policy `mitstack-hosting-flows` lets the Job reach
@@ -3053,15 +3071,20 @@ pod, so the pod ends once its one container exits.
 
 `rollout/openbao_rollout_test.go` runs the script against a fake kubectl. It
 proves that the Job evicts nothing when every member is current, and evicts
-standby, standby, then leader. It also proves that a member that returns
-behind the leader's commit, or not at all, stops the run.
+standby, standby, then leader. It proves that the Job waits on the budget
+before each eviction, and that a wait that misses its bound or is refused
+evicts nothing. It also proves that a member that returns behind the leader's
+commit, or not at all, stops the run.
 `apiserver_openbao_rollout_test.go` runs the Job's container from the tools
 image against a real API server under the Job's own account. It proves the
-account's rights, the order of the evictions, and that the disruption budget
-refuses an eviction while it allows no disruption. That API server runs no
-kubelet, so a stand-in answers the exec once the API server has authorized
-it, and the test writes the budget's status as the disruption controller
-would.
+account's rights, including a wait on the budget by name, and the order of
+the evictions. It proves that the Job waits while the budget allows no
+disruption and evicts once it allows one. A budget that allows none within
+the bound fails the Job before any eviction. That API server runs no kubelet,
+so a stand-in answers the exec once the API server has authorized it. The
+test writes the budget's status as the disruption controller would. It raises
+the budget only once the Job's wait, run verbosely, logs that its watch holds
+the budget.
 
 ### The documentation the hosting set follows
 
@@ -3082,6 +3105,10 @@ would.
 | [Argo CD v3.5.5: sync phases and hooks](https://github.com/argoproj/argo-cd/blob/v3.5.5/docs/user-guide/sync-waves.md) | A PostSync hook runs once every Sync hook succeeded and every object reads Healthy, a failed one fails the sync, and `BeforeHookCreation` deletes the earlier hook before a new one |
 | [Argo CD v3.5.5: StatefulSet health](https://github.com/argoproj/argo-cd/blob/v3.5.5/gitops-engine/pkg/health/health_statefulset.go#L57-L62) | An `OnDelete` StatefulSet reads Healthy once its pods are Ready |
 | [Kubernetes: API-initiated eviction](https://kubernetes.io/docs/concepts/scheduling-eviction/api-eviction/) | An eviction respects the disruption budget and the grace period, and answers 429 while the budget allows no disruption |
+| [Kubernetes v1.37.1: the disruption controller's count](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/disruption/disruption.go#L921-L934) | A pod counts as healthy only while it reads Ready and is not being deleted |
+| [Kubernetes: RBAC, referring to resources](https://kubernetes.io/docs/reference/access-authn-authz/rbac/#referring-to-resources) | A rule may name its resources in `resourceNames`, and a list or watch it holds must select that name with a `metadata.name` field selector |
+| [kubectl v0.37.1: `wait`'s timeout](https://github.com/kubernetes/kubectl/blob/v0.37.1/pkg/cmd/wait/wait.go#L158), [its watch of one object](https://github.com/kubernetes/kubectl/blob/v0.37.1/pkg/cmd/wait/condition.go#L140-L170) and [its exit status](https://github.com/kubernetes/kubectl/blob/v0.37.1/pkg/cmd/util/helpers.go#L152-L218) | A negative `--timeout` waits a week, the wait reads the object through a list and watch that select its name, and kubectl exits 1 on a time-out as on a refusal |
+| [client-go v0.37.1: `WatchListClient`](https://github.com/kubernetes/client-go/blob/v0.37.1/features/known_features.go#L141-L144) | The gate is on by default from 1.35, so a client's first read streams as a watch |
 | [client-go v0.37.1: `DeferredLoadingClientConfig.ClientConfig`](https://github.com/kubernetes/client-go/blob/v0.37.1/tools/clientcmd/merged_client_builder.go#L96-L128) | kubectl takes the in-cluster configuration only while its flags leave the default configuration unchanged |
 | [Kubernetes: how a Job ends](https://kubernetes.io/docs/concepts/workloads/controllers/job/#job-termination-and-cleanup) | Once a Job reaches `activeDeadlineSeconds`, Kubernetes ends all of its running pods |
 | [Kubernetes: a Job's pod failure policy](https://kubernetes.io/docs/concepts/workloads/controllers/job/#pod-failure-policy) | The policy's rules are read in order, `FailJob` on a container's exit code fails the Job, and `Ignore` on the condition `DisruptionTarget` keeps a disrupted pod out of the count `backoffLimit` holds |

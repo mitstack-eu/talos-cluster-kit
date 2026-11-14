@@ -150,6 +150,15 @@ rules:
   verbs:
   - get
 - apiGroups:
+  - policy
+  resourceNames:
+  - 'openbao'
+  resources:
+  - poddisruptionbudgets
+  verbs:
+  - get
+  - watch
+- apiGroups:
   - ""
   resources:
   - pods/eviction

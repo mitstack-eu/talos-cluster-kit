@@ -1691,8 +1691,10 @@ node-local Collector, in two copies:
 ### How each record is tagged and masked
 
 Each copy tags every record with `mitstack.app`, the value of its namespace's
-`mitstack.dev/app` label, and with `mitstack.subscription.id`. A metric's data
-points carry both tags as well, so a query can pick out one app's series.
+`mitstack.dev/app` label, and with `mitstack.subscription.id`. Each data point
+of a metric carries both tags, and the names of the node, namespace, volume
+claim and pod its resource holds, so an alert rule can group by them and name
+what it reports.
 
 The `redaction` processor then replaces each part of a value that matches one
 of its patterns with `****`. The patterns catch tokens, keys and passwords,

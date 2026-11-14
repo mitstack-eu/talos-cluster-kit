@@ -77,6 +77,10 @@ subjects:
       transform/datapoints:
         metric_statements:
           - set(datapoint.attributes["mitstack.app"], resource.attributes["mitstack.app"]) where resource.attributes["mitstack.app"] != nil
+          - set(datapoint.attributes["k8s.node.name"], resource.attributes["k8s.node.name"]) where resource.attributes["k8s.node.name"] != nil
+          - set(datapoint.attributes["k8s.namespace.name"], resource.attributes["k8s.namespace.name"]) where resource.attributes["k8s.namespace.name"] != nil
+          - set(datapoint.attributes["k8s.persistentvolumeclaim.name"], resource.attributes["k8s.persistentvolumeclaim.name"]) where resource.attributes["k8s.persistentvolumeclaim.name"] != nil
+          - set(datapoint.attributes["k8s.pod.name"], resource.attributes["k8s.pod.name"]) where resource.attributes["k8s.pod.name"] != nil
           - set(datapoint.attributes["mitstack.subscription.id"], resource.attributes["mitstack.subscription.id"])
       batch: {}
     extensions:

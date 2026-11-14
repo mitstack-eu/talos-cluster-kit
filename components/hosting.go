@@ -28,8 +28,15 @@ const OpenBaoVolume = "openbao"
 // OpenBaoMembers is how many Raft members OpenBao runs, one per node, since a user volume's data is lost with its machine.
 const OpenBaoMembers = 3
 
-// openBaoName names OpenBao's component and its StatefulSet, whose pod for the member of ordinal i is openbao-i.
+// openBaoName names OpenBao's component and the release its chart renders, so the member of ordinal i runs as openbao-i.
 const openBaoName = "openbao"
+
+// OpenBaoMember is the pod of the member of ordinal i and the name it answers at on OpenBao's headless Service, which
+// its certificate holds.
+func OpenBaoMember(i int) (pod, host string) {
+	pod = fmt.Sprintf("%s-%d", openBaoName, i)
+	return pod, pod + ".openbao-internal.openbao.svc"
+}
 
 const SealKeyBytes = 32
 

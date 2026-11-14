@@ -1692,9 +1692,15 @@ node-local Collector, in two copies:
 | `mitstack-telemetry-node` | A DaemonSet on every node, the control plane included | Each container's log under `/var/log/pods`, except its own, and the node, pod, container and volume metrics of its node's kubelet |
 | `mitstack-telemetry-cluster` | A Deployment of one replica on a control-plane node, since a second would send each event twice | The API server's events, the cluster's metrics, among them each node's `Ready` condition, and what it [scrapes from Argo CD and OpenBao](#what-the-cluster-copy-scrapes) |
 
+The Collector reads its configuration only when it starts. Each copy's pod
+template therefore carries the sha256 of that copy's configuration in the
+annotation `mitstack.dev/config-sha256`, so a release that changes a copy's
+configuration restarts that copy, and a release that leaves it alone does not.
+
 ### What the cluster copy scrapes
 
-The cluster copy also reads two Prometheus endpoints, each at a fixed address:
+The cluster copy also reads two Prometheus endpoints, each at a fixed address,
+and keeps only the one series of each that an alert rule reads:
 
 | Job | Where it reads | What an alert rule reads from it |
 |---|---|---|
@@ -1705,9 +1711,9 @@ Each scraped data point carries `mitstack.subscription.id` like every other
 metric, so a rule can group by it. Each OpenBao member serves its metrics on a
 listener of its own, port 9101, which answers the metrics path alone and asks
 for no token. The Collector therefore holds no OpenBao token and reaches no
-other part of OpenBao's API. OpenBao opens a cluster port beside every TCP
-listener, so that listener binds its cluster port, 9102, to the loopback
-address alone. The `telemetry` stanza of OpenBao's configuration keeps its
+other part of OpenBao's API. OpenBao opens a cluster port, the port its members
+call each other on, beside every TCP listener, so that listener binds its
+cluster port, 9102, to the loopback address alone. The `telemetry` stanza of OpenBao's configuration keeps its
 Prometheus metrics for 24 hours and leaves the host name out of each name.
 
 `kube-system` is outside the mesh, so the Collector presents no workload
@@ -1715,15 +1721,18 @@ identity. A port-level exception lets 8082 on Argo CD's application controller
 and 9101 on each OpenBao member take its call. On OpenBao the AuthorizationPolicy
 `mitstack-openbao-ports` refuses any caller inside the mesh on 9101, and the
 Cilium policy `mitstack-hosting-flows` admits the cluster copy alone. Argo CD's
-chart already admits a call to its metrics port from every namespace.
+chart already admits a call to its metrics port from every namespace, so any
+pod outside the mesh can read Argo CD's application names, repositories and
+states there. Only `kube-system`, `istio-system`, `kyverno` and the host
+network hold such pods.
 
-OpenBao's StatefulSet updates `OnDelete`, and each member copies its
-configuration when it starts. A release that changes that configuration
+OpenBao's StatefulSet updates `OnDelete`, so Kubernetes replaces a member's pod
+only once something deletes it, and each member copies its configuration when
+it starts. A release that changes that configuration
 therefore restarts no member, and each member opens 9101 at its next start.
 Until then the `openbao` job cannot reach that member, which then sends no
 `vault_core_unsealed`, so a rule that reads only that series stays quiet for
-it. `collector_test.go`
-starts OpenBao on its rendered configuration and sends the cluster copy's
+it. `collector_test.go` starts OpenBao on its rendered configuration and sends the cluster copy's
 request without a token: the sealed member answers with `vault_core_unsealed`
 at 0, and answers any other path on 9101 with 404.
 

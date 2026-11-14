@@ -140,14 +140,7 @@ subjects:
               - key: token
                 path: token
 {{- end }}
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: mitstack-telemetry-node
-  namespace: kube-system
-data:
-  config.yaml: |
+{{- define "nodeConfig" }}
     receivers:
       file_log:
         include: [/var/log/pods/*/*/*.log]
@@ -184,15 +177,8 @@ data:
           receivers: [kubelet_stats]
           processors: [memory_limiter, k8s_attributes, redaction, resource/subscription, transform/datapoints, batch]
           exporters: [otlp_http/metrics]
-# Talos trims each document before it decodes it, so this line keeps the value above whole.
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: mitstack-telemetry-cluster
-  namespace: kube-system
-data:
-  config.yaml: |
+{{- end }}
+{{- define "clusterConfig" }}
     receivers:
       k8s_objects:
         auth_type: serviceAccount
@@ -206,6 +192,8 @@ data:
             - job_name: argocd
               static_configs:
                 - targets: [argocd-application-controller-metrics.argocd.svc:8082]
+              metric_relabel_configs:
+                - {source_labels: [__name__], regex: argocd_app_info, action: keep}
 {{- with .OpenBaoMembers }}
             - job_name: openbao
               scheme: https
@@ -216,9 +204,11 @@ data:
                 ca_file: /etc/mitstack-telemetry-openbao/ca.crt
               static_configs:
 {{- range . }}
-                - targets: [{{ . }}.openbao-internal.openbao.svc:9101]
-                  labels: {k8s_pod_name: {{ . }}}
+                - targets: [{{ .Host }}:9101]
+                  labels: {k8s_pod_name: {{ .Pod }}}
 {{- end }}
+              metric_relabel_configs:
+                - {source_labels: [__name__], regex: vault_core_unsealed, action: keep}
 {{- end }}
     processors:
       k8s_attributes:
@@ -239,6 +229,26 @@ data:
           receivers: [k8s_cluster, prometheus]
           processors: [memory_limiter, k8s_attributes, redaction, resource/subscription, transform/datapoints, batch]
           exporters: [otlp_http/metrics]
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mitstack-telemetry-node
+  namespace: kube-system
+data:
+  config.yaml: |
+{{- template "nodeConfig" . }}
+# Talos trims each document before it decodes it, so this line keeps the value above whole.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mitstack-telemetry-cluster
+  namespace: kube-system
+data:
+  config.yaml: |
+{{- template "clusterConfig" . }}
 # Talos trims each document before it decodes it, so this line keeps the value above whole.
 ---
 apiVersion: apps/v1
@@ -254,6 +264,9 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: mitstack-telemetry-node
+      annotations:
+        # The Collector reads its configuration only when it starts, so this hash of it restarts the copy on a new one.
+        mitstack.dev/config-sha256: "{{ index .ConfigSHA256 "node" }}"
     spec:
       priorityClassName: system-node-critical
       tolerations:
@@ -290,6 +303,8 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: mitstack-telemetry-cluster
+      annotations:
+        mitstack.dev/config-sha256: "{{ index .ConfigSHA256 "cluster" }}"
     spec:
       priorityClassName: system-cluster-critical
       nodeSelector:

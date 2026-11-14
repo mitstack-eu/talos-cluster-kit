@@ -56,9 +56,8 @@ server:
     raft:
       enabled: true
       setNodeId: true
-      # The second listener serves the metrics path alone and without a token, so the telemetry Collector reads each
-      # member's seal state without reaching the API. OpenBao opens a cluster port beside every TCP listener, so this
-      # listener's cluster port binds the loopback address alone.
+      # The second listener serves the metrics path alone, without a token, and binds the cluster port OpenBao opens
+      # beside every TCP listener to the loopback address alone.
       config: |
         ui = false
         listener "tcp" {

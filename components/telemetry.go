@@ -1,7 +1,9 @@
 package components
 
 import (
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
@@ -61,28 +63,40 @@ func (s Set) TelemetryCollector(e TelemetryExport, subscription string) ([]Manif
 	if err := e.validate(); err != nil {
 		return nil, err
 	}
-	out, err := tmpl.Execute(telemetryCollector, map[string]any{
+	data := map[string]any{
 		"Image":           logCollectorImage.Ref(),
 		"SubscriptionID":  subscription,
 		"MetricsEndpoint": e.MetricsEndpoint,
 		"LogsEndpoint":    e.LogsEndpoint,
 		"TokenHeader":     e.TokenHeader,
 		"OpenBaoMembers":  s.openBaoMembers(),
-	})
+	}
+	sums := map[string]string{}
+	for _, which := range []string{"node", "cluster"} {
+		config, err := tmpl.Execute(telemetryCollector.Lookup(which+"Config"), data)
+		if err != nil {
+			return nil, err
+		}
+		sum := sha256.Sum256(config)
+		sums[which] = hex.EncodeToString(sum[:])
+	}
+	data["ConfigSHA256"] = sums
+	out, err := tmpl.Execute(telemetryCollector, data)
 	if err != nil {
 		return nil, err
 	}
 	return []Manifest{{Name: TelemetryName, Path: "components/telemetry/collector.yaml", Bytes: out}}, nil
 }
 
-// openBaoMembers names the pod of each OpenBao member the set runs, or none for a set without OpenBao.
-func (s Set) openBaoMembers() []string {
+// openBaoMembers is the pod and host of each OpenBao member the set runs, or none for a set without OpenBao.
+func (s Set) openBaoMembers() []map[string]string {
 	if !slices.ContainsFunc(s.Served, func(m Manifest) bool { return m.Name == openBaoName }) {
 		return nil
 	}
-	members := make([]string, OpenBaoMembers)
+	members := make([]map[string]string, OpenBaoMembers)
 	for i := range members {
-		members[i] = fmt.Sprintf("%s-%d", openBaoName, i)
+		pod, host := OpenBaoMember(i)
+		members[i] = map[string]string{"Pod": pod, "Host": host}
 	}
 	return members
 }

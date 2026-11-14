@@ -748,6 +748,25 @@ func TestClusterTokens_EnrolRefusesAnAnswerMissingATokenBeforeWritingAnySecret(t
 	}
 }
 
+func TestClusterTokens_EnrolAsksAgainWhenThePlatformClosesTheConnectionUnanswered(t *testing.T) {
+	srv, seen := platformServing(t, http.StatusOK, enrolmentAnswer, map[string]http.HandlerFunc{
+		"POST /v1/cluster-enrolments": func(w http.ResponseWriter, _ *http.Request) {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if assert.NoError(t, err) {
+				_ = conn.Close()
+			}
+		},
+	})
+
+	run := runClusterTokens(t, srv, "enrol", "enrolment-token", "CALL_ATTEMPTS=3")
+
+	require.Error(t, run.err, "an enrolment the platform never answered passed: %s", run.out)
+	assert.Contains(t, run.out, "the platform answered 000 to the enrolment")
+	assert.Len(t, *seen, 3, "an unanswered enrolment is asked CALL_ATTEMPTS times")
+	assert.Contains(t, run.tools.Calls(t), "sleep 15", "the run waits before it asks again")
+	assert.Empty(t, createdSecrets(t, run))
+}
+
 func TestClusterTokens_EnrolTreatsASpentTokenAsEnrolledOnlyWhenItsSecretsExist(t *testing.T) {
 	srv, _ := platform(t, http.StatusConflict)
 

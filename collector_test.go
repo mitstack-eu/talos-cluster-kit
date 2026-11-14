@@ -1,7 +1,7 @@
 //go:build apiserver && collector
 
 // The pinned Collector, run on its rendered configuration against a real API server, masks and tags a container's log
-// line and sends it under the push token, and an OpenBao member, run on its own, answers the cluster copy's scrape.
+// line, sends it under the push token and reports each target it cannot scrape, and an OpenBao member answers its scrape.
 package talosclusterkit
 
 import (
@@ -12,6 +12,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -30,6 +31,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
@@ -43,6 +45,13 @@ const (
 	backendCADir          = "/etc/mitstack-collector-check"
 	appShopNamespace      = "{apiVersion: v1, kind: Namespace, metadata: {name: app-shop, labels: {mitstack.dev/app: shop}}}"
 )
+
+// scraped is one sample of a scrape's up series the backend received, with its job and data point attributes.
+type scraped struct {
+	job        string
+	attributes map[string]string
+	value      float64
+}
 
 type shipped struct {
 	body       string
@@ -80,7 +89,7 @@ func TestCollector_ThePinnedCollectorAcceptsEachCopysRenderedConfiguration(t *te
 	writeFiles(t, account, map[string][]byte{"ca.crt": ca.Cert, "token": []byte(rand.Text()), "namespace": []byte("kube-system")})
 	for name, set := range map[string]components.Set{"default": components.Default(), "hosting": components.HostingServed()} {
 		docs := testutil.Documents(t, renderedCollector(t, set, testutil.TelemetryExport()))
-		image := testutil.Field(t, collectorPod(t, docs), "containers", "0", "image").(string)
+		image := testutil.Field(t, collectorPod(t, docs, "node"), "containers", "0", "image").(string)
 		for _, which := range []string{"node", "cluster"} {
 			t.Run(name+"/"+which, func(t *testing.T) {
 				dir := sharedDir(t)
@@ -118,14 +127,48 @@ func TestCollector_AnOpenBaoMemberAnswersTheClusterCopysScrapeWithItsSealStateWi
 	assert.Equal(t, http.StatusNotFound, other, "the API, asked on the metrics listener")
 }
 
+func TestCollector_TheClusterCopySendsUpAtZeroForEachTargetItCannotScrapeThoughItsJobsKeepOneSeriesEach(t *testing.T) {
+	server := startAPIServer(t)
+	backend := startOTLPBackend(t, bridgeGateway(t, server.etcd))
+	export := testutil.TelemetryExport()
+	export.MetricsEndpoint, export.LogsEndpoint = backend.url+"/otlp/v1/metrics", backend.url+"/otlp/v1/logs"
+	rendered := renderedCollector(t, components.HostingServed(), export)
+	server.admin(t, builtInObjects(t, rendered), "apply", "-f", "-")
+	authority, err := gateway.NewCA(time.Now(), time.Hour, []netip.Addr{netip.MustParseAddr("127.0.0.1")})
+	require.NoError(t, err)
+	openBaoCA := sharedDir(t)
+	writeFiles(t, openBaoCA, map[string][]byte{"ca.crt": authority.Cert})
+	collector := startCollector(t, server, testutil.Documents(t, rendered), "cluster", map[string]string{"openbao-ca": openBaoCA}, backend.caDir, rand.Text())
+
+	down := map[string]scraped{}
+	deadline := time.NewTimer(3 * time.Minute)
+	defer deadline.Stop()
+	for len(down) < 1+components.OpenBaoMembers {
+		select {
+		case up := <-backend.ups:
+			if up.value == 0 {
+				down[up.job+" "+up.attributes["k8s_pod_name"]] = up
+			}
+		case <-deadline.C:
+			require.FailNow(t, "the backend received no up at 0 for every target", "it received %v, and the Collector printed:\n%s", slices.Collect(maps.Keys(down)), collector.log())
+		}
+	}
+
+	assert.ElementsMatch(t, []string{"argocd ", "openbao openbao-0", "openbao openbao-1", "openbao openbao-2"}, slices.Collect(maps.Keys(down)),
+		"no stand-in serves the targets, so each reads up at 0 with the member it names")
+	for target, up := range down {
+		assert.Equal(t, collectorSubscription, up.attributes["mitstack.subscription.id"], "the up series of %s", target)
+	}
+}
+
 // shipContainerLogLine runs the node copy as its DaemonSet runs it, writes message as a containerd log line of a pod in
 // app-shop, and returns the record the stand-in backend received for it.
 func shipContainerLogLine(t *testing.T, message string) shipped {
 	t.Helper()
 	server := startAPIServer(t)
-	url, caDir, received := startOTLPBackend(t, bridgeGateway(t, server.etcd))
+	backend := startOTLPBackend(t, bridgeGateway(t, server.etcd))
 	export := testutil.TelemetryExport()
-	export.MetricsEndpoint, export.LogsEndpoint = url+"/otlp/v1/metrics", url+"/otlp/v1/logs"
+	export.MetricsEndpoint, export.LogsEndpoint = backend.url+"/otlp/v1/metrics", backend.url+"/otlp/v1/logs"
 	rendered := renderedCollector(t, components.Default(), export)
 	server.admin(t, builtInObjects(t, rendered), "apply", "-f", "-")
 	server.admin(t, []byte(appShopNamespace), "apply", "-f", "-")
@@ -136,7 +179,7 @@ func shipContainerLogLine(t *testing.T, message string) shipped {
 	logFile := filepath.Join(podLogs, "0.log")
 	require.NoError(t, os.WriteFile(logFile, []byte(containerdLine("a line the Collector finds when it starts")), 0o644))
 	pushToken := rand.Text()
-	collector := startCollector(t, server, testutil.Documents(t, rendered), logs, caDir, pushToken)
+	collector := startCollector(t, server, testutil.Documents(t, rendered), "node", map[string]string{"pods": logs}, backend.caDir, pushToken)
 	collector.await(t, time.Minute, "Started watching file", "/var/log/pods/"+shopPodLogs+"/0.log")
 
 	marker := rand.Text()
@@ -149,7 +192,7 @@ func shipContainerLogLine(t *testing.T, message string) shipped {
 	defer deadline.Stop()
 	for {
 		select {
-		case got := <-received:
+		case got := <-backend.records:
 			if strings.Contains(got.body, marker) {
 				got.pushToken = pushToken
 				return got
@@ -172,9 +215,10 @@ func renderedCollector(t *testing.T, set components.Set, export components.Telem
 	return manifests[0].Bytes
 }
 
-func collectorPod(t *testing.T, docs []map[string]any) map[string]any {
+func collectorPod(t *testing.T, docs []map[string]any, which string) map[string]any {
 	t.Helper()
-	return testutil.Field(t, testutil.Named(t, docs, "DaemonSet", "mitstack-telemetry-node"), "spec", "template", "spec").(map[string]any)
+	kind := map[string]string{"node": "DaemonSet", "cluster": "Deployment"}[which]
+	return testutil.Field(t, testutil.Named(t, docs, kind, "mitstack-telemetry-"+which), "spec", "template", "spec").(map[string]any)
 }
 
 func collectorConfig(t *testing.T, docs []map[string]any, which string) string {
@@ -260,8 +304,14 @@ func bridgeGateway(t *testing.T, container string) netip.Addr {
 	return address
 }
 
-// startOTLPBackend serves OTLP over HTTPS at address and returns its URL, its CA's directory and each log record it gets.
-func startOTLPBackend(t *testing.T, address netip.Addr) (url, caDir string, records <-chan shipped) {
+type otlpBackend struct {
+	url, caDir string
+	records    <-chan shipped
+	ups        <-chan scraped
+}
+
+// startOTLPBackend serves OTLP over HTTPS at address and hands on each log record and each sample of up it gets.
+func startOTLPBackend(t *testing.T, address netip.Addr) otlpBackend {
 	t.Helper()
 	ca, err := gateway.NewCA(time.Now(), time.Hour, []netip.Addr{address})
 	require.NoError(t, err)
@@ -271,10 +321,13 @@ func startOTLPBackend(t *testing.T, address netip.Addr) (url, caDir string, reco
 	require.NoError(t, err)
 	listener, err := net.Listen("tcp", netip.AddrPortFrom(address, 0).String())
 	require.NoError(t, err)
-	received := make(chan shipped, 256)
+	received, ups := make(chan shipped, 256), make(chan scraped, 256)
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/otlp/v1/logs" {
+		switch r.URL.Path {
+		case "/otlp/v1/logs":
 			sendRecords(t, r, received)
+		case "/otlp/v1/metrics":
+			sendUps(t, r, ups)
 		}
 		w.Header().Set("Content-Type", "application/x-protobuf")
 		w.WriteHeader(http.StatusOK)
@@ -283,23 +336,60 @@ func startOTLPBackend(t *testing.T, address netip.Addr) (url, caDir string, reco
 	srv.TLS = &tls.Config{Certificates: []tls.Certificate{certificate}}
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
-	caDir = sharedDir(t)
+	caDir := sharedDir(t)
 	writeFiles(t, caDir, map[string][]byte{"ca.crt": ca.Cert})
-	return srv.URL, caDir, received
+	return otlpBackend{url: srv.URL, caDir: caDir, records: received, ups: ups}
 }
 
-func sendRecords(t *testing.T, r *http.Request, received chan<- shipped) {
+// decode reads the OTLP request r carries into message, and reports whether it could.
+func decode(t *testing.T, r *http.Request, message proto.Message) bool {
 	body := io.Reader(r.Body)
 	if r.Header.Get("Content-Encoding") == "gzip" {
 		unzipped, err := gzip.NewReader(r.Body)
 		if !assert.NoError(t, err) {
-			return
+			return false
 		}
 		body = unzipped
 	}
 	data, err := io.ReadAll(body)
+	return assert.NoError(t, err) && assert.NoError(t, proto.Unmarshal(data, message))
+}
+
+func sendUps(t *testing.T, r *http.Request, ups chan<- scraped) {
+	var request colmetricspb.ExportMetricsServiceRequest
+	if !decode(t, r, &request) {
+		return
+	}
+	for _, resourceMetrics := range request.GetResourceMetrics() {
+		job := ""
+		for _, kv := range resourceMetrics.GetResource().GetAttributes() {
+			if kv.GetKey() == "service.name" {
+				job = kv.GetValue().GetStringValue()
+			}
+		}
+		for _, scopeMetrics := range resourceMetrics.GetScopeMetrics() {
+			for _, metric := range scopeMetrics.GetMetrics() {
+				if metric.GetName() != "up" {
+					continue
+				}
+				for _, point := range metric.GetGauge().GetDataPoints() {
+					attributes := map[string]string{}
+					for _, kv := range point.GetAttributes() {
+						attributes[kv.GetKey()] = kv.GetValue().GetStringValue()
+					}
+					select {
+					case ups <- scraped{job: job, attributes: attributes, value: point.GetAsDouble()}:
+					default:
+					}
+				}
+			}
+		}
+	}
+}
+
+func sendRecords(t *testing.T, r *http.Request, received chan<- shipped) {
 	var request collogspb.ExportLogsServiceRequest
-	if !assert.NoError(t, err) || !assert.NoError(t, proto.Unmarshal(data, &request)) {
+	if !decode(t, r, &request) {
 		return
 	}
 	for _, resourceLogs := range request.GetResourceLogs() {
@@ -326,17 +416,18 @@ type followedContainer struct {
 	stopped chan struct{}
 }
 
-// startCollector runs the node copy's container as its DaemonSet runs it, with logs as the node's pod logs, pushToken
-// where its token Secret mounts and the backend's CA from caDir.
-func startCollector(t *testing.T, server *apiServer, docs []map[string]any, logs, caDir, pushToken string) *followedContainer {
+// startCollector runs the which copy's container as Kubernetes runs it, with standIns as the directories of the volumes
+// beside its configuration and token, pushToken where its token Secret mounts and the backend's CA from caDir.
+func startCollector(t *testing.T, server *apiServer, docs []map[string]any, which string, standIns map[string]string, caDir, pushToken string) *followedContainer {
 	t.Helper()
-	pod := collectorPod(t, docs)
+	pod := collectorPod(t, docs, which)
 	container := testutil.Field(t, pod, "containers", "0")
 	config, token := sharedDir(t), sharedDir(t)
-	writeFiles(t, config, map[string][]byte{"config.yaml": []byte(collectorConfig(t, docs, "node"))})
+	writeFiles(t, config, map[string][]byte{"config.yaml": []byte(collectorConfig(t, docs, which))})
 	writeFiles(t, token, map[string][]byte{"token": []byte(pushToken)})
-	sources := map[string]string{"config": config, "pods": logs, "token": token}
-	name := server.etcd + "-collector"
+	sources := maps.Clone(standIns)
+	sources["config"], sources["token"] = config, token
+	name := server.etcd + "-collector-" + which
 	args := []string{"run", "-d", "--name", name, "--network", "container:" + server.etcd,
 		"-v", server.serviceAccount(t, "kube-system", testutil.Field(t, pod, "serviceAccountName").(string)) + ":" + serviceAccountDir + ":ro",
 		"-v", caDir + ":" + backendCADir + ":ro", "-e", "SSL_CERT_FILE=" + backendCADir + "/ca.crt",
@@ -345,7 +436,7 @@ func startCollector(t *testing.T, server *apiServer, docs []map[string]any, logs
 	for _, mount := range testutil.Field(t, container, "volumeMounts").([]any) {
 		volume := testutil.Field(t, mount, "name").(string)
 		source, ok := sources[volume]
-		require.True(t, ok, "the node copy mounts the volume %s, which this check has no stand-in for", volume)
+		require.True(t, ok, "the %s copy mounts the volume %s, which this check has no stand-in for", which, volume)
 		args = append(args, "-v", source+":"+testutil.Field(t, mount, "mountPath").(string)+":ro")
 	}
 	args = append(args, testutil.Field(t, container, "image").(string))

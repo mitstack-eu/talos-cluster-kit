@@ -38,7 +38,7 @@ func renderedManifests(t *testing.T) map[string][]byte {
 	collector, err := components.LogCollector(testutil.LogExport(t))
 	require.NoError(t, err)
 	out["logs/"+collector.Name] = collector.Bytes
-	telemetry, err := components.TelemetryCollector(testutil.TelemetryExport(), "sub_0123456789ab")
+	telemetry, err := components.Default().TelemetryCollector(testutil.TelemetryExport(), "sub_0123456789ab")
 	require.NoError(t, err)
 	for _, m := range telemetry {
 		out["telemetry/"+m.Name] = m.Bytes

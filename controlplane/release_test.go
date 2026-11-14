@@ -348,6 +348,35 @@ func TestRelease_AClusterRequiringAnOTLPBackendCarriesTheTelemetryCollectorItsLe
 		"Deployment mitstack-telemetry-cluster"}, "what Argo CD applies from the cluster repository")
 }
 
+func TestRelease_TheCollectorOfAClusterThatHostsThePlatformScrapesEachOpenBaoMemberAndAnotherClustersScrapesArgoCDAlone(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		options []func(*harness)
+		jobs    []string
+	}{
+		{"a cluster that hosts the platform", []func(*harness){hosting, telemetry}, []string{"argocd", "openbao"}},
+		{"a cluster that hosts none", []func(*harness){telemetry}, []string{"argocd"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, tc.options...)
+			h.withLoadBalancers()
+			plane, err := h.plane.WithGatewayCA()
+			require.NoError(t, err)
+
+			release, err := plane.Release(h.read())
+
+			require.NoError(t, err)
+			configMap := testutil.Named(t, testutil.Documents(t, testutil.Manifest(t, "mitstack-telemetry", release.Components).Bytes), "ConfigMap", "mitstack-telemetry-cluster")
+			config := testutil.Documents(t, []byte(testutil.Field(t, configMap, "data", "config.yaml").(string)))[0]
+			var jobs []string
+			for _, job := range testutil.Field(t, config, "receivers", "prometheus", "config", "scrape_configs").([]any) {
+				jobs = append(jobs, testutil.Field(t, job, "job_name").(string))
+			}
+			assert.Equal(t, tc.jobs, jobs, "the cluster copy's scrape jobs")
+		})
+	}
+}
+
 func TestRelease_AClusterRequiringNoOTLPBackendCarriesNoTelemetryCollectorAndNoExportEndpoint(t *testing.T) {
 	h := newHarness(t, hosting)
 	h.withLoadBalancers()

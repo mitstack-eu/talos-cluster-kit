@@ -29,4 +29,5 @@ results:
   kind: PeerAuthentication
   resources:
   - traefik/mitstack-traefik-web
+  - openbao/mitstack-openbao-metrics
   result: skip

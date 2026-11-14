@@ -399,23 +399,26 @@ func TestRender_PutsEveryPodButKubeSystemsIstiosAndKyvernosInTheMeshFromTheMirro
 	assert.Equal(t, "true", cilium["bpf-lb-sock-hostns-only"], "Cilium's socket load balancing would hide service calls from ztunnel")
 }
 
-func TestRender_RefusesACallWithoutAWorkloadIdentityButOnTheWebhookAndWebPorts(t *testing.T) {
+func TestRender_RefusesACallWithoutAWorkloadIdentityButOnTheWebhookWebAndScrapedMetricsPorts(t *testing.T) {
 	set, err := components.Hosting(testutil.HostingInputs(t))
 	require.NoError(t, err)
 	var peers []map[string]any
 	for _, m := range slices.Concat(set.Served, set.Inline) {
 		peers = append(peers, testutil.Kind(testutil.Documents(t, m.Bytes), "PeerAuthentication")...)
 	}
-	admitted := testutil.Field(t, meshDocs(t, set, "mitstack-require-strict-mtls")[0], "spec", "matchConditions", "0", "expression").(string)
+	policy := meshDocs(t, set, "mitstack-require-strict-mtls")[0]
+	admitted := testutil.Field(t, policy, "spec", "matchConditions", "0", "expression").(string)
+	exempt := testutil.Field(t, policy, "spec", "matchConstraints", "namespaceSelector", "matchExpressions", "0", "values").([]any)
 
 	got := map[string]string{}
 	for _, peer := range peers {
-		key := fmt.Sprintf("%v/%v", testutil.Field(t, peer, "metadata", "namespace"), testutil.Field(t, peer, "metadata", "name"))
+		namespace := testutil.Field(t, peer, "metadata", "namespace")
+		key := fmt.Sprintf("%v/%v", namespace, testutil.Field(t, peer, "metadata", "name"))
 		assert.Equal(t, "STRICT", testutil.Field(t, peer, "spec", "mtls", "mode"), key)
 		got[key] = ""
 		if ports, ok := testutil.Field(t, peer, "spec").(map[string]any)["portLevelMtls"]; ok {
 			got[key] = fmt.Sprint(ports)
-			assert.True(t, key == "cnpg-system/mitstack-cloudnative-pg-webhook" || strings.Contains(admitted, `"`+key+`"`), "Kyverno refuses %s", key)
+			assert.True(t, slices.Contains(exempt, namespace) || strings.Contains(admitted, `"`+key+`"`), "Kyverno refuses %s", key)
 		}
 	}
 	permissive := func(ports ...int) string {
@@ -432,7 +435,9 @@ func TestRender_RefusesACallWithoutAWorkloadIdentityButOnTheWebhookAndWebPorts(t
 		"cert-manager/mitstack-trust-manager-webhook":        permissive(6443),
 		"external-secrets/mitstack-external-secrets-webhook": permissive(10250),
 		"traefik/mitstack-traefik-web":                       permissive(8000, 8443),
-	}, got, "a port takes calls without a workload identity that neither the API server nor an outside web client makes")
+		"argocd/mitstack-argocd-controller-metrics":          permissive(8082),
+		"openbao/mitstack-openbao-metrics":                   permissive(9101),
+	}, got, "a port takes calls without a workload identity that neither the API server, an outside web client nor the telemetry Collector makes")
 }
 
 func TestRender_AdmitsZtunnelsPortWhereverArgoCDsChartAdmitsACallBetweenItsPods(t *testing.T) {

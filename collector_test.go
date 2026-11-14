@@ -1,7 +1,7 @@
 //go:build apiserver && collector
 
-// The pinned Collector, run on the node copy's rendered configuration against a real API server, masks and tags a
-// container's log line and sends it under the push token.
+// The pinned Collector, run on its rendered configuration against a real API server, masks and tags a container's log
+// line and sends it under the push token, and an OpenBao member, run on its own, answers the cluster copy's scrape.
 package talosclusterkit
 
 import (
@@ -9,16 +9,19 @@ import (
 	"compress/gzip"
 	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -71,23 +74,47 @@ func TestCollector_TagsAContainerLogLineWithItsNamespacesAppAndSendsThePushToken
 }
 
 func TestCollector_ThePinnedCollectorAcceptsEachCopysRenderedConfiguration(t *testing.T) {
-	docs := testutil.Documents(t, renderedCollector(t, testutil.TelemetryExport()))
-	image := testutil.Field(t, collectorPod(t, docs), "containers", "0", "image").(string)
 	ca, err := gateway.NewCA(time.Now(), time.Hour, []netip.Addr{netip.MustParseAddr("10.0.0.4")})
 	require.NoError(t, err)
 	account := sharedDir(t)
 	writeFiles(t, account, map[string][]byte{"ca.crt": ca.Cert, "token": []byte(rand.Text()), "namespace": []byte("kube-system")})
-	for _, which := range []string{"node", "cluster"} {
-		t.Run(which, func(t *testing.T) {
-			dir := sharedDir(t)
-			writeFiles(t, dir, map[string][]byte{"config.yaml": []byte(collectorConfig(t, docs, which))})
+	for name, set := range map[string]components.Set{"default": components.Default(), "hosting": components.HostingServed()} {
+		docs := testutil.Documents(t, renderedCollector(t, set, testutil.TelemetryExport()))
+		image := testutil.Field(t, collectorPod(t, docs), "containers", "0", "image").(string)
+		for _, which := range []string{"node", "cluster"} {
+			t.Run(name+"/"+which, func(t *testing.T) {
+				dir := sharedDir(t)
+				writeFiles(t, dir, map[string][]byte{"config.yaml": []byte(collectorConfig(t, docs, which))})
 
-			out, err := exec.Command("docker", "run", "--rm", "-e", "K8S_NODE_IP=10.0.0.4", "-e", "K8S_NODE_NAME=shop-node-fsn1",
-				"-v", account+":"+serviceAccountDir+":ro", "-v", dir+":/conf:ro", image, "validate", "--config=/conf/config.yaml").CombinedOutput()
+				out, err := exec.Command("docker", "run", "--rm", "-e", "K8S_NODE_IP=10.0.0.4", "-e", "K8S_NODE_NAME=shop-node-fsn1",
+					"-v", account+":"+serviceAccountDir+":ro", "-v", dir+":/conf:ro", image, "validate", "--config=/conf/config.yaml").CombinedOutput()
 
-			require.NoError(t, err, "the %s copy's configuration:\n%s", which, out)
-		})
+				require.NoError(t, err, "the %s set's %s copy's configuration:\n%s", name, which, out)
+			})
+		}
 	}
+}
+
+func TestCollector_AnOpenBaoMemberAnswersTheClusterCopysScrapeWithItsSealStateWithoutATokenAndServesNothingElseThere(t *testing.T) {
+	job := scrapeJob(t, testutil.Documents(t, renderedCollector(t, components.HostingServed(), testutil.TelemetryExport())), "openbao")
+	_, port, err := net.SplitHostPort(testutil.Field(t, job, "static_configs", "0", "targets", "0").(string))
+	require.NoError(t, err)
+	address, client := startOpenBaoMember(t, port)
+	query := url.Values{}
+	for key, values := range testutil.Field(t, job, "params").(map[string]any) {
+		for _, value := range values.([]any) {
+			query.Add(key, value.(string))
+		}
+	}
+	scrape := url.URL{Scheme: testutil.Field(t, job, "scheme").(string), Host: address, Path: testutil.Field(t, job, "metrics_path").(string), RawQuery: query.Encode()}
+	health := url.URL{Scheme: scrape.Scheme, Host: address, Path: "/v1/sys/health"}
+
+	scraped, metrics := get(t, client, scrape.String())
+	other, _ := get(t, client, health.String())
+
+	assert.Equal(t, http.StatusOK, scraped, "the scrape, sent without a token:\n%s", metrics)
+	assert.Regexp(t, `(?m)^vault_core_unsealed(\{[^}]*\})? 0$`, metrics, "the seal state of a member not yet initialised, which is sealed")
+	assert.Equal(t, http.StatusNotFound, other, "the API, asked on the metrics listener")
 }
 
 // shipContainerLogLine runs the node copy as its DaemonSet runs it, writes message as a containerd log line of a pod in
@@ -98,7 +125,7 @@ func shipContainerLogLine(t *testing.T, message string) shipped {
 	url, caDir, received := startOTLPBackend(t, bridgeGateway(t, server.etcd))
 	export := testutil.TelemetryExport()
 	export.MetricsEndpoint, export.LogsEndpoint = url+"/otlp/v1/metrics", url+"/otlp/v1/logs"
-	rendered := renderedCollector(t, export)
+	rendered := renderedCollector(t, components.Default(), export)
 	server.admin(t, builtInObjects(t, rendered), "apply", "-f", "-")
 	server.admin(t, []byte(appShopNamespace), "apply", "-f", "-")
 
@@ -136,9 +163,9 @@ func containerdLine(text string) string {
 	return time.Now().UTC().Format(time.RFC3339Nano) + " stdout F " + text + "\n"
 }
 
-func renderedCollector(t *testing.T, export components.TelemetryExport) []byte {
+func renderedCollector(t *testing.T, set components.Set, export components.TelemetryExport) []byte {
 	t.Helper()
-	manifests, err := components.TelemetryCollector(export, collectorSubscription)
+	manifests, err := set.TelemetryCollector(export, collectorSubscription)
 	require.NoError(t, err)
 	require.Len(t, manifests, 1)
 	return manifests[0].Bytes
@@ -152,6 +179,83 @@ func collectorPod(t *testing.T, docs []map[string]any) map[string]any {
 func collectorConfig(t *testing.T, docs []map[string]any, which string) string {
 	t.Helper()
 	return testutil.Field(t, testutil.Named(t, docs, "ConfigMap", "mitstack-telemetry-"+which), "data", "config.yaml").(string)
+}
+
+func scrapeJob(t *testing.T, docs []map[string]any, name string) map[string]any {
+	t.Helper()
+	config := testutil.Documents(t, []byte(collectorConfig(t, docs, "cluster")))[0]
+	jobs := testutil.Field(t, config, "receivers", "prometheus", "config", "scrape_configs").([]any)
+	i := slices.IndexFunc(jobs, func(job any) bool { return testutil.Field(t, job, "job_name") == name })
+	require.GreaterOrEqual(t, i, 0, "the cluster copy holds no %s scrape job", name)
+	return jobs[i].(map[string]any)
+}
+
+// startOpenBaoMember runs the hosting set's OpenBao container on its rendered configuration, less the Kubernetes service
+// registration a container outside a cluster cannot make, and returns the loopback address it publishes port at and a
+// client that trusts the member's certificate.
+func startOpenBaoMember(t *testing.T, port string) (string, *http.Client) {
+	t.Helper()
+	served := components.HostingServed().Served
+	i := slices.IndexFunc(served, func(m components.Manifest) bool { return m.Name == "openbao" })
+	require.GreaterOrEqual(t, i, 0, "the hosting set serves no OpenBao")
+	docs := testutil.Documents(t, served[i].Bytes)
+	container := testutil.Field(t, testutil.Named(t, docs, "StatefulSet", "openbao"), "spec", "template", "spec", "containers", "0")
+	config := map[string][]byte{}
+	for file, text := range testutil.Field(t, testutil.Named(t, docs, "ConfigMap", "openbao-config"), "data").(map[string]any) {
+		config[file] = []byte(strings.Replace(text.(string), `service_registration "kubernetes" {}`, "", 1))
+	}
+	loopback := netip.MustParseAddr("127.0.0.1")
+	ca, err := gateway.NewCA(time.Now(), time.Hour, []netip.Addr{loopback})
+	require.NoError(t, err)
+	serving, err := ca.Issue(loopback, time.Now(), time.Hour)
+	require.NoError(t, err)
+	sealKey := make([]byte, 32)
+	_, err = rand.Read(sealKey)
+	require.NoError(t, err)
+	sources := map[string]map[string][]byte{
+		"config":   config,
+		"tls":      {"tls.crt": serving.Cert, "tls.key": serving.Key, "ca.crt": ca.Cert},
+		"seal-key": {"key": sealKey},
+		"data":     {},
+		"home":     {},
+	}
+	name := "mitstack-openbao-check-" + strings.ToLower(rand.Text()[:8])
+	args := []string{"run", "-d", "--name", name, "--user", strconv.Itoa(os.Getuid()) + ":" + strconv.Itoa(os.Getgid()),
+		"-p", "127.0.0.1::" + port, "-e", "BAO_API_ADDR=https://127.0.0.1:8200", "-e", "BAO_CLUSTER_ADDR=https://127.0.0.1:8201"}
+	configDir := ""
+	for _, mount := range testutil.Field(t, container, "volumeMounts").([]any) {
+		volume, path := testutil.Field(t, mount, "name").(string), testutil.Field(t, mount, "mountPath").(string)
+		files, ok := sources[volume]
+		require.True(t, ok, "OpenBao mounts the volume %s, which this check has no stand-in for", volume)
+		dir := sharedDir(t)
+		writeFiles(t, dir, files)
+		args = append(args, "-v", dir+":"+path)
+		if volume == "config" {
+			configDir = path
+		}
+	}
+	require.NotEmpty(t, configDir, "OpenBao mounts no configuration")
+	args = append(args, "--entrypoint", "bao", testutil.Field(t, container, "image").(string), "server", "-config="+configDir)
+	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", name).Run() })
+	docker(t, args...)
+	followLogs(t, name).await(t, time.Minute, "OpenBao server started")
+
+	out, err := exec.Command("docker", "port", name, port+"/tcp").CombinedOutput()
+	require.NoError(t, err, "%s", out)
+	pool := x509.NewCertPool()
+	require.True(t, pool.AppendCertsFromPEM(ca.Cert))
+	client := &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}}
+	return strings.Fields(string(out))[0], client
+}
+
+func get(t *testing.T, client *http.Client, address string) (int, string) {
+	t.Helper()
+	response, err := client.Get(address)
+	require.NoError(t, err)
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	require.NoError(t, err)
+	return response.StatusCode, string(body)
 }
 
 // bridgeGateway is the address at which a container on container's network reaches this host.
@@ -222,7 +326,8 @@ func sendRecords(t *testing.T, r *http.Request, received chan<- shipped) {
 	}
 }
 
-type runningCollector struct {
+// followedContainer holds each line a running container prints.
+type followedContainer struct {
 	mu      sync.Mutex
 	output  []string
 	printed chan struct{}
@@ -231,7 +336,7 @@ type runningCollector struct {
 
 // startCollector runs the node copy's container as its DaemonSet runs it, with logs as the node's pod logs, pushToken
 // where its token Secret mounts and the backend's CA from caDir.
-func startCollector(t *testing.T, server *apiServer, docs []map[string]any, logs, caDir, pushToken string) *runningCollector {
+func startCollector(t *testing.T, server *apiServer, docs []map[string]any, logs, caDir, pushToken string) *followedContainer {
 	t.Helper()
 	pod := collectorPod(t, docs)
 	container := testutil.Field(t, pod, "containers", "0")
@@ -257,8 +362,13 @@ func startCollector(t *testing.T, server *apiServer, docs []map[string]any, logs
 	}
 	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", name).Run() })
 	docker(t, args...)
+	return followLogs(t, name)
+}
 
-	c := &runningCollector{printed: make(chan struct{}, 1), stopped: make(chan struct{})}
+// followLogs follows what the running container name prints until the test ends.
+func followLogs(t *testing.T, name string) *followedContainer {
+	t.Helper()
+	c := &followedContainer{printed: make(chan struct{}, 1), stopped: make(chan struct{})}
 	follow := exec.Command("docker", "logs", "--follow", name)
 	reader, writer := io.Pipe()
 	follow.Stdout, follow.Stderr = writer, writer
@@ -281,8 +391,8 @@ func startCollector(t *testing.T, server *apiServer, docs []map[string]any, logs
 	return c
 }
 
-// await returns once the Collector prints a line holding every one of texts, and fails if it stops or within passes first.
-func (c *runningCollector) await(t *testing.T, within time.Duration, texts ...string) {
+// await returns once the container prints a line holding every one of texts, and fails if it stops or within passes first.
+func (c *followedContainer) await(t *testing.T, within time.Duration, texts ...string) {
 	t.Helper()
 	deadline := time.NewTimer(within)
 	defer deadline.Stop()
@@ -294,16 +404,16 @@ func (c *runningCollector) await(t *testing.T, within time.Duration, texts ...st
 		case <-c.printed:
 		case <-c.stopped:
 			if !c.hasPrinted(texts) {
-				require.FailNow(t, "the Collector stopped", "waiting for %q it printed:\n%s", texts, c.log())
+				require.FailNow(t, "the container stopped", "waiting for %q it printed:\n%s", texts, c.log())
 			}
 			return
 		case <-deadline.C:
-			require.FailNow(t, "the Collector never printed what was awaited", "waiting %s for %q it printed:\n%s", within, texts, c.log())
+			require.FailNow(t, "the container never printed what was awaited", "waiting %s for %q it printed:\n%s", within, texts, c.log())
 		}
 	}
 }
 
-func (c *runningCollector) hasPrinted(texts []string) bool {
+func (c *followedContainer) hasPrinted(texts []string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return slices.ContainsFunc(c.output, func(line string) bool {
@@ -311,7 +421,7 @@ func (c *runningCollector) hasPrinted(texts []string) bool {
 	})
 }
 
-func (c *runningCollector) log() string {
+func (c *followedContainer) log() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return strings.Join(c.output, "\n")

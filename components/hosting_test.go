@@ -7,10 +7,12 @@ import (
 	"encoding/pem"
 	"fmt"
 	"maps"
+	"net"
 	"net/netip"
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -30,22 +32,60 @@ func hostingSet(t *testing.T, in components.HostingInputs) components.Set {
 
 func hclBlock(t *testing.T, config, header string) string {
 	t.Helper()
-	start := strings.Index(config, header+" {")
-	require.GreaterOrEqual(t, start, 0, "the configuration has no %s block", header)
-	depth := 0
-	for i := start + len(header); i < len(config); i++ {
-		switch config[i] {
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
-				return config[start+len(header)+2 : i]
+	blocks := hclBlocks(t, config, header)
+	require.NotEmpty(t, blocks, "the configuration has no %s block", header)
+	return blocks[0]
+}
+
+// hclBlocks is the body of each block that header opens in config, in the order config holds them.
+func hclBlocks(t *testing.T, config, header string) []string {
+	t.Helper()
+	var blocks []string
+	for rest := config; ; {
+		start := strings.Index(rest, header+" {")
+		if start < 0 {
+			return blocks
+		}
+		rest = rest[start+len(header)+2:]
+		depth, end := 1, -1
+		for i := 0; i < len(rest) && end < 0; i++ {
+			switch rest[i] {
+			case '{':
+				depth++
+			case '}':
+				if depth--; depth == 0 {
+					end = i
+				}
 			}
 		}
+		require.GreaterOrEqual(t, end, 0, "an unclosed %s block", header)
+		blocks, rest = append(blocks, rest[:end]), rest[end:]
 	}
-	require.Fail(t, "unclosed block", header)
-	return ""
+}
+
+func openBaoConfig(t *testing.T, set components.Set) string {
+	t.Helper()
+	return testutil.Field(t, namedDocument(t, testutil.Manifest(t, "openbao", set.Served), "ConfigMap", "openbao-config"), "data", "extraconfig-from-values.hcl").(string)
+}
+
+// openBaoMetricsListener is the body of the one OpenBao listener that serves the metrics path alone.
+func openBaoMetricsListener(t *testing.T, set components.Set) string {
+	t.Helper()
+	listeners := slices.DeleteFunc(hclBlocks(t, openBaoConfig(t, set), `listener "tcp"`), func(body string) bool {
+		return !regexp.MustCompile(`metrics_only\s*=\s*true`).MatchString(body)
+	})
+	require.Len(t, listeners, 1, "the OpenBao listeners that serve the metrics path alone")
+	return listeners[0]
+}
+
+func openBaoMetricsPort(t *testing.T, set components.Set) int {
+	t.Helper()
+	address := hclString(t, openBaoMetricsListener(t, set), "address")
+	_, port, err := net.SplitHostPort(address)
+	require.NoError(t, err, address)
+	n, err := strconv.Atoi(port)
+	require.NoError(t, err, address)
+	return n
 }
 
 func hclString(t *testing.T, block, key string) string {
@@ -89,6 +129,50 @@ func TestHosting_ListensOnlyOnTLSKeepsRaftOnTheUserVolumeAndUnsealsWithAStaticKe
 		assert.Equal(t, testutil.HostingNodes[i], node)
 	}
 	assert.Contains(t, set.UserVolumes, components.OpenBaoVolume)
+}
+
+func TestHosting_ServesEachMembersMetricsAloneWithoutATokenOnATLSListenerOfItsOwnAndRestartsNoMemberForIt(t *testing.T) {
+	set := hostingSet(t, testutil.HostingInputs(t))
+	config := openBaoConfig(t, set)
+
+	api, metrics := hclBlock(t, config, `listener "tcp"`), openBaoMetricsListener(t, set)
+
+	for _, key := range []string{"tls_cert_file", "tls_key_file", "tls_min_version"} {
+		assert.Equal(t, hclString(t, api, key), hclString(t, metrics, key), "the metrics listener's %s", key)
+	}
+	assert.Regexp(t, `unauthenticated_metrics_access\s*=\s*true`, hclBlock(t, metrics, "telemetry"), "a scrape needs no token")
+	assert.NotContains(t, api, "unauthenticated_metrics_access", "the API's own metrics path still needs a token")
+	assert.Regexp(t, `^127\.0\.0\.1:`, hclString(t, metrics, "cluster_address"), "the cluster port OpenBao opens beside each listener takes no call from outside the pod")
+	telemetry := hclBlock(t, config, "\ntelemetry")
+	assert.Regexp(t, `disable_hostname\s*=\s*true`, telemetry, "no metric's name holds its member's")
+	assert.NotEqual(t, "0", hclString(t, telemetry, "prometheus_retention_time"), "a retention of 0 builds no Prometheus sink")
+	assert.Equal(t, "OnDelete", testutil.Field(t, namedDocument(t, testutil.Manifest(t, "openbao", set.Served), "StatefulSet", "openbao"), "spec", "updateStrategy", "type"),
+		"a running member reads its configuration at its next start, so a release restarts none")
+}
+
+func TestHosting_LetsTheCollectorsClusterCopyAloneReachOpenBaosMetricsListenerAndOnlyFromOutsideTheMesh(t *testing.T) {
+	set := hostingSet(t, testutil.HostingInputs(t))
+	port := openBaoMetricsPort(t, set)
+	collector := collectorDocs(t, set, testutil.TelemetryExport())
+	pods := map[string]testutil.CiliumEndpoint{"OpenBao": testutil.Endpoint("openbao", nil, map[string]string{"app.kubernetes.io/name": "openbao"})}
+	for _, which := range collectorCopies {
+		labels := map[string]string{}
+		for k, v := range testutil.Field(t, testutil.Named(t, collector, map[string]string{"node": "DaemonSet", "cluster": "Deployment"}[which], "mitstack-telemetry-"+which),
+			"spec", "template", "metadata", "labels").(map[string]any) {
+			labels[k] = v.(string)
+		}
+		pods["the Collector's "+which+" copy"] = testutil.Endpoint("kube-system", nil, labels)
+	}
+	flows := namedDocument(t, testutil.Manifest(t, "mitstack-hosting-flows", set.Served), "CiliumClusterwideNetworkPolicy", "mitstack-hosting-flows")
+	ports := namedDocument(t, testutil.Manifest(t, "mitstack-hosting-mesh", set.Served), "AuthorizationPolicy", "mitstack-openbao-ports")
+
+	onMetrics := slices.DeleteFunc(testutil.Grants(t, flows, pods, "OpenBao"), func(g string) bool { return !strings.Contains(g, strconv.Itoa(port)) })
+
+	assert.Equal(t, []string{fmt.Sprintf("ingress with the Collector's cluster copy on %d/TCP", port)}, onMetrics, "who reaches OpenBao's metrics listener")
+	assert.False(t, testutil.Denies(t, ports, "", port), "the cluster copy's call, which carries no workload identity")
+	for _, principal := range []string{"cluster.local/ns/external-secrets/sa/external-secrets", "cluster.local/ns/openbao/sa/openbao"} {
+		assert.True(t, testutil.Denies(t, ports, principal, port), "a call from %s, which Cilium admits on 15008 inside the mesh", principal)
+	}
 }
 
 func secretForms(value []byte) []string {
@@ -411,6 +495,9 @@ func TestHosting_ServesOpenBaoACertificateForEveryAddressItsMembersAndClientsDia
 		hosts = append(hosts, m[1])
 	}
 	require.Len(t, hosts, 2+components.OpenBaoMembers)
+	for _, target := range testutil.Field(t, scrapeJobs(t, collectorDocs(t, set, testutil.TelemetryExport()))["openbao"], "static_configs").([]any) {
+		hosts = append(hosts, strings.Split(testutil.Field(t, target, "targets", "0").(string), ":")[0])
+	}
 	for _, host := range hosts {
 		assert.True(t, slices.ContainsFunc(patterns, func(p string) bool { return regexp.MustCompile(p).MatchString(host) }), "the certificate does not name %s", host)
 	}

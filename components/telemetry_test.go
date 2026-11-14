@@ -24,7 +24,12 @@ var collectorCopies = []string{"node", "cluster"}
 
 func telemetryDocs(t *testing.T, export components.TelemetryExport) []map[string]any {
 	t.Helper()
-	manifests, err := components.TelemetryCollector(export, telemetrySubscription)
+	return collectorDocs(t, components.Default(), export)
+}
+
+func collectorDocs(t *testing.T, set components.Set, export components.TelemetryExport) []map[string]any {
+	t.Helper()
+	manifests, err := set.TelemetryCollector(export, telemetrySubscription)
 	require.NoError(t, err)
 	require.Len(t, manifests, 1, "the manifests the telemetry Collector renders")
 	assert.Equal(t, "mitstack-telemetry", manifests[0].Name)
@@ -151,12 +156,60 @@ func TestTelemetryCollector_TheClusterCopyReadsClusterMetricsFromOneReplicaOnACo
 	deployment := testutil.Named(t, docs, "Deployment", "mitstack-telemetry-cluster")
 
 	assert.Equal(t, "serviceAccount", testutil.Field(t, cluster, "receivers", "k8s_cluster", "auth_type"))
-	assert.Equal(t, []any{"k8s_cluster"}, testutil.Field(t, cluster, "service", "pipelines", "metrics", "receivers"), "the node conditions and node list")
+	assert.Equal(t, []any{"k8s_cluster", "prometheus"}, testutil.Field(t, cluster, "service", "pipelines", "metrics", "receivers"),
+		"the node conditions and node list, and the metrics it scrapes")
 	assert.EqualValues(t, 1, testutil.Field(t, deployment, "spec", "replicas"), "a second replica would send each event twice")
 	assert.Equal(t, "Recreate", testutil.Field(t, deployment, "spec", "strategy", "type"), "a rollout never runs two replicas at once")
 	pod := podOf(t, docs, "cluster")
 	assert.Equal(t, map[string]any{controlPlaneRole: ""}, pod["nodeSelector"], "a stopped worker never takes the cluster copy down")
 	assert.Equal(t, []any{map[string]any{"key": controlPlaneRole, "operator": "Exists", "effect": "NoSchedule"}}, pod["tolerations"])
+}
+
+// scrapeJobs is the cluster copy's Prometheus scrape configuration of each job, by the job's name.
+func scrapeJobs(t *testing.T, docs []map[string]any) map[string]any {
+	t.Helper()
+	jobs := map[string]any{}
+	for _, job := range testutil.Field(t, collectorConfig(t, docs, "cluster"), "receivers", "prometheus", "config", "scrape_configs").([]any) {
+		jobs[testutil.Field(t, job, "job_name").(string)] = job
+	}
+	return jobs
+}
+
+func TestTelemetryCollector_TheClusterCopyScrapesArgoCDsApplicationControllerThroughItsMetricsServiceAndNoOpenBaoWhereNoneRuns(t *testing.T) {
+	docs := telemetryDocs(t, testutil.TelemetryExport())
+	service := namedDocument(t, testutil.Manifest(t, "argocd", components.Default().Served), "Service", "argocd-application-controller-metrics")
+
+	jobs := scrapeJobs(t, docs)
+
+	assert.Equal(t, map[string]any{"app.kubernetes.io/name": "argocd-application-controller", "app.kubernetes.io/instance": "argocd"},
+		testutil.Field(t, service, "spec", "selector"), "the Service the cluster copy scrapes selects the application controller")
+	assert.Equal(t, "metrics", testutil.Field(t, service, "spec", "ports", "0", "targetPort"))
+	target := fmt.Sprintf("argocd-application-controller-metrics.argocd.svc:%v", testutil.Field(t, service, "spec", "ports", "0", "port"))
+	assert.Equal(t, []any{map[string]any{"targets": []any{target}}}, testutil.Field(t, jobs["argocd"], "static_configs"))
+	assert.NotContains(t, jobs, "openbao", "a cluster that runs no OpenBao scrapes none")
+	assert.NotContains(t, fmt.Sprint(podOf(t, docs, "cluster")["volumes"]), "openbao-ca")
+}
+
+func TestTelemetryCollector_OnAClusterThatHostsThePlatformTheClusterCopyScrapesEachOpenBaoMemberOnItsMetricsListenerAndNamesIt(t *testing.T) {
+	set := components.HostingServed()
+	docs := collectorDocs(t, set, testutil.TelemetryExport())
+
+	openbao := scrapeJobs(t, docs)["openbao"]
+
+	var targets []any
+	for i := range components.OpenBaoMembers {
+		member := fmt.Sprintf("openbao-%d", i)
+		targets = append(targets, map[string]any{"targets": []any{fmt.Sprintf("%s.openbao-internal.openbao.svc:%d", member, openBaoMetricsPort(t, set))},
+			"labels": map[string]any{"k8s_pod_name": member}})
+	}
+	assert.Equal(t, targets, testutil.Field(t, openbao, "static_configs"), "one target for each member, so each sample names the member it came from")
+	assert.Equal(t, []any{"https", "/v1/sys/metrics", []any{"prometheus"}},
+		[]any{testutil.Field(t, openbao, "scheme"), testutil.Field(t, openbao, "metrics_path"), testutil.Field(t, openbao, "params", "format")})
+	pod := podOf(t, docs, "cluster")
+	assert.Contains(t, pod["volumes"], map[string]any{"name": "openbao-ca", "configMap": map[string]any{"name": "openbao-ca"}}, "the authority trust-manager publishes in every namespace")
+	assert.Contains(t, testutil.Field(t, pod, "containers", "0", "volumeMounts"), map[string]any{"name": "openbao-ca", "mountPath": "/etc/mitstack-telemetry-openbao", "readOnly": true})
+	assert.Equal(t, "/etc/mitstack-telemetry-openbao/ca.crt", testutil.Field(t, openbao, "tls_config", "ca_file"), "the members' certificate stays verified")
+	assert.NotContains(t, fmt.Sprint(podOf(t, docs, "node")["volumes"]), "openbao-ca")
 }
 
 func TestTelemetryCollector_RefusesAnExportWithoutAnHTTPSEndpointOrAHeaderName(t *testing.T) {
@@ -179,7 +232,7 @@ func TestTelemetryCollector_RefusesAnExportWithoutAnHTTPSEndpointOrAHeaderName(t
 			export := testutil.TelemetryExport()
 			tc.edit(&export)
 
-			manifests, err := components.TelemetryCollector(export, telemetrySubscription)
+			manifests, err := components.Default().TelemetryCollector(export, telemetrySubscription)
 
 			require.Error(t, err, "TelemetryCollector(%+v) rendered %d manifests", export, len(manifests))
 			assert.ErrorContains(t, err, tc.names, "the refusal names what is wrong")
@@ -189,7 +242,7 @@ func TestTelemetryCollector_RefusesAnExportWithoutAnHTTPSEndpointOrAHeaderName(t
 }
 
 func TestTelemetryCollector_RendersNothingWithoutAnExport(t *testing.T) {
-	manifests, err := components.TelemetryCollector(components.TelemetryExport{}, telemetrySubscription)
+	manifests, err := components.Default().TelemetryCollector(components.TelemetryExport{}, telemetrySubscription)
 
 	require.NoError(t, err)
 	assert.Empty(t, manifests, "a cluster that requires no OTLP backend runs no Collector, since one with no exporter cannot start")

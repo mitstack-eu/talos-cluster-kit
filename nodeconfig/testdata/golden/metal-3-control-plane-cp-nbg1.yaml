@@ -834,6 +834,23 @@ manifest: |
         ports:
         - port: 15008
           protocol: TCP
+    ---
+    # The telemetry Collector in kube-system holds no workload identity, so the application controller's metrics port alone
+    # takes a call without one.
+    apiVersion: security.istio.io/v1
+    kind: PeerAuthentication
+    metadata:
+      name: mitstack-argocd-controller-metrics
+      namespace: argocd
+    spec:
+      selector:
+        matchLabels:
+          app.kubernetes.io/name: argocd-application-controller
+      mtls:
+        mode: STRICT
+      portLevelMtls:
+        8082:
+          mode: PERMISSIVE
 ---
 apiVersion: v1alpha1
 kind: KubeInlineManifestConfig
@@ -890,13 +907,13 @@ manifest: |
           - key: kubernetes.io/metadata.name
             operator: NotIn
             values: [kube-system, kube-public, kube-node-lease, argocd, kyverno, cnpg-system, mitstack-node, istio-system]
-      # The hosting set's own policies open only the ports the API server and outside web clients call.
+      # The hosting set's own policies open only the ports the API server, outside web clients and the telemetry Collector call.
       matchConditions:
       - name: not-one-of-the-hosting-sets-own
         expression: >-
           !(object.metadata.namespace + "/" + object.metadata.name in [
             "cert-manager/mitstack-cert-manager-webhook", "cert-manager/mitstack-trust-manager-webhook",
-            "external-secrets/mitstack-external-secrets-webhook", "traefik/mitstack-traefik-web"])
+            "external-secrets/mitstack-external-secrets-webhook", "traefik/mitstack-traefik-web", "openbao/mitstack-openbao-metrics"])
       variables:
       - name: plain
         expression: '["PERMISSIVE", "DISABLE"]'

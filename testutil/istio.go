@@ -8,8 +8,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Denies evaluates a DENY AuthorizationPolicy for a call from principal to port, reading the ports, notPorts and
-// notPrincipals forms the kit's policies use, where a rule denies when every condition it names holds.
+// Denies evaluates a DENY AuthorizationPolicy for a call from principal to port, reading the ports, notPorts,
+// principals and notPrincipals forms the kit's policies use, where a rule denies when every condition it names holds.
+// The principal "" is a call that presents no workload identity, which no principals list matches, "*" included.
 func Denies(t *testing.T, policy map[string]any, principal string, port int) bool {
 	t.Helper()
 	require.Equal(t, "DENY", Field(t, policy, "spec", "action"))
@@ -25,8 +26,14 @@ func Denies(t *testing.T, policy map[string]any, principal string, port int) boo
 				continue
 			}
 		}
-		if from, ok := r["from"]; ok && has(Field(t, from, "0", "source", "notPrincipals"), principal) {
-			continue
+		if from, ok := r["from"]; ok {
+			source := Field(t, from, "0", "source").(map[string]any)
+			if has(source["notPrincipals"], principal) {
+				continue
+			}
+			if principals, ok := source["principals"]; ok && (principal == "" || !has(principals, principal) && !has(principals, "*")) {
+				continue
+			}
 		}
 		return true
 	}

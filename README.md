@@ -1698,8 +1698,10 @@ what it reports.
 
 The `redaction` processor then replaces each part of a value that matches one
 of its patterns with `****`. The patterns catch tokens, keys and passwords,
-e-mail addresses, IP addresses and card numbers. Masking runs after tagging,
-so it also covers what the tagging copied in. `collector_test.go` proves both
+e-mail addresses, IP addresses and card numbers. Masking runs after the app
+tag and before the subscription tag and the data-point copies. It leaves the
+tags and the Kubernetes names untouched, so no pattern masks a name an alert
+rule groups by. `collector_test.go` proves both
 on the pinned Collector: a containerd log line from a pod in `app-shop`
 arrives at a stand-in backend tagged `mitstack.app=shop`, with its token,
 password and e-mail address masked.
@@ -2107,8 +2109,9 @@ that hosts the platform takes about 31,500 bytes when it keeps 300 images.
 `TestPlane_EveryServerOfAnInstallKeepsTheUserDataReserveWithTheLongestProofScriptUnderEachOptionOfThePlane`
 in `controlplane/render_test.go` keeps room free. It installs a cluster eight
 ways: with and without the platform, with apps on the control plane or on
-workers, and with and without the telemetry Collector's lease job. Each plane takes a proof script of `report.ProofScriptLimit` bytes of
-random printable text, which gzip shortens by about a sixth. Each also takes
+workers, and with and without the telemetry Collector's lease job. Each plane
+takes a proof script of `report.ProofScriptLimit` bytes of random printable
+text, which gzip shortens by about a sixth. Each also takes
 a signer list of `components.SignerLimit` entries, with every field at its
 limit and of random text, which the serving server carries. Every install in
 the test takes one set of the cluster's keys and one draw of every other value

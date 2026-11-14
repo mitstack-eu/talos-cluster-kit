@@ -131,7 +131,7 @@ func TestHosting_ListensOnlyOnTLSKeepsRaftOnTheUserVolumeAndUnsealsWithAStaticKe
 	assert.Contains(t, set.UserVolumes, components.OpenBaoVolume)
 }
 
-func TestHosting_ServesEachMembersMetricsAloneWithoutATokenOnATLSListenerOfItsOwnAndRestartsNoMemberForIt(t *testing.T) {
+func TestHosting_ServesEachMembersMetricsAloneWithoutATokenOnATLSListenerOfItsOwn(t *testing.T) {
 	set := hostingSet(t, testutil.HostingInputs(t))
 	config := openBaoConfig(t, set)
 
@@ -146,8 +146,79 @@ func TestHosting_ServesEachMembersMetricsAloneWithoutATokenOnATLSListenerOfItsOw
 	telemetry := hclBlock(t, config, "\ntelemetry")
 	assert.Regexp(t, `disable_hostname\s*=\s*true`, telemetry, "no metric's name holds its member's")
 	assert.NotEqual(t, "0", hclString(t, telemetry, "prometheus_retention_time"), "a retention of 0 builds no Prometheus sink")
-	assert.Equal(t, "OnDelete", testutil.Field(t, namedDocument(t, testutil.Manifest(t, "openbao", set.Served), "StatefulSet", "openbao"), "spec", "updateStrategy", "type"),
-		"a running member reads its configuration at its next start, so a release restarts none")
+}
+
+func TestHosting_KeepsOpenBaosMembersOnDeleteAndGivesEachPodTemplateTheChecksumOfItsConfiguration(t *testing.T) {
+	openBao := testutil.Manifest(t, "openbao", hostingSet(t, testutil.HostingInputs(t)).Served)
+	members := namedDocument(t, openBao, "StatefulSet", "openbao")
+	config := namedDocument(t, openBao, "ConfigMap", "openbao-config")
+
+	podSum := testutil.Field(t, members, "spec", "template", "metadata", "annotations", "openbao.hashicorp.com/config-checksum")
+
+	assert.Equal(t, "OnDelete", testutil.Field(t, members, "spec", "updateStrategy", "type"),
+		"OpenBao moves its standbys before the active member, which the rollout Job orders and a rolling update would not")
+	assert.Regexp(t, `^[0-9a-f]{64}$`, podSum, "the chart's checksum of the configuration")
+	assert.Equal(t, testutil.Field(t, config, "metadata", "annotations", "vault.hashicorp.com/config-checksum"), podSum,
+		"the pod template carries the checksum of the configuration the ConfigMap holds, so a new configuration is a new revision")
+}
+
+// rbacRules are a Role's rules as one "<group> <resource> <verb>" line for each right they grant.
+func rbacRules(t *testing.T, role map[string]any) []string {
+	t.Helper()
+	var rights []string
+	for _, rule := range testutil.Field(t, role, "rules").([]any) {
+		for _, group := range testutil.Field(t, rule, "apiGroups").([]any) {
+			for _, resource := range testutil.Field(t, rule, "resources").([]any) {
+				for _, verb := range testutil.Field(t, rule, "verbs").([]any) {
+					rights = append(rights, fmt.Sprintf("%q %s %s", group, resource, verb))
+				}
+			}
+		}
+	}
+	slices.Sort(rights)
+	return rights
+}
+
+func TestHosting_GivesOpenBaosRolloutAnAccountThatMayReadTheMembersEvictOneAndRunACommandInsideItInOpenBaosNamespaceAlone(t *testing.T) {
+	set := hostingSet(t, testutil.HostingInputs(t))
+	openBao := testutil.Manifest(t, "openbao", set.Served)
+	account := map[string]any{"kind": "ServiceAccount", "name": "mitstack-openbao-rollout", "namespace": "openbao"}
+
+	role := namedDocument(t, openBao, "Role", "mitstack-openbao-rollout")
+	binding := namedDocument(t, openBao, "RoleBinding", "mitstack-openbao-rollout")
+	var bound []string
+	for _, m := range slices.Concat(set.Served, set.Inline) {
+		for _, doc := range testutil.Documents(t, m.Bytes) {
+			if subjects, ok := doc["subjects"].([]any); ok && slices.ContainsFunc(subjects, func(s any) bool { return assert.ObjectsAreEqual(account, s) }) {
+				bound = append(bound, fmt.Sprintf("%s %s/%s", doc["kind"], testutil.Field(t, doc, "metadata", "namespace"), testutil.Field(t, doc, "metadata", "name")))
+			}
+		}
+	}
+
+	assert.Equal(t, "openbao", testutil.Field(t, namedDocument(t, openBao, "ServiceAccount", "mitstack-openbao-rollout"), "metadata", "namespace"))
+	assert.Equal(t, "openbao", testutil.Field(t, role, "metadata", "namespace"))
+	assert.Equal(t, []string{
+		`"" pods get`, `"" pods list`, `"" pods watch`, `"" pods/eviction create`, `"" pods/exec create`, `"apps" statefulsets get`,
+	}, rbacRules(t, role), "the rights the rollout uses: read and watch the members, read their StatefulSet, evict a member and read inside it")
+	assert.Equal(t, map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": "mitstack-openbao-rollout"}, testutil.Field(t, binding, "roleRef"))
+	assert.Equal(t, []string{"RoleBinding openbao/mitstack-openbao-rollout"}, bound, "every binding that grants the account a right, so it holds none outside OpenBao's namespace")
+}
+
+func TestHosting_LetsOpenBaosRolloutJobReachTheAPIServerAloneAndNoPodReachIt(t *testing.T) {
+	set := hostingSet(t, testutil.HostingInputs(t))
+	rollout := testutil.Endpoint("openbao", nil, map[string]string{"app.kubernetes.io/name": "mitstack-openbao-rollout", "mitstack.dev/app": "openbao"})
+	flows := namedDocument(t, testutil.Manifest(t, "mitstack-hosting-flows", set.Served), "CiliumClusterwideNetworkPolicy", "mitstack-hosting-flows")
+	pods := map[string]testutil.CiliumEndpoint{
+		"OpenBao":         testutil.Endpoint("openbao", nil, map[string]string{"app.kubernetes.io/name": "openbao", "component": "server"}),
+		"the rollout Job": rollout,
+	}
+
+	assert.Equal(t, []string{"egress to entity kube-apiserver"}, hostingEgress(t, rollout),
+		"the Job's reads, evictions and execs all go to the API server, which reaches the kubelet for an exec")
+	assert.Empty(t, slices.DeleteFunc(testutil.Grants(t, flows, pods, "the rollout Job"), func(g string) bool { return !strings.HasPrefix(g, "ingress") }),
+		"what reaches the Job")
+	assert.Empty(t, slices.DeleteFunc(testutil.Grants(t, flows, pods, "OpenBao"), func(g string) bool { return !strings.Contains(g, "the rollout Job") }),
+		"no flow between the Job and a member, whose port 8200 the Job never calls")
 }
 
 func TestHosting_LetsTheCollectorsClusterCopyAloneReachOpenBaosMetricsListenerAndOnlyFromOutsideTheMesh(t *testing.T) {

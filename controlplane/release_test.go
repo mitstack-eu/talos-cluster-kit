@@ -193,8 +193,9 @@ func TestRelease_CarriesWhatTheBuildAppliedButTheHostingKeysTheEnrolmentTokenAnd
 						assert.Nil(t, doc["stringData"], "the string data of Secret %v in %s", doc["metadata"], f.Path)
 					}
 					if doc["kind"] == "Job" {
-						assert.Equal(t, "Sync", testutil.Field(t, doc, "metadata", "annotations", "argocd.argoproj.io/hook"),
-							"the one Job %s holds is the carriage's handover, and no Job of the build", f.Path)
+						hook, name := testutil.Field(t, doc, "metadata", "annotations", "argocd.argoproj.io/hook"), testutil.Field(t, doc, "metadata", "name")
+						carried := hook == "Sync" || hook == "PostSync" && name == "mitstack-openbao-rollout" && f.Path == "components/openbao/manifest.yaml"
+						assert.True(t, carried, "Job %v of %s is the carriage's handover, or OpenBao's rollout in OpenBao's file, and no Job of the build", name, f.Path)
 					}
 				}
 			}
@@ -298,7 +299,7 @@ func TestPlane_EveryJobAndCronJobTheKitWritesLabelsItsJobsAsTheKitsAndRunsEachCo
 
 	assert.Subset(t, written, []string{"component-cilium-handover", etcd.JobName("shop-node-nbg1"), "mitstack-openbao-init", "mitstack-node-report",
 		"mitstack-security-scan", "mitstack-mesh-probe", "mitstack-enrolment", "mitstack-repository-token", "mitstack-node-topology",
-		"mitstack-telemetry-lease"}, "the walk reaches each renderer's Job")
+		"mitstack-telemetry-lease", "mitstack-openbao-rollout"}, "the walk reaches each renderer's Job")
 	assert.Empty(t, wrong, "a failed container leaves the end of its output as its message only under FallbackToLogsOnError, and the report carries it only from a Job with the kit's label")
 }
 

@@ -46,8 +46,13 @@ func collectorConfig(t *testing.T, docs []map[string]any, which string) map[stri
 
 func podOf(t *testing.T, docs []map[string]any, which string) map[string]any {
 	t.Helper()
+	return testutil.Field(t, podTemplate(t, docs, which), "spec").(map[string]any)
+}
+
+func podTemplate(t *testing.T, docs []map[string]any, which string) map[string]any {
+	t.Helper()
 	kind := map[string]string{"node": "DaemonSet", "cluster": "Deployment"}[which]
-	return testutil.Field(t, testutil.Named(t, docs, kind, "mitstack-telemetry-"+which), "spec", "template", "spec").(map[string]any)
+	return testutil.Field(t, testutil.Named(t, docs, kind, "mitstack-telemetry-"+which), "spec", "template").(map[string]any)
 }
 
 func TestTelemetryCollector_RendersTheEventsLogsAndKubeletReceivers(t *testing.T) {
@@ -186,6 +191,7 @@ func TestTelemetryCollector_TheClusterCopyScrapesArgoCDsApplicationControllerThr
 	assert.Equal(t, "metrics", testutil.Field(t, service, "spec", "ports", "0", "targetPort"))
 	target := fmt.Sprintf("argocd-application-controller-metrics.argocd.svc:%v", testutil.Field(t, service, "spec", "ports", "0", "port"))
 	assert.Equal(t, []any{map[string]any{"targets": []any{target}}}, testutil.Field(t, jobs["argocd"], "static_configs"))
+	assert.Equal(t, keepOnly("argocd_app_info"), testutil.Field(t, jobs["argocd"], "metric_relabel_configs"), "the one series an alert rule reads")
 	assert.NotContains(t, jobs, "openbao", "a cluster that runs no OpenBao scrapes none")
 	assert.NotContains(t, fmt.Sprint(podOf(t, docs, "cluster")["volumes"]), "openbao-ca")
 }
@@ -209,7 +215,25 @@ func TestTelemetryCollector_OnAClusterThatHostsThePlatformTheClusterCopyScrapesE
 	assert.Contains(t, pod["volumes"], map[string]any{"name": "openbao-ca", "configMap": map[string]any{"name": "openbao-ca"}}, "the authority trust-manager publishes in every namespace")
 	assert.Contains(t, testutil.Field(t, pod, "containers", "0", "volumeMounts"), map[string]any{"name": "openbao-ca", "mountPath": "/etc/mitstack-telemetry-openbao", "readOnly": true})
 	assert.Equal(t, "/etc/mitstack-telemetry-openbao/ca.crt", testutil.Field(t, openbao, "tls_config", "ca_file"), "the members' certificate stays verified")
+	assert.Equal(t, keepOnly("vault_core_unsealed"), testutil.Field(t, openbao, "metric_relabel_configs"), "the one series an alert rule reads")
 	assert.NotContains(t, fmt.Sprint(podOf(t, docs, "node")["volumes"]), "openbao-ca")
+}
+
+func keepOnly(metric string) []any {
+	return []any{map[string]any{"source_labels": []any{"__name__"}, "regex": metric, "action": "keep"}}
+}
+
+func TestTelemetryCollector_EachCopysPodChangesWithItsConfigurationAndOnlyThenSinceTheCollectorReadsItAtStart(t *testing.T) {
+	export := testutil.TelemetryExport()
+	moved := export
+	moved.MetricsEndpoint = "https://4a5b6c7d.metrics.cockpit.fr-par.scw.cloud/otlp/v1/metrics"
+
+	once, again, changed := telemetryDocs(t, export), telemetryDocs(t, export), telemetryDocs(t, moved)
+
+	for _, which := range collectorCopies {
+		assert.Equal(t, podTemplate(t, once, which), podTemplate(t, again, which), "the %s copy's pod for the same configuration", which)
+		assert.NotEqual(t, podTemplate(t, once, which), podTemplate(t, changed, which), "the %s copy's pod for another configuration", which)
+	}
 }
 
 func TestTelemetryCollector_RefusesAnExportWithoutAnHTTPSEndpointOrAHeaderName(t *testing.T) {

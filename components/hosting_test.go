@@ -157,8 +157,7 @@ func TestHosting_LetsTheCollectorsClusterCopyAloneReachOpenBaosMetricsListenerAn
 	pods := map[string]testutil.CiliumEndpoint{"OpenBao": testutil.Endpoint("openbao", nil, map[string]string{"app.kubernetes.io/name": "openbao"})}
 	for _, which := range collectorCopies {
 		labels := map[string]string{}
-		for k, v := range testutil.Field(t, testutil.Named(t, collector, map[string]string{"node": "DaemonSet", "cluster": "Deployment"}[which], "mitstack-telemetry-"+which),
-			"spec", "template", "metadata", "labels").(map[string]any) {
+		for k, v := range testutil.Field(t, podTemplate(t, collector, which), "metadata", "labels").(map[string]any) {
 			labels[k] = v.(string)
 		}
 		pods["the Collector's "+which+" copy"] = testutil.Endpoint("kube-system", nil, labels)

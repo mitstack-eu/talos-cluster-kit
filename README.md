@@ -2130,10 +2130,12 @@ of the reserve, 1,024 less 544, and a set that gzip shortens less than the
 held one takes from those.
 
 With that proof script, that signer list and the seeds' keys, the builder
-takes 30,232 bytes, or 30,312 on a cluster that hosts the platform. The lease
-job and its empty Secret add about 190 bytes, or about 250 on a cluster that
-hosts the platform, so the largest builder takes 30,576. The signer
-list costs the builder only the address and key of the serving server. The
+takes 30,232 bytes, 30,248 when its apps run on workers, 30,312 on a cluster
+that hosts the platform and 30,328 when it does both. The lease job and its
+empty Secret add about 190 bytes, or about 250 on a cluster that hosts the
+platform, so the largest builder, on a cluster that does both, takes 30,576.
+The signer list costs the builder only the address and key of the serving
+server. The
 serving server carries the policy, and takes about 10,900 bytes, or about
 30,600 on a cluster that hosts the platform, which leaves it at least 2,169
 bytes free. With a one-line proof script and no signer list, as the tests in

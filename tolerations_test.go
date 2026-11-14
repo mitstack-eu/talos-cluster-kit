@@ -38,6 +38,11 @@ func renderedManifests(t *testing.T) map[string][]byte {
 	collector, err := components.LogCollector(testutil.LogExport(t))
 	require.NoError(t, err)
 	out["logs/"+collector.Name] = collector.Bytes
+	telemetry, err := components.TelemetryCollector(testutil.TelemetryExport(), "sub_0123456789ab")
+	require.NoError(t, err)
+	for _, m := range telemetry {
+		out["telemetry/"+m.Name] = m.Bytes
+	}
 	reportManifests, err := report.Manifests(report.Inputs{URL: "https://api.mitstack.dev/v1/cluster-reports", SubscriptionID: "sub_0123456789ab",
 		ToolsImage: testutil.ToolsImage, ProofScript: "echo report-proof\n"})
 	require.NoError(t, err)
@@ -109,4 +114,5 @@ func TestManifests_EveryPodThatSelectsControlPlaneNodesToleratesTheirNoScheduleT
 
 	assert.Contains(t, selecting, "report: CronJob mitstack-node-report.spec.jobTemplate.spec.template.spec", "the pods that select control-plane nodes")
 	assert.Contains(t, selecting, "etcd remove-member: Job mitstack-etcd-remove-shop-node-nbg1.spec.template.spec", "the pods that select control-plane nodes")
+	assert.Contains(t, selecting, "telemetry/mitstack-telemetry: Deployment mitstack-telemetry-cluster.spec.template.spec", "the pods that select control-plane nodes")
 }

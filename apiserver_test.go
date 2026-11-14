@@ -1,7 +1,7 @@
 //go:build apiserver
 
-// The outside probe and the security scan write their ConfigMaps from the tools image, as their CronJobs run them,
-// through an API server at the Kubernetes release the kit pins that enforces the RBAC report.Manifests renders.
+// The kit's jobs reach only what their rendered RBAC grants, run from the tools image against an API server at the
+// Kubernetes release the kit pins.
 package talosclusterkit
 
 import (
@@ -25,6 +25,7 @@ import (
 	"go.yaml.in/yaml/v4"
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
+	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
 	"github.com/mitstack-eu/talos-cluster-kit/gateway"
 	"github.com/mitstack-eu/talos-cluster-kit/report"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
@@ -118,6 +119,52 @@ func TestAPIServer_TheOutsideProbeAndTheSecurityScanWriteTheirOwnConfigMapAndNoO
 
 			require.Error(t, err, "kubectl %v as %s printed:\n%s", tc.request, tc.account, out)
 			assert.Contains(t, out, "(Forbidden)", "kubectl %v as %s", tc.request, tc.account)
+		})
+	}
+}
+
+func TestAPIServer_OnlyTheLeaseJobMayReadOrPatchThePushTokenSecretUnderTheRenderedRBAC(t *testing.T) {
+	ca, err := gateway.NewCA(time.Now(), time.Hour, []netip.Addr{netip.MustParseAddr("10.0.0.2")})
+	require.NoError(t, err)
+	release, err := controlplane.Plane{Subscription: "sub_0123456789ab", PlatformURL: "https://api.mitstack.dev", RepoURL: "https://github.com/acme/cluster",
+		ReportProofScript: "echo report-proof\n", GatewayCA: &ca, Telemetry: testutil.TelemetryExport()}.Release(controlplane.State{})
+	require.NoError(t, err)
+	var rendered []byte
+	for _, name := range []string{"mitstack-cluster-tokens", "mitstack-telemetry"} {
+		rendered = append(append(rendered, "\n---\n"...), testutil.Manifest(t, name, release.Components).Bytes...)
+	}
+	server := startAPIServer(t)
+	server.admin(t, builtInObjects(t, rendered), "apply", "-f", "-")
+	const pushToken, other = "mitstack-telemetry-token", "mitstack-apiserver-check-other"
+	server.admin(t, nil, "create", "secret", "generic", other, "-n", "kube-system")
+	server.admin(t, nil, "create", "serviceaccount", "default", "-n", "kube-system")
+	get := func(name string) []string { return []string{"kubectl", "get", "secret", name, "-n", "kube-system"} }
+	patch := func(name string) []string {
+		return []string{"kubectl", "patch", "secret", name, "-n", "kube-system", "--type", "merge", "-p", `{"stringData":{"token":"written"}}`}
+	}
+
+	for _, request := range [][]string{get(pushToken), patch(pushToken)} {
+		out, err := server.asIn(t, "mitstack-node", "mitstack-telemetry-lease", nil, request...)
+
+		require.NoError(t, err, "%v as the lease job printed:\n%s", request, out)
+	}
+	for _, tc := range []struct {
+		name, namespace, account string
+		request                  []string
+	}{
+		{"the lease job reads another Secret", "mitstack-node", "mitstack-telemetry-lease", get(other)},
+		{"the lease job patches another Secret", "mitstack-node", "mitstack-telemetry-lease", patch(other)},
+		{"the lease job lists kube-system's Secrets", "mitstack-node", "mitstack-telemetry-lease", []string{"kubectl", "get", "secrets", "-n", "kube-system"}},
+		{"the lease job creates a Secret", "mitstack-node", "mitstack-telemetry-lease", []string{"kubectl", "create", "secret", "generic", "new", "-n", "kube-system"}},
+		{"the Collector, which parses untrusted logs, reads its push token through the API", "kube-system", "mitstack-telemetry", get(pushToken)},
+		{"the repository token job reads the push token", "mitstack-node", "mitstack-repo-token", get(pushToken)},
+		{"kube-system's default account patches the push token", "kube-system", "default", patch(pushToken)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := server.asIn(t, tc.namespace, tc.account, nil, tc.request...)
+
+			require.Error(t, err, "%v as %s printed:\n%s", tc.request, tc.account, out)
+			assert.Contains(t, out, "is forbidden", "the API server's refusal of %v as %s", tc.request, tc.account)
 		})
 	}
 }
@@ -280,10 +327,8 @@ wait`)
 
 func cronJobPod(t *testing.T, rendered []byte, name string) (job map[string]any, pod any) {
 	t.Helper()
-	jobs := testutil.Kind(testutil.Documents(t, rendered), "CronJob")
-	i := slices.IndexFunc(jobs, func(job map[string]any) bool { return testutil.Field(t, job, "metadata", "name") == name })
-	require.GreaterOrEqual(t, i, 0, "no CronJob %s", name)
-	return jobs[i], testutil.Field(t, jobs[i], "spec", "jobTemplate", "spec", "template", "spec")
+	job = testutil.Named(t, testutil.Documents(t, rendered), "CronJob", name)
+	return job, testutil.Field(t, job, "spec", "jobTemplate", "spec", "template", "spec")
 }
 
 // runCronJob runs the CronJob name's first container as its pod runs it, with its service account's token.

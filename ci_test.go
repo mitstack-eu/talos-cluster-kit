@@ -117,6 +117,25 @@ func TestCI_ComponentsJobJudgesTheSignaturePolicyReachingOnlyTheHostsItsEgressLi
 	assert.Equal(t, 1, systemPods, "steps that apply the policy to the pods in mitstack-node and kube-system and want no result")
 }
 
+func TestCI_ToolsImageJobShipsAContainerLogLineThroughThePinnedCollector(t *testing.T) {
+	const run = "TOOLS_IMAGE=talos-tools:ci go test -tags apiserver,collector -count=1 -run '^TestCollector_' ."
+	raw, err := os.ReadFile(".github/workflows/ci.yml")
+	require.NoError(t, err)
+	var ci struct {
+		Jobs map[string]struct {
+			Steps []ciStep `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	require.NoError(t, yaml.Unmarshal(raw, &ci))
+	steps := ci.Jobs["tools-image"].Steps
+
+	at := slices.IndexFunc(steps, func(s ciStep) bool { return s.Run == run })
+
+	require.GreaterOrEqual(t, at, 0, "the tools image job, the one with Docker and the API server's images, runs `%s`", run)
+	assert.Equal(t, "${{ !cancelled() }}", steps[at].If, "the Collector runs even when an earlier check in the job failed")
+	assert.Nil(t, steps[at].ContinueOnError, "a failed Collector test fails the job")
+}
+
 // The record delivery job runs only on a push to main, so a pin that moved or stopped naming a release fails here first.
 func TestCI_RunsEachBoardCommandFromPlainDeliveryAtAReleaseTag(t *testing.T) {
 	raw, err := os.ReadFile(".github/workflows/ci.yml")

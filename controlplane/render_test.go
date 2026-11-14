@@ -712,6 +712,10 @@ func TestPlane_EveryServerOfAnInstallKeepsTheUserDataReserveWithTheLongestProofS
 		{"a cluster whose apps run on workers", []func(*harness){appsOnWorkers}},
 		{"a cluster that hosts the platform", []func(*harness){hosting}},
 		{"a cluster that hosts the platform and runs its apps on workers", []func(*harness){hosting, appsOnWorkers}},
+		{"a cluster that ships its telemetry", []func(*harness){telemetry}},
+		{"a cluster whose apps run on workers and that ships its telemetry", []func(*harness){appsOnWorkers, telemetry}},
+		{"a cluster that hosts the platform and ships its telemetry", []func(*harness){hosting, telemetry}},
+		{"a cluster that hosts the platform, runs its apps on workers and ships its telemetry", []func(*harness){hosting, appsOnWorkers, telemetry}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cryptotest.SetGlobalRandom(t, heldDrawSeed)

@@ -3,6 +3,7 @@ package controlplane_test
 // The builder's, the gateway's and the cluster's scripts, run with bash against fake commands that log each call.
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"maps"
@@ -611,9 +612,19 @@ func platform(t *testing.T, enrolStatus int) (*httptest.Server, *[]string) {
 // platformAnswering is platform with answer as its enrolment answer.
 func platformAnswering(t *testing.T, enrolStatus int, answer map[string]string) (*httptest.Server, *[]string) {
 	t.Helper()
+	return platformServing(t, enrolStatus, answer, nil)
+}
+
+// platformServing is platformAnswering with each of routes, keyed "<method> <path>", answering its own request.
+func platformServing(t *testing.T, enrolStatus int, answer map[string]string, routes map[string]http.HandlerFunc) (*httptest.Server, *[]string) {
+	t.Helper()
 	var seen []string
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen = append(seen, r.Method+" "+r.URL.Path+" "+r.Header.Get("Authorization"))
+		if route, ok := routes[r.Method+" "+r.URL.Path]; ok {
+			route(w, r)
+			return
+		}
 		switch r.URL.Path {
 		case "/v1/cluster-enrolments":
 			w.WriteHeader(enrolStatus)
@@ -639,7 +650,9 @@ func runClusterTokens(t *testing.T, srv *httptest.Server, verb, token string, ex
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "token"), []byte(token), 0o600))
 	script, err := os.ReadFile(filepath.Join("scripts", "cluster-tokens.sh"))
 	require.NoError(t, err)
-	tools := testutil.NewTools(t, map[string]string{"kubectl": `case $1 in
+	tools := testutil.NewTools(t, map[string]string{"jq": recorded(t, "jq"), "curl": recorded(t, "curl"), "sleep": "",
+		"date": `[ "$*" = "-u +%s" ] || { echo "date: unexpected arguments $*" >&2; exit 2; }
+echo "$FAKE_NOW"`, "kubectl": `case $1 in
   apply) cat > /dev/null ;;
   get)
     case ${SECRETS_PRESENT:-no} in
@@ -657,9 +670,18 @@ func runClusterTokens(t *testing.T, srv *httptest.Server, verb, token string, ex
   *) cat ;;
 esac`})
 	env := tools.Env("PLATFORM_URL="+srv.URL, "SUBSCRIPTION_ID="+testSub, "REPO_URL="+testRepoURL, "REPOSITORY_CREDENTIAL=platform-token",
-		"TOKEN_FILE="+filepath.Join(dir, "token"), "CURL_CA_BUNDLE="+ca, "KUBE_API="+srv.URL, "KUBE_ACCOUNT_DIR="+dir, "CALL_ATTEMPTS=1")
+		"TOKEN_FILE="+filepath.Join(dir, "token"), "CURL_CA_BUNDLE="+ca, "KUBE_API="+srv.URL, "KUBE_ACCOUNT_DIR="+dir, "CALL_ATTEMPTS=1",
+		"FAKE_NOW="+strconv.FormatInt(leaseNow.Unix(), 10))
 	out, err := testutil.RunBash(t, string(script), append(env, extraEnv...), verb)
 	return scriptRun{out: out, err: err, tools: tools, dir: dir}
+}
+
+// recorded is a fake that runs the system's own command, so its call is logged with its arguments.
+func recorded(t *testing.T, command string) string {
+	t.Helper()
+	path, err := exec.LookPath(command)
+	require.NoError(t, err)
+	return "exec " + path + ` "$@"`
 }
 
 func createdSecrets(t *testing.T, run scriptRun) []string {
@@ -726,6 +748,25 @@ func TestClusterTokens_EnrolRefusesAnAnswerMissingATokenBeforeWritingAnySecret(t
 	}
 }
 
+func TestClusterTokens_EnrolAsksAgainWhenThePlatformClosesTheConnectionUnanswered(t *testing.T) {
+	srv, seen := platformServing(t, http.StatusOK, enrolmentAnswer, map[string]http.HandlerFunc{
+		"POST /v1/cluster-enrolments": func(w http.ResponseWriter, _ *http.Request) {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if assert.NoError(t, err) {
+				_ = conn.Close()
+			}
+		},
+	})
+
+	run := runClusterTokens(t, srv, "enrol", "enrolment-token", "CALL_ATTEMPTS=3")
+
+	require.Error(t, run.err, "an enrolment the platform never answered passed: %s", run.out)
+	assert.Contains(t, run.out, "the platform answered 000 to the enrolment")
+	assert.Len(t, *seen, 3, "an unanswered enrolment is asked CALL_ATTEMPTS times")
+	assert.Contains(t, commandsRun(t, run), "sleep", "the run waits before it asks again")
+	assert.Empty(t, createdSecrets(t, run))
+}
+
 func TestClusterTokens_EnrolTreatsASpentTokenAsEnrolledOnlyWhenItsSecretsExist(t *testing.T) {
 	srv, _ := platform(t, http.StatusConflict)
 
@@ -778,6 +819,247 @@ func TestClusterTokens_EnrolOnAClusterThatReadsItsRepositoryWithADeployKeyWrites
 	require.NoError(t, spent.err, spent.out)
 	require.Error(t, renew.err, "a deploy-key cluster renewed a repository token")
 	assert.NotContains(t, *seen, "POST /v1/cluster-repository-tokens Bearer report-token", "the renewal asked the platform")
+}
+
+var leaseNow = time.Date(2026, 11, 14, 15, 0, 0, 0, time.UTC)
+
+const (
+	pushTokenSecretPath = "/api/v1/namespaces/kube-system/secrets/mitstack-telemetry-token"
+	reportBearer        = "report-token-5e2b9c"
+	accountBearer       = "account-token-81d4f7"
+)
+
+// leaseStandIn is the platform's lease route and the Kubernetes API's push token Secret, recording each ask and patch.
+type leaseStandIn struct {
+	srv         *httptest.Server
+	seen        *[]string
+	asks        []map[string]any
+	patches     []map[string]any
+	patchTypes  []string
+	patchStatus int
+}
+
+// leasePlatform answers a lease with answer under status and holds secret, or no Secret when it is nil.
+func leasePlatform(t *testing.T, status int, answer, secret map[string]any) *leaseStandIn {
+	t.Helper()
+	s := &leaseStandIn{patchStatus: http.StatusOK}
+	decode := func(r *http.Request) map[string]any {
+		var body map[string]any
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		return body
+	}
+	s.srv, s.seen = platformServing(t, http.StatusOK, enrolmentAnswer, map[string]http.HandlerFunc{
+		"POST /v1/cluster-leases": func(w http.ResponseWriter, r *http.Request) {
+			s.asks = append(s.asks, decode(r))
+			w.WriteHeader(status)
+			_ = json.NewEncoder(w).Encode(answer)
+		},
+		"GET " + pushTokenSecretPath: func(w http.ResponseWriter, _ *http.Request) {
+			if secret == nil {
+				w.WriteHeader(http.StatusNotFound)
+				_ = json.NewEncoder(w).Encode(map[string]any{"kind": "Status", "reason": "NotFound"})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(secret)
+		},
+		"PATCH " + pushTokenSecretPath: func(w http.ResponseWriter, r *http.Request) {
+			s.patchTypes = append(s.patchTypes, r.Header.Get("Content-Type"))
+			s.patches = append(s.patches, decode(r))
+			w.WriteHeader(s.patchStatus)
+			_ = json.NewEncoder(w).Encode(map[string]any{"kind": "Secret"})
+		},
+	})
+	return s
+}
+
+// pushTokenSecret is the Collector's token Secret as the Kubernetes API answers it, leaving out each empty value.
+func pushTokenSecret(token, expiresAt string) map[string]any {
+	metadata := map[string]any{"name": "mitstack-telemetry-token", "namespace": "kube-system"}
+	secret := map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": metadata}
+	if expiresAt != "" {
+		metadata["annotations"] = map[string]any{"mitstack.dev/lease-expires-at": expiresAt}
+	}
+	if token != "" {
+		secret["data"] = map[string]any{"token": base64.StdEncoding.EncodeToString([]byte(token))}
+	}
+	return secret
+}
+
+// leaseAnswer is the platform's answer to a Cockpit lease, in the shape the Cockpit block's lease gives it.
+func leaseAnswer(token, expiresAt string) map[string]any {
+	export := testutil.TelemetryExport()
+	return map[string]any{
+		"credential": map[string]any{"otlpTokenHeader": export.TokenHeader, "otlpMetricsEndpoint": export.MetricsEndpoint,
+			"otlpLogsEndpoint": export.LogsEndpoint, "token": token, "tokenId": "8d3c1f0e-5a7b-4c2d-9e6f-0a1b2c3d4e5f"},
+		"expiresAt": expiresAt,
+	}
+}
+
+func leaseClock(ahead time.Duration) string {
+	return leaseNow.Add(ahead).Format(time.RFC3339)
+}
+
+// runLease runs the lease as its job does, with the platform and the resource set and every enrolment setting blank.
+func runLease(t *testing.T, s *leaseStandIn) scriptRun {
+	t.Helper()
+	account := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(account, "token"), []byte(accountBearer), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(account, "ca.crt"), certPEM(s.srv), 0o644))
+	return runClusterTokens(t, s.srv, "lease", reportBearer, "LEASE_RESOURCE="+testutil.TelemetryExport().Resource,
+		"KUBE_ACCOUNT_DIR="+account, "SUBSCRIPTION_ID=", "REPO_URL=", "REPOSITORY_CREDENTIAL=", "CALL_ATTEMPTS=")
+}
+
+func commandsRun(t *testing.T, run scriptRun) []string {
+	t.Helper()
+	var commands []string
+	for _, call := range run.tools.Calls(t) {
+		commands = append(commands, strings.Fields(call)[0])
+	}
+	return commands
+}
+
+func TestClusterTokens_LeaseWritesThePushTokenAndItsExpiryIntoTheCollectorsSecret(t *testing.T) {
+	s := leasePlatform(t, http.StatusOK, leaseAnswer("push-token", leaseClock(23*time.Hour)), pushTokenSecret("", ""))
+
+	run := runLease(t, s)
+
+	require.NoError(t, run.err, run.out)
+	assert.Equal(t, []string{
+		"GET " + pushTokenSecretPath + " Bearer " + accountBearer,
+		"POST /v1/cluster-leases Bearer " + reportBearer,
+		"PATCH " + pushTokenSecretPath + " Bearer " + accountBearer,
+	}, *s.seen, "the report token goes to the platform alone and the job's own account to the Kubernetes API")
+	assert.Equal(t, []map[string]any{{"resource": "scaleway.cockpit", "want": map[string]any{"signals": "metrics,logs"}}}, s.asks)
+	assert.Equal(t, []map[string]any{{
+		"metadata":   map[string]any{"annotations": map[string]any{"mitstack.dev/lease-expires-at": leaseClock(23 * time.Hour)}},
+		"stringData": map[string]any{"token": "push-token"},
+	}}, s.patches, "one merge patch carrying the token and its expiry")
+	assert.Equal(t, []string{"application/merge-patch+json"}, s.patchTypes)
+}
+
+func TestClusterTokens_LeaseLeavesATokenWithMoreThanElevenHoursLeftAlone(t *testing.T) {
+	s := leasePlatform(t, http.StatusOK, leaseAnswer("fresh-push-token", leaseClock(23*time.Hour)),
+		pushTokenSecret("push-token", leaseClock(11*time.Hour+time.Minute)))
+
+	run := runLease(t, s)
+
+	require.NoError(t, run.err, run.out)
+	assert.Equal(t, []string{"GET " + pushTokenSecretPath + " Bearer " + accountBearer}, *s.seen, "a run with nothing to do asks for no lease")
+}
+
+func TestClusterTokens_LeaseRenewsATokenWithFewerThanElevenHoursLeft(t *testing.T) {
+	for _, tc := range []struct{ name, token, expiresAt string }{
+		{"eleven hours less a minute left", "push-token", leaseClock(11*time.Hour - time.Minute)},
+		{"expired", "push-token", leaseClock(-time.Hour)},
+		{"an expiry and no token", "", leaseClock(20 * time.Hour)},
+		{"a token and no expiry", "push-token", ""},
+		{"an expiry that is no time", "push-token", "tomorrow"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := leasePlatform(t, http.StatusOK, leaseAnswer("fresh-push-token", leaseClock(23*time.Hour)), pushTokenSecret(tc.token, tc.expiresAt))
+
+			run := runLease(t, s)
+
+			require.NoError(t, run.err, run.out)
+			assert.Len(t, s.asks, 1, "the leases asked")
+			require.Len(t, s.patches, 1, "the patches written")
+			assert.Equal(t, map[string]any{"token": "fresh-push-token"}, s.patches[0]["stringData"])
+		})
+	}
+}
+
+func TestClusterTokens_LeaseFailsNamingTheStatusAndWritesNothingWhenThePlatformRefuses(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusNotFound, http.StatusConflict, http.StatusBadGateway, http.StatusServiceUnavailable} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			refusal := "the platform's fixed message for " + strconv.Itoa(status)
+			s := leasePlatform(t, status, map[string]any{"error": refusal}, pushTokenSecret("", ""))
+
+			run := runLease(t, s)
+
+			require.Error(t, run.err, "a refused lease passed: %s", run.out)
+			assert.Contains(t, run.out, strconv.Itoa(status))
+			assert.Contains(t, run.out, refusal)
+			assert.Len(t, s.asks, 1, "a refused lease is asked once, and the next run is the retry")
+			assert.NotContains(t, commandsRun(t, run), "sleep", "the run waited")
+			assert.Empty(t, s.patches)
+		})
+	}
+}
+
+func TestClusterTokens_LeaseRefusesAnAnswerWithoutATokenOrWithAnExpiryPastADayBeforeWritingTheSecret(t *testing.T) {
+	noToken := leaseAnswer("", leaseClock(23*time.Hour))
+	delete(noToken["credential"].(map[string]any), "token")
+	noExpiry := leaseAnswer("push-token", "")
+	delete(noExpiry, "expiresAt")
+	for _, tc := range []struct {
+		name   string
+		answer map[string]any
+		named  string
+	}{
+		{"no token", noToken, "token"},
+		{"an empty token", leaseAnswer("", leaseClock(23*time.Hour)), "token"},
+		{"an expiry a day ahead", leaseAnswer("push-token", leaseClock(24*time.Hour)), "expiresAt"},
+		{"an expiry 25 hours ahead", leaseAnswer("push-token", leaseClock(25*time.Hour)), "expiresAt"},
+		{"an expiry already past", leaseAnswer("push-token", leaseClock(-time.Minute)), "expiresAt"},
+		{"an expiry that is no time", leaseAnswer("push-token", "tomorrow"), "expiresAt"},
+		{"no expiry", noExpiry, "expiresAt"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := leasePlatform(t, http.StatusOK, tc.answer, pushTokenSecret("", ""))
+
+			run := runLease(t, s)
+
+			require.Error(t, run.err, "an answer with %s was written: %s", tc.name, run.out)
+			assert.Contains(t, run.out, tc.named, "the failure names what the answer lacks")
+			assert.Empty(t, s.patches, "the Secret was written from an answer with %s", tc.name)
+		})
+	}
+}
+
+func TestClusterTokens_LeaseNeverPrintsThePushTokenOrPutsItOnACommandLine(t *testing.T) {
+	const pushToken = "scw-push-7f3a9c2e5b1d4086"
+	for _, tc := range []struct {
+		name      string
+		expiresAt string
+	}{
+		{"a lease written", leaseClock(23 * time.Hour)},
+		{"a lease refused for its expiry", leaseClock(25 * time.Hour)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := leasePlatform(t, http.StatusOK, leaseAnswer(pushToken, tc.expiresAt), pushTokenSecret("", ""))
+
+			run := runLease(t, s)
+
+			for _, secret := range []string{pushToken, reportBearer, accountBearer} {
+				assert.NotContains(t, run.out, secret, "the run printed a token")
+				for _, call := range run.tools.Calls(t) {
+					assert.NotContains(t, call, secret, "a token on the command line of %s", strings.Fields(call)[0])
+				}
+			}
+		})
+	}
+}
+
+func TestClusterTokens_LeaseFailsNamingTheSecretItCannotReadAndAsksForNoLease(t *testing.T) {
+	s := leasePlatform(t, http.StatusOK, leaseAnswer("push-token", leaseClock(23*time.Hour)), nil)
+
+	run := runLease(t, s)
+
+	require.Error(t, run.err, "a lease with no Secret to hold it passed: %s", run.out)
+	assert.Contains(t, run.out, "mitstack-telemetry-token")
+	assert.Contains(t, run.out, "404")
+	assert.Empty(t, s.asks, "a lease asked for a token nothing can hold")
+}
+
+func TestClusterTokens_LeaseFailsNamingTheStatusWhenTheSecretRefusesThePatch(t *testing.T) {
+	s := leasePlatform(t, http.StatusOK, leaseAnswer("push-token", leaseClock(23*time.Hour)), pushTokenSecret("", ""))
+	s.patchStatus = http.StatusForbidden
+
+	run := runLease(t, s)
+
+	require.Error(t, run.err, "a lease whose patch was refused passed: %s", run.out)
+	assert.Contains(t, run.out, "mitstack-telemetry-token")
+	assert.Contains(t, run.out, "403")
 }
 
 func certPEM(srv *httptest.Server) []byte {

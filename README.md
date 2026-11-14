@@ -848,12 +848,12 @@ with none of these capabilities. `main` in
 exits unless the starter holds `NET_ADMIN` and either `SYS_ADMIN` or `BPF`.
 The chart's comment says `BPF` needs Linux 5.8 or newer, and
 [Talos v1.14.4's release note](https://github.com/siderolabs/talos/releases/tag/v1.14.4)
-names Linux 6.18.57.
+names Linux 6.18.57, so the nodes of the Talos release the kit pins meet it.
 
 [The security scan](#how-the-security-scan-runs) runs kubescape. Its
 privileged-container control, C-0057, fails a container that adds
 `SYS_ADMIN`, so envoy passes it. Its insecure-capabilities control, C-0046,
-still counts `NET_ADMIN` and `BPF`.
+counts both `NET_ADMIN` and `BPF` as insecure, so it still fails envoy.
 
 The chart's one privileged container is `mount-bpf-fs`, an init container that
 mounts the BPF filesystem, where Cilium keeps its kernel maps. Talos mounts

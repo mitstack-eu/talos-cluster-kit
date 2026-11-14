@@ -3123,8 +3123,9 @@ keeps Robot API code out of this module.
 ## How a Cloud worker is replaced
 
 A Cloud worker keeps its server for as long as it runs. To move one onto a new
-server, a block names the worker's member key, such as `fsn1-1`, on an
-upgrade's call. Which workers an upgrade replaces, and how its user confirms
+server, a block names the worker's member key on an upgrade's call. The member
+key is the worker's location and sequence number, such as `fsn1-1`, which its
+server carries in the label `mitstack.dev/member`. Which workers an upgrade replaces, and how its user confirms
 that, is the block's to decide. This section is for the author of a block on
 the node pools, and for whoever reads the events a replacement records.
 
@@ -3136,15 +3137,23 @@ plane.Records = []controlplane.Record{pools.ReplaceWorkers(p.Cloud, keys)} // ke
 step, ok, err := pools.ReplaceStep(ctx, plane, p.Cloud)                    // once plane.NextStep has no step left
 ```
 
-The plane runs each of `Plane.Records` inside the upgrade's one network write,
-so the record joins the labels a node replacement and a gateway list set.
+A `controlplane.Record` is a function that adds a part's own labels to the
+network's before the upgrade writes them. The plane runs each of
+`Plane.Records` inside the upgrade's one network write, so the record joins the
+labels a node replacement and a gateway list set.
 `ReplaceWorkers` labels the network with `mitstack.dev/worker-replace-<key>`,
 holding the id Hetzner gives the worker's server and the time of that call. A
 key already recorded keeps its first record. Every later call reads the label,
 so a replacement stopped part way resumes where it stood. Once a server of
 another id holds the key, `ReplaceStep` takes it for the worker's successor.
-`pools.ReplacementProblems` names where the replacement stands, for the
-block's own problems.
+
+`ReplaceStep` returns the next change with `ok` true, and the block runs it
+with `Step.Take`, as it runs a change of `NextStep`. With `ok` false and no
+error, the replacement waits on a node report or on Hetzner, and the block
+answers that the subscription is still converging. `pools.ReplacementProblems`
+returns one sentence per recorded replacement saying where it stands and what
+it waits for. The block adds them to its own problems, so a cluster with a
+replacement under way never reads as complete.
 
 The upgrade's call refuses before any change in these cases, each with its own
 class:
@@ -3203,7 +3212,7 @@ takes one of these changes:
 A refusal in step 2 takes the label off the network, since the worker still
 runs untouched. The guard's class `redundancy-below-minimum` names the worker
 and each other worker with its reading. A worker whose server is already gone
-still gets its removal Job before its successor. The pool takes out a drain
+skips steps 1 to 6 but still gets its removal Job before its successor. The pool takes out a drain
 file first, and creates the successor only in the step that takes the removal
 file out, since Argo CD would run a held Job again against the new server of
 the same name.
@@ -3235,7 +3244,8 @@ The node report carries that line as the failed attempt's message, as
 describes. While the Job has attempts left, `ReplacementProblems` names that
 line and says the worker's server is kept. The Job runs six attempts of ten
 minutes each, about an hour with the Job controller's backoff between them,
-and its last failed attempt gives the worker back to the scheduler. The pool then takes the drain file out, takes
+and its last failed attempt uncordons the worker, so the scheduler places pods
+on it again. The pool then takes the drain file out, takes
 the label off the network and refuses with the class `worker-drain-failed`,
 naming the same line. The worker serves on.
 
@@ -3245,15 +3255,16 @@ The cluster's default storage class, `local-path`, keeps a volume's data in a
 directory on the node's own disk. Its volume is pinned to that node by the
 `kubernetes.io/hostname` label. That data goes when the server is deleted. The
 successor carries the same name, so a claim left bound would still match it.
-local-path's volumes are of the `hostPath` type `DirectoryOrCreate`, so the
-pod would start on the successor in a new, empty directory, holding none of
-its data.
+The kit's class makes `local` volumes, as
+[Where a claim keeps its data](#where-a-claim-keeps-its-data) describes, and a
+pod cannot mount a `local` volume whose directory is gone. The pod would wait
+on the successor and never start.
 
 The removal Job therefore releases each such claim before it deletes the Node
 object. It reads every volume of type `local` or `hostPath` whose node
 affinity names only this worker. It deletes the volume's claim when the
 claim's uid is still the one the volume records. It then deletes each pod that
-mounts the claim and is not scheduled anywhere else. A claim made anew under
+mounts the claim and runs on this worker or waits unscheduled. A claim made anew under
 the same name belongs to the workload's new copy, so the Job leaves it alone. A
 volume the worker reaches over the network keeps its claim.
 
@@ -3268,8 +3279,9 @@ primary, and the primary's disruption budget holds the drain until then. A
 workload with no other copy of a volume loses its data with the server, and
 talos-cluster-kit takes no snapshot of a local volume.
 
-The removal Job may list every volume and delete any claim and pod, since the
-claims it releases are known only once the worker is off. Its script, which
+The removal Job's own rights let it list every volume and delete any claim and
+any pod in the cluster, since the claims it releases are known only once the
+worker is off. Its script, which
 the kit renders and pins with the tools image, deletes only those the rules
 above name.
 

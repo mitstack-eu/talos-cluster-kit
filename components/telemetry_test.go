@@ -3,6 +3,7 @@ package components_test
 // The telemetry Collector a cluster requiring an OTLP backend runs, in a copy on every node and one for the cluster.
 
 import (
+	"fmt"
 	"slices"
 	"testing"
 
@@ -97,10 +98,13 @@ func TestTelemetryCollector_TagsEveryPipelineWithTheNamespacesAppAndMasksBeforeE
 		assert.NotContains(t, redaction, "allowed_values", "the %s copy lets no value that matches a pattern pass unmasked", which)
 		assert.Equal(t, []any{map[string]any{"key": "mitstack.subscription.id", "value": telemetrySubscription, "action": "upsert"}},
 			testutil.Field(t, config, "processors", "resource/subscription", "attributes"), "the %s copy's subscription tag", which)
-		assert.Equal(t, []any{
-			`set(datapoint.attributes["mitstack.app"], resource.attributes["mitstack.app"]) where resource.attributes["mitstack.app"] != nil`,
-			`set(datapoint.attributes["mitstack.subscription.id"], resource.attributes["mitstack.subscription.id"])`,
-		}, testutil.Field(t, config, "processors", "transform/datapoints", "metric_statements"), "the %s copy's tags on each data point", which)
+		var statements []any
+		for _, name := range []string{"mitstack.app", "k8s.node.name", "k8s.namespace.name", "k8s.persistentvolumeclaim.name", "k8s.pod.name"} {
+			statements = append(statements, fmt.Sprintf("set(datapoint.attributes[%q], resource.attributes[%q]) where resource.attributes[%q] != nil", name, name, name))
+		}
+		statements = append(statements, `set(datapoint.attributes["mitstack.subscription.id"], resource.attributes["mitstack.subscription.id"])`)
+		assert.Equal(t, statements, testutil.Field(t, config, "processors", "transform/datapoints", "metric_statements"),
+			"the %s copy's tags on each data point, by which the cluster's alert rules group and name what they report", which)
 		for _, signal := range []string{"logs", "metrics"} {
 			want := []any{"memory_limiter", "k8s_attributes", "redaction", "resource/subscription", "batch"}
 			if signal == "metrics" {

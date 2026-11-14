@@ -144,22 +144,14 @@ func renderedCollector(t *testing.T, export components.TelemetryExport) []byte {
 	return manifests[0].Bytes
 }
 
-func renderedObject(t *testing.T, docs []map[string]any, kind, name string) map[string]any {
-	t.Helper()
-	of := testutil.Kind(docs, kind)
-	i := slices.IndexFunc(of, func(doc map[string]any) bool { return testutil.Field(t, doc, "metadata", "name") == name })
-	require.GreaterOrEqual(t, i, 0, "no %s %s", kind, name)
-	return of[i]
-}
-
 func collectorPod(t *testing.T, docs []map[string]any) map[string]any {
 	t.Helper()
-	return testutil.Field(t, renderedObject(t, docs, "DaemonSet", "mitstack-telemetry-node"), "spec", "template", "spec").(map[string]any)
+	return testutil.Field(t, testutil.Named(t, docs, "DaemonSet", "mitstack-telemetry-node"), "spec", "template", "spec").(map[string]any)
 }
 
 func collectorConfig(t *testing.T, docs []map[string]any, which string) string {
 	t.Helper()
-	return testutil.Field(t, renderedObject(t, docs, "ConfigMap", "mitstack-telemetry-"+which), "data", "config.yaml").(string)
+	return testutil.Field(t, testutil.Named(t, docs, "ConfigMap", "mitstack-telemetry-"+which), "data", "config.yaml").(string)
 }
 
 // bridgeGateway is the address at which a container on container's network reaches this host.

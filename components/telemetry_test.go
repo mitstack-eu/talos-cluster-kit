@@ -4,7 +4,6 @@ package components_test
 
 import (
 	"fmt"
-	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -32,17 +31,9 @@ func telemetryDocs(t *testing.T, export components.TelemetryExport) []map[string
 	return testutil.Documents(t, manifests[0].Bytes)
 }
 
-func named(t *testing.T, docs []map[string]any, kind, name string) map[string]any {
-	t.Helper()
-	of := testutil.Kind(docs, kind)
-	i := slices.IndexFunc(of, func(doc map[string]any) bool { return testutil.Field(t, doc, "metadata", "name") == name })
-	require.GreaterOrEqual(t, i, 0, "no %s %s", kind, name)
-	return of[i]
-}
-
 func collectorConfig(t *testing.T, docs []map[string]any, which string) map[string]any {
 	t.Helper()
-	configMap := named(t, docs, "ConfigMap", "mitstack-telemetry-"+which)
+	configMap := testutil.Named(t, docs, "ConfigMap", "mitstack-telemetry-"+which)
 	var config map[string]any
 	require.NoError(t, yaml.Unmarshal([]byte(testutil.Field(t, configMap, "data", "config.yaml").(string)), &config))
 	return config
@@ -51,7 +42,7 @@ func collectorConfig(t *testing.T, docs []map[string]any, which string) map[stri
 func podOf(t *testing.T, docs []map[string]any, which string) map[string]any {
 	t.Helper()
 	kind := map[string]string{"node": "DaemonSet", "cluster": "Deployment"}[which]
-	return testutil.Field(t, named(t, docs, kind, "mitstack-telemetry-"+which), "spec", "template", "spec").(map[string]any)
+	return testutil.Field(t, testutil.Named(t, docs, kind, "mitstack-telemetry-"+which), "spec", "template", "spec").(map[string]any)
 }
 
 func TestTelemetryCollector_RendersTheEventsLogsAndKubeletReceivers(t *testing.T) {
@@ -148,7 +139,7 @@ func TestTelemetryCollector_ReadsTheVolumeAndNodeFilesystemMetrics(t *testing.T)
 	assert.Equal(t, []any{"node", "pod", "container", "volume"}, kubelet["metric_groups"], "the node group holds the filesystem metrics and the volume group each volume's")
 	assert.Equal(t, []any{"k8s.volume.type"}, kubelet["extra_metadata_labels"], "each volume carries its type beside its claim name")
 	assert.Equal(t, true, testutil.Field(t, kubelet, "metrics", "k8s.pod.volume.usage", "enabled"), "each volume's used bytes")
-	assert.Contains(t, testutil.Field(t, named(t, docs, "ClusterRole", "mitstack-telemetry"), "rules"),
+	assert.Contains(t, testutil.Field(t, testutil.Named(t, docs, "ClusterRole", "mitstack-telemetry"), "rules"),
 		map[string]any{"apiGroups": []any{""}, "resources": []any{"nodes/stats", "nodes/pods"}, "verbs": []any{"get"}},
 		"the kubelet answers the stats and, for the volume type, its pods")
 }
@@ -157,7 +148,7 @@ func TestTelemetryCollector_TheClusterCopyReadsClusterMetricsFromOneReplicaOnACo
 	docs := telemetryDocs(t, testutil.TelemetryExport())
 
 	cluster := collectorConfig(t, docs, "cluster")
-	deployment := named(t, docs, "Deployment", "mitstack-telemetry-cluster")
+	deployment := testutil.Named(t, docs, "Deployment", "mitstack-telemetry-cluster")
 
 	assert.Equal(t, "serviceAccount", testutil.Field(t, cluster, "receivers", "k8s_cluster", "auth_type"))
 	assert.Equal(t, []any{"k8s_cluster"}, testutil.Field(t, cluster, "service", "pipelines", "metrics", "receivers"), "the node conditions and node list")

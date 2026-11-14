@@ -301,14 +301,6 @@ func TestPlane_EveryJobAndCronJobTheKitWritesLabelsItsJobsAsTheKitsAndRunsEachCo
 	assert.Empty(t, wrong, "a failed container leaves the end of its output as its message only under FallbackToLogsOnError, and the report carries it only from a Job with the kit's label")
 }
 
-func object(t *testing.T, docs []map[string]any, kind, name string) map[string]any {
-	t.Helper()
-	of := testutil.Kind(docs, kind)
-	i := slices.IndexFunc(of, func(doc map[string]any) bool { return testutil.Field(t, doc, "metadata", "name") == name })
-	require.GreaterOrEqual(t, i, 0, "no %s %s", kind, name)
-	return of[i]
-}
-
 func TestRelease_AClusterRequiringAnOTLPBackendCarriesTheTelemetryCollectorItsLeaseJobAndItsEmptyTokenSecret(t *testing.T) {
 	h := newHarness(t, telemetry)
 	plane, err := h.plane.WithGatewayCA()
@@ -319,7 +311,7 @@ func TestRelease_AClusterRequiringAnOTLPBackendCarriesTheTelemetryCollectorItsLe
 	require.NoError(t, err)
 	assert.Contains(t, manifestNames(release.Components), "mitstack-telemetry")
 	tokens := testutil.Documents(t, testutil.Manifest(t, "mitstack-cluster-tokens", release.Components).Bytes)
-	lease := object(t, tokens, "CronJob", "mitstack-telemetry-lease")
+	lease := testutil.Named(t, tokens, "CronJob", "mitstack-telemetry-lease")
 	assert.Equal(t, "mitstack-node", testutil.Field(t, lease, "metadata", "namespace"), "the namespace that holds the report token")
 	assert.Equal(t, "*/15 * * * *", testutil.Field(t, lease, "spec", "schedule"))
 	assert.Equal(t, "Forbid", testutil.Field(t, lease, "spec", "concurrencyPolicy"))
@@ -334,15 +326,15 @@ func TestRelease_AClusterRequiringAnOTLPBackendCarriesTheTelemetryCollectorItsLe
 	assert.Equal(t, "mitstack-report-token", testutil.Field(t, pod, "volumes", "0", "secret", "secretName"), "the job's bearer, the report token")
 	assert.Contains(t, testutil.Field(t, container, "volumeMounts"), map[string]any{"name": "token", "mountPath": "/var/run/mitstack", "readOnly": true})
 	assert.Contains(t, testutil.Field(t, pod, "volumes"), map[string]any{"name": "tmp", "emptyDir": map[string]any{"medium": "Memory"}}, "no token touches the node's disk")
-	secret := object(t, tokens, "Secret", "mitstack-telemetry-token")
+	secret := testutil.Named(t, tokens, "Secret", "mitstack-telemetry-token")
 	assert.Equal(t, "kube-system", testutil.Field(t, secret, "metadata", "namespace"))
 	assert.Nil(t, secret["data"], "the kit commits the push token's Secret empty, for the lease job to fill")
 	assert.Nil(t, secret["stringData"])
-	role := object(t, tokens, "Role", "mitstack-telemetry-lease")
+	role := testutil.Named(t, tokens, "Role", "mitstack-telemetry-lease")
 	assert.Equal(t, "kube-system", testutil.Field(t, role, "metadata", "namespace"))
 	assert.Equal(t, []any{map[string]any{"apiGroups": []any{""}, "resources": []any{"secrets"}, "resourceNames": []any{"mitstack-telemetry-token"},
 		"verbs": []any{"get", "patch"}}}, role["rules"], "the job may read and patch the one Secret, and create none")
-	binding := object(t, tokens, "RoleBinding", "mitstack-telemetry-lease")
+	binding := testutil.Named(t, tokens, "RoleBinding", "mitstack-telemetry-lease")
 	assert.Equal(t, []any{map[string]any{"kind": "ServiceAccount", "name": "mitstack-telemetry-lease", "namespace": "mitstack-node"}}, binding["subjects"])
 	files, err := release.Files(testutil.InitRepository)
 	require.NoError(t, err)

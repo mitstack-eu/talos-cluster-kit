@@ -137,6 +137,15 @@ func Kind(docs []map[string]any, kind string) []map[string]any {
 	return matching
 }
 
+// Named returns the one document of kind whose metadata names it name.
+func Named(t *testing.T, docs []map[string]any, kind, name string) map[string]any {
+	t.Helper()
+	of := Kind(docs, kind)
+	i := slices.IndexFunc(of, func(doc map[string]any) bool { return Field(t, doc, "metadata", "name") == name })
+	require.GreaterOrEqual(t, i, 0, "no %s %s", kind, name)
+	return of[i]
+}
+
 func Manifest(t *testing.T, name string, lists ...[]components.Manifest) components.Manifest {
 	t.Helper()
 	manifests := slices.Concat(lists...)

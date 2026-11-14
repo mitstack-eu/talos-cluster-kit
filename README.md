@@ -3186,24 +3186,27 @@ takes one of these changes:
    drain, since none of its pods would end.
 5. It takes the drain file out and writes the removal Job at
    `cluster/mitstack-remove-node-<key>.yaml`. That Job releases each claim on
-   a local volume of the worker, then deletes its Node object.
-6. Once a node report lists no Node object of the worker, it takes the removal
-   file out and deletes the server.
-7. It creates the successor in the same location, under the same key and
-   name, from the worker image with no user data. The successor takes the
-   first of the pool's `ServerTypes` its location can order, and the event
-   names the type and the ones Hetzner could not order when it is not the
-   list's first.
+   a local volume of the worker, then deletes its Node object. A removal Job
+   that fails is taken out and written again, and the event names its last
+   words.
+6. Once a node report reads the removal Job `Healthy` and lists no Node object
+   of the worker, it deletes the server.
+7. In one step it takes the removal file out and creates the successor in the
+   same location, under the same key and name, from the worker image with no
+   user data. The successor takes the first of the pool's `ServerTypes` its
+   location can order, and the event names the type and the ones Hetzner could
+   not order when it is not the list's first.
 8. Once a node report received since the successor's creation reads its Node
    object Ready, it takes the label off the network, and the next named
    worker begins.
 
 A refusal in step 2 takes the label off the network, since the worker still
 runs untouched. The guard's class `redundancy-below-minimum` names the worker
-and each other worker with its reading. When the old server is gone while the
-repository still holds a file of the replacement, the pool takes the file out
-before it creates the successor, since Argo CD would run that Job again against
-the new server of the same name.
+and each other worker with its reading. A worker whose server is already gone
+still gets its removal Job before its successor. The pool takes out a drain
+file first, and creates the successor only in the step that takes the removal
+file out, since Argo CD would run a held Job again against the new server of
+the same name.
 
 ### How the drain waits on a disruption budget
 
@@ -3223,6 +3226,10 @@ budget:
 drain: pod shop/web-0 waits on a disruption budget in namespace shop: The disruption budget web needs 1 healthy pods and has 1 currently
 ```
 
+Any other answer to the dry-run eviction, such as the API refusing the Job's
+own request, ends the attempt with that answer instead. An attempt that cannot
+read its Job's count of failed attempts takes itself for the last.
+
 The node report carries that line as the failed attempt's message, as
 [the report's own section](#how-the-report-carries-the-reason-a-kit-job-failed)
 describes. While the Job has attempts left, `ReplacementProblems` names that
@@ -3237,8 +3244,10 @@ naming the same line. The worker serves on.
 The cluster's default storage class, `local-path`, keeps a volume's data in a
 directory on the node's own disk. Its volume is pinned to that node by the
 `kubernetes.io/hostname` label. That data goes when the server is deleted. The
-successor carries the same name, so a claim left bound would hold its pod to a
-directory that no longer exists, and the pod would never start.
+successor carries the same name, so a claim left bound would still match it.
+local-path's volumes are of the `hostPath` type `DirectoryOrCreate`, so the
+pod would start on the successor in a new, empty directory, holding none of
+its data.
 
 The removal Job therefore releases each such claim before it deletes the Node
 object. It reads every volume of type `local` or `hostPath` whose node

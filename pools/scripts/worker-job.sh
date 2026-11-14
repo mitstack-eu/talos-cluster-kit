@@ -13,14 +13,20 @@ fail() {
   exit 1
 }
 
-# budget_of <namespace> <pod> prints the cause the API gives for refusing a dry-run eviction of the pod, or nothing.
+# budget_of <namespace> <pod> prints the cause the API gives for refusing a dry-run eviction of the pod, nothing when
+# it allows the eviction or the pod is gone, and fails on any other answer, so no refusal reads as a budget's absence.
 budget_of() {
-  local answer
-  answer=$(curl -sS --cacert "$SERVICE_ACCOUNT_DIR/ca.crt" -H "Authorization: Bearer $(cat "$SERVICE_ACCOUNT_DIR/token")" \
-    -H 'Content-Type: application/json' -X POST \
+  local answer verdict
+  answer=$(curl -sS --connect-timeout 5 --max-time 30 --cacert "$SERVICE_ACCOUNT_DIR/ca.crt" \
+    -H "Authorization: Bearer $(cat "$SERVICE_ACCOUNT_DIR/token")" -H 'Content-Type: application/json' -X POST \
     --data "{\"apiVersion\":\"policy/v1\",\"kind\":\"Eviction\",\"metadata\":{\"name\":\"$2\",\"namespace\":\"$1\"}}" \
-    "https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT/api/v1/namespaces/$1/pods/$2/eviction?dryRun=All")
-  jq -r '[.details.causes[]? | select(.reason == "DisruptionBudget") | .message] | first // empty' <<<"$answer"
+    "https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT/api/v1/namespaces/$1/pods/$2/eviction?dryRun=All") ||
+    fail "the dry-run eviction of pod $1/$2 got no answer"
+  verdict=$(jq -r --arg pod "$1/$2" 'if .code == 429 then [.details.causes[]? | select(.reason == "DisruptionBudget") | .message] | first // empty
+    elif .status == "Success" or .code == 404 then empty
+    else error("the dry-run eviction of pod \($pod) was answered \(.code // "with no code"): \(.message // "")") end' <<<"$answer" 2>&1) ||
+    fail "${verdict#jq: error (at <stdin>:*): }"
+  printf '%s\n' "$verdict"
 }
 
 drain() {
@@ -28,7 +34,8 @@ drain() {
     return 0
   fi
   local failed pods pod cause named=""
-  failed=$(kubectl get job "$JOB" -n "$JOB_NAMESPACE" -o jsonpath='{.status.failed}')
+  # An attempt that cannot read its Job's count takes itself for the last, since a cordon left on would outlive the Job.
+  failed=$(kubectl get job "$JOB" -n "$JOB_NAMESPACE" -o jsonpath='{.status.failed}') || failed=$((ATTEMPTS - 1))
   if [ $((${failed:-0} + 1)) -ge "$ATTEMPTS" ]; then
     kubectl uncordon "$NODE" >/dev/null
   fi

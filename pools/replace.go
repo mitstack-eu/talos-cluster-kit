@@ -241,7 +241,7 @@ func (x replacer) next(ctx context.Context) (progress, error) {
 	case worker.Status == controlplane.ServerOff:
 		return x.off(ctx, worker, held)
 	}
-	return waitsOn("Hetzner reads Cloud worker %d neither running nor off", worker.ID)
+	return waitsOn("Hetzner reads Cloud worker %d %s, neither running nor off", worker.ID, worker.Status)
 }
 
 // running judges a running worker's removal by a node report since its replacement began, and refuses it before its
@@ -283,7 +283,7 @@ func (x replacer) running(ctx context.Context, worker controlplane.Server) (prog
 	case !ready:
 		return x.powerOff(worker, "with no drain, since the node report read at "+stamp(read.At)+" reads its Node object not Ready")
 	}
-	return x.write(drainStep, worker, "whose Job drains it under its pods' disruption budgets")
+	return x.write(drainStep, worker.Name, "whose Job drains it under its pods' disruption budgets")
 }
 
 // allowRemoval judges the worker's removal by block-kit's guard over every worker the report lists, whose minimum
@@ -372,9 +372,13 @@ func (x replacer) draining(ctx context.Context, worker controlplane.Server) (pro
 		return progress{}, err
 	}
 	failure, ferr := read.JobFailure(nodeconfig.TalosAPINamespace, job)
+	_, applied := jobs[job]
 	switch {
 	case !readable:
 		return waitsOn("%s, so its drain Job %s cannot be read; its server is kept", read.UnreadJobs(controlplane.RemovalApplication), job)
+	case !applied:
+		return waitsOn("the node report read at %s lists no Job %s, so the Application %s has not applied its file; its server is kept",
+			at, job, controlplane.RemovalApplication)
 	case jobs[job].Health == report.JobCompleted:
 		return x.powerOff(worker, "since the node report read at "+at+" reads its drain complete")
 	case ferr != nil:
@@ -415,10 +419,9 @@ func (x replacer) powerOff(worker controlplane.Server, why string) (progress, er
 }
 
 // off removes a powered-off worker's Node object through the cluster repository, and deletes its server only once a
-// node report lists no Node object of it and main holds no file of its replacement.
+// node report reads that removal complete and lists no Node object of it.
 func (x replacer) off(ctx context.Context, worker controlplane.Server, held []string) (progress, error) {
-	drain, removal := jobPath(drainStep, x.r.key), jobPath(removeNodeStep, x.r.key)
-	if slices.Contains(held, drain) {
+	if drain := jobPath(drainStep, x.r.key); slices.Contains(held, drain) {
 		return x.takeOut(drain, "since Cloud worker "+x.r.key+" is off")
 	}
 	began, begun := controlplane.RemovalBegan(worker, x.r.plan())
@@ -432,38 +435,54 @@ func (x replacer) off(ctx context.Context, worker controlplane.Server, held []st
 	case read == nil:
 		return waitsOn("no node report was received since its replacement began at %s", stamp(began))
 	}
+	if g, removed, err := x.removal(*read, worker.Name, held); err != nil || !removed {
+		return g, err
+	}
 	listed, err := read.ListedNodes()
 	if err != nil {
 		return progress{}, err
 	}
-	gone := len(listed) > 0 && !slices.ContainsFunc(listed, func(m report.Member) bool { return m.Name == worker.Name })
-	holds := slices.Contains(held, removal)
-	switch {
-	case gone && holds:
-		return x.takeOut(removal, "whose Job removed the Node object of "+worker.Name)
-	case gone:
-		return x.deleteServer(worker, *read)
+	if len(listed) == 0 || slices.ContainsFunc(listed, func(m report.Member) bool { return m.Name == worker.Name }) {
+		return waitsOn("its Node object's removal completed, and the node report read at %s still lists the Node object", stamp(read.At))
 	}
-	job, at := jobName(removeNodeStep, x.r.key), stamp(read.At)
-	jobs, readable, err := read.AppliedJobs(controlplane.RemovalApplication)
-	status, applied := jobs[job]
-	switch {
-	case err != nil:
-		return progress{}, err
-	case !readable:
-		return waitsOn("%s, so the Job %s that removes its Node object cannot be read", read.UnreadJobs(controlplane.RemovalApplication), job)
-	case holds && (status.Health == report.JobCompleted || status.Health == report.JobFailed):
-		return x.takeOut(removal, "whose Job finished in a report that still lists the Node object of "+worker.Name)
-	case holds:
-		return waitsOn("the Job %s that removes its Node object has not finished in the node report read at %s", job, at)
-	case applied:
-		return waitsOn("Argo CD still holds the Job %s in the node report read at %s, and prunes it now that the cluster repository no longer holds its file", job, at)
-	}
-	return x.write(removeNodeStep, worker, "whose Job releases each claim on a local volume of it and removes its Node object")
+	return x.deleteServer(worker, *read)
 }
 
-func (x replacer) write(step string, worker controlplane.Server, why string) (progress, error) {
-	job, err := renderWorkerJob(step, x.r.key, worker.Name)
+// removal carries on the Job that removes the Node object of hostname, and reports whether read reads it complete
+// while main holds its file, which only this replacement writes.
+func (x replacer) removal(read report.Read, hostname string, held []string) (progress, bool, error) {
+	path, job, at := jobPath(removeNodeStep, x.r.key), jobName(removeNodeStep, x.r.key), stamp(read.At)
+	jobs, readable, err := read.AppliedJobs(controlplane.RemovalApplication)
+	if err != nil {
+		return progress{}, false, err
+	}
+	status, applied := jobs[job]
+	holds := slices.Contains(held, path)
+	pending := func(g progress, err error) (progress, bool, error) { return g, false, err }
+	switch {
+	case !readable:
+		return pending(waitsOn("%s, so the Job %s that removes its Node object cannot be read", read.UnreadJobs(controlplane.RemovalApplication), job))
+	case holds && status.Health == report.JobCompleted:
+		return progress{}, true, nil
+	case holds && status.Health == report.JobFailed:
+		failure, err := read.JobFailure(nodeconfig.TalosAPINamespace, job)
+		if err != nil {
+			return progress{}, false, err
+		}
+		return pending(x.takeOut(path, "whose Job failed in the node report read at "+at+", so it runs again: "+
+			cmp.Or(failure, status.Message, "the node report gives no message of it")))
+	case holds && !applied:
+		return pending(waitsOn("the node report read at %s lists no Job %s, so the Application %s has not applied its file", at, job, controlplane.RemovalApplication))
+	case holds:
+		return pending(waitsOn("the Job %s that removes its Node object has not finished in the node report read at %s", job, at))
+	case applied:
+		return pending(waitsOn("Argo CD still holds the Job %s in the node report read at %s, and prunes it now that the cluster repository no longer holds its file", job, at))
+	}
+	return pending(x.write(removeNodeStep, hostname, "whose Job releases each claim on a local volume of it and removes its Node object"))
+}
+
+func (x replacer) write(step, hostname, why string) (progress, error) {
+	job, err := renderWorkerJob(step, x.r.key, hostname)
 	if err != nil {
 		return progress{}, err
 	}
@@ -498,11 +517,21 @@ func (x replacer) deleteServer(worker controlplane.Server, read report.Read) (pr
 	})
 }
 
-// createSuccessor boots the successor of the key's worker in its location only once main holds no file of the
-// replacement, since Argo CD would run a held Job again against the successor of the same name.
+// createSuccessor boots the successor of the key's worker once the Job that removes its Node object has run, and takes
+// that Job's file out in the same step, since Argo CD would run a held Job again against the successor of the same name.
 func (x replacer) createSuccessor(ctx context.Context, held []string) (progress, error) {
-	if len(held) > 0 {
-		return x.takeOut(held[0], "before the successor of Cloud worker "+x.r.key+" is created")
+	if drain := jobPath(drainStep, x.r.key); slices.Contains(held, drain) {
+		return x.takeOut(drain, "before the successor of Cloud worker "+x.r.key+" is created")
+	}
+	read, err := x.plane.ReadReport(ctx, x.r.asked)
+	switch {
+	case err != nil:
+		return progress{}, err
+	case read == nil:
+		return waitsOn("no node report was received since the upgrade asked for its replacement at %s", stamp(x.r.asked))
+	}
+	if g, removed, err := x.removal(*read, x.plane.LocatedName(RoleCloudWorker, x.r.key), held); err != nil || !removed {
+		return g, err
 	}
 	site, err := newSite(x.st)
 	if err != nil {
@@ -517,11 +546,15 @@ func (x replacer) createSuccessor(ctx context.Context, held []string) (progress,
 	if i := slices.Index(x.pool.ServerTypes, spec.ServerType); i > 0 {
 		why = fmt.Sprintf(", since Hetzner can order no %s there now", strings.Join(x.pool.ServerTypes[:i], " or "))
 	}
-	return next("create the successor of Cloud worker "+x.r.key+" in "+loc+" from the worker image", func(ctx context.Context) error {
+	path := jobPath(removeNodeStep, x.r.key)
+	return next("take "+path+" out and create the successor of Cloud worker "+x.r.key+" in "+loc+" from the worker image", func(ctx context.Context) error {
+		if err := x.plane.Removals.Commit(ctx, path, nil); err != nil {
+			return fmt.Errorf("taking %s out of the cluster repository: %w", path, err)
+		}
 		if _, err := x.plane.API.CreateServers(ctx, spec); err != nil {
 			return fmt.Errorf("creating the successor of Cloud worker %s: %w", x.r.key, err)
 		}
-		x.notify(ctx, "created the successor of Cloud worker %s in %s as %s%s", x.r.key, loc, spec.ServerType, why)
+		x.notify(ctx, "took %s out of the cluster repository and created the successor of Cloud worker %s in %s as %s%s", path, x.r.key, loc, spec.ServerType, why)
 		return nil
 	})
 }

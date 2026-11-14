@@ -398,8 +398,7 @@ func TestManifests_NoCiliumContainerRunsPrivilegedOrAddsACapabilityBeyondTheRead
 	}
 }
 
-// Envoy's starter needs NET_ADMIN and either SYS_ADMIN or BPF, and the scan's privileged-container control fails a
-// container that adds SYS_ADMIN.
+// The scan's privileged-container control, C-0057, fails a container that adds SYS_ADMIN.
 func TestManifests_CiliumEnvoyAddsNetAdminAndBPFInPlaceOfSysAdmin(t *testing.T) {
 	added := map[string]any{}
 	for _, pod := range renderedPods(t) {

@@ -51,8 +51,7 @@ func newSite(t *testing.T) *site {
 		notReady: map[string]bool{}, openBao: map[string]string{}, sealed: map[string]bool{}}
 	s.cloud = cloudtest.New(s.tick)
 	s.cloud.InstantBuild = true
-	s.plane = controlplane.Plane{API: s.cloud, Block: "hcloud-hrobot-talos-cluster", Subscription: "sub_0123456789ab", AppName: "shop",
-		Now: s.tick, ReadReport: s.readReport, Guard: redundanttest.Guard}
+	s.plane = s.newPlane()
 	var err error
 	s.network, err = s.cloud.CreateNetwork(ctx, controlplane.NetworkSpec{Name: "net", Labels: s.plane.Labels("network")})
 	require.NoError(t, err)
@@ -65,6 +64,12 @@ func newSite(t *testing.T) *site {
 	s.image, err = s.cloud.StartSnapshot(ctx, builders[0].ID, controlplane.SnapshotSpec{Labels: s.plane.Labels(controlplane.RoleWorkerImage)})
 	require.NoError(t, err)
 	return s
+}
+
+// newPlane is the plane a block builds afresh on each call, so a test that replaces it stands in for a restart.
+func (s *site) newPlane() controlplane.Plane {
+	return controlplane.Plane{API: s.cloud, Block: "hcloud-hrobot-talos-cluster", Subscription: "sub_0123456789ab", AppName: "shop",
+		Now: s.tick, ReadReport: s.readReport, Guard: redundanttest.Guard}
 }
 
 // readReport is the report a node would send now: each member's node, the pod and seal state of each OpenBao member.
@@ -418,6 +423,19 @@ func TestPlanCloud_TwoMembersOfOneLocationTakeNamesOfTheirOwn(t *testing.T) {
 		names[srv.Name] = true
 	}
 	assert.Len(t, names, 2, "member names %v", names)
+}
+
+func TestPlanCloud_PlansNothingWhileTheNetworkRecordsAWorkerReplacement(t *testing.T) {
+	s := newSite(t)
+	s.reach(cloudPool(1, "fsn1"))
+	labels := maps.Clone(s.network.Labels)
+	labels[pools.KeyWorkerReplace+"fsn1-1"] = "7-1794605517"
+	require.NoError(t, s.cloud.SetNetworkLabels(context.Background(), s.network.ID, labels))
+
+	plan, err := s.plan(pools.CloudPool{ServerTypes: []string{"cx43"}, Locations: []string{"fsn1", "nbg1"}, Min: 2, Max: 2})
+
+	require.NoError(t, err)
+	assert.True(t, plan.Empty(), "the plan of a pool raised to two of another type while a replacement is recorded: %+v", plan)
 }
 
 func TestPlanCloud_PassesOnAListFailureWithoutPlanningFromAPartialRead(t *testing.T) {

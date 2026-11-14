@@ -1,0 +1,6 @@
+{"items": [
+  {"metadata": {"name": "db-0"}, "spec": {"volumes": [{"name": "data", "persistentVolumeClaim": {"claimName": "data-db-0"}}]}},
+  {"metadata": {"name": "db-1"}, "spec": {"nodeName": "robot-3041839", "volumes": [{"name": "data", "persistentVolumeClaim": {"claimName": "data-db-1"}}]}},
+  {"metadata": {"name": "cache-0"}, "spec": {"volumes": [{"name": "cache", "persistentVolumeClaim": {"claimName": "cache-0"}}]}},
+  {"metadata": {"name": "web-0"}, "spec": {"nodeName": "shop-cloud-worker-nbg1-1", "volumes": [{"name": "files", "persistentVolumeClaim": {"claimName": "files"}}]}}
+]}

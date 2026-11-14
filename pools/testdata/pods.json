@@ -1,0 +1,4 @@
+{"items": [
+  {"metadata": {"namespace": "kube-system", "name": "cilium-x7k2q", "ownerReferences": [{"kind": "DaemonSet", "name": "cilium"}]}},
+  {"metadata": {"namespace": "shop", "name": "web-0", "ownerReferences": [{"kind": "ReplicaSet", "name": "web-5d8f"}]}}
+]}

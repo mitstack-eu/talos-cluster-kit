@@ -148,6 +148,13 @@ specs:
     - matchName: ssh.github.com
     toPorts:
     - ports: [{port: "443", protocol: TCP}]
+- description: "OpenBao's rollout Job reaches the API server alone, which serves its reads and evictions and runs its reads inside a member, so it needs no flow to OpenBao."
+  endpointSelector:
+    matchLabels:
+      k8s:io.kubernetes.pod.namespace: openbao
+      k8s:app.kubernetes.io/name: mitstack-openbao-rollout
+  egress:
+  - toEntities: [kube-apiserver]
 - description: "Traefik takes web traffic from the load balancers on its NodePorts, reaches the API server, and reaches the app slices."
   endpointSelector:
     matchLabels:

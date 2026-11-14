@@ -1,0 +1,60 @@
+---
+# Argo CD runs this Job after each sync of OpenBao's component, once every object is applied and reads Healthy and the
+# handover has run, so the StatefulSet's update revision is the one the release states. It moves each member whose pod
+# runs an older revision onto it, the standbys first and the active member last, under an account of its own that
+# acts in OpenBao's namespace alone.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+  labels:
+    mitstack.dev/rendered-by: talos-cluster-kit
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ .Deadline }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Name }}
+        mitstack.dev/app: {{ .App }}
+    spec:
+      serviceAccountName: {{ .Name }}
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: rollout
+          image: {{ .Image }}
+          terminationMessagePolicy: FallbackToLogsOnError
+          command: [bash, {{ .Script }}]
+          env:
+            - name: ROLLOUT_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: ROLLOUT_STATEFULSET
+              value: {{ printf "%q" .StatefulSet }}
+            - name: ROLLOUT_MEMBER_TIMEOUT
+              value: {{ printf "%q" .MemberTimeout }}
+            - name: ROLLOUT_CALL_TIMEOUT
+              value: {{ printf "%q" .CallTimeout }}
+            - name: HOME
+              value: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

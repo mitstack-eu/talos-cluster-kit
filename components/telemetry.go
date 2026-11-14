@@ -90,7 +90,7 @@ func (s Set) TelemetryCollector(e TelemetryExport, subscription string) ([]Manif
 
 // openBaoMembers is the pod and host of each OpenBao member the set runs, or none for a set without OpenBao.
 func (s Set) openBaoMembers() []map[string]string {
-	if !slices.ContainsFunc(s.Served, func(m Manifest) bool { return m.Name == openBaoName }) {
+	if !slices.ContainsFunc(s.Served, func(m Manifest) bool { return m.Name == OpenBaoName }) {
 		return nil
 	}
 	members := make([]map[string]string, OpenBaoMembers)

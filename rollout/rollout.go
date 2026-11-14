@@ -58,9 +58,9 @@ type File struct {
 }
 
 // carried is one component as the repository holds it: the documents it carries, the Job that hands them over from
-// Talos, then the ConfigMap named for the digest of both, since Argo CD's list of what it applied names objects and no
-// revision. The Job and the ConfigMap sync in the wave of the last document, and the sync succeeds only once the Job
-// did.
+// Talos, for OpenBao the Job that moves its members once the sync is done, then the ConfigMap named for the digest of
+// all of them, since Argo CD's list of what it applied names objects and no revision. The handover Job and the
+// ConfigMap sync in the wave of the last document, and the sync succeeds only once each Job did.
 type carried struct {
 	name, app string
 	bytes     []byte
@@ -175,6 +175,13 @@ func (r Release) carry(m components.Manifest) (carried, error) {
 		if err != nil {
 			return carried{}, err
 		}
+		if m.Name == components.OpenBaoName {
+			moves, err := renderOpenBaoRollout(heads, r.ToolsImage)
+			if err != nil {
+				return carried{}, err
+			}
+			job = append(job, moves...)
+		}
 		c = c.withMarker(append(docs, job...), heads, wave)
 	}
 	carriedCache.Store(key, c)
@@ -185,8 +192,8 @@ func (r Release) carry(m components.Manifest) (carried, error) {
 const markerFormat = "# Argo CD lists this ConfigMap once it compared the documents above, whose digest it is named for.\n" +
 	"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: %s\n  namespace: %s\n  annotations:\n    " + syncWaveAnnotation + ": \"%d\"\n"
 
-// withMarker closes stated, the component's documents and its handover Job, with the marker named for their digest,
-// which Argo CD applies in wave.
+// withMarker closes stated, the component's documents and its Jobs, with the marker named for their digest, which
+// Argo CD applies in wave.
 func (c carried) withMarker(stated []byte, heads []documentHead, wave int) carried {
 	stated = append(stated, "---\n"...)
 	sum := sha256.Sum256(stated)

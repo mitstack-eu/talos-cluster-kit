@@ -28,13 +28,13 @@ const OpenBaoVolume = "openbao"
 // OpenBaoMembers is how many Raft members OpenBao runs, one per node, since a user volume's data is lost with its machine.
 const OpenBaoMembers = 3
 
-// openBaoName names OpenBao's component and the release its chart renders, so the member of ordinal i runs as openbao-i.
-const openBaoName = "openbao"
+// OpenBaoName names OpenBao's component and the release its chart renders, so the member of ordinal i runs as openbao-i.
+const OpenBaoName = "openbao"
 
 // OpenBaoMember is the pod of the member of ordinal i and the name it answers at on OpenBao's headless Service, which
 // its certificate holds.
 func OpenBaoMember(i int) (pod, host string) {
-	pod = fmt.Sprintf("%s-%d", openBaoName, i)
+	pod = fmt.Sprintf("%s-%d", OpenBaoName, i)
 	return pod, pod + ".openbao-internal.openbao.svc"
 }
 
@@ -149,7 +149,7 @@ func Hosting(in HostingInputs) (Set, error) {
 func HostingServed() Set {
 	set := Default()
 	set.Served = append(slices.Clone(set.Served),
-		Manifest{Name: openBaoName, Path: "components/openbao/openbao.yaml", Bytes: openBaoManifest},
+		Manifest{Name: OpenBaoName, Path: "components/openbao/openbao.yaml", Bytes: openBaoManifest},
 		Manifest{Name: "cert-manager", Path: "components/cert-manager/cert-manager.yaml", Bytes: certManagerManifest},
 		Manifest{Name: "trust-manager", Path: "components/trust-manager/trust-manager.yaml", Bytes: trustManagerManifest},
 		Manifest{Name: "external-secrets", Path: "components/external-secrets/external-secrets.yaml", Bytes: externalSecretsManifest},

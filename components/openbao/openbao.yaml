@@ -27,6 +27,13 @@ spec:
       app.kubernetes.io/instance: openbao
       component: server
 ---
+# Source: openbao/templates/extra-objects.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mitstack-openbao-rollout
+  namespace: openbao
+---
 # Source: openbao/templates/server-serviceaccount.yaml
 apiVersion: v1
 kind: ServiceAccount
@@ -50,6 +57,8 @@ metadata:
     app.kubernetes.io/name: openbao
     app.kubernetes.io/instance: openbao
     app.kubernetes.io/managed-by: Helm
+  annotations:
+    vault.hashicorp.com/config-checksum: f373f73627eeb5bdea5f3652d1fe2ff500dfe394ce0eb27d889ed8b91c4fbf0f
 data:
   extraconfig-from-values.hcl: |-
     
@@ -119,6 +128,35 @@ subjects:
   name: openbao
   namespace: openbao
 ---
+# Source: openbao/templates/extra-objects.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mitstack-openbao-rollout
+  namespace: openbao
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - statefulsets
+  verbs:
+  - get
+- apiGroups:
+  - ""
+  resources:
+  - pods/eviction
+  - pods/exec
+  verbs:
+  - create
+---
 # Source: openbao/templates/server-discovery-role.yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -134,6 +172,21 @@ rules:
 - apiGroups: [""]
   resources: ["pods"]
   verbs: ["get", "watch", "list", "update", "patch"]
+---
+# Source: openbao/templates/extra-objects.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mitstack-openbao-rollout
+  namespace: openbao
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mitstack-openbao-rollout
+subjects:
+- kind: ServiceAccount
+  name: mitstack-openbao-rollout
+  namespace: openbao
 ---
 # Source: openbao/templates/server-discovery-rolebinding.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -300,6 +353,8 @@ spec:
         app.kubernetes.io/instance: openbao
         component: server
         mitstack.dev/app: openbao
+      annotations:
+        openbao.hashicorp.com/config-checksum: f373f73627eeb5bdea5f3652d1fe2ff500dfe394ce0eb27d889ed8b91c4fbf0f
     spec:
       
       affinity:

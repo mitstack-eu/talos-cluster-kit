@@ -11,6 +11,9 @@ server:
     mitstack.dev/app: openbao
   extraEnvironmentVars:
     BAO_CACERT: /openbao/tls/ca.crt
+  # A checksum of the configuration in each member's pod template gives the StatefulSet a new revision whenever the
+  # configuration changes, which OpenBao's rollout Job then moves each member onto.
+  configAnnotation: true
   statefulSet:
     securityContext:
       pod:
@@ -104,3 +107,39 @@ server:
           current_key = "file:///openbao/seal/key"
         }
         service_registration "kubernetes" {}
+# OpenBao's rollout Job runs under this account, which may read the members and their StatefulSet, evict a member and
+# run a command inside one, in this namespace alone.
+extraObjects:
+  - apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: mitstack-openbao-rollout
+      namespace: openbao
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata:
+      name: mitstack-openbao-rollout
+      namespace: openbao
+    rules:
+      - apiGroups: [""]
+        resources: [pods]
+        verbs: [get, list, watch]
+      - apiGroups: [apps]
+        resources: [statefulsets]
+        verbs: [get]
+      - apiGroups: [""]
+        resources: [pods/eviction, pods/exec]
+        verbs: [create]
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: mitstack-openbao-rollout
+      namespace: openbao
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: Role
+      name: mitstack-openbao-rollout
+    subjects:
+      - kind: ServiceAccount
+        name: mitstack-openbao-rollout
+        namespace: openbao

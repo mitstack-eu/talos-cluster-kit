@@ -193,8 +193,8 @@ func TestAPIServer_OpenBaosRolloutEvictsEachOutdatedStandbyAndThenTheActiveMembe
 			server.admin(t, nil, "label", "pod", leader, "-n", "openbao", "--overwrite", "openbao-active=true")
 		}
 		server.admin(t, openBaoMember(t, statefulSet, name, rolloutNewRevision, name == leader), "create", "-f", "-")
-		// The disruption controller recounts the moment a member turns Ready, before the rollout's next two reads end,
-		// which a stand-in whose every write is a container's run cannot match, so it writes the budget first.
+		// Each write of the stand-in runs a container, so it counts the member back before marking it Ready, and the
+		// rollout's next eviction cannot reach the budget before the count does.
 		server.budgetCounts(t, 3)
 		server.memberRuns(t, name)
 	}

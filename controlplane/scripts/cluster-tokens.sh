@@ -38,12 +38,9 @@ fail() {
 # post <path> <body file> prints the platform's status and writes its answer to $work/answer, retrying a passing refusal.
 post() {
   local attempt status
-  [ -s "$token_file" ] || fail "no bearer token at $token_file"
-  printf 'Authorization: Bearer %s\n' "$(cat "$token_file")" > "$work/headers"
   for ((attempt = 1; attempt <= attempts; attempt++)); do
-    status=$(curl -sS --proto '=https' --tlsv1.2 --connect-timeout 5 --max-time 30 -X POST \
-      -H @"$work/headers" -H 'Content-Type: application/json' --data-binary @"$2" \
-      -o "$work/answer" -w '%{http_code}' "$PLATFORM_URL$1" || echo 000)
+    # A command substitution runs without -e, so post_once's own failure has to stop post here.
+    status=$(post_once "$1" "$2") || exit
     case $status in
       429 | 503 | 000) sleep 15 ;;
       *) echo "$status"; return 0 ;;

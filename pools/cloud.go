@@ -66,6 +66,9 @@ func PlanCloud(ctx context.Context, plane controlplane.Plane, pool CloudPool, dr
 	if err != nil {
 		return CloudPlan{}, err
 	}
+	if network, ok := st.Network(); ok && recordsReplacement(network) {
+		return CloudPlan{}, nil
+	}
 	members := st.Servers[RoleCloudWorker]
 	keep, leaving := splitMembers(members, pool)
 	var plan CloudPlan
@@ -110,7 +113,9 @@ func PlanCloud(ctx context.Context, plane controlplane.Plane, pool CloudPool, dr
 	taken := memberKeys(members)
 	for range room {
 		loc := fewest(keep, pool.Locations)
-		spec, err := site.spec(ctx, plane, pool, loc, taken)
+		key := nextKey(loc, taken)
+		taken[key] = true
+		spec, err := site.specAt(ctx, plane, pool, loc, key)
 		if err != nil {
 			return CloudPlan{}, err
 		}
@@ -205,26 +210,32 @@ func newSite(st controlplane.State) (*creation, error) {
 	return &creation{network: network, firewall: firewall, image: image, offered: map[string][]string{}}, nil
 }
 
-// spec boots a member from the worker image, which embeds the node's configuration, in loc, of the first type listed
-// that loc offers, under the first member key of loc not taken.
-func (c *creation) spec(ctx context.Context, plane controlplane.Plane, pool CloudPool, loc string, taken map[string]bool) (controlplane.ServerSpec, error) {
+// serverType is the first type of the pool that loc offers now, which a member created there takes.
+func (c *creation) serverType(ctx context.Context, plane controlplane.Plane, pool CloudPool, loc string) (string, error) {
 	if _, ok := c.offered[loc]; !ok {
 		types, err := plane.API.AvailableServerTypes(ctx, loc)
 		if err != nil {
-			return controlplane.ServerSpec{}, fmt.Errorf("listing the server types %s offers: %w", loc, err)
+			return "", fmt.Errorf("listing the server types %s offers: %w", loc, err)
 		}
 		c.offered[loc] = types
 	}
 	i := slices.IndexFunc(pool.ServerTypes, func(t string) bool { return slices.Contains(c.offered[loc], t) })
 	if i < 0 {
-		return controlplane.ServerSpec{}, &controlplane.Refusal{Class: "no-server-type-available", Message: fmt.Sprintf("%s offers none of the Cloud pool's server types %v", loc, pool.ServerTypes)}
+		return "", &controlplane.Refusal{Class: "no-server-type-available", Message: fmt.Sprintf("%s offers none of the Cloud pool's server types %v", loc, pool.ServerTypes)}
 	}
-	key := nextKey(loc, taken)
-	taken[key] = true
+	return pool.ServerTypes[i], nil
+}
+
+// specAt boots the member of key in loc from the worker image, which embeds the node's configuration.
+func (c *creation) specAt(ctx context.Context, plane controlplane.Plane, pool CloudPool, loc, key string) (controlplane.ServerSpec, error) {
+	serverType, err := c.serverType(ctx, plane, pool, loc)
+	if err != nil {
+		return controlplane.ServerSpec{}, err
+	}
 	labels := plane.Labels(RoleCloudWorker)
 	labels[KeyMember] = key
 	return controlplane.ServerSpec{
-		Name: plane.LocatedName(RoleCloudWorker, key), ServerType: pool.ServerTypes[i], Location: loc, ImageID: c.image.ID,
+		Name: plane.LocatedName(RoleCloudWorker, key), ServerType: serverType, Location: loc, ImageID: c.image.ID,
 		Labels: labels, NetworkIDs: []int64{c.network.ID}, FirewallIDs: []int64{c.firewall.ID},
 	}, nil
 }

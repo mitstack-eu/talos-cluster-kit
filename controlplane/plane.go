@@ -67,8 +67,12 @@ type Plane struct {
 	// Removals is the cluster repository a replaced node's member removal is written to; nil refuses an upgrade that
 	// names a node.
 	Removals *Removals
+	Records  []Record
 	Signers  []components.Signer
 }
+
+// Record adds to the network's labels what an upgrade asks of a part beside the plane, inside the upgrade's one write.
+type Record func(ctx context.Context, p Plane, st State, labels map[string]string) (replaces string, err error)
 
 // Refusal is a request the plane will not carry out, which no retry of the same call fixes. Class is
 // machine-readable, and the block answers it as its own framework's refusal.

@@ -58,9 +58,13 @@ type members struct {
 		} `json:"members"`
 	} `json:"etcd"`
 	Pods []struct {
-		Namespace string  `json:"namespace"`
-		Name      string  `json:"name"`
-		Node      *string `json:"node"`
+		Namespace  string  `json:"namespace"`
+		Name       string  `json:"name"`
+		Node       *string `json:"node"`
+		Phase      string  `json:"phase"`
+		Containers []struct {
+			Message string `json:"message"`
+		} `json:"containers"`
 	} `json:"pods"`
 	OpenBao struct {
 		Members []struct {

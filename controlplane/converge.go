@@ -87,6 +87,15 @@ func (p Plane) recordUpgradeStep(ctx context.Context, st State, network Network)
 			return Step{}, false, err
 		}
 	}
+	for _, record := range p.Records {
+		replaces, err := record(ctx, p, st, rec.labels)
+		if err != nil {
+			return Step{}, false, err
+		}
+		if replaces != "" {
+			rec.replaces = append(rec.replaces, replaces)
+		}
+	}
 	if len(rec.replaces) == 0 {
 		return Step{}, false, nil
 	}

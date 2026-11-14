@@ -57,8 +57,8 @@ server:
       enabled: true
       setNodeId: true
       # The second listener serves the metrics path alone and without a token, so the telemetry Collector reads each
-      # member's seal state without reaching the API. OpenBao opens a cluster port beside every TCP listener, so that
-      # listener's binds the loopback address alone.
+      # member's seal state without reaching the API. OpenBao opens a cluster port beside every TCP listener, so this
+      # listener's cluster port binds the loopback address alone.
       config: |
         ui = false
         listener "tcp" {

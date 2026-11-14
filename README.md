@@ -1720,7 +1720,9 @@ chart already admits a call to its metrics port from every namespace.
 OpenBao's StatefulSet updates `OnDelete`, and each member copies its
 configuration when it starts. A release that changes that configuration
 therefore restarts no member, and each member opens 9101 at its next start.
-Until then the `openbao` job reads that member as down. `collector_test.go`
+Until then the `openbao` job cannot reach that member, which then sends no
+`vault_core_unsealed`, so a rule that reads only that series stays quiet for
+it. `collector_test.go`
 starts OpenBao on its rendered configuration and sends the cluster copy's
 request without a token: the sealed member answers with `vault_core_unsealed`
 at 0, and answers any other path on 9101 with 404.

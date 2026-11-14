@@ -142,13 +142,19 @@ func TestRelease_AClusterThatHostsNoPlatformCarriesNoTraefikAndNeedsNoIngressAdd
 	assert.NotContains(t, manifestNames(release.Components), "traefik")
 }
 
+// telemetry makes the plane's block require an OTLP backend, which the kit's fixture names.
+func telemetry(h *harness) { h.plane.Telemetry = testutil.TelemetryExport() }
+
 func TestRelease_CarriesWhatTheBuildAppliedButTheHostingKeysTheEnrolmentTokenAndTheClustersOwnApplication(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		opts []func(*harness)
+		// releaseOnly is what no builder's user data has room for, so the release alone carries it.
+		releaseOnly []string
 	}{
-		{"a cluster that hosts no platform", nil},
-		{"a cluster that hosts the platform", []func(*harness){hosting}},
+		{"a cluster that hosts no platform", nil, nil},
+		{"a cluster that hosts the platform", []func(*harness){hosting}, nil},
+		{"a cluster that hosts the platform and ships its telemetry", []func(*harness){hosting, telemetry}, []string{"mitstack-telemetry"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t, tc.opts...)
@@ -169,6 +175,9 @@ func TestRelease_CarriesWhatTheBuildAppliedButTheHostingKeysTheEnrolmentTokenAnd
 			release, err := plane.Release(h.read())
 
 			require.NoError(t, err)
+			for _, name := range tc.releaseOnly {
+				carriedAtBuild = append(carriedAtBuild, testutil.Manifest(t, name, release.Components))
+			}
 			assert.ElementsMatch(t, manifestNames(carriedAtBuild), manifestNames(release.Components), "the manifests the release carries")
 			assert.Subset(t, manifestNames(release.Components), []string{"mitstack-node-report", "mitstack-cluster-tokens", "mitstack-node-topology"}, "the plane's own manifests")
 			assert.Equal(t, tools.Image, release.ToolsImage, "the tools image each component's handover Job runs, which this kit release published")
@@ -240,7 +249,7 @@ func labelsOf(object map[string]any) map[string]any {
 }
 
 func TestPlane_EveryJobAndCronJobTheKitWritesLabelsItsJobsAsTheKitsAndRunsEachContainerWithFallbackToLogsOnError(t *testing.T) {
-	h := newHarness(t, hosting)
+	h := newHarness(t, hosting, telemetry)
 	h.withLoadBalancers()
 	plane, err := h.plane.WithGatewayCA()
 	require.NoError(t, err)
@@ -288,6 +297,82 @@ func TestPlane_EveryJobAndCronJobTheKitWritesLabelsItsJobsAsTheKitsAndRunsEachCo
 	}
 
 	assert.Subset(t, written, []string{"component-cilium-handover", etcd.JobName("shop-node-nbg1"), "mitstack-openbao-init", "mitstack-node-report",
-		"mitstack-security-scan", "mitstack-mesh-probe", "mitstack-enrolment", "mitstack-repository-token", "mitstack-node-topology"}, "the walk reaches each renderer's Job")
+		"mitstack-security-scan", "mitstack-mesh-probe", "mitstack-enrolment", "mitstack-repository-token", "mitstack-node-topology",
+		"mitstack-telemetry-lease"}, "the walk reaches each renderer's Job")
 	assert.Empty(t, wrong, "a failed container leaves the end of its output as its message only under FallbackToLogsOnError, and the report carries it only from a Job with the kit's label")
+}
+
+// object is the one document of kind and name among docs.
+func object(t *testing.T, docs []map[string]any, kind, name string) map[string]any {
+	t.Helper()
+	of := testutil.Kind(docs, kind)
+	i := slices.IndexFunc(of, func(doc map[string]any) bool { return testutil.Field(t, doc, "metadata", "name") == name })
+	require.GreaterOrEqual(t, i, 0, "no %s %s", kind, name)
+	return of[i]
+}
+
+func TestRelease_AClusterRequiringAnOTLPBackendCarriesTheTelemetryCollectorItsLeaseJobAndItsEmptyTokenSecret(t *testing.T) {
+	h := newHarness(t, telemetry)
+	plane, err := h.plane.WithGatewayCA()
+	require.NoError(t, err)
+
+	release, err := plane.Release(h.read())
+
+	require.NoError(t, err)
+	assert.Contains(t, manifestNames(release.Components), "mitstack-telemetry")
+	tokens := testutil.Documents(t, testutil.Manifest(t, "mitstack-cluster-tokens", release.Components).Bytes)
+	lease := object(t, tokens, "CronJob", "mitstack-telemetry-lease")
+	assert.Equal(t, "mitstack-node", testutil.Field(t, lease, "metadata", "namespace"), "the namespace that holds the report token")
+	assert.Equal(t, "*/15 * * * *", testutil.Field(t, lease, "spec", "schedule"))
+	assert.Equal(t, "Forbid", testutil.Field(t, lease, "spec", "concurrencyPolicy"))
+	assert.EqualValues(t, 0, testutil.Field(t, lease, "spec", "jobTemplate", "spec", "backoffLimit"), "the next run, 15 minutes on, is the retry")
+	pod := testutil.Field(t, lease, "spec", "jobTemplate", "spec", "template", "spec")
+	assert.Equal(t, "mitstack-telemetry-lease", testutil.Field(t, pod, "serviceAccountName"))
+	container := testutil.Field(t, pod, "containers", "0")
+	assert.Equal(t, []any{"bash", tools.ScriptDir + "/cluster-tokens.sh", "lease"}, testutil.Field(t, container, "command"))
+	env := testutil.ContainerEnv(t, container)
+	assert.Equal(t, platformURL, env["PLATFORM_URL"])
+	assert.Equal(t, testutil.TelemetryExport().Resource, env["LEASE_RESOURCE"], "the resource the block requires, whose push token the job leases")
+	assert.Equal(t, "mitstack-report-token", testutil.Field(t, pod, "volumes", "0", "secret", "secretName"), "the job's bearer, the report token")
+	assert.Contains(t, testutil.Field(t, container, "volumeMounts"), map[string]any{"name": "token", "mountPath": "/var/run/mitstack", "readOnly": true})
+	assert.Contains(t, testutil.Field(t, pod, "volumes"), map[string]any{"name": "tmp", "emptyDir": map[string]any{"medium": "Memory"}}, "no token touches the node's disk")
+	secret := object(t, tokens, "Secret", "mitstack-telemetry-token")
+	assert.Equal(t, "kube-system", testutil.Field(t, secret, "metadata", "namespace"))
+	assert.Nil(t, secret["data"], "the kit commits the push token's Secret empty, for the lease job to fill")
+	assert.Nil(t, secret["stringData"])
+	role := object(t, tokens, "Role", "mitstack-telemetry-lease")
+	assert.Equal(t, "kube-system", testutil.Field(t, role, "metadata", "namespace"))
+	assert.Equal(t, []any{map[string]any{"apiGroups": []any{""}, "resources": []any{"secrets"}, "resourceNames": []any{"mitstack-telemetry-token"},
+		"verbs": []any{"get", "patch"}}}, role["rules"], "the job may read and patch the one Secret, and create none")
+	binding := object(t, tokens, "RoleBinding", "mitstack-telemetry-lease")
+	assert.Equal(t, []any{map[string]any{"kind": "ServiceAccount", "name": "mitstack-telemetry-lease", "namespace": "mitstack-node"}}, binding["subjects"])
+	files, err := release.Files(testutil.InitRepository)
+	require.NoError(t, err)
+	var carried []string
+	for _, f := range files {
+		for _, doc := range testutil.Documents(t, f.Bytes) {
+			carried = append(carried, fmt.Sprintf("%v %v", doc["kind"], testutil.Field(t, doc, "metadata", "name")))
+		}
+	}
+	assert.Subset(t, carried, []string{"Secret mitstack-telemetry-token", "CronJob mitstack-telemetry-lease", "DaemonSet mitstack-telemetry-node",
+		"Deployment mitstack-telemetry-cluster"}, "what Argo CD applies from the cluster repository")
+}
+
+func TestRelease_AClusterRequiringNoOTLPBackendCarriesNoTelemetryCollectorAndNoExportEndpoint(t *testing.T) {
+	h := newHarness(t, hosting)
+	h.withLoadBalancers()
+	plane, err := h.plane.WithGatewayCA()
+	require.NoError(t, err)
+	built, err := plane.BuildSet(context.Background(), testStart, "enrolment-token")
+	require.NoError(t, err)
+
+	release, err := plane.Release(h.read())
+
+	require.NoError(t, err)
+	for _, m := range slices.Concat(release.Components, built.Served, built.Inline) {
+		for _, doc := range testutil.Documents(t, m.Bytes) {
+			name := fmt.Sprint(testutil.Field(t, doc, "metadata", "name"))
+			assert.False(t, strings.HasPrefix(name, "mitstack-telemetry"), "%s renders %v %s", m.Name, doc["kind"], name)
+		}
+	}
 }

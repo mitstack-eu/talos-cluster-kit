@@ -8,8 +8,10 @@ require (
 	github.com/siderolabs/talos/pkg/machinery v1.14.4
 	github.com/stretchr/testify v1.12.1
 	github.com/yuin/gopher-lua v1.1.2
+	go.opentelemetry.io/proto/otlp v1.10.0
 	go.yaml.in/yaml/v4 v4.0.0-rc.6
 	golang.org/x/crypto v0.55.0
+	google.golang.org/protobuf v1.36.12
 	k8s.io/apimachinery v0.37.1
 )
 
@@ -65,7 +67,6 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20260810153831-ec0a7760b754 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260810153831-ec0a7760b754 // indirect
 	google.golang.org/grpc v1.83.2 // indirect
-	google.golang.org/protobuf v1.36.12 // indirect
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )

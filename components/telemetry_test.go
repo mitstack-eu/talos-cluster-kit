@@ -39,7 +39,6 @@ func named(t *testing.T, docs []map[string]any, kind, name string) map[string]an
 	return of[i]
 }
 
-// collectorConfig is the configuration a copy of the Collector runs, decoded from its ConfigMap.
 func collectorConfig(t *testing.T, docs []map[string]any, which string) map[string]any {
 	t.Helper()
 	configMap := named(t, docs, "ConfigMap", "mitstack-telemetry-"+which)

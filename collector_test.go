@@ -41,7 +41,6 @@ const (
 	appShopNamespace      = "{apiVersion: v1, kind: Namespace, metadata: {name: app-shop, labels: {mitstack.dev/app: shop}}}"
 )
 
-// shipped is a log record the stand-in backend received, with its resource's attributes and its request's headers.
 type shipped struct {
 	body       string
 	attributes map[string]string
@@ -173,8 +172,7 @@ func bridgeGateway(t *testing.T, container string) netip.Addr {
 	return address
 }
 
-// startOTLPBackend serves OTLP over HTTPS at address, and returns its URL, a directory holding the ca.crt that signed its
-// certificate, and each log record it receives.
+// startOTLPBackend serves OTLP over HTTPS at address and returns its URL, its CA's directory and each log record it gets.
 func startOTLPBackend(t *testing.T, address netip.Addr) (url, caDir string, records <-chan shipped) {
 	t.Helper()
 	ca, err := gateway.NewCA(time.Now(), time.Hour, []netip.Addr{address})
@@ -232,7 +230,6 @@ func sendRecords(t *testing.T, r *http.Request, received chan<- shipped) {
 	}
 }
 
-// runningCollector is the node copy's container and everything it has printed.
 type runningCollector struct {
 	mu      sync.Mutex
 	output  []string

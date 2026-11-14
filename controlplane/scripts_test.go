@@ -802,7 +802,6 @@ func TestClusterTokens_EnrolOnAClusterThatReadsItsRepositoryWithADeployKeyWrites
 	assert.NotContains(t, *seen, "POST /v1/cluster-repository-tokens Bearer report-token", "the renewal asked the platform")
 }
 
-// leaseNow is the clock a lease run reads through its fake date.
 var leaseNow = time.Date(2026, 11, 14, 15, 0, 0, 0, time.UTC)
 
 const (

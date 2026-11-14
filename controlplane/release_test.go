@@ -142,7 +142,6 @@ func TestRelease_AClusterThatHostsNoPlatformCarriesNoTraefikAndNeedsNoIngressAdd
 	assert.NotContains(t, manifestNames(release.Components), "traefik")
 }
 
-// telemetry makes the plane's block require an OTLP backend, which the kit's fixture names.
 func telemetry(h *harness) { h.plane.Telemetry = testutil.TelemetryExport() }
 
 func TestRelease_CarriesWhatTheBuildAppliedButTheHostingKeysTheEnrolmentTokenAndTheClustersOwnApplication(t *testing.T) {
@@ -302,7 +301,6 @@ func TestPlane_EveryJobAndCronJobTheKitWritesLabelsItsJobsAsTheKitsAndRunsEachCo
 	assert.Empty(t, wrong, "a failed container leaves the end of its output as its message only under FallbackToLogsOnError, and the report carries it only from a Job with the kit's label")
 }
 
-// object is the one document of kind and name among docs.
 func object(t *testing.T, docs []map[string]any, kind, name string) map[string]any {
 	t.Helper()
 	of := testutil.Kind(docs, kind)

@@ -34,7 +34,7 @@ type workerReplacement struct {
 	asked time.Time
 }
 
-// record is the label value that holds r, which is also the plan its worker's removal labels name.
+// record is the label value that holds r, which workerReplacePlan prefixes to give the plan its worker's removal labels name.
 func (r workerReplacement) record() string {
 	return strconv.FormatInt(r.old, 10) + "-" + strconv.FormatInt(r.asked.Unix(), 10)
 }
@@ -244,8 +244,8 @@ func (x replacer) next(ctx context.Context) (progress, error) {
 	return waitsOn("Hetzner reads Cloud worker %d neither running nor off", worker.ID)
 }
 
-// running judges a running worker's removal by a node report since its replacement began, and refuses it while
-// nothing of the worker has changed, which withdraws the replacement.
+// running judges a running worker's removal by a node report since its replacement began, and refuses it before its
+// drain is written, which withdraws the replacement.
 func (x replacer) running(ctx context.Context, worker controlplane.Server) (progress, error) {
 	site, err := newSite(x.st)
 	if err == nil {

@@ -18,7 +18,7 @@ const (
 	jobKind      = "Job"
 )
 
-// AppliedJobs reads Argo CD's health of each Job application applied, and false when r carries no object's health.
+// AppliedJobs reads Argo CD's health of each Job application applied, and false when r lacks any object's health.
 func (r Read) AppliedJobs(application string) (map[string]AppliedJob, bool, error) {
 	var body struct {
 		ArgoCD struct {
@@ -60,7 +60,7 @@ func (r Read) UnreadJobs(application string) string {
 
 var attemptSuffix = regexp.MustCompile(`^[a-z0-9]{5}$`)
 
-// JobFailure is the message a failed attempt's pod of the Job left in the report, and empty while none failed.
+// JobFailure is the message a failed attempt's pod of the Job left in the report, and empty while none left one.
 func (r Read) JobFailure(namespace, job string) (string, error) {
 	m, err := r.members()
 	if err != nil {

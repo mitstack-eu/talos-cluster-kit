@@ -53,7 +53,7 @@ type nodeReplacement struct {
 	asked time.Time
 }
 
-// record is the label value that holds r, which is also the plan its node's removal labels name.
+// record is the label value that holds r, which nodeReplacePlan prefixes to give the plan its node's removal labels name.
 func (r nodeReplacement) record() string {
 	return strconv.FormatInt(r.old, 10) + "-" + strconv.FormatInt(r.asked.Unix(), 10)
 }
@@ -439,7 +439,7 @@ func BelowMinimum(err error) error {
 	return &Refusal{Class: redundant.ClassBelowMinimum, Message: strings.TrimPrefix(err.Error(), "refused:"+redundant.ClassBelowMinimum+": ")}
 }
 
-// removeMember deletes the server only once main holds no removal, since self-heal applies what main holds and the
+// removeMember deletes the server only once main holds no removal of it, since self-heal applies what main holds and the
 // cluster lacks, so a held removal could run again against the successor of the same name once its Job is deleted.
 func (p Plane) removeMember(ctx context.Context, st State, network Network, r nodeReplacement, node Server, off time.Time, read report.Read) (progress, error) {
 	held, err := p.Removals.held(ctx)

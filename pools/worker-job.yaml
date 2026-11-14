@@ -1,7 +1,8 @@
 # Step {{ .Step }} of the replacement of the Cloud worker {{ .Hostname }}. A
 # drain evicts its pods under their disruption budgets, and a removal releases
-# each claim on a local volume of it, then deletes its Node object. Each step
-# may change only that one Node object.
+# each claim on a local volume of it, then deletes its Node object. Only the
+# Node object's rights name the one worker, since its pods and claims live in
+# every namespace.
 apiVersion: v1
 kind: ServiceAccount
 metadata:

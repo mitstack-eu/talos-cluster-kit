@@ -59,8 +59,8 @@ func (p CloudPlan) Apply(ctx context.Context, api controlplane.API) error {
 }
 
 // PlanCloud compares the servers Hetzner lists for the subscription's Cloud pool with the pool's size, Max. It creates
-// a server only while the pool holds fewer than Max, a member leaving included, so the pool never passes its size.
-// drained reports whether a member's node has left the cluster.
+// a server only while the pool holds fewer than Max, a member leaving included, and none while a worker's replacement
+// runs, which creates its successor itself. drained reports whether a member's node has left the cluster.
 func PlanCloud(ctx context.Context, plane controlplane.Plane, pool CloudPool, drained func(controlplane.Server) bool) (CloudPlan, error) {
 	st, err := plane.Read(ctx)
 	if err != nil {

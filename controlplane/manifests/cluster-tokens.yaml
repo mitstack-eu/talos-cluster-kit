@@ -4,9 +4,7 @@
 # GitHub expires within an hour. Their identity may write only the Secrets
 # they fill, and each app slice's Role lets it patch that slice's repository
 # Secret. A cluster that reads its repository with a deploy key takes no
-# repository token, and runs no renewal. A cluster that requires an OTLP
-# backend also runs a CronJob that leases the telemetry Collector's push token
-# into the one Secret its identity may read and patch.
+# repository token, and runs no renewal. A CronJob leases the telemetry push token.
 apiVersion: v1
 kind: Secret
 metadata:

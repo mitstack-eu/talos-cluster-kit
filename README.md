@@ -2094,6 +2094,7 @@ everything a control-plane node boots with.
 | The node report's, its outside probe's, the security scan's, the labeller's and the cluster tokens' scripts | In the tools image at `tools.ScriptDir`, where each command names its script's path |
 | Each served manifest | From the gateway, which copies it out of the tools image |
 | The hosting set's inline manifests, and the signature policy of a cluster that has a signer list | From the serving server, where the builder fetches them |
+| The telemetry Collector of a cluster that requires an OTLP backend | From the cluster repository, since only a release carries it |
 
 A script in the tools image costs no server any user data, because the
 gateway mirrors that image whole. A served manifest does cost some. The
@@ -2102,9 +2103,9 @@ its sha256 and its path, about 75 bytes once gzipped. The gateway of a cluster
 that hosts the platform takes about 31,500 bytes when it keeps 300 images.
 
 `TestPlane_EveryServerOfAnInstallKeepsTheUserDataReserveWithTheLongestProofScriptUnderEachOptionOfThePlane`
-in `controlplane/render_test.go` keeps room free. It installs a cluster four
-ways: with and without the platform, and with apps on the control plane or on
-workers. Each plane takes a proof script of `report.ProofScriptLimit` bytes of
+in `controlplane/render_test.go` keeps room free. It installs a cluster eight
+ways: with and without the platform, with apps on the control plane or on
+workers, and with and without the telemetry Collector's lease job. Each plane takes a proof script of `report.ProofScriptLimit` bytes of
 random printable text, which gzip shortens by about a sixth. Each also takes
 a signer list of `components.SignerLimit` entries, with every field at its
 limit and of random text, which the serving server carries. Every install in
@@ -2127,7 +2128,9 @@ of the reserve, 1,024 less 544, and a set that gzip shortens less than the
 held one takes from those.
 
 With that proof script, that signer list and the seeds' keys, the builder
-takes 30,204 bytes, or 30,280 on a cluster that hosts the platform. The signer
+takes 30,232 bytes, or 30,312 on a cluster that hosts the platform. The lease
+job and its empty Secret add about 190 bytes, or about 250 on a cluster that
+hosts the platform, so the largest builder takes 30,576. The signer
 list costs the builder only the address and key of the serving server. The
 serving server carries the policy, and takes about 10,900 bytes, or about
 30,600 on a cluster that hosts the platform, which leaves it at least 2,169

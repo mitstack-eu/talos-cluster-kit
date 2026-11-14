@@ -77,8 +77,8 @@ func TestWorkerJob_ADrainADisruptionBudgetHoldsFailsNamingTheBudgetAndUncordonsO
 		uncordons bool
 	}{
 		"its first attempt":      {"", false},
-		"an attempt before last": {"13", false},
-		"its last attempt":       {"14", true},
+		"an attempt before last": {"4", false},
+		"its last attempt":       {"5", true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			out, err, calls := runWorkerJob(t, pools.DrainStep, "shop-node-hel1", "FAKE_DRAIN_EXIT=1", "FAKE_FAILED="+tc.failed, "FAKE_HELD=web-0")

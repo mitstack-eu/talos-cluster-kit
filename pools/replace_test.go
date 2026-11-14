@@ -62,7 +62,7 @@ func withWorkers(t *testing.T) (*site, *workers) {
 	s := newSite(t)
 	s.reach(pool2)
 	w := &workers{s: s, argo: testutil.BuildCluster(t), files: map[string][]byte{}, objects: map[string]bool{robot: true},
-		down: map[string]bool{}, pods: map[string]string{}, held: map[string]bool{}, attempts: 15, failed: map[string]int{}, jobs: map[string]string{}}
+		down: map[string]bool{}, pods: map[string]string{}, held: map[string]bool{}, attempts: 6, failed: map[string]int{}, jobs: map[string]string{}}
 	w.argo.Commit(map[string][]byte{"cluster/namespace.yaml": []byte("apiVersion: v1\nkind: Namespace\nmetadata:\n  name: mitstack-node\n")})
 	w.argo.Sync()
 	w.pods["shop/web-0"], w.pods["shop/web-1"] = w.worker("fsn1-1").Name, w.worker("nbg1-1").Name

@@ -47,7 +47,7 @@ func (p Plane) clusterComponents(set components.Set, enrolmentToken string) (com
 	if err != nil {
 		return components.Set{}, err
 	}
-	signatures, err := components.SignaturePolicy(p.Signers)
+	signatures, err := p.signaturePolicy()
 	if err != nil {
 		return components.Set{}, err
 	}
@@ -55,6 +55,17 @@ func (p Plane) clusterComponents(set components.Set, enrolmentToken string) (com
 	set.Inline = append(set.Inline, signatures...)
 	set.Inline = append(set.Inline, components.Manifest{Name: clusterApplicationManifest, Path: manifestDir + "cluster-application.yaml", Bytes: application})
 	return set, nil
+}
+
+// signaturePolicy renders the plane's signer list, whose pull Secrets only the External Secrets of a hosting set copies.
+func (p Plane) signaturePolicy() ([]components.Manifest, error) {
+	for _, s := range p.Signers {
+		if p.Hosting == nil && s.PullSecret != (components.SecretRef{}) {
+			return nil, fmt.Errorf("the signer %s names the pull Secret %s/%s, which External Secrets copies for Kyverno, "+
+				"and only a cluster that hosts the platform runs External Secrets", s.Repository, s.PullSecret.Namespace, s.PullSecret.Name)
+		}
+	}
+	return components.SignaturePolicy(p.Signers)
 }
 
 // clusterApplicationManifest names the cluster's own Application, through which every later release reaches it.

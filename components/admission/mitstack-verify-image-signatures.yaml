@@ -7,6 +7,13 @@
       enabled: false
   validationConfigurations:
     mutateDigest: false
+{{- if .Logins }}
+  credentials:
+    secrets:
+{{- range .Logins }}
+    - {{ .Copy }}
+{{- end }}
+{{- end }}
 {{- end }}
 {{- define "checks" }}
     namespaceSelector:
@@ -37,6 +44,57 @@
     message: "{{ $.Name }}: an image of {{ $s.Repository }} must carry the keyless signature of {{ $s.Subject }}, issued by {{ $s.Issuer }}"
 {{- end }}
 {{- end -}}
+{{ if .Logins -}}
+# Kyverno reads a registry login only from its own namespace, so External Secrets copies there each pull Secret a signer
+# names. It reads the Secret as this account, which the Secret's namespace grants get on that Secret alone.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Reader }}
+  namespace: {{ .Namespace }}
+automountServiceAccountToken: false
+{{- range .Logins }}
+---
+apiVersion: external-secrets.io/v1
+kind: SecretStore
+metadata:
+  name: {{ .Copy }}
+  namespace: {{ $.Namespace }}
+spec:
+  provider:
+    kubernetes:
+      remoteNamespace: {{ .Namespace }}
+      server:
+        caProvider:
+          type: ConfigMap
+          name: kube-root-ca.crt
+          key: ca.crt
+      auth:
+        serviceAccount:
+          name: {{ $.Reader }}
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: {{ .Copy }}
+  namespace: {{ $.Namespace }}
+spec:
+  refreshInterval: {{ $.Refresh }}
+  secretStoreRef:
+    kind: SecretStore
+    name: {{ .Copy }}
+  target:
+    name: {{ .Copy }}
+    template:
+      type: kubernetes.io/dockerconfigjson
+  data:
+  - secretKey: .dockerconfigjson
+    remoteRef:
+      key: {{ .Name }}
+      property: .dockerconfigjson
+{{- end }}
+---
+{{ end -}}
 # An image of a repository the cluster's signer list names starts only with the keyless signature of that entry's
 # issuer and subject. The policy names no ctlog, so Kyverno checks the log entry each signature carries against
 # Sigstore's trust root and calls no log.
@@ -45,7 +103,7 @@ kind: ImageValidatingPolicy
 metadata:
   name: {{ .Name }}
 spec:
-{{- template "settings" }}
+{{- template "settings" . }}
   matchConstraints:
     resourceRules:
     - apiGroups: [""]
@@ -61,7 +119,7 @@ kind: ImageValidatingPolicy
 metadata:
   name: {{ .Name }}-ephemeral-containers
 spec:
-{{- template "settings" }}
+{{- template "settings" . }}
   matchConstraints:
     resourceRules:
     - apiGroups: [""]

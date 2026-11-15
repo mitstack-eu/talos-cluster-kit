@@ -23,7 +23,7 @@ func (p Plane) Release(st State) (rollout.Release, error) {
 	if p.Hosting == nil && p.RepoURL == "" || p.Hosting != nil && p.Hosting.Repository == "" {
 		return rollout.Release{}, errors.New("the cluster's credentials name the cluster repository, and the plane names none")
 	}
-	signatures, err := components.SignaturePolicy(p.Signers)
+	signatures, err := p.signaturePolicy()
 	if err != nil {
 		return rollout.Release{}, err
 	}

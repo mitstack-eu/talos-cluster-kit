@@ -1,6 +1,7 @@
 package controlplane_test
 
 import (
+	"fmt"
 	mathrand "math/rand/v2"
 	"slices"
 	"testing"
@@ -21,7 +22,14 @@ var kitSigner = components.Signer{
 
 func signed(h *harness) { h.plane.Signers = []components.Signer{kitSigner} }
 
-// longestSignerList gives the plane as many signers as the kit takes, each field at its limit and of random text.
+const privateRegistry = "123456789012.dkr.ecr.eu-central-1.amazonaws.com"
+
+func privatelySigned(h *harness) {
+	h.plane.Signers = []components.Signer{kitSigner, {Repository: privateRegistry + "/shop-api", Issuer: kitSigner.Issuer,
+		Subject: kitSigner.Subject, PullSecret: components.SecretRef{Namespace: "app-shop", Name: "registry-login"}}}
+}
+
+// longestSignerList gives the plane the longest signer list the kit takes, which the user-data reserve is measured with.
 func longestSignerList(h *harness) {
 	random := mathrand.New(mathrand.NewChaCha8([32]byte{1}))
 	text := func(prefix string, length int) string {
@@ -32,13 +40,25 @@ func longestSignerList(h *harness) {
 		}
 		return string(out)
 	}
+	repository := func(int) (string, components.SecretRef) {
+		return text("ghcr.io/", components.SignerRepositoryLimit), components.SecretRef{}
+	}
+	if h.plane.Hosting != nil {
+		var logins []components.SecretRef
+		for range components.SignerLoginLimit {
+			logins = append(logins, components.SecretRef{Namespace: text("n", components.SignerSecretLimit), Name: text("s", components.SignerSecretLimit)})
+		}
+		repository = func(i int) (string, components.SecretRef) {
+			registry := fmt.Sprintf("%012d.dkr.ecr.ap-southeast-%d.amazonaws.com/", random.Int64N(1e12), i+1)
+			return text(registry, components.SignerRepositoryLimit), logins[i%len(logins)]
+		}
+	}
 	h.plane.Signers = nil
-	for range components.SignerLimit {
-		h.plane.Signers = append(h.plane.Signers, components.Signer{
-			Repository: text("ghcr.io/", components.SignerRepositoryLimit),
-			Issuer:     text("https://", components.SignerIssuerLimit),
-			Subject:    text("https://", components.SignerSubjectLimit),
-		})
+	for i := range components.SignerLimit {
+		s := components.Signer{}
+		s.Repository, s.PullSecret = repository(i)
+		s.Issuer, s.Subject = text("https://", components.SignerIssuerLimit), text("https://", components.SignerSubjectLimit)
+		h.plane.Signers = append(h.plane.Signers, s)
 	}
 }
 
@@ -57,6 +77,8 @@ func TestSigners_ABuildAppliesTheListsPolicyWhichItsBuilderFetchesFromTheServing
 		want []string
 	}{
 		{"a cluster that hosts the platform", []func(*harness){hosting, signed}, append(slices.Clone(hostingInline), components.SignaturePolicyName)},
+		{"a cluster that hosts the platform under a list with a private registry", []func(*harness){hosting, privatelySigned},
+			append(slices.Clone(hostingInline), components.SignaturePolicyName)},
 		{"a cluster that hosts none", []func(*harness){signed}, []string{components.SignaturePolicyName}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -92,6 +114,7 @@ func TestSigners_EveryReleaseCarriesThePolicyOfThePlanesListAndNoneWithoutAList(
 		signed bool
 	}{
 		{"a cluster that hosts the platform under a signer list", []func(*harness){hosting, signed}, true},
+		{"a cluster that hosts the platform under a list with a private registry", []func(*harness){hosting, privatelySigned}, true},
 		{"a cluster that hosts no platform under a signer list", []func(*harness){signed}, true},
 		{"a cluster that hosts the platform under no list", []func(*harness){hosting}, false},
 		{"a cluster that hosts no platform under no list", nil, false},
@@ -114,21 +137,28 @@ func TestSigners_EveryReleaseCarriesThePolicyOfThePlanesListAndNoneWithoutAList(
 }
 
 func TestSigners_ASignerKyvernoCouldNotCheckStopsTheInstallBeforeAnyServerAndTheRelease(t *testing.T) {
-	const ecr = "839001574838.dkr.ecr.eu-central-1.amazonaws.com"
 	unchecked := func(h *harness) {
-		h.plane.Signers = []components.Signer{{Repository: ecr + "/mitstack-api", Issuer: kitSigner.Issuer, Subject: kitSigner.Subject}}
+		h.plane.Signers = []components.Signer{{Repository: privateRegistry + "/shop-api", Issuer: kitSigner.Issuer, Subject: kitSigner.Subject}}
 	}
-	for name, opts := range map[string][]func(*harness){"a cluster that hosts the platform": {hosting, unchecked}, "a cluster that hosts none": {unchecked}} {
-		t.Run(name, func(t *testing.T) {
-			h := newHarness(t, opts...)
+	for _, tc := range []struct {
+		name string
+		opts []func(*harness)
+		want string
+	}{
+		{"a cluster that hosts the platform, with no pull Secret for a private registry", []func(*harness){hosting, unchecked}, privateRegistry},
+		{"a cluster that hosts none, with no pull Secret for a private registry", []func(*harness){unchecked}, privateRegistry},
+		{"a cluster that hosts none, with no External Secrets to copy a pull Secret", []func(*harness){privatelySigned}, "External Secrets"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, tc.opts...)
 			plane, err := h.plane.WithGatewayCA()
 			require.NoError(t, err)
 
 			_, releaseErr := plane.Release(h.read())
 			installErr := h.converge()
 
-			assert.ErrorContains(t, releaseErr, ecr, "the release's refusal names the registry")
-			assert.ErrorContains(t, installErr, ecr, "the install's refusal names the registry")
+			assert.ErrorContains(t, releaseErr, tc.want, "the release's refusal")
+			assert.ErrorContains(t, installErr, tc.want, "the install's refusal")
 			assert.Empty(t, h.cloud.ServerSpecs, "servers the refused install created")
 		})
 	}

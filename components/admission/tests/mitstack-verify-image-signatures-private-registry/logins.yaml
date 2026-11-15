@@ -1,0 +1,46 @@
+# Kyverno reads a registry login only from its own namespace, so External Secrets copies there each pull Secret a signer
+# names. It reads the Secret as this account, which the Secret's namespace grants get on that Secret alone.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mitstack-signature-logins
+  namespace: kyverno
+automountServiceAccountToken: false
+---
+apiVersion: external-secrets.io/v1
+kind: SecretStore
+metadata:
+  name: mitstack-signature-login-0
+  namespace: kyverno
+spec:
+  provider:
+    kubernetes:
+      remoteNamespace: app-shop
+      server:
+        caProvider:
+          type: ConfigMap
+          name: kube-root-ca.crt
+          key: ca.crt
+      auth:
+        serviceAccount:
+          name: mitstack-signature-logins
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: mitstack-signature-login-0
+  namespace: kyverno
+spec:
+  refreshInterval: 15m
+  secretStoreRef:
+    kind: SecretStore
+    name: mitstack-signature-login-0
+  target:
+    name: mitstack-signature-login-0
+    template:
+      type: kubernetes.io/dockerconfigjson
+  data:
+  - secretKey: .dockerconfigjson
+    remoteRef:
+      key: registry-login
+      property: .dockerconfigjson

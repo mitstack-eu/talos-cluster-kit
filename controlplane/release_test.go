@@ -23,6 +23,7 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/rollout"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 	"github.com/mitstack-eu/talos-cluster-kit/tools"
+	"github.com/mitstack-eu/talos-cluster-kit/topology"
 )
 
 // buildOnly are the manifests a build applies and no upgrade carries: the hosting set's keys, sealed keys, the volumes
@@ -149,12 +150,13 @@ func TestRelease_CarriesWhatTheBuildAppliedButTheHostingKeysTheEnrolmentTokenAnd
 	for _, tc := range []struct {
 		name string
 		opts []func(*harness)
-		// releaseOnly is what no builder's user data has room for, so the release alone carries it.
+		// releaseOnly is what the build cannot apply, as no builder's user data has room for it or Talos's own CoreDNS
+		// precedes it, so the release alone carries it.
 		releaseOnly []string
 	}{
-		{"a cluster that hosts no platform", nil, nil},
-		{"a cluster that hosts the platform", []func(*harness){hosting}, nil},
-		{"a cluster that hosts the platform and ships its telemetry", []func(*harness){hosting, telemetry}, []string{"mitstack-telemetry"}},
+		{"a cluster that hosts no platform", nil, []string{"coredns"}},
+		{"a cluster that hosts the platform", []func(*harness){hosting}, []string{"coredns"}},
+		{"a cluster that hosts the platform and ships its telemetry", []func(*harness){hosting, telemetry}, []string{"mitstack-telemetry", "coredns"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t, tc.opts...)
@@ -391,4 +393,33 @@ func TestRelease_AClusterRequiringNoOTLPBackendCarriesNoTelemetryCollectorAndNoE
 			assert.False(t, strings.HasPrefix(name, "mitstack-telemetry"), "%s renders %v %s", m.Name, doc["kind"], name)
 		}
 	}
+}
+
+// coreDNSOf is the CoreDNS Deployment the release of a cluster in the plane's locations carries.
+func coreDNSOf(t *testing.T) map[string]any {
+	t.Helper()
+	h := newHarness(t)
+	plane, err := h.plane.WithGatewayCA()
+	require.NoError(t, err)
+	release, err := plane.Release(h.read())
+	require.NoError(t, err)
+	return testutil.Named(t, testutil.Documents(t, testutil.Manifest(t, "coredns", release.Components).Bytes), "Deployment", "coredns")
+}
+
+func TestRelease_AClusterInFsn1Nbg1AndHel1RunsThreeCoreDNSReplicasWithASpreadThatAllowsNoTwoInOneLocation(t *testing.T) {
+	require.Equal(t, []string{"fsn1", "nbg1", "hel1"}, controlplane.Locations, "the locations a node of the cluster runs in")
+
+	deployment := coreDNSOf(t)
+
+	assert.EqualValues(t, 3, testutil.Field(t, deployment, "spec", "replicas"))
+	assert.Equal(t, []any{map[string]any{"maxSkew": 1, "topologyKey": topology.ZoneLabel, "whenUnsatisfiable": "DoNotSchedule",
+		"labelSelector": map[string]any{"matchLabels": map[string]any{"k8s-app": "kube-dns"}}}},
+		testutil.Field(t, deployment, "spec", "template", "spec", "topologySpreadConstraints"), "a hard spread over the zone the labeller sets, counting every CoreDNS pod")
+}
+
+func TestRelease_ACoreDNSRolloutStopsOneReplicaBeforeItStartsTheNext(t *testing.T) {
+	deployment := coreDNSOf(t)
+
+	assert.Equal(t, map[string]any{"type": "RollingUpdate", "rollingUpdate": map[string]any{"maxSurge": 0, "maxUnavailable": 1}},
+		testutil.Field(t, deployment, "spec", "strategy"), "a rollout that never runs more pods than replicas, nor more than one fewer")
 }

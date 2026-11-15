@@ -43,6 +43,9 @@ func renderedManifests(t *testing.T) map[string][]byte {
 	for _, m := range telemetry {
 		out["telemetry/"+m.Name] = m.Bytes
 	}
+	coreDNS, err := components.CoreDNS([]string{"fsn1", "nbg1", "hel1"})
+	require.NoError(t, err)
+	out["coredns"] = coreDNS[0].Bytes
 	reportManifests, err := report.Manifests(report.Inputs{URL: "https://api.mitstack.dev/v1/cluster-reports", SubscriptionID: "sub_0123456789ab",
 		ToolsImage: testutil.ToolsImage, ProofScript: "echo report-proof\n"})
 	require.NoError(t, err)

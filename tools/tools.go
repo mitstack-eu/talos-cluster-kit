@@ -30,7 +30,7 @@ const ScriptDir = "/usr/local/lib/mitstack"
 func ManifestPath(path string) string { return ScriptDir + "/" + path }
 
 // Image is the tools image this release published and signed, which the release job writes into the commit it tags.
-const Image = "ghcr.io/mitstack-eu/talos-cluster-kit-tools:v0.35.0@sha256:9f3f51745e05bf0815682eed41fa4eb2bca2698dcc9577520044cef13118126a"
+const Image = "ghcr.io/mitstack-eu/talos-cluster-kit-tools:v0.78.0@sha256:49579c1aa4ddfcd41816b6eb9bde91aa8dada59d0873a78e218b3d995cd0008e"
 
 // Pin returns the value tools.env, jq.env or scan.env gives name, or "" when none names it.
 func Pin(name string) string {

@@ -150,8 +150,7 @@ func TestRelease_CarriesWhatTheBuildAppliedButTheHostingKeysTheEnrolmentTokenAnd
 	for _, tc := range []struct {
 		name string
 		opts []func(*harness)
-		// releaseOnly is what the build cannot apply, as no builder's user data has room for it or Talos's own CoreDNS
-		// precedes it, so the release alone carries it.
+		// releaseOnly is what the build cannot apply, so the release alone carries it.
 		releaseOnly []string
 	}{
 		{"a cluster that hosts no platform", nil, []string{"coredns"}},
@@ -401,9 +400,7 @@ func coreDNSOf(t *testing.T) map[string]any {
 	h := newHarness(t)
 	plane, err := h.plane.WithGatewayCA()
 	require.NoError(t, err)
-	release, err := plane.Release(h.read())
-	require.NoError(t, err)
-	return testutil.Named(t, testutil.Documents(t, testutil.Manifest(t, "coredns", release.Components).Bytes), "Deployment", "coredns")
+	return testutil.Named(t, testutil.Documents(t, testutil.Manifest(t, "coredns", h.releaseOf(plane).Components).Bytes), "Deployment", "coredns")
 }
 
 func TestRelease_AClusterInFsn1Nbg1AndHel1RunsThreeCoreDNSReplicasWithASpreadThatAllowsNoTwoInOneLocation(t *testing.T) {

@@ -1201,7 +1201,8 @@ target, on 8080 and on 15008, and no other pod:
   in mutual TLS.
 - The outside probe, a CronJob in `kube-system`. That namespace is outside the
   mesh, so the probe's calls carry no workload identity. Every five minutes it
-  makes a plain call to port 8080. It also opens a TLS handshake to the
+  makes a plain call to port 8080. It then calls port 8081, where the target
+  listens on nothing and no policy admits a caller. It also opens a TLS handshake to the
   target's port 15008. In a TLS handshake the server sends its certificate
   before it asks for the caller's, so the probe sees the certificate ztunnel
   presents for the target, and ztunnel then refuses the probe for presenting
@@ -1213,24 +1214,45 @@ target, on 8080 and on 15008, and no other pod:
   report may only read it.
 
 The probe's own Cilium policy, `mitstack-mesh-probe-outside`, lets it look up
-the target's name and no other, reach the API server, the target's two ports
-and each gateway's address on 443, and nothing else. The probe writes the
+the target's name and no other, reach the API server, the target's ports 8080,
+15008 and 8081, and each gateway's address on 443, and nothing else. The probe writes the
 target's name with a final dot, which makes it an absolute DNS name. Without the dot, the resolver would
 first try the name under each search domain, Cilium's DNS proxy would refuse
 those names, and the probe's resolver, musl's, stops at the first refusal.
 
-`mesh` holds three results, each with `passed` and, when it fails, a `reason`:
+The call to port 8081 reads whether a call that no policy admits still goes
+unanswered. The probe's own policy admits that port, which a test of the
+rendered policy pins, so only the target's policies,
+`mitstack-mesh-probe-callers` and `mitstack-default-deny`, are left to refuse
+the call, as they would refuse a caller to an app. A policy that selects a pod
+puts that pod's ingress into default deny, as Cilium's page on policy
+enforcement modes says. Under the default response
+`policy-deny-response: none`, which `components/cilium/cilium.yaml` keeps,
+that page says Cilium drops a denied call without an answer, so the caller
+times out. The result passes on that timeout: curl's exit status 28, with a
+message that reads `Connection timed out`. A timeout does not name the rule or
+the hop that dropped the call. A lookup of the target's name that gets no
+answer also ends with exit status 28, but its message reads
+`Resolving timed out`, so the result fails. A call that reaches the pod ends
+with exit status 7, a refused connection, when nothing takes it. It ends with
+52, an empty reply, or 56, a reset connection, when the mesh closes it.
+
+`mesh` holds four results, each with `passed` and, when it fails, a `reason`:
 
 | Result | Passes when |
 |---|---|
 | `callFromInside` | The report's own call gets the target's answer |
 | `workloadIdentity` | The certificate the probe saw on port 15008 names `spiffe://cluster.local/ns/mitstack-mesh-probe/sa/mitstack-mesh-probe`, and the time of the probe's run falls within the certificate's validity. The result also carries the certificate's `serial` and its validity, `notBefore` to `notAfter` |
 | `plainCallFromOutside` | The plain call reached the target and was closed with no answer, which curl reports as exit status 52, an empty reply, or 56, a reset connection. `workloadIdentity` and `callFromInside` must pass too, so a target that is down never reads as refusing |
+| `unadmittedCallFromOutside` | The call to port 8081 timed out, curl's exit status 28, and curl's message names a connection timeout, which is how a call ends when Cilium drops it. In the same run the plain call must have reached the target, with exit status 0, 52 or 56, and `workloadIdentity` and `callFromInside` must pass, so a target that is down or unreachable never reads as dropped. Any other exit status fails it with a reason naming that status, and a timeout with any other message fails it with a reason quoting that message. The result also carries the `port`, the `curlExitStatus` and curl's `stderr` |
 
 Suppose the mesh stopped holding the target, for example because ztunnel no
 longer runs on its node. No certificate then comes back from port 15008, so
-`workloadIdentity` fails, and `plainCallFromOutside` fails with it whatever
-the plain call did. A plain call that gets an answer fails on its own.
+`workloadIdentity` fails, and `plainCallFromOutside` and
+`unadmittedCallFromOutside` fail with it whatever their calls did. A plain
+call that gets an answer fails on its own. Suppose instead that Cilium stopped
+enforcing the target's policies. The call to 8081 then reaches the pod and
+ends with 7, 52 or 56, so `unadmittedCallFromOutside` fails on its own.
 
 Each of these also fails the results it touches, with the reason named, and
 the report still posts in full:
@@ -1239,7 +1261,8 @@ the report still posts in full:
 - a result older than 15 minutes, three of the probe's runs;
 - a result dated after the report;
 - a refused handshake;
-- a result the report cannot parse.
+- a result the report cannot parse;
+- a result that holds no call to port 8081.
 
 [How every call between pods proves who makes it](#how-every-call-between-pods-proves-who-makes-it)
 says a workload certificate lasts 24 hours and ztunnel asks for a new one when
@@ -1280,7 +1303,7 @@ change `report/scripts/report.sh`.
 | `defaultDenyPolicies` | Each NetworkPolicy named `mitstack-default-deny`, with its pod selector, policy types, rule counts and `managedBy` label | The NetworkPolicy read |
 | `subscriptionResources` and `subscriptionResourceKinds` | The objects a block labels `mitstack.dev/subscription`, and the object types the report read whole | One read per object type in `subscription_kinds` in `report.sh` |
 | `jwks` | The key set the API server signs service-account tokens with | `/openid/v1/jwks` |
-| `mesh` | The mesh probe's results, which [the section on the mesh](#how-the-node-report-shows-the-mesh-refusing-a-call) explains | The probe's target and its ConfigMap |
+| `mesh` | The mesh probe's results: the mesh answering a call with a workload identity and refusing one without, and a call to a port no policy admits timing out, which [the section on the mesh](#how-the-node-report-shows-the-mesh-refusing-a-call) explains | The probe's target and its ConfigMap |
 | `gateways` | Each gateway's `address`, its `connection`, and `passed` when its mirror answered HTTP 200 on `/v2/` over a certificate the gateway CA signs, and otherwise a `reason` naming curl's exit status or the answer. The `connection` is `closed` when nothing took the connection, `reset` when the peer reset or dropped it, `tls-failure` when the handshake or the certificate failed, `timed-out` after 5 seconds without an answer, `answered` for an HTTP status other than 200, `served` for 200, and `failed` for any other curl error. `probedAt` is when the outside probe read it | The outside probe's reading of each gateway's mirror. `GATEWAYS` lists the gateways' private addresses, and the probe verifies each mirror against `GATEWAY_CA`, the gateway CA's certificate alone, from outside the mesh |
 | `egress` | `passed` when a TLS connection to Let's Encrypt's ACME directory opened and answered, and otherwise a `reason` naming curl's exit status. The connection leaves through the network's default route, so it reads the egress of the gateway that route names | `EGRESS_URL`, `https://acme-v02.api.letsencrypt.org/directory` |
 | `repositorySecrets` | Each repository credential the cluster declares, with its `name`, `secretType`, `project` and `url`. These come from the template of each SealedSecret in `argocd` that carries an `argocd.argoproj.io/secret-type` label, so the report reads no Secret and carries no ciphertext. A credential written straight into a Secret, as the cluster tokens write `cluster-repository` on a cluster that reads its repository with a platform token, is not listed | `kubectl get sealedsecrets.bitnami.com -n argocd` |
@@ -2205,15 +2228,16 @@ of the reserve, 1,024 less 544, and a set that gzip shortens less than the
 held one takes from those.
 
 With that proof script, that signer list and the seeds' keys, the builder
-takes 30,356 bytes, 30,372 when its apps run on workers, 30,428 on a cluster
-that hosts the platform and 30,444 when it does both. The lease job and its
+takes 30,388 bytes, 30,408 when its apps run on workers, 30,452 on a cluster
+that hosts the platform and 30,468 when it does both. The lease job and its
 empty Secret add about 185 bytes, or about 245 on a cluster that hosts the
-platform, so the largest builder, on a cluster that does both, takes 30,688.
+platform, so the largest builder, on a cluster that does both, takes 30,712.
 The signer list costs the builder only the address and key of the serving
 server. The
 serving server carries the policy, and takes about 10,900 bytes, or about
-30,600 on a cluster that hosts the platform, which leaves it at least 2,169
-bytes free. With a one-line proof script and no signer list, as the tests in
+30,600 on a cluster that hosts the platform. Test processes have read that
+second size at 30,595, 30,599 and 30,603 bytes, the 8 bytes it moves by
+between processes, so it leaves at least 2,165 bytes free. With a one-line proof script and no signer list, as the tests in
 `controlplane/render_test.go` and `controlplane/hosting_test.go` log it, the
 builder takes about 27,400 and 27,500 bytes.
 

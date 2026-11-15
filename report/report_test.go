@@ -662,10 +662,12 @@ func TestReport_PostsEachMemberItReadsFromAHealthyCluster(t *testing.T) {
 				"failed": []any{map[string]any{"id": "C-0013", "name": "Non-root containers", "severity": "Medium", "failedResources": float64(3),
 					"resources": []any{}}},
 				"finishedAt": "2026-11-07T03:19:05Z"}}},
-		"a call from inside the mesh answered, and a plain call from outside refused while ztunnel presents the target's certificate": {
+		"a call from inside the mesh answered, a plain call from outside refused while ztunnel presents the target's certificate, and a call to a port no policy admits dropped": {
 			"mesh", "", map[string]any{"callFromInside": map[string]any{"passed": true},
 				"plainCallFromOutside": map[string]any{"passed": true, "probedAt": "2026-10-23T15:42:31Z", "curlExitStatus": float64(56),
 					"stderr": "curl: (56) Recv failure: Connection reset by peer\n"},
+				"unadmittedCallFromOutside": map[string]any{"passed": true, "probedAt": "2026-10-23T15:42:31Z", "port": float64(8081),
+					"curlExitStatus": float64(28), "stderr": "curl: (28) Connection timed out after 5002 milliseconds\n"},
 				"workloadIdentity": map[string]any{"passed": true, "probedAt": "2026-10-23T15:42:31Z", "identity": components.MeshProbeIdentity,
 					"serial": "5E1C0A9F3B2D47E8", "notBefore": "2026-10-23T09:12:00Z", "notAfter": "2026-10-24T09:12:00Z"}}},
 	}

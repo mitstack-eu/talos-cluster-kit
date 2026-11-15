@@ -87,7 +87,8 @@ func tcpPeer(t *testing.T, answer func(*net.TCPConn)) string {
 // ConfigMap data it patched, as the report reads it.
 func probeGateways(t *testing.T, gateways string, ca []byte) string {
 	t.Helper()
-	_, result := runMeshProbe(t, nil, "MESH_PROBE_HOST=127.0.0.1", "MESH_PROBE_PORT=1", "GATEWAYS="+gateways, "GATEWAY_CA="+string(ca))
+	_, result := runMeshProbe(t, nil, "MESH_PROBE_HOST=127.0.0.1", "MESH_PROBE_PORT=1", "MESH_PROBE_UNADMITTED_PORT=1", "GATEWAYS="+gateways,
+		"GATEWAY_CA="+string(ca))
 	encoded, err := json.Marshal(result)
 	require.NoError(t, err)
 	data, err := json.Marshal(map[string]any{"data": map[string]string{"result": string(encoded)}})

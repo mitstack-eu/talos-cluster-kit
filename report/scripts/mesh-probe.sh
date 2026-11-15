@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# Calls the mesh probe's target from outside the mesh: a plain call to its port, which the mesh must refuse, and a TLS
-# handshake to its port 15008, where ztunnel presents the target's workload certificate. It writes both outcomes, with
-# the certificate's identities, serial and validity, and how each gateway mirror's connection ended, into the ConfigMap
-# the node report reads.
-# Usage: MESH_PROBE_HOST=<target's name> MESH_PROBE_PORT=<port> MESH_PROBE_CONFIGMAP=<name> POD_NAMESPACE=<namespace> [GATEWAYS="<address>[=<https url>] ..." GATEWAY_CA=<pem>] mesh-probe.sh
+# Calls the mesh probe's target from outside the mesh: a plain call to its port, which the mesh must refuse, a call to a
+# port no policy admits, which Cilium must drop, and a TLS handshake to its port 15008, where ztunnel presents the
+# target's workload certificate. It writes each outcome, with the certificate's identities, serial and validity, and how
+# each gateway mirror's connection ended, into the ConfigMap the node report reads.
+# Usage: MESH_PROBE_HOST=<target's name> MESH_PROBE_PORT=<port> MESH_PROBE_UNADMITTED_PORT=<port> MESH_PROBE_CONFIGMAP=<name> POD_NAMESPACE=<namespace> [GATEWAYS="<address>[=<https url>] ..." GATEWAY_CA=<pem>] mesh-probe.sh
 # It exists because a pod inside the mesh cannot call without a workload identity or see a closed port, and the report
 # runs inside it.
 set -euo pipefail
 shopt -s nullglob
 
 : "${MESH_PROBE_HOST:?names the target}" "${MESH_PROBE_PORT:?names the port of the target}"
+: "${MESH_PROBE_UNADMITTED_PORT:?names a port of the target that no policy admits}"
 : "${MESH_PROBE_CONFIGMAP:?names the ConfigMap the report reads}" "${POD_NAMESPACE:?names the namespace of this pod}"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -43,6 +44,10 @@ probe_gateway() {
 plain=0
 timeout -k 5 10 curl -sS --max-time 5 -o "$work/plain.out" "http://$MESH_PROBE_HOST:$MESH_PROBE_PORT/" \
   2> "$work/plain.err" || plain=$?
+# Cilium drops a call no policy admits without an answer, so this call ends in curl's timeout while policy holds.
+unadmitted=0
+timeout -k 5 10 curl -sS --max-time 5 -o /dev/null "http://$MESH_PROBE_HOST:$MESH_PROBE_UNADMITTED_PORT/" \
+  2> "$work/unadmitted.err" || unadmitted=$?
 handshake=0
 timeout -k 5 10 openssl s_client -connect "$MESH_PROBE_HOST:15008" -alpn h2 < /dev/null \
   > "$work/handshake.out" 2> "$work/handshake.err" || handshake=$?
@@ -63,6 +68,9 @@ jq -n \
   --argjson plain "$plain" \
   --rawfile answer "$work/plain.out" \
   --rawfile plain_err "$work/plain.err" \
+  --argjson unadmitted_port "$MESH_PROBE_UNADMITTED_PORT" \
+  --argjson unadmitted "$unadmitted" \
+  --rawfile unadmitted_err "$work/unadmitted.err" \
   --argjson handshake "$handshake" \
   --rawfile handshake_err "$work/handshake.err" \
   --rawfile certificate "$work/certificate.txt" \
@@ -72,6 +80,7 @@ jq -n \
   {
     probedAt: $at,
     plainCall: {exitStatus: $plain, answer: $answer[0:256], stderr: $plain_err[-512:]},
+    unadmittedCall: {port: $unadmitted_port, exitStatus: $unadmitted, stderr: $unadmitted_err[-512:]},
     handshake: {exitStatus: $handshake, stderr: $handshake_err[-512:], certificate: (
       if field("serial") then {
         serial: field("serial"),

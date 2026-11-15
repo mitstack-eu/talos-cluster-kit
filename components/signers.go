@@ -22,7 +22,6 @@ type Signer struct {
 	PullSecret SecretRef
 }
 
-// SecretRef names a Secret by its namespace and name.
 type SecretRef struct {
 	Namespace, Name string
 }
@@ -185,7 +184,6 @@ func registryHosts(repository string) []string {
 	return nil
 }
 
-// signatureLogins lists each pull Secret the signers name once, in the order the list first names it.
 func signatureLogins(signers []Signer) []signatureLogin {
 	var logins []signatureLogin
 	for _, s := range signers {

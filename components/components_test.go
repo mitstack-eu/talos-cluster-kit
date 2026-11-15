@@ -177,7 +177,7 @@ func TestCoreDNS_RunsTalossDeploymentWithOneReplicaInEachLocationAndLeavesAClust
 	}{
 		{"a cluster in one location keeps the replicas Talos sets", "", []string{"fsn1"}},
 		{"a cluster in two locations runs two replicas", "coredns-2-locations.yaml", []string{"fsn1", "nbg1"}},
-		{"a cluster whose nodes name three locations, one twice, runs three", "coredns-3-locations.yaml", []string{"hel1", "fsn1", "nbg1", "fsn1"}},
+		{"a cluster whose nodes name three locations, one twice, runs one in each, replaced one at a time", "coredns-3-locations.yaml", []string{"hel1", "fsn1", "nbg1", "fsn1"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			manifests, err := components.CoreDNS(tc.locations)

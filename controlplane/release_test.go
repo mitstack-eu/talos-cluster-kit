@@ -23,7 +23,6 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/rollout"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 	"github.com/mitstack-eu/talos-cluster-kit/tools"
-	"github.com/mitstack-eu/talos-cluster-kit/topology"
 )
 
 // buildOnly are the manifests a build applies and no upgrade carries: the hosting set's keys, sealed keys, the volumes
@@ -394,29 +393,15 @@ func TestRelease_AClusterRequiringNoOTLPBackendCarriesNoTelemetryCollectorAndNoE
 	}
 }
 
-// coreDNSOf is the CoreDNS Deployment the release of a cluster in the plane's locations carries.
-func coreDNSOf(t *testing.T) map[string]any {
-	t.Helper()
+func TestRelease_AClusterInFsn1Nbg1AndHel1RunsThreeCoreDNSReplicasWithASpreadThatAllowsNoTwoInOneLocation(t *testing.T) {
+	require.Equal(t, []string{"fsn1", "nbg1", "hel1"}, controlplane.Locations, "the locations a node of the cluster runs in")
 	h := newHarness(t)
 	plane, err := h.plane.WithGatewayCA()
 	require.NoError(t, err)
-	return testutil.Named(t, testutil.Documents(t, testutil.Manifest(t, "coredns", h.releaseOf(plane).Components).Bytes), "Deployment", "coredns")
-}
 
-func TestRelease_AClusterInFsn1Nbg1AndHel1RunsThreeCoreDNSReplicasWithASpreadThatAllowsNoTwoInOneLocation(t *testing.T) {
-	require.Equal(t, []string{"fsn1", "nbg1", "hel1"}, controlplane.Locations, "the locations a node of the cluster runs in")
+	release := h.releaseOf(plane)
 
-	deployment := coreDNSOf(t)
-
-	assert.EqualValues(t, 3, testutil.Field(t, deployment, "spec", "replicas"))
-	assert.Equal(t, []any{map[string]any{"maxSkew": 1, "topologyKey": topology.ZoneLabel, "whenUnsatisfiable": "DoNotSchedule",
-		"labelSelector": map[string]any{"matchLabels": map[string]any{"k8s-app": "kube-dns"}}}},
-		testutil.Field(t, deployment, "spec", "template", "spec", "topologySpreadConstraints"), "a hard spread over the zone the labeller sets, counting every CoreDNS pod")
-}
-
-func TestRelease_ACoreDNSRolloutStopsOneReplicaBeforeItStartsTheNext(t *testing.T) {
-	deployment := coreDNSOf(t)
-
-	assert.Equal(t, map[string]any{"type": "RollingUpdate", "rollingUpdate": map[string]any{"maxSurge": 0, "maxUnavailable": 1}},
-		testutil.Field(t, deployment, "spec", "strategy"), "a rollout that never runs more pods than replicas, nor more than one fewer")
+	want, err := components.CoreDNS(controlplane.Locations)
+	require.NoError(t, err)
+	assert.Equal(t, want, []components.Manifest{testutil.Manifest(t, "coredns", release.Components)}, "the Deployment the golden coredns-3-locations.yaml pins")
 }

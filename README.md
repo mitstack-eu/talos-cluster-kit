@@ -778,21 +778,26 @@ cluster that runs its apps on workers keeps on those nodes. Each location
 therefore always has a node that can take its replica, and the kit pins no
 replica to a control-plane node.
 
-An Update onto a release that first carries the component changes a running
-cluster in three locations in these steps:
+When a block commits the first release that carries the component, a running
+cluster in three locations changes in these steps:
 
 1. Argo CD's `component-coredns` Application applies the Deployment over the
-   one Talos created. Argo CD v3.5.5 forces conflicts on a server-side apply,
-   as line 486 of gitops-engine's
+   one Talos created. It applies by server-side apply, where the API server
+   records which writer, its field manager, set each field. Argo CD v3.5.5
+   forces conflicts on such an apply, as line 486 of gitops-engine's
    [`resource_ops.go`](https://github.com/argoproj/argo-cd/blob/v3.5.5/gitops-engine/pkg/utils/kube/resource_ops.go#L486)
-   sets, so it takes `replicas` and the image from Talos's field manager. The
-   component's handover Job then has Talos give up its fields, and Argo CD
-   owns the Deployment from then on.
-2. The pod template changes, so the Deployment rolls. The new replica count
-   arrives with it, so the Deployment controller first scales Talos's
-   ReplicaSet up for a moment and removes the extra pod again during the
-   rollout. It starts the first new replica in a location that runs neither of
-   Talos's two, while both keep answering.
+   sets, so it takes `replicas` and the image over from Talos's field
+   manager. The component's handover Job then has Talos give up its fields,
+   and Argo CD owns the Deployment from then on.
+2. The pod template is the part of a Deployment that says how each pod runs.
+   The kit's template adds the spread and names the image by digest, so the
+   Deployment rolls, replacing its pods with pods built from the new template.
+   A ReplicaSet is the object through which a Deployment runs the pods of one
+   template. The new replica count arrives in the same apply, so the
+   Deployment controller first scales Talos's ReplicaSet up for a moment, and
+   removes the extra pod again during the rollout. It starts the first new
+   replica in a location that runs neither of Talos's two, while both keep
+   answering.
 3. Once that replica is Ready, the Deployment stops one of Talos's replicas
    and starts the next new one in a location that has none. It does the same
    for the last.
@@ -820,31 +825,35 @@ of
 shows. Argo CD reads it as `Progressing` while fewer replicas are available
 than updated.
 
-An Update that changes the pod template while one location takes no pod stops
-that location's replica too, and its replacement waits as Pending. The other
-two replicas answer throughout, and a cluster reads as follows:
+When a release changes the pod template while one location takes no new pod,
+the rollout stops that location's replica too, and its replacement waits as
+Pending. The other two replicas answer throughout, and a cluster reads as
+follows:
 
 | When | The Deployment reads | Argo CD reads |
 |---|---|---|
 | Until the progress deadline | `Available=True`, and `Progressing=True` with reason `ReplicaSetUpdated`, with two replicas Ready | `Progressing` |
 | 600 seconds without progress, the default `progressDeadlineSeconds` that Talos's Deployment keeps | `Progressing=False` with reason `ProgressDeadlineExceeded` | `Degraded`, as lines 39 to 58 of gitops-engine's [`health_deployment.go`](https://github.com/argoproj/argo-cd/blob/v3.5.5/gitops-engine/pkg/health/health_deployment.go#L39-L58) decide |
 
-The block's read-back, `ReadBack` in `rollout/rollout.go`, wants every
-Application Healthy, so it keeps reporting `component-coredns` with that
-health. The Update reads back once a node of that location is Ready again,
-the replica starts there and the rollout finishes.
+The block's read-back checks from the node report that the cluster runs each
+component as the release states it. `ReadBack` in `rollout/rollout.go` wants
+every Application Healthy, so it keeps reporting `component-coredns` with
+that health. The read-back succeeds once a node of that location is Ready
+again, the replica starts there and the rollout finishes.
 
 No release may drop the component from a cluster that carries it. Argo CD's
-resources finalizer would delete the Deployment, and Talos would not create
-it again.
+resources finalizer, the marker that has Argo CD delete every object an
+Application applied before the Application itself goes, would delete the
+Deployment, and Talos would not create it again.
 
+Two tests check the render against golden files, the recordings of the
+expected render in `components/testdata/golden/`.
 `TestRelease_AClusterInFsn1Nbg1AndHel1RunsThreeCoreDNSReplicasWithASpreadThatAllowsNoTwoInOneLocation`
-in `controlplane/release_test.go` finds in a release the Deployment that the
-golden file `coredns-3-locations.yaml` pins, with its spread and its
-`maxSurge: 0`.
+in `controlplane/release_test.go` finds in a release the Deployment that
+`coredns-3-locations.yaml` records, with its spread and its `maxSurge: 0`.
 `TestCoreDNS_RunsTalossDeploymentWithOneReplicaInEachLocationAndLeavesAClusterInOneLocationToTalos`
 in `components/components_test.go` compares the render for two and three
-locations with a golden file, and finds none for one.
+locations with those recordings byte for byte, and finds none for one.
 
 ## How AWS comes to trust a cluster's tokens
 

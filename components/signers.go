@@ -48,7 +48,7 @@ const (
 
 const sigstoreTrustRoot = "tuf-repo-cdn.sigstore.dev"
 
-// The copy refreshes well inside the twelve hours an ECR login lasts, so a renewed login reaches Kyverno before the old one ends.
+// The copy follows its pull Secret within this interval, so a login renewed this long before it expires reaches Kyverno in time.
 const signatureLoginRefresh = "15m"
 
 const signatureLoginPrefix = "mitstack-signature-login-"

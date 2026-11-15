@@ -49,7 +49,7 @@ the order a block uses them.
 | `etcd` | Renders the Job that removes a lost node's etcd member and then its Node object, and holds the gateway's script that bootstraps etcd empty or from a snapshot | `RemoveMemberJob`, `BootstrapScript`, `Bootstrap.Args` |
 | `report` | Renders the node report, a CronJob that reads the cluster and posts what it read to the platform, signed for its exact body. [What the node report carries](#what-the-node-report-carries) lists its members, the nine checks it names and what happens when a read fails. It also renders the outside probe, a CronJob in `kube-system` that calls the mesh probe's target with no workload identity and reads each gateway's mirror from outside the mesh, the admission probe namespace and the daily security scan. The report holds no right on Secrets | `Manifests`, `Interval` |
 | `topology` | Renders the topology labeller, a CronJob that labels each Cloud node with its zone and region, and holds the two label names | `Manifests`, `Labels`, `ZoneLabel`, `RegionLabel`, `FieldManager` |
-| `openbaoinit` | Renders OpenBao's init Job, which the hosting set carries: it initialises a hosting cluster's OpenBao once, commits the root token and recovery key to the cluster repository as PGP messages, then writes the policy each slice's External Secrets reads with | `Manifests`, `Inputs`, `InitFile` |
+| `openbaoinit` | Renders OpenBao's init Job, which the hosting set carries. On a hosting cluster, a cluster that runs mitstack's own control plane, it initialises OpenBao once, commits the root token and recovery key to the cluster repository as PGP messages, then writes the policy that External Secrets reads with in each slice, the namespace a block gives one app | `Manifests`, `Inputs`, `InitFile` |
 | `rollout` | Gives a running cluster a release's component set, the manifests one kit release carries; [How a running cluster takes a release's components](#how-a-running-cluster-takes-a-releases-components) defines each term. A block commits the set's files to the cluster repository, where Argo CD applies each component through an Application of its own, which is Argo CD's record of one repository directory it keeps applied to the cluster. Files that an earlier release committed and this release no longer states are retired, which means deleted. Each component's sync runs a handover Job, which has Talos give up the fields it set when it created the component's objects, so they hold only what the release states. After OpenBao's sync, OpenBao's rollout Job moves each member onto the StatefulSet's new revision, as [How OpenBao's members take a new revision](#how-openbaos-members-take-a-new-revision) explains, which also says what a member, a StatefulSet and a revision are. The read-back then checks from the node report that the cluster runs each component as the release states it | `Release.Files`, `Release.Retired`, `Release.ReadBack`, `Release.ToolsImage`, `LegacyFiles` |
 | `controlplane` | Builds and deletes a Talos control plane on Hetzner Cloud: a network, a firewall, a gateway in each of `fsn1`, `nbg1` and `hel1`, a builder that makes the cluster's own snapshot, a node in each of `fsn1`, `nbg1` and `hel1`, and an API and an ingress load balancer. Each call reads the resources by their labels and takes the one change still missing. A refusal is a `*Refusal` with a `Class` and a `Message`, which the block answers as its own framework's refusal | `Plane`, `Plane.Read`, `Plane.EnsureNetwork`, `Plane.NextStep`, `Plane.Problems`, `Plane.Unhealthy`, `Plane.Outputs`, `State.IngressAddresses`, `Plane.Release`, `ErrNoIngressAddress`, `Plane.GatewaysAwaitRelease`, `Plane.GatewaysServeRelease`, `Plane.Delete`, `NewAPI`, `Refusal`, `TopologyLabels`, `GatewayUpgradeBound`, `GatewayCertRenewBefore`, `KeyGatewayCertExpires` |
 | `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image carries and the gateway copies out of it, `tools/jq.env`, which pins the tools image's jq, and `tools/kube-bench-talos.yaml`, the settings kube-bench reads over its own on Talos. It names the tools image a release published and the directory in that image that holds the node report's, its outside probe's, the labeller's, the cluster tokens', the handover's and OpenBao's rollout's scripts, and where in that image each served manifest sits | `Env`, `Pin`, `Image`, `ScriptDir`, `ManifestPath` |
@@ -1661,8 +1661,9 @@ Secrets.
 This section is for a block author whose cluster requires an OTLP backend, such
 as Scaleway Cockpit, and for an engineer who changes the telemetry Collector.
 OTLP is OpenTelemetry's protocol for sending logs and metrics. The section says
-what the Collector reads, how it tags and masks each record, and how its push
-token stays fresh.
+what the Collector reads, including the Argo CD and OpenBao metrics it
+scrapes, how it tags and masks each record, and how its push token stays
+fresh.
 
 ### What the block hands the kit
 
@@ -1750,7 +1751,8 @@ the sync, one member at a time, as
 [How OpenBao's members take a new revision](#how-openbaos-members-take-a-new-revision)
 describes. Until the rollout Job has moved a member, the `openbao` scrape job
 cannot reach it. That member then sends no `vault_core_unsealed`, and its `up`
-reads 0, so only a rule that also reads `up` sees it. `collector_test.go`
+reads 0, so only a rule that also reads `up` sees it. `collector_test.go`,
+at the repository root under the build tags `apiserver` and `collector`,
 starts OpenBao on its rendered configuration and sends the cluster copy's
 request without a token: the sealed member answers with `vault_core_unsealed`
 at 0, and answers any other path on 9101 with 404. It also runs the cluster
@@ -1933,7 +1935,7 @@ every Docker Hub image goes on the list under its full name.
 
 | Component | What it does here | Values |
 |---|---|---|
-| OpenBao 2.7.1 | Three Raft members, one per control-plane node, each tolerating the control-plane taint. The listener serves TLS 1.3 only, with the certificate cert-manager issues, and reloads it when it is renewed. The static seal reads its key from `/openbao/seal/key` | `components/render/openbao-values.yaml` |
+| OpenBao 2.7.1 | Three Raft members, one per control-plane node, each tolerating the control-plane taint. Both listeners, the API on 8200 and the metrics listener on 9101, serve TLS 1.3 only, with the certificate cert-manager issues, and reload it when it is renewed. The static seal reads its key from `/openbao/seal/key` | `components/render/openbao-values.yaml` |
 | cert-manager v1.21.2 | Issues OpenBao's serving certificate from OpenBao's own authority, the shared Postgres server's from the database authority, and the External Secrets webhook's certificate. It reads each `ClusterIssuer`'s key in `mitstack-trust` | `components/render/cert-manager-values.yaml` |
 | trust-manager v0.25.0 | Copies each authority's certificate from `mitstack-trust` into a ConfigMap of the authority's name, under `ca.crt`, in every namespace | `components/render/trust-manager-values.yaml` |
 | External Secrets v2.11.0 | Copies values from OpenBao into Kubernetes Secrets | `components/render/external-secrets-values.yaml` |
@@ -2515,7 +2517,7 @@ that file again after such a change.
 
 | File | What it holds |
 |---|---|
-| `components/<name>/manifest.yaml` | The component's documents, then its handover Job, then a marker ConfigMap in `argocd` named `component-<name>-<digest>` |
+| `components/<name>/manifest.yaml` | The component's documents, then its handover Job, then, in OpenBao's file alone, its rollout Job, then a marker ConfigMap in `argocd` named `component-<name>-<digest>` |
 | `cluster/component-<name>.yaml` | The Argo CD Application `component-<name>`, which applies `components/<name>/` |
 
 The marker ConfigMap is how the read-back tells which release Argo CD
@@ -3016,27 +3018,48 @@ own copy.
 3. It picks the first outdated standby by name, or the active member once no
    outdated standby is left.
 4. It reads `raft_committed_index` from the member that is active in that
-   pass. It waits until OpenBao's disruption budget allows a disruption, then
-   asks the API server to evict the picked member's pod through the Eviction
-   API. The budget is the PodDisruptionBudget `openbao`, Kubernetes's limit on
-   how many of the members may be down by choice at once, and its
-   `maxUnavailable: 1` allows one.
-5. It watches the member's pod until the StatefulSet controller has created it
+   pass, and waits until OpenBao's disruption budget allows a disruption. The
+   budget is the PodDisruptionBudget `openbao`, Kubernetes's limit on how many
+   of the members may be down by choice at once, and its `maxUnavailable: 1`
+   allows one.
+5. It reads the members once more. Should the picked member now read active
+   while an outdated standby is left, the pass evicts nothing and the next
+   pass picks again. Otherwise it asks the API server to evict the picked
+   member's pod through the Eviction API.
+6. It watches the member's pod until the StatefulSet controller has created it
    again at the new revision, Ready and unsealed.
-6. It reads the member's `raft_applied_index`, and starts the next pass only
+7. It reads the member's `raft_applied_index`, and starts the next pass only
    once that index has reached the commit it read before the eviction.
 
-The Job takes at most as many passes as the StatefulSet has replicas, so a
-member that stays outdated fails the Job once the passes run out, rather than
-keep the Job evicting. For example, with `openbao-1` active and all three members
-outdated, the passes evict `openbao-0`, then `openbao-2`, then `openbao-1`.
-Should leadership move to `openbao-2` during the first pass, the second pass
-evicts `openbao-1`, now a standby, and the third evicts `openbao-2`.
+The reads and the wait before an eviction can take up to 30 seconds each, and
+leadership can move during them. Step 5 therefore reads the labels again just
+before the eviction, with no other call between the two.
+
+The Job evicts at most as many times as the StatefulSet has replicas, so a
+member that stays outdated fails the Job once the evictions run out, rather
+than keep the Job evicting. A pass that evicts nothing counts against a second
+bound, also one per replica. Leadership that moves onto the picked member more
+often than that has not settled, so the Job fails, and Argo CD's retry starts
+a fresh Job.
+
+For example, with `openbao-1` active and all three members outdated, the
+passes evict `openbao-0`, then `openbao-2`, then `openbao-1`. Should
+leadership move to `openbao-2` during the first pass, the second pass evicts
+`openbao-1`, now a standby, and the third evicts `openbao-2`. Should
+`openbao-0` turn active just before its eviction in the first pass, that pass
+evicts nothing, and the next three evict `openbao-1`, then `openbao-2`, then
+`openbao-0`.
 
 The Job reads `sys/leader` inside a member with
 `kubectl exec <member> -c openbao -- bao read -tls-skip-verify -format=json sys/leader`.
-That is the TLS handling of the member's own readiness probe. OpenBao answers
-that path without a token, from the member's own Raft indexes. The exec runs
+`bao` is OpenBao's command-line client, and `-tls-skip-verify` has it accept
+the listener's certificate without checking it. The client calls
+`https://127.0.0.1:8200`, the address the member's `BAO_ADDR` names in
+`components/openbao/openbao.yaml`, so the call stays on the member's own
+loopback interface, where no other host can answer it. The member's readiness
+probe, `bao status -tls-skip-verify`, calls the same address the same way.
+OpenBao answers `sys/leader` without a token, from the member's own Raft
+indexes. The exec runs
 through the API server and the member's kubelet, so the Job needs no flow to
 OpenBao's port 8200.
 
@@ -3049,7 +3072,7 @@ Argo CD's retry of the failed sync, after 30 seconds and doubling to at most
 |---|---|
 | A member's return after its eviction | 300 seconds, for its preStop hook, the command Kubernetes runs in the container before stopping it, and its grace period, the 10 seconds Kubernetes then waits for the container to exit, and for its start, a new image's pull and its unseal |
 | Each read of the StatefulSet or the members, each read inside a member, each wait for the disruption budget, and each eviction | 30 seconds, under `timeout` |
-| The whole Job | An `activeDeadlineSeconds` of 1,410: 450 seconds for each of the three members' passes, which is 300 for its return and 30 for each of its five calls, and 60 for the StatefulSet's read and the members' last read |
+| The whole Job | An `activeDeadlineSeconds` of 1,860. Each of the three passes that evict takes 480 seconds: 300 for the member's return, and 30 for each of its six calls, which are the members' read, the read of the active member's commit, the wait for the budget, the members' second read, the eviction and the read of the member's applied index. Each of up to three passes that evict nothing takes 120 seconds, 30 for each of its first four calls. The StatefulSet's read and the members' last read take 60 |
 
 The script bounds each call with `timeout` rather than kubectl's
 `--request-timeout`. That flag takes kubectl off the pod's in-cluster
@@ -3110,8 +3133,11 @@ proves that the Job evicts nothing when every member is current, and evicts
 standby, standby, then leader. It proves that each pass reads the members
 again: leadership that moves to an outdated standby sends that member last,
 leadership that moves to a member already moved changes where the commit is
-read, and a member that reads sealed between passes stops the run. A member
-that never reads the new revision fails the Job after three passes. It
+read, and a member that reads sealed between passes stops the run. A standby
+that turns active just before its eviction is not evicted then and goes last,
+and three passes that each find leadership moved onto their member fail the
+Job with no eviction. A member that never reads the new revision fails the
+Job after three evictions. It
 proves that the Job waits on the budget before each eviction, and that a wait
 that misses its bound or is refused evicts nothing. It also proves that a
 member that returns behind the leader's commit, or not at all, stops the run.

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Moves each OpenBao member whose pod runs an older revision of its StatefulSet onto the current one, one member a pass,
 # the standbys first and the active member last, and stops at the first member that does not return caught up. Each
-# pass reads the members again, so a member that turns active or sealed during the run is judged as it then is.
+# pass reads the members again, so a member that turns active or sealed during the run is judged as it then is, and
+# reads them once more just before its eviction, so a standby that has turned active since is not evicted then.
 # Usage: ROLLOUT_NAMESPACE=<namespace> ROLLOUT_STATEFULSET=<name> ROLLOUT_DISRUPTION_BUDGET=<name> \
 #   ROLLOUT_MEMBER_TIMEOUT=<seconds>s ROLLOUT_CALL_TIMEOUT=<seconds>s openbao-rollout.sh
 # It exists because OpenBao's StatefulSet updates OnDelete, as OpenBao requires so that no member fails over to an
@@ -96,17 +97,23 @@ export ROLLOUT_REVISION=$revision
 replicas=$(jq -r '.spec.replicas' "$work/statefulset.json")
 container=$(jq -r '.spec.template.spec.containers[0].name' "$work/statefulset.json")
 selector=$(jq -r '.spec.selector.matchLabels | to_entries | map("\(.key)=\(.value)") | join(",")' "$work/statefulset.json")
-passes=0
-while :; do
+read_members() {
   timeout "$call_timeout" kubectl get pods -n "$namespace" -l "$selector" -o json > "$work/pods.json" \
     || fail "cannot read the members of $namespace/$statefulset"
+}
+
+# Each bound is one per member: the evictions, and the passes that evict nothing because leadership moved onto the
+# member they picked, which more often than that means leadership has not settled.
+evictions=0 skips=0
+while :; do
+  read_members
   mapfile -t stale < <(members "$outdated")
   if [ "${#stale[@]}" -eq 0 ]; then
     echo "openbao-rollout: every member runs revision $revision"
     exit 0
   fi
-  [ "$passes" -lt "$replicas" ] \
-    || fail "$passes passes, one for each of the $replicas members, left ${stale[*]} on an older revision than $revision, so the rollout stops"
+  [ "$evictions" -lt "$replicas" ] \
+    || fail "$evictions evictions, one for each of the $replicas members, left ${stale[*]} on an older revision than $revision, so the rollout stops"
   mapfile -t all < <(members true)
   [ "${#all[@]}" = "$replicas" ] || fail "${#all[@]} of $replicas members exist, so moving one now could cost the quorum"
   down=$(members "($serving) | not" | paste -sd ' ' -)
@@ -120,6 +127,15 @@ while :; do
 
   committed=$(raft_index "${leader[0]}" raft_committed_index)
   await_budget "$member"
+  read_members
+  mapfile -t standbys < <(members "($outdated) and (($active) | not)")
+  if [ "${#standbys[@]}" -gt 0 ] && [ -n "$(ROLLOUT_MEMBER=$member members ".metadata.name == env.ROLLOUT_MEMBER and ($active)")" ]; then
+    echo "openbao-rollout: $member turned active before its eviction while ${standbys[*]} are outdated standbys, so this pass evicts nothing"
+    skips=$((skips + 1))
+    [ "$skips" -lt "$replicas" ] \
+      || fail "$skips passes, one for each of the $replicas members, evicted nothing as leadership moved onto the member each had picked, so the rollout stops"
+    continue
+  fi
   evict "$member"
   echo "openbao-rollout: evicted $member after ${leader[0]} committed Raft index $committed, and waiting up to $timeout for its return"
   await "$member"
@@ -127,5 +143,5 @@ while :; do
   [ "$applied" -ge "$committed" ] \
     || fail "$member has applied Raft index $applied, short of the $committed ${leader[0]} committed before its eviction, so no other member moves"
   echo "openbao-rollout: $member runs revision $revision, unsealed, at Raft index $applied"
-  passes=$((passes + 1))
+  evictions=$((evictions + 1))
 done

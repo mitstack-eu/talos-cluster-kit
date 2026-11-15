@@ -577,6 +577,24 @@ body() {
           failed("the target closed the plain call, but it did not answer the report either, so it may be down: \($inside.reason)")
         else {passed: true, curlExitStatus: $call.exitStatus, stderr: $call.stderr} end
       | . + {probedAt: ($probe.probedAt // null)};
+    # A call to a port no policy admits passes only when it timed out, curl's 28, since Cilium drops it without an answer,
+    # while the same run's admitted calls reached the target and the target answered the report, so a target that is down
+    # or unreachable never reads as dropped.
+    def unadmitted_call_from_outside($probe; $identity; $inside):
+      ($probe.unadmittedCall // null) as $call
+      | ($probe.plainCall // {}) as $plain
+      | if $probe.error then failed($probe.error)
+        elif $call == null then failed("the outside probe's result in \($mesh_configmap) holds no call to a port no policy admits")
+        elif $call.exitStatus != 28 then
+          failed("the call to port \($call.port), which no policy admits, ended with curl exit status \($call.exitStatus) where a policy drop times out with 28: \($call.stderr)")
+        elif [0, 52, 56] | index($plain.exitStatus) | not then
+          failed("the call to port \($call.port) timed out, but the plain call, which a policy admits, did not reach the target either: curl ended with exit status \($plain.exitStatus): \($plain.stderr)")
+        elif $identity.passed | not then
+          failed("the call to port \($call.port) timed out, but no workload certificate shows the target up: \($identity.reason)")
+        elif $inside.passed | not then
+          failed("the call to port \($call.port) timed out, but the target did not answer the report either, so it may be down: \($inside.reason)")
+        else {passed: true, port: $call.port, curlExitStatus: $call.exitStatus, stderr: $call.stderr} end
+      | . + {probedAt: ($probe.probedAt // null)};
     # A sealed credential's template names the Secret it unseals into, its Argo CD type and its plain project and URL.
     def repository_credential: (.spec.template // {}) as $t | ($t.metadata.labels["argocd.argoproj.io/secret-type"] // null) as $type
       | select($type != null)
@@ -649,6 +667,7 @@ body() {
       outside_probe as $probe | call_from_inside as $inside | judged(workload_identity($probe)) as $identity | {
         callFromInside: $inside,
         plainCallFromOutside: judged(plain_call_from_outside($probe; $identity; $inside)),
+        unadmittedCallFromOutside: judged(unadmitted_call_from_outside($probe; $identity; $inside)),
         workloadIdentity: $identity
       };
     subscription_resources as $listed | {

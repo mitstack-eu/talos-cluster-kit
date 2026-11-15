@@ -173,6 +173,7 @@ func Manifests(in Inputs) ([]byte, error) {
 		"Script":          tools.ScriptDir + "/mesh-probe.sh",
 		"Host":            components.MeshProbeHost,
 		"Port":            components.MeshProbePort,
+		"UnadmittedPort":  components.MeshProbeUnadmittedPort,
 		"TargetNamespace": components.MeshProbeNamespace,
 		"Gateways":        in.gateways(),
 		"GatewayAddrs":    in.Gateways,

@@ -1,5 +1,5 @@
-# Talos v1.14.4's CoreDNS Deployment, with one replica per location, a hard spread over the zone label, and the image by digest.
-# maxSurge 0 keeps a rollout at the replica count, so each new replica takes the location the one it replaces left.
+# Talos v1.14.4's CoreDNS Deployment with no field of Talos's left out, since the handover drops a field only Talos set.
+# maxSurge 0 starts a replica only while fewer run than replicas, and the zone spread puts it in a location with none.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

@@ -41,7 +41,7 @@ func ParseImage(ref string) (Image, error) {
 // MirroredRegistries are the public registries a node's configuration sends to the private mirror.
 var MirroredRegistries = []string{"docker.io", "ghcr.io", "public.ecr.aws", "quay.io", "registry.k8s.io"}
 
-// coreDNSImage is the CoreDNS Talos v1.14.4 deploys, which the kit's spread of its Deployment runs too.
+// coreDNSImage is the CoreDNS image Talos v1.14.4 deploys, which the kit's own CoreDNS Deployment names by digest.
 var coreDNSImage = Image{Name: "registry.k8s.io/coredns/coredns", Tag: "v1.14.7", Digest: "sha256:7efd3c635b03efd68c4e8398fc45f0d993d0e9ab016f72c1cefb0fd6d01aa286"}
 
 // pinnedTalosImages are the images Talos v1.14.4 pulls for Kubernetes 1.37.1, by digest.

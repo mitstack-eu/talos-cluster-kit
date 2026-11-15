@@ -149,12 +149,12 @@ func TestRelease_CarriesWhatTheBuildAppliedButTheHostingKeysTheEnrolmentTokenAnd
 	for _, tc := range []struct {
 		name string
 		opts []func(*harness)
-		// releaseOnly is what no builder's user data has room for, so the release alone carries it.
+		// releaseOnly is what the build cannot apply, so the release alone carries it.
 		releaseOnly []string
 	}{
-		{"a cluster that hosts no platform", nil, nil},
-		{"a cluster that hosts the platform", []func(*harness){hosting}, nil},
-		{"a cluster that hosts the platform and ships its telemetry", []func(*harness){hosting, telemetry}, []string{"mitstack-telemetry"}},
+		{"a cluster that hosts no platform", nil, []string{"coredns"}},
+		{"a cluster that hosts the platform", []func(*harness){hosting}, []string{"coredns"}},
+		{"a cluster that hosts the platform and ships its telemetry", []func(*harness){hosting, telemetry}, []string{"mitstack-telemetry", "coredns"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t, tc.opts...)
@@ -391,4 +391,17 @@ func TestRelease_AClusterRequiringNoOTLPBackendCarriesNoTelemetryCollectorAndNoE
 			assert.False(t, strings.HasPrefix(name, "mitstack-telemetry"), "%s renders %v %s", m.Name, doc["kind"], name)
 		}
 	}
+}
+
+func TestRelease_AClusterInFsn1Nbg1AndHel1RunsThreeCoreDNSReplicasWithASpreadThatAllowsNoTwoInOneLocation(t *testing.T) {
+	require.Equal(t, []string{"fsn1", "nbg1", "hel1"}, controlplane.Locations, "the locations a node of the cluster runs in")
+	h := newHarness(t)
+	plane, err := h.plane.WithGatewayCA()
+	require.NoError(t, err)
+
+	release := h.releaseOf(plane)
+
+	want, err := components.CoreDNS(controlplane.Locations)
+	require.NoError(t, err)
+	assert.Equal(t, want, []components.Manifest{testutil.Manifest(t, "coredns", release.Components)}, "the Deployment the golden coredns-3-locations.yaml pins")
 }

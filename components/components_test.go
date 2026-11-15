@@ -2,6 +2,7 @@ package components_test
 
 import (
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -167,4 +168,27 @@ func TestImages_KeepsOneSlotForAManifestWhateverBytesItHasHad(t *testing.T) {
 	}
 
 	assert.Equal(t, before, components.ManifestImageSlots())
+}
+
+func TestCoreDNS_RunsTalossDeploymentWithOneReplicaInEachLocationAndLeavesAClusterInOneLocationToTalos(t *testing.T) {
+	for _, tc := range []struct {
+		name, golden string
+		locations    []string
+	}{
+		{"a cluster in one location keeps the replicas Talos sets", "", []string{"fsn1"}},
+		{"a cluster in two locations runs two replicas", "coredns-2-locations.yaml", []string{"fsn1", "nbg1"}},
+		{"a cluster whose nodes name three locations, one twice, runs one in each, replaced one at a time", "coredns-3-locations.yaml", []string{"hel1", "fsn1", "nbg1", "fsn1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manifests, err := components.CoreDNS(tc.locations)
+
+			require.NoError(t, err)
+			if tc.golden == "" {
+				assert.Empty(t, manifests, "a cluster in %v keeps the Deployment Talos creates", tc.locations)
+				return
+			}
+			require.Len(t, manifests, 1, "the CoreDNS of a cluster in %v", tc.locations)
+			testutil.Golden(t, filepath.Join("testdata", "golden", tc.golden), manifests[0].Bytes)
+		})
+	}
 }

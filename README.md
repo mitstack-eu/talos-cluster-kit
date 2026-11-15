@@ -1118,9 +1118,10 @@ namespace, `kyverno`, or in a namespace its `--imagePullSecrets` flag names.
 Its admission controller watches Secrets in those namespaces alone
 (`setupRegistryClient` in its
 [`registry.go`](https://github.com/kyverno/kyverno/blob/v1.19.1/cmd/internal/registry.go)).
-A policy that names a Secret elsewhere as `namespace/name`, as Kyverno's
-documentation shows, finds no Secret, and Kyverno then reads the registry with
-no login.
+Kyverno's page on the ImageValidatingPolicy says its Secrets live in that
+namespace. Its pages on the ClusterPolicy accept a Secret elsewhere as
+`namespace/name`, but in an ImageValidatingPolicy that form finds no Secret,
+and Kyverno then reads the registry with no login.
 
 The kit therefore copies each pull Secret the list names into `kyverno`, and
 the policy names the copies in `spec.credentials.secrets`. External Secrets

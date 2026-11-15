@@ -33,49 +33,70 @@ func probeResult(edit string) map[string]string {
 }
 
 func TestReport_NamesEachMeshResultItCannotPassAsFailedWithItsReason(t *testing.T) {
-	both := func(reason string) map[string]string {
-		return map[string]string{"plainCallFromOutside": reason, "workloadIdentity": reason}
+	outside := func(reason string) map[string]string {
+		return map[string]string{"plainCallFromOutside": reason, "unadmittedCallFromOutside": reason, "workloadIdentity": reason}
 	}
 	noConfigMap := configMap(`echo 'Error from server (NotFound): configmaps "mitstack-mesh-probe" not found' >&2; exit 1`)
-	noResult := both("the ConfigMap kube-system/mitstack-mesh-probe holds no result the outside probe wrote")
+	noResult := outside("the ConfigMap kube-system/mitstack-mesh-probe holds no result the outside probe wrote")
+	notDropped := "the call to port 8081, which no policy admits, ended with curl exit status "
+	timedOutBut := "the call to port 8081 timed out, but "
 	cases := map[string]struct {
 		fakes  map[string]string
 		env    []string
 		failed map[string]string
 	}{
 		"the target is down": {map[string]string{"date": reportAt}, []string{"MESH_PROBE_URL=http://127.0.0.1:1/"}, map[string]string{
-			"callFromInside":       "the call from inside the mesh ended with curl exit status 7: ",
-			"plainCallFromOutside": "it did not answer the report either, so it may be down: the call from inside the mesh ended with curl exit status 7"}},
+			"callFromInside":            "the call from inside the mesh ended with curl exit status 7: ",
+			"plainCallFromOutside":      "it did not answer the report either, so it may be down: the call from inside the mesh ended with curl exit status 7",
+			"unadmittedCallFromOutside": timedOutBut + "the target did not answer the report either, so it may be down: the call from inside the mesh ended with curl exit status 7"}},
 		"the outside probe names a time after the report": {probeResult(`.probedAt = "2026-10-23T16:00:00Z"`), nil,
-			both("names 2026-10-23T16:00:00Z, after this report")},
+			outside("names 2026-10-23T16:00:00Z, after this report")},
 		"the certificate names no identity": {probeResult(`.handshake.certificate.identities = null`), nil, map[string]string{
-			"workloadIdentity":     "the certificate on port 15008 names no identity, not " + components.MeshProbeIdentity,
-			"plainCallFromOutside": "no workload certificate shows the mesh holds it: the certificate on port 15008 names no identity"}},
+			"workloadIdentity":          "the certificate on port 15008 names no identity, not " + components.MeshProbeIdentity,
+			"plainCallFromOutside":      "no workload certificate shows the mesh holds it: the certificate on port 15008 names no identity",
+			"unadmittedCallFromOutside": timedOutBut + "no workload certificate shows the target up: the certificate on port 15008 names no identity"}},
 		"the result has a shape the report cannot judge": {probeResult(`.plainCall = "reset"`), nil, map[string]string{
-			"plainCallFromOutside": "the outside probe's result in kube-system/mitstack-mesh-probe cannot be judged: "}},
+			"plainCallFromOutside":      "the outside probe's result in kube-system/mitstack-mesh-probe cannot be judged: ",
+			"unadmittedCallFromOutside": "the outside probe's result in kube-system/mitstack-mesh-probe cannot be judged: "}},
 		"the result is not JSON":            {configMap(`jq '.data.result = "oops"' testdata/mesh-probe.json`), nil, noResult},
 		"the ConfigMap holds no data":       {configMap(`jq 'del(.data)' testdata/mesh-probe.json`), nil, noResult},
 		"the ConfigMap read prints no JSON": {configMap(`echo 'not json'`), nil, noResult},
 		"the ConfigMap is missing": {noConfigMap, nil,
-			both("reading the ConfigMap kube-system/mitstack-mesh-probe ended with exit status 1: Error from server (NotFound)")},
+			outside("reading the ConfigMap kube-system/mitstack-mesh-probe ended with exit status 1: Error from server (NotFound)")},
 		"the outside probe stopped writing": {probeResult(`.probedAt = "2026-10-23T15:29:00Z"`), nil,
-			both("the outside probe last wrote at 2026-10-23T15:29:00Z, over 15 minutes before this report")},
+			outside("the outside probe last wrote at 2026-10-23T15:29:00Z, over 15 minutes before this report")},
 		"the target answered a plain call": {probeResult(`.plainCall = {exitStatus: 0, answer: "mitstack-mesh-probe answered\n", stderr: ""}`), nil,
 			map[string]string{"plainCallFromOutside": `the target answered a call that carried no workload identity: "mitstack-mesh-probe answered\n"`}},
 		"the plain call reached nothing": {probeResult(`.plainCall = {exitStatus: 28, answer: "", stderr: "curl: (28) timed out\n"}`), nil,
-			map[string]string{"plainCallFromOutside": "the plain call never reached the target: curl ended with exit status 28: curl: (28) timed out"}},
+			map[string]string{
+				"plainCallFromOutside":      "the plain call never reached the target: curl ended with exit status 28: curl: (28) timed out",
+				"unadmittedCallFromOutside": timedOutBut + "the plain call, which a policy admits, did not reach the target either: curl ended with exit status 28: curl: (28) timed out"}},
 		"the handshake was refused": {probeResult(`.handshake = {exitStatus: 1, stderr: "connect: Connection refused\n", certificate: null}`), nil,
 			map[string]string{
-				"workloadIdentity":     "no workload certificate came back from port 15008: openssl s_client ended with exit status 1: connect: Connection refused",
-				"plainCallFromOutside": "the target closed the plain call, and no workload certificate shows the mesh holds it: no workload certificate"}},
+				"workloadIdentity":          "no workload certificate came back from port 15008: openssl s_client ended with exit status 1: connect: Connection refused",
+				"plainCallFromOutside":      "the target closed the plain call, and no workload certificate shows the mesh holds it: no workload certificate",
+				"unadmittedCallFromOutside": timedOutBut + "no workload certificate shows the target up: no workload certificate came back from port 15008"}},
 		"the certificate names another workload": {probeResult(`.handshake.certificate.identities = ["spiffe://cluster.local/ns/app-shop/sa/default"]`), nil,
 			map[string]string{
-				"workloadIdentity":     "the certificate on port 15008 names spiffe://cluster.local/ns/app-shop/sa/default, not " + components.MeshProbeIdentity,
-				"plainCallFromOutside": "no workload certificate shows the mesh holds it: the certificate on port 15008 names"}},
+				"workloadIdentity":          "the certificate on port 15008 names spiffe://cluster.local/ns/app-shop/sa/default, not " + components.MeshProbeIdentity,
+				"plainCallFromOutside":      "no workload certificate shows the mesh holds it: the certificate on port 15008 names",
+				"unadmittedCallFromOutside": timedOutBut + "no workload certificate shows the target up: the certificate on port 15008 names"}},
 		"the certificate had expired": {probeResult(`.handshake.certificate.notAfter = "2026-10-23T15:00:00Z"`), nil,
 			map[string]string{
-				"workloadIdentity":     "the certificate on port 15008 holds from 2026-10-23T09:12:00Z to 2026-10-23T15:00:00Z, which leaves out 2026-10-23T15:42:31Z",
-				"plainCallFromOutside": "no workload certificate shows the mesh holds it: the certificate on port 15008 holds from"}},
+				"workloadIdentity":          "the certificate on port 15008 holds from 2026-10-23T09:12:00Z to 2026-10-23T15:00:00Z, which leaves out 2026-10-23T15:42:31Z",
+				"plainCallFromOutside":      "no workload certificate shows the mesh holds it: the certificate on port 15008 holds from",
+				"unadmittedCallFromOutside": timedOutBut + "no workload certificate shows the target up: the certificate on port 15008 holds from"}},
+		"the call to a port no policy admits reached the target with no listener there": {
+			probeResult(`.unadmittedCall = {port: 8081, exitStatus: 7, stderr: "curl: (7) Failed to connect to 10.244.0.228 port 8081 after 0 ms: Could not connect to server\n"}`), nil,
+			map[string]string{"unadmittedCallFromOutside": notDropped + "7 where a policy drop times out with 28: curl: (7) Failed to connect"}},
+		"the mesh closed the call to a port no policy admits": {
+			probeResult(`.unadmittedCall = {port: 8081, exitStatus: 56, stderr: "curl: (56) Recv failure: Connection reset by peer\n"}`), nil,
+			map[string]string{"unadmittedCallFromOutside": notDropped + "56 where a policy drop times out with 28: curl: (56) Recv failure"}},
+		"the target answered the call to a port no policy admits": {
+			probeResult(`.unadmittedCall = {port: 8081, exitStatus: 0, stderr: ""}`), nil,
+			map[string]string{"unadmittedCallFromOutside": notDropped + "0 where a policy drop times out with 28: "}},
+		"the outside probe wrote no call to a port no policy admits": {probeResult(`del(.unadmittedCall)`), nil,
+			map[string]string{"unadmittedCallFromOutside": "the outside probe's result in kube-system/mitstack-mesh-probe holds no call to a port no policy admits"}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -83,8 +104,8 @@ func TestReport_NamesEachMeshResultItCannotPassAsFailedWithItsReason(t *testing.
 
 			require.NoError(t, err, out)
 			assert.Len(t, posted.body["nodes"], 3, "a failed mesh result leaves a full report")
-			for _, result := range []string{"callFromInside", "plainCallFromOutside", "workloadIdentity"} {
-				got := testutil.Field(t, posted.body, "mesh", result).(map[string]any)
+			for _, result := range []string{"callFromInside", "plainCallFromOutside", "unadmittedCallFromOutside", "workloadIdentity"} {
+				got, _ := testutil.Field(t, posted.body, "mesh", result).(map[string]any)
 				want, failed := tc.failed[result]
 				assert.Equal(t, !failed, got["passed"], "%s: %v", result, got)
 				if failed {
@@ -109,7 +130,8 @@ func runMeshProbe(t *testing.T, fakes map[string]string, env ...string) (*testut
 	script, rendered := renderedScript(t, reportURL, "mitstack-mesh-probe")
 
 	out, err := testutil.RunBash(t, script, tools.Env(append([]string{"MESH_PROBE_HOST=" + rendered["MESH_PROBE_HOST"],
-		"MESH_PROBE_PORT=" + rendered["MESH_PROBE_PORT"], "MESH_PROBE_CONFIGMAP=" + rendered["MESH_PROBE_CONFIGMAP"], "POD_NAMESPACE=kube-system"}, env...)...))
+		"MESH_PROBE_PORT=" + rendered["MESH_PROBE_PORT"], "MESH_PROBE_UNADMITTED_PORT=" + rendered["MESH_PROBE_UNADMITTED_PORT"],
+		"MESH_PROBE_CONFIGMAP=" + rendered["MESH_PROBE_CONFIGMAP"], "POD_NAMESPACE=kube-system"}, env...)...))
 	require.NoError(t, err, out)
 	var written struct{ Data struct{ Result string } }
 	data, err := os.ReadFile(patch)
@@ -142,6 +164,19 @@ func TestMeshProbe_WritesAnAnsweredPlainCallAndAHandshakeThatGaveNoCertificateAs
 	assert.Equal(t, map[string]any{"exitStatus": float64(0), "answer": "mitstack-mesh-probe answered\n", "stderr": ""}, result["plainCall"])
 	assert.Nil(t, testutil.Field(t, result, "handshake", "certificate"))
 	assert.Equal(t, "connect:errno=111\n", testutil.Field(t, result, "handshake", "stderr"))
+}
+
+func TestMeshProbe_WritesHowItsCallToTheTargetsPortThatNoPolicyAdmitsEndedBesideThePlainCall(t *testing.T) {
+	tools, result := runMeshProbe(t, map[string]string{"curl": `case "$*" in
+*:8081/) echo 'curl: (28) Connection timed out after 5002 milliseconds' >&2; exit 28 ;;
+*) echo 'curl: (56) Recv failure: Connection reset by peer' >&2; exit 56 ;;
+esac`})
+
+	assert.Contains(t, tools.Calls(t), "curl -sS --max-time 5 -o /dev/null http://"+components.MeshProbeHost+".:8081/",
+		"the call to the port no policy admits, by the absolute name its DNS rule admits")
+	assert.Equal(t, map[string]any{"port": float64(8081), "exitStatus": float64(28), "stderr": "curl: (28) Connection timed out after 5002 milliseconds\n"},
+		result["unadmittedCall"])
+	assert.Equal(t, float64(56), testutil.Field(t, result, "plainCall", "exitStatus"), "the plain call keeps its own outcome")
 }
 
 func TestManifests_LetsTheOutsideProbeAndTheScanReadAndPatchTheirOwnConfigMapAndTheReportOnlyReadItByNameInKubeSystem(t *testing.T) {
@@ -202,8 +237,10 @@ func TestMeshProbe_TheTargetAdmitsOnlyTheReportAndTheOutsideProbeWhichLooksUpOnl
 	assert.Equal(t, []string{
 		"egress to entity kube-apiserver",
 		"egress with kube-dns on 53/UDP 53/TCP through the DNS proxy",
-		"egress with target on 8080/TCP 15008/TCP",
-	}, testutil.Grants(t, outside[0], endpoints, "outside probe"))
+		"egress with target on 8080/TCP 15008/TCP 8081/TCP",
+	}, testutil.Grants(t, outside[0], endpoints, "outside probe"), "the call to 8081 leaves the probe, so only the target's policy can drop it")
+	_, _, probe := cronJob(t, rendered, "mitstack-mesh-probe")
+	assert.Equal(t, "8081", testutil.ContainerEnv(t, probe)["MESH_PROBE_UNADMITTED_PORT"], "the outside probe calls the port the target admits no caller on")
 	assert.Equal(t, []any{map[string]any{"matchName": components.MeshProbeHost}}, testutil.Field(t, outside[0], "spec", "egress", "0", "toPorts", "0", "rules", "dns"),
 		"the DNS proxy answers the target's name alone, so no lookup leaves kube-system")
 	assert.Empty(t, testutil.Grants(t, outside[0], endpoints, "cilium"), "the policy holds the outside probe's pod alone")

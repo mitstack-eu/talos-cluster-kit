@@ -53,7 +53,7 @@ func TestAPIServer_TheOutsideProbeAndTheSecurityScanWriteTheirOwnConfigMapAndNoO
 		require.NoError(t, err, "the outside probe printed:\n%s", out)
 		var result map[string]any
 		require.NoError(t, json.Unmarshal([]byte(server.configMapData(t, "mitstack-mesh-probe")["result"]), &result))
-		assert.ElementsMatch(t, []string{"probedAt", "plainCall", "handshake", "gateways"}, slices.Collect(maps.Keys(result)))
+		assert.ElementsMatch(t, []string{"probedAt", "plainCall", "unadmittedCall", "handshake", "gateways"}, slices.Collect(maps.Keys(result)))
 	})
 
 	t.Run("the security scan writes both summaries and its outcome into mitstack-security-scans when kube-bench left none", func(t *testing.T) {

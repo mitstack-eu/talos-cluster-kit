@@ -254,6 +254,14 @@ func TestAPIServer_OpenBaosRolloutEvictsEachOutdatedStandbyAndThenTheActiveMembe
 	assert.Equal(t, []string{"openbao-0"}, waited, "the rollout said it waits on the budget before its first eviction")
 	assert.True(t, freed, "the rollout's wait held the budget while it allowed no disruption, and evicted only once it allowed one")
 	assert.Equal(t, []string{"openbao-0", "openbao-2", "openbao-1"}, order, "the standbys in name order, then the active member, whatever its ordinal")
+	for _, pass := range []string{
+		"moving openbao-0 onto revision " + rolloutNewRevision + ", with openbao-0 openbao-1 openbao-2 outdated and openbao-1 active",
+		"moving openbao-2 onto revision " + rolloutNewRevision + ", with openbao-1 openbao-2 outdated and openbao-1 active",
+		"moving openbao-1 onto revision " + rolloutNewRevision + ", with openbao-1 outdated and openbao-1 active",
+		"every member runs revision " + rolloutNewRevision,
+	} {
+		assert.Contains(t, out.String(), "openbao-rollout: "+pass+"\n", "each pass reads the members as the API server then holds them")
+	}
 	assert.Contains(t, out.String(), "the API server passed kubectl exec -n openbao openbao-1 -c openbao -- bao read -tls-skip-verify -format=json sys/leader on to the kubelet",
 		"the account's exec into a member passes the API server's authorization")
 	assert.Contains(t, out.String(), "openbao-rollout: openbao-1 runs revision "+rolloutNewRevision+", unsealed, at Raft index 4100")

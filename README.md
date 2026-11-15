@@ -2235,10 +2235,9 @@ platform, so the largest builder, on a cluster that does both, takes 30,712.
 The signer list costs the builder only the address and key of the serving
 server. The
 serving server carries the policy, and takes about 10,900 bytes, or about
-30,600 on a cluster that hosts the platform. Two test processes read that
-second size at 30,599 and 30,603 bytes. It moves by up to 8 bytes between
-processes, so it takes at most 30,607, which leaves it at least 2,161 bytes
-free. With a one-line proof script and no signer list, as the tests in
+30,600 on a cluster that hosts the platform. Test processes have read that
+second size at 30,595, 30,599 and 30,603 bytes, the 8 bytes it moves by
+between processes, so it leaves at least 2,165 bytes free. With a one-line proof script and no signer list, as the tests in
 `controlplane/render_test.go` and `controlplane/hosting_test.go` log it, the
 builder takes about 27,400 and 27,500 bytes.
 

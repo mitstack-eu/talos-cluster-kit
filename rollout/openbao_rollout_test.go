@@ -61,9 +61,9 @@ func TestRelease_RunsOpenBaosRolloutJobAfterEachSyncOfItsComponentUnderItsOwnAcc
 	assert.Nil(t, testutil.Field(t, job, "metadata", "annotations", "argocd.argoproj.io/sync-wave"), "a PostSync hook runs after every wave")
 	assert.Equal(t, "talos-cluster-kit", testutil.Field(t, job, "metadata", "labels", "mitstack.dev/rendered-by"))
 	assert.Equal(t, 0, testutil.Field(t, job, "spec", "backoffLimit"), "Argo CD's own retry runs a failed rollout again")
-	assert.Equal(t, 1410, testutil.Field(t, job, "spec", "activeDeadlineSeconds"),
-		"past the 300 seconds each of the three members may take to return, the 30 seconds each of the five bounded calls of its pass may take, "+
-			"and 30 seconds each for the StatefulSet's read and the members' last read")
+	assert.Equal(t, 1860, testutil.Field(t, job, "spec", "activeDeadlineSeconds"),
+		"past the 300 seconds each of the three members may take to return, the 30 seconds each of the six bounded calls of its pass may take, "+
+			"the four calls of each of up to three passes that evict nothing, and 30 seconds each for the StatefulSet's read and the members' last read")
 	assert.Equal(t, map[string]any{"app.kubernetes.io/name": "mitstack-openbao-rollout", "mitstack.dev/app": "openbao"},
 		testutil.Field(t, job, "spec", "template", "metadata", "labels"), "the label the hosting flows select the Job by, and the app label the admission policy asks for")
 	assert.Equal(t, "mitstack-openbao-rollout", testutil.Field(t, pod, "serviceAccountName"))
@@ -144,7 +144,12 @@ const fakeRolloutKubectl = `case "$1 $2" in
     [ "${FAKE_WATCH_THEN:-0}" != hold ] || exec tail -f /dev/null
     exit "${FAKE_WATCH_THEN:-0}"
     ;;
-  *) cat "$FAKE_DIR/pods.json" ;;
+  *)
+    n=$(($(cat "$FAKE_DIR/reads" 2> /dev/null || echo 0) + 1))
+    echo "$n" > "$FAKE_DIR/reads"
+    [ ! -f "$FAKE_DIR/read-$n.json" ] || cp "$FAKE_DIR/read-$n.json" "$FAKE_DIR/pods.json"
+    cat "$FAKE_DIR/pods.json"
+    ;;
   esac
   ;;
 "wait "*)
@@ -190,10 +195,12 @@ func (r rolloutRun) evicted() []string {
 
 // rolloutCluster is what the fake kubectl serves: the members, sys/leader as each answers it, what the watch of a
 // member prints, which by default is the member at the update revision, Ready and unsealed, and the members as they
-// read once a member's eviction has run, which by default are the members before it with that one at the update revision.
+// read once a member's eviction has run, which by default are the members before it with that one at the update revision,
+// and the members as they read from the nth read of them on.
 type rolloutCluster struct {
 	members  []map[string]any
 	after    map[string][]map[string]any
+	reads    map[int][]map[string]any
 	answers  map[string]string
 	watches  map[string]string
 	replicas int
@@ -218,10 +225,17 @@ func runRollout(t *testing.T, c rolloutCluster, env ...string) rolloutRun {
 		require.NoError(t, err)
 		require.NoError(t, os.WriteFile(filepath.Join(fakes.Dir, name), bytes, 0o644))
 	}
+	states := map[string][]map[string]any{}
 	for name, members := range c.after {
+		states["after-"+name] = members
+	}
+	for n, members := range c.reads {
+		states[fmt.Sprintf("read-%d", n)] = members
+	}
+	for name, members := range states {
 		bytes, err := json.Marshal(map[string]any{"apiVersion": "v1", "kind": "List", "items": members})
 		require.NoError(t, err)
-		require.NoError(t, os.WriteFile(filepath.Join(fakes.Dir, "after-"+name+".json"), bytes, 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(fakes.Dir, name+".json"), bytes, 0o644))
 	}
 	for name, answer := range c.answers {
 		require.NoError(t, os.WriteFile(filepath.Join(fakes.Dir, "sys-leader-"+name+".json"), []byte(answer), 0o644))
@@ -279,7 +293,7 @@ func TestOpenBaoRollout_EvictsEachOutdatedStandbyOneAtATimeAndThenTheActiveMembe
 	}
 	var want []string
 	for _, name := range []string{"openbao-0", "openbao-2", "openbao-1"} {
-		want = append(want, "members", read("openbao-1"), "budget", "evict "+name, "watch "+name, read(name))
+		want = append(want, "members", read("openbao-1"), "budget", "members", "evict "+name, "watch "+name, read(name))
 	}
 	want = append(want, "members")
 	var got []string
@@ -301,8 +315,8 @@ func TestOpenBaoRollout_EvictsEachOutdatedStandbyOneAtATimeAndThenTheActiveMembe
 			got = append(got, call)
 		}
 	}
-	assert.Equal(t, want, got, "for each member: a fresh read of the members, the leader's commit, the budget's allowance, the eviction, the watch "+
-		"until the member returns, then the member's own index, and a last read of the members that finds none outdated")
+	assert.Equal(t, want, got, "for each member: a fresh read of the members, the leader's commit, the budget's allowance, another read of the members, "+
+		"the eviction, the watch until the member returns, then the member's own index, and a last read of the members that finds none outdated")
 	assert.Contains(t, run.out, "openbao-1 runs revision "+newRevision+", unsealed, at Raft index 100")
 	for _, name := range []string{"openbao-0", "openbao-2", "openbao-1"} {
 		waiting := strings.Index(run.out, "openbao-rollout: waiting up to 30s for OpenBao's disruption budget openbao to allow a disruption before evicting "+name+"\n")
@@ -312,40 +326,52 @@ func TestOpenBaoRollout_EvictsEachOutdatedStandbyOneAtATimeAndThenTheActiveMembe
 }
 
 func TestOpenBaoRollout_ReadsTheMembersAgainBeforeEachEvictionAndTheLeaderOfThatPass(t *testing.T) {
+	active0 := []map[string]any{leader("openbao-0", oldRevision), standby("openbao-1", oldRevision), standby("openbao-2", oldRevision)}
+	active1 := []map[string]any{standby("openbao-0", oldRevision), leader("openbao-1", oldRevision), standby("openbao-2", oldRevision)}
 	for _, tc := range []struct {
-		name     string
-		after    []map[string]any
-		evicted  []string
-		leaders  []string
-		stopsFor string
+		name    string
+		after   []map[string]any
+		reads   map[int][]map[string]any
+		evicted []string
+		leaders []string
+		fails   bool
+		says    string
 	}{
 		{"leadership moves to an outdated standby after the first eviction, which then goes last",
-			[]map[string]any{standby("openbao-0", newRevision), standby("openbao-1", oldRevision), leader("openbao-2", oldRevision)},
-			[]string{"openbao-0", "openbao-1", "openbao-2"}, []string{"openbao-1", "openbao-2", "openbao-2"}, ""},
+			[]map[string]any{standby("openbao-0", newRevision), standby("openbao-1", oldRevision), leader("openbao-2", oldRevision)}, nil,
+			[]string{"openbao-0", "openbao-1", "openbao-2"}, []string{"openbao-1", "openbao-2", "openbao-2"}, false, ""},
 		{"leadership moves to a member already moved",
-			[]map[string]any{leader("openbao-0", newRevision), standby("openbao-1", oldRevision), standby("openbao-2", oldRevision)},
-			[]string{"openbao-0", "openbao-1", "openbao-2"}, []string{"openbao-1", "openbao-0", "openbao-0"}, ""},
+			[]map[string]any{leader("openbao-0", newRevision), standby("openbao-1", oldRevision), standby("openbao-2", oldRevision)}, nil,
+			[]string{"openbao-0", "openbao-1", "openbao-2"}, []string{"openbao-1", "openbao-0", "openbao-0"}, false, ""},
 		{"a member reads sealed between passes",
-			[]map[string]any{standby("openbao-0", newRevision), leader("openbao-1", oldRevision), member("openbao-2", oldRevision, false, true, true)},
-			[]string{"openbao-0"}, []string{"openbao-1"}, "openbao-2 is not Ready and unsealed"},
-		{"a member that never reads the update revision after its return",
-			[]map[string]any{standby("openbao-0", oldRevision), leader("openbao-1", oldRevision), standby("openbao-2", oldRevision)},
-			[]string{"openbao-0", "openbao-0", "openbao-0"}, []string{"openbao-1", "openbao-1", "openbao-1"},
-			"3 passes, one for each of the 3 members, left openbao-0 openbao-1 openbao-2 on an older revision than " + newRevision},
+			[]map[string]any{standby("openbao-0", newRevision), leader("openbao-1", oldRevision), member("openbao-2", oldRevision, false, true, true)}, nil,
+			[]string{"openbao-0"}, []string{"openbao-1"}, true, "openbao-2 is not Ready and unsealed"},
+		{"a member that never reads the update revision after its return", active1, nil,
+			[]string{"openbao-0", "openbao-0", "openbao-0"}, []string{"openbao-1", "openbao-1", "openbao-1"}, true,
+			"3 evictions, one for each of the 3 members, left openbao-0 openbao-1 openbao-2 on an older revision than " + newRevision},
+		{"the standby a pass picked turns active just before its eviction, so it is not evicted then and goes last", nil,
+			map[int][]map[string]any{2: active0},
+			[]string{"openbao-1", "openbao-2", "openbao-0"}, []string{"openbao-1", "openbao-0", "openbao-0", "openbao-0"}, false,
+			"openbao-0 turned active before its eviction while openbao-1 openbao-2 are outdated standbys, so this pass evicts nothing"},
+		{"leadership moves onto the member each pass picked until the passes that evict nothing run out", nil,
+			map[int][]map[string]any{2: active0, 4: active1, 6: active0},
+			nil, []string{"openbao-1", "openbao-0", "openbao-1"}, true,
+			"3 passes, one for each of the 3 members, evicted nothing as leadership moved onto the member each had picked, so the rollout stops"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			run := runRollout(t, rolloutCluster{
-				members: []map[string]any{standby("openbao-0", oldRevision), leader("openbao-1", oldRevision), standby("openbao-2", oldRevision)},
-				answers: caughtUp("openbao-0", "openbao-1", "openbao-2"),
-				after:   map[string][]map[string]any{"openbao-0": tc.after},
-			})
-
-			if tc.stopsFor == "" {
-				require.NoError(t, run.err, run.out)
-			} else {
-				require.Error(t, run.err, run.out)
-				assert.Contains(t, run.out, tc.stopsFor, "what the rollout printed")
+			cluster := rolloutCluster{members: active1, answers: caughtUp("openbao-0", "openbao-1", "openbao-2"), reads: tc.reads}
+			if tc.after != nil {
+				cluster.after = map[string][]map[string]any{"openbao-0": tc.after}
 			}
+
+			run := runRollout(t, cluster)
+
+			if tc.fails {
+				require.Error(t, run.err, run.out)
+			} else {
+				require.NoError(t, run.err, run.out)
+			}
+			assert.Contains(t, run.out, tc.says, "what the rollout printed")
 			assert.Equal(t, tc.evicted, run.evicted(), "the members it evicted, in order")
 			var leaders []string
 			for i, call := range run.calls {

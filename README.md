@@ -1220,21 +1220,22 @@ target's name with a final dot, which makes it an absolute DNS name. Without the
 first try the name under each search domain, Cilium's DNS proxy would refuse
 those names, and the probe's resolver, musl's, stops at the first refusal.
 
-The call to port 8081 shows Cilium enforcing a policy on a running cluster.
-The probe's own policy lets that call leave, so only the target's policies,
-`mitstack-mesh-probe-callers` and `mitstack-default-deny`, can refuse it, as
-they would refuse a caller to an app. A policy that selects a pod puts that
-pod's ingress into default deny, as Cilium's page on policy enforcement modes
-says. That page also says Cilium drops a call it denies without an answer,
-under its default response `policy-deny-response: none`, which
-`components/cilium/cilium.yaml` keeps, so the caller times out. Istio's page
-on ambient mode and network policy says a network policy is enforced on the
-host, outside the pod. Its page on ztunnel's traffic redirection says ztunnel
-takes each call to the pod inside the pod's own network namespace, so Cilium
-drops the call before the mesh sees it. A dropped call
-therefore ends in curl's timeout, exit status 28. A call that reaches the pod
-ends with exit status 7 when nothing takes it, or 52 or 56 when the mesh
-closes it.
+The call to port 8081 reads whether a call that no policy admits still goes
+unanswered. The probe's own policy admits that port, which a test of the
+rendered policy pins, so only the target's policies,
+`mitstack-mesh-probe-callers` and `mitstack-default-deny`, are left to refuse
+the call, as they would refuse a caller to an app. A policy that selects a pod
+puts that pod's ingress into default deny, as Cilium's page on policy
+enforcement modes says. Under the default response
+`policy-deny-response: none`, which `components/cilium/cilium.yaml` keeps,
+that page says Cilium drops a denied call without an answer, so the caller
+times out. The result passes on that timeout: curl's exit status 28, with a
+message that reads `Connection timed out`. A timeout does not name the rule or
+the hop that dropped the call. A lookup of the target's name that gets no
+answer also ends with exit status 28, but its message reads
+`Resolving timed out`, so the result fails. A call that reaches the pod ends
+with exit status 7, a refused connection, when nothing takes it. It ends with
+52, an empty reply, or 56, a reset connection, when the mesh closes it.
 
 `mesh` holds four results, each with `passed` and, when it fails, a `reason`:
 
@@ -1243,7 +1244,7 @@ closes it.
 | `callFromInside` | The report's own call gets the target's answer |
 | `workloadIdentity` | The certificate the probe saw on port 15008 names `spiffe://cluster.local/ns/mitstack-mesh-probe/sa/mitstack-mesh-probe`, and the time of the probe's run falls within the certificate's validity. The result also carries the certificate's `serial` and its validity, `notBefore` to `notAfter` |
 | `plainCallFromOutside` | The plain call reached the target and was closed with no answer, which curl reports as exit status 52, an empty reply, or 56, a reset connection. `workloadIdentity` and `callFromInside` must pass too, so a target that is down never reads as refusing |
-| `unadmittedCallFromOutside` | The call to port 8081 timed out, curl's exit status 28, which is how a call Cilium drops ends. In the same run the plain call must have reached the target, with exit status 0, 52 or 56, and `workloadIdentity` and `callFromInside` must pass, so a target that is down or unreachable never reads as dropped. Any other exit status fails it with a reason naming that status. The result also carries the `port`, the `curlExitStatus` and curl's `stderr` |
+| `unadmittedCallFromOutside` | The call to port 8081 timed out, curl's exit status 28, and curl's message names a connection timeout, which is how a call ends when Cilium drops it. In the same run the plain call must have reached the target, with exit status 0, 52 or 56, and `workloadIdentity` and `callFromInside` must pass, so a target that is down or unreachable never reads as dropped. Any other exit status fails it with a reason naming that status, and a timeout with any other message fails it with a reason quoting that message. The result also carries the `port`, the `curlExitStatus` and curl's `stderr` |
 
 Suppose the mesh stopped holding the target, for example because ztunnel no
 longer runs on its node. No certificate then comes back from port 15008, so
@@ -1302,7 +1303,7 @@ change `report/scripts/report.sh`.
 | `defaultDenyPolicies` | Each NetworkPolicy named `mitstack-default-deny`, with its pod selector, policy types, rule counts and `managedBy` label | The NetworkPolicy read |
 | `subscriptionResources` and `subscriptionResourceKinds` | The objects a block labels `mitstack.dev/subscription`, and the object types the report read whole | One read per object type in `subscription_kinds` in `report.sh` |
 | `jwks` | The key set the API server signs service-account tokens with | `/openid/v1/jwks` |
-| `mesh` | The mesh probe's results: the mesh answering a call with a workload identity and refusing one without, and Cilium dropping a call to a port no policy admits, which [the section on the mesh](#how-the-node-report-shows-the-mesh-refusing-a-call) explains | The probe's target and its ConfigMap |
+| `mesh` | The mesh probe's results: the mesh answering a call with a workload identity and refusing one without, and a call to a port no policy admits timing out, which [the section on the mesh](#how-the-node-report-shows-the-mesh-refusing-a-call) explains | The probe's target and its ConfigMap |
 | `gateways` | Each gateway's `address`, its `connection`, and `passed` when its mirror answered HTTP 200 on `/v2/` over a certificate the gateway CA signs, and otherwise a `reason` naming curl's exit status or the answer. The `connection` is `closed` when nothing took the connection, `reset` when the peer reset or dropped it, `tls-failure` when the handshake or the certificate failed, `timed-out` after 5 seconds without an answer, `answered` for an HTTP status other than 200, `served` for 200, and `failed` for any other curl error. `probedAt` is when the outside probe read it | The outside probe's reading of each gateway's mirror. `GATEWAYS` lists the gateways' private addresses, and the probe verifies each mirror against `GATEWAY_CA`, the gateway CA's certificate alone, from outside the mesh |
 | `egress` | `passed` when a TLS connection to Let's Encrypt's ACME directory opened and answered, and otherwise a `reason` naming curl's exit status. The connection leaves through the network's default route, so it reads the egress of the gateway that route names | `EGRESS_URL`, `https://acme-v02.api.letsencrypt.org/directory` |
 | `repositorySecrets` | Each repository credential the cluster declares, with its `name`, `secretType`, `project` and `url`. These come from the template of each SealedSecret in `argocd` that carries an `argocd.argoproj.io/secret-type` label, so the report reads no Secret and carries no ciphertext. A credential written straight into a Secret, as the cluster tokens write `cluster-repository` on a cluster that reads its repository with a platform token, is not listed | `kubectl get sealedsecrets.bitnami.com -n argocd` |
@@ -2234,8 +2235,10 @@ platform, so the largest builder, on a cluster that does both, takes 30,712.
 The signer list costs the builder only the address and key of the serving
 server. The
 serving server carries the policy, and takes about 10,900 bytes, or about
-30,600 on a cluster that hosts the platform, which leaves it at least 2,169
-bytes free. With a one-line proof script and no signer list, as the tests in
+30,600 on a cluster that hosts the platform. Two test processes read that
+second size at 30,599 and 30,603 bytes. It moves by up to 8 bytes between
+processes, so it takes at most 30,607, which leaves it at least 2,161 bytes
+free. With a one-line proof script and no signer list, as the tests in
 `controlplane/render_test.go` and `controlplane/hosting_test.go` log it, the
 builder takes about 27,400 and 27,500 bytes.
 

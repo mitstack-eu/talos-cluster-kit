@@ -41,7 +41,7 @@ the order a block uses them.
 
 | Package | What it does | Main entry points |
 |---|---|---|
-| `components` | Holds the pinned component set: Cilium, the custom resource definition (CRD) of Cilium's cluster-wide policy, Argo CD, the policy that keeps pods from Hetzner's metadata service at `169.254.169.254`, Istio's ambient mesh with its mesh-wide mutual TLS policy and the mesh probe's target, Kyverno with the admission policies [How a cluster isolates each app](#how-a-cluster-isolates-each-app) lists, the CloudNativePG operator with the database-slice policy, the local path provisioner behind the default StorageClass, and the node-local OpenTelemetry Collector. It also holds the boot set of a cluster that hosts the platform, and the telemetry Collector of a cluster that requires an OTLP backend, which [ships its events, metrics and app logs](#how-a-cluster-ships-its-events-metrics-and-app-logs) | `Default`, `Hosting`, `HostingServed`, `Set.PublishingIngress`, `Manifest` (whose `Name` is a component's name), `Set.Images`, `LogCollector`, `Set.TelemetryCollector`, `TelemetryExport`, `ParseImage` |
+| `components` | Holds the pinned component set: Cilium, the custom resource definition (CRD) of Cilium's cluster-wide policy, Argo CD, the policy that keeps pods from Hetzner's metadata service at `169.254.169.254`, Istio's ambient mesh with its mesh-wide mutual TLS policy and the mesh probe's target, Kyverno with the admission policies [How a cluster isolates each app](#how-a-cluster-isolates-each-app) lists, the CloudNativePG operator with the database-slice policy, the local path provisioner behind the default StorageClass, and the node-local OpenTelemetry Collector. It also holds the boot set of a cluster that hosts the platform, and the telemetry Collector of a cluster that requires an OTLP backend, which [ships its events, metrics and app logs](#how-a-cluster-ships-its-events-metrics-and-app-logs). It renders the CoreDNS Deployment that [keeps a replica in each location](#how-coredns-keeps-a-replica-in-each-location) | `Default`, `Hosting`, `HostingServed`, `Set.PublishingIngress`, `Manifest` (whose `Name` is a component's name), `Set.Images`, `LogCollector`, `Set.TelemetryCollector`, `TelemetryExport`, `CoreDNS`, `ParseImage` |
 | `nodeconfig` | Renders a control-plane node's or a worker node's machine configuration with Talos's own `machinery` module and validates it against Talos's schema | `Render`, `RenderWorker`, `Cluster`, `Node`, `NewSecrets`, `ParseSecrets`, `Secrets.AdminTalosconfig` |
 | `image` | Runs imager, Sidero Labs' open-source image builder, with the `hcloud` or the `metal` profile, and discards its output | `Run`, `Build` |
 | `mirror` | Lists every image the nodes pull, each by digest | `List`, `Render` |
@@ -733,6 +733,90 @@ built from a release that carries them. A running cluster's nodes keep the
 configuration their snapshot embedded, which the kit never changes after the
 install. The gateway fills its image mirror once, at its first boot, so the
 nodes could pull no newer tools image either.
+
+## How CoreDNS keeps a replica in each location
+
+CoreDNS is the cluster's DNS server, which every pod asks to find a Service by
+name. This section is for an engineer who changes where a cluster's system
+pods run. A cluster whose nodes span more than one location runs one CoreDNS
+replica in each, so the pods left running keep resolving names while one
+location is down.
+
+Talos creates CoreDNS itself at a cluster's first build, as a Deployment of
+two replicas that prefers two different nodes. A Talos v1.14.4 machine
+configuration can turn that Deployment on or off and choose its image, and
+nothing else, as
+[`KubeCoreDNSConfig`](https://github.com/siderolabs/talos/blob/v1.14.4/website/content/v1.14/reference/configuration/kubernetes/kubecorednsconfig.md)
+says. Talos never applies the Deployment again, as
+[the section on a running cluster](#how-a-running-cluster-takes-a-releases-components)
+explains, and a running node never takes a new machine configuration.
+
+The kit therefore carries CoreDNS as a release component named `coredns`.
+`components.CoreDNS` renders the Deployment that `CoreDNSDeployment` in
+Talos's
+[`coredns.go`](https://github.com/siderolabs/talos/blob/v1.14.4/internal/app/machined/pkg/controllers/k8s/internal/k8stemplates/coredns.go)
+renders, with four fields changed:
+
+| Field | Talos | The kit | Why |
+|---|---|---|---|
+| `replicas` | 2 | One for each distinct location it is given | Each location holds one replica |
+| `topologySpreadConstraints` | None | `maxSkew: 1` over `topology.kubernetes.io/zone`, `whenUnsatisfiable: DoNotSchedule`, counting every pod labelled `k8s-app: kube-dns` | The scheduler places no second replica in a location while another location has none |
+| `strategy.rollingUpdate.maxSurge` | Unset, which Kubernetes reads as 25 percent, one pod | 0 | A rollout stops one replica before it starts the next, and the spread puts the new one in a location that has none |
+| `image` | The tag | The tag with the digest `components/image.go` pins | Each node pulls the exact image the gateway's mirror holds |
+
+`Plane.Release` adds the component for `controlplane.Locations`, the three
+locations the control-plane nodes run in. A Cloud pool may list only those
+locations, so every cluster the `controlplane` package builds runs three
+replicas. `components.CoreDNS` renders nothing for a cluster in one location,
+which keeps the Deployment Talos created. The build applies none of this.
+Talos's own CoreDNS manifest applies before every manifest of the kit and
+creates the Deployment first, so Talos would skip a copy of the kit's. A new
+cluster runs Talos's two replicas until the block commits its first release.
+
+Every location holds a control-plane node, and CoreDNS tolerates the taint a
+cluster that runs its apps on workers keeps on those nodes. Each location
+therefore always has a node that can take its replica, and the kit pins no
+replica to a control-plane node.
+
+An Update onto a release that first carries the component changes a running
+cluster in three locations in these steps:
+
+1. Argo CD's `component-coredns` Application applies the Deployment over the
+   one Talos created. The component's handover Job then has Talos give up its
+   fields, and Argo CD owns the Deployment from then on.
+2. The pod template changes, so the Deployment rolls. It starts the first new
+   replica in a location that runs neither of Talos's two, while both keep
+   answering.
+3. Once that replica is Ready, the Deployment stops one of Talos's replicas
+   and starts the next new one in a location that has none. It does the same
+   for the last.
+4. At least two replicas answer throughout. A replica that stops waits five
+   seconds before it shuts down, the `lameduck 5s` of the Corefile Talos
+   created, and reads not ready meanwhile, as
+   [CoreDNS's health plugin](https://github.com/coredns/coredns/blob/v1.14.7/plugin/health/README.md)
+   says. The Service then sends it no new lookup while it still runs.
+
+No other workload restarts. A later release that renders the same Deployment
+restarts no CoreDNS pod.
+
+The scheduler counts a location while a node in it carries the zone label.
+When a location's nodes are all down, its replica waits as Pending, the
+replicas of the other locations answer, and it starts there once a node is
+Ready again. A node without the zone label yet, such as a new pool worker
+before the labeller's next run, takes no replica. A location whose last Node
+object is gone stops counting, so its replica then runs beside another one
+until the next rollout.
+
+No release may drop the component from a cluster that carries it. Argo CD's
+resources finalizer would delete the Deployment, and Talos would not create
+it again.
+
+`TestRelease_AClusterInFsn1Nbg1AndHel1RunsThreeCoreDNSReplicasWithASpreadThatAllowsNoTwoInOneLocation`
+and `TestRelease_ACoreDNSRolloutStopsOneReplicaBeforeItStartsTheNext` in
+`controlplane/release_test.go` read the Deployment a release carries.
+`TestCoreDNS_RunsTalossDeploymentWithOneReplicaInEachLocationAndLeavesAClusterInOneLocationToTalos`
+in `components/components_test.go` compares the render for two and three
+locations with a golden file, and finds none for one.
 
 ## How AWS comes to trust a cluster's tokens
 
@@ -2292,6 +2376,7 @@ everything a control-plane node boots with.
 | Each served manifest | From the gateway, which copies it out of the tools image |
 | The hosting set's inline manifests, and the signature policy of a cluster that has a signer list | From the serving server, where the builder fetches them |
 | The telemetry Collector of a cluster that requires an OTLP backend | From the cluster repository, since only a release carries it |
+| The CoreDNS Deployment of a cluster in more than one location | From the cluster repository, since Talos creates its own CoreDNS first at the build |
 
 A script in the tools image costs no server any user data, because the
 gateway mirrors that image whole. A served manifest does cost some. The
@@ -2587,10 +2672,12 @@ returns. It holds every manifest the build
 applies, with two exceptions. It leaves out the hosting set's inline
 manifests, since only an install's keys render them, and it leaves out the
 `cluster` Application, since the carriage runs through that Application. It
-also holds one manifest the build never applies: the telemetry Collector,
-`mitstack-telemetry`, of a plane whose `Telemetry` names an OTLP backend. A
-builder's user data has no room for it, so a new cluster runs it from its
-first release. The block then commits the files
+also holds two manifests the build never applies. One is the telemetry
+Collector, `mitstack-telemetry`, of a plane whose `Telemetry` names an OTLP
+backend. A builder's user data has no room for it, so a new cluster runs it
+from its first release. The other is `coredns`, the CoreDNS Deployment that
+[keeps a replica in each location](#how-coredns-keeps-a-replica-in-each-location).
+The block then commits the files
 `Release.Files` returns in one commit, and reads the result back with
 `Release.ReadBack`:
 

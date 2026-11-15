@@ -95,6 +95,9 @@ func TestReport_NamesEachMeshResultItCannotPassAsFailedWithItsReason(t *testing.
 		"the target answered the call to a port no policy admits": {
 			probeResult(`.unadmittedCall = {port: 8081, exitStatus: 0, stderr: ""}`), nil,
 			map[string]string{"unadmittedCallFromOutside": notDropped + "0 where a policy drop times out with 28: "}},
+		"the call to a port no policy admits timed out looking up the target's name": {
+			probeResult(`.unadmittedCall = {port: 8081, exitStatus: 28, stderr: "curl: (28) Resolving timed out after 5002 milliseconds\n"}`), nil,
+			map[string]string{"unadmittedCallFromOutside": timedOutBut + "curl reported no connection timeout, which is how a call Cilium drops ends: curl: (28) Resolving timed out"}},
 		"the outside probe wrote no call to a port no policy admits": {probeResult(`del(.unadmittedCall)`), nil,
 			map[string]string{"unadmittedCallFromOutside": "the outside probe's result in kube-system/mitstack-mesh-probe holds no call to a port no policy admits"}},
 	}

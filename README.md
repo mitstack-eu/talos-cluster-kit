@@ -782,11 +782,17 @@ An Update onto a release that first carries the component changes a running
 cluster in three locations in these steps:
 
 1. Argo CD's `component-coredns` Application applies the Deployment over the
-   one Talos created. The component's handover Job then has Talos give up its
-   fields, and Argo CD owns the Deployment from then on.
-2. The pod template changes, so the Deployment rolls. It starts the first new
-   replica in a location that runs neither of Talos's two, while both keep
-   answering.
+   one Talos created. Argo CD v3.5.5 forces conflicts on a server-side apply,
+   as line 486 of gitops-engine's
+   [`resource_ops.go`](https://github.com/argoproj/argo-cd/blob/v3.5.5/gitops-engine/pkg/utils/kube/resource_ops.go#L486)
+   sets, so it takes `replicas` and the image from Talos's field manager. The
+   component's handover Job then has Talos give up its fields, and Argo CD
+   owns the Deployment from then on.
+2. The pod template changes, so the Deployment rolls. The new replica count
+   arrives with it, so the Deployment controller first scales Talos's
+   ReplicaSet up for a moment and removes the extra pod again during the
+   rollout. It starts the first new replica in a location that runs neither of
+   Talos's two, while both keep answering.
 3. Once that replica is Ready, the Deployment stops one of Talos's replicas
    and starts the next new one in a location that has none. It does the same
    for the last.
@@ -799,21 +805,43 @@ cluster in three locations in these steps:
 No other workload restarts. A later release that renders the same Deployment
 restarts no CoreDNS pod.
 
-The scheduler counts a location while a node in it carries the zone label.
-When a location's nodes are all down, its replica waits as Pending, the
-replicas of the other locations answer, and it starts there once a node is
-Ready again. A node without the zone label yet, such as a new pool worker
-before the labeller's next run, takes no replica. A location whose last Node
-object is gone stops counting, so its replica then runs beside another one
-until the next rollout.
+The scheduler counts a location while a node in it carries the zone label,
+even while that node is down or cordoned. A node without the zone label yet,
+such as a new pool worker before the labeller's next run, takes no replica. A
+location whose last Node object is gone stops counting, so its replica then
+runs beside another one until the next rollout.
+
+When a location's nodes all go down, the replacement for its replica waits as
+Pending, the replicas of the other two locations answer, and it starts there
+once a node is Ready again. The Deployment meanwhile keeps `Progressing` with
+reason `NewReplicaSetAvailable`, which Kubernetes never times out, as line 794
+of
+[`deployment_util.go`](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/deployment/util/deployment_util.go#L794)
+shows. Argo CD reads it as `Progressing` while fewer replicas are available
+than updated.
+
+An Update that changes the pod template while one location takes no pod stops
+that location's replica too, and its replacement waits as Pending. The other
+two replicas answer throughout, and a cluster reads as follows:
+
+| When | The Deployment reads | Argo CD reads |
+|---|---|---|
+| Until the progress deadline | `Available=True`, and `Progressing=True` with reason `ReplicaSetUpdated`, with two replicas Ready | `Progressing` |
+| 600 seconds without progress, the default `progressDeadlineSeconds` that Talos's Deployment keeps | `Progressing=False` with reason `ProgressDeadlineExceeded` | `Degraded`, as lines 39 to 58 of gitops-engine's [`health_deployment.go`](https://github.com/argoproj/argo-cd/blob/v3.5.5/gitops-engine/pkg/health/health_deployment.go#L39-L58) decide |
+
+The block's read-back, `ReadBack` in `rollout/rollout.go`, wants every
+Application Healthy, so it keeps reporting `component-coredns` with that
+health. The Update reads back once a node of that location is Ready again,
+the replica starts there and the rollout finishes.
 
 No release may drop the component from a cluster that carries it. Argo CD's
 resources finalizer would delete the Deployment, and Talos would not create
 it again.
 
 `TestRelease_AClusterInFsn1Nbg1AndHel1RunsThreeCoreDNSReplicasWithASpreadThatAllowsNoTwoInOneLocation`
-and `TestRelease_ACoreDNSRolloutStopsOneReplicaBeforeItStartsTheNext` in
-`controlplane/release_test.go` read the Deployment a release carries.
+in `controlplane/release_test.go` finds in a release the Deployment that the
+golden file `coredns-3-locations.yaml` pins, with its spread and its
+`maxSurge: 0`.
 `TestCoreDNS_RunsTalossDeploymentWithOneReplicaInEachLocationAndLeavesAClusterInOneLocationToTalos`
 in `components/components_test.go` compares the render for two and three
 locations with a golden file, and finds none for one.

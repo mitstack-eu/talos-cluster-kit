@@ -1170,7 +1170,8 @@ subjects:
 ```
 
 Until the grant exists, the SecretStore reports that it cannot validate and
-makes no copy. Both policies still load. Kyverno refuses every image of an
+makes no copy. The two ImageValidatingPolicies still load. Kyverno refuses
+every image of an
 entry that names that pull Secret, since the registry refuses a read with no
 login. It judges a `ghcr.io` image and an image no entry names as before.
 External Secrets watches no SecretStore, so after the grant the copy appears

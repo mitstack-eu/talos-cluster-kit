@@ -29,9 +29,7 @@ func privatelySigned(h *harness) {
 		Subject: kitSigner.Subject, PullSecret: components.SecretRef{Namespace: "app-shop", Name: "registry-login"}}}
 }
 
-// longestSignerList gives the plane as many signers as the kit takes, each field at its limit and of random text, and on
-// a plane that hosts the platform, whose External Secrets copies pull Secrets, each in its own ECR registry and read
-// with one of as many pull Secrets as the kit takes.
+// longestSignerList gives the plane the longest signer list the kit takes, which the user-data reserve is measured with.
 func longestSignerList(h *harness) {
 	random := mathrand.New(mathrand.NewChaCha8([32]byte{1}))
 	text := func(prefix string, length int) string {

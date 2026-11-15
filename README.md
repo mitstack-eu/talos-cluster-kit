@@ -738,9 +738,9 @@ nodes could pull no newer tools image either.
 
 CoreDNS is the cluster's DNS server, which every pod asks to find a Service by
 name. This section is for an engineer who changes where a cluster's system
-pods run. A cluster whose nodes span more than one location runs one CoreDNS
-replica in each, so the pods left running keep resolving names while one
-location is down.
+pods run. A cluster whose nodes span more than one Hetzner location, such as
+`fsn1`, `nbg1` and `hel1`, runs one CoreDNS replica in each, so the pods left
+running keep resolving names while one location is down.
 
 Talos creates CoreDNS itself at a cluster's first build, as a Deployment of
 two replicas that prefers two different nodes. A Talos v1.14.4 machine
@@ -751,7 +751,15 @@ says. Talos never applies the Deployment again, as
 [the section on a running cluster](#how-a-running-cluster-takes-a-releases-components)
 explains, and a running node never takes a new machine configuration.
 
-The kit therefore carries CoreDNS as a release component named `coredns`.
+The kit therefore carries CoreDNS as a release component named `coredns`. A
+release is the set of components one kit version carries, and a component is
+a group of manifests. A block, which the top of this file defines, commits
+them to the cluster's repository at each upgrade. Argo CD, the tool in the
+cluster that applies what that repository holds, applies each component
+through an Application of its own, here `component-coredns`.
+[How a running cluster takes a release's components](#how-a-running-cluster-takes-a-releases-components)
+describes that path.
+
 `components.CoreDNS` renders the Deployment that `CoreDNSDeployment` in
 Talos's
 [`coredns.go`](https://github.com/siderolabs/talos/blob/v1.14.4/internal/app/machined/pkg/controllers/k8s/internal/k8stemplates/coredns.go)
@@ -787,8 +795,9 @@ cluster in three locations changes in these steps:
    forces conflicts on such an apply, as line 486 of gitops-engine's
    [`resource_ops.go`](https://github.com/argoproj/argo-cd/blob/v3.5.5/gitops-engine/pkg/utils/kube/resource_ops.go#L486)
    sets, so it takes `replicas` and the image over from Talos's field
-   manager. The component's handover Job then has Talos give up its fields,
-   and Argo CD owns the Deployment from then on.
+   manager. The component's handover Job then removes Talos's field manager
+   from the Deployment, so Talos owns no field of it and Argo CD owns the
+   Deployment from then on.
 2. The pod template is the part of a Deployment that says how each pod runs.
    The kit's template adds the spread and names the image by digest, so the
    Deployment rolls, replacing its pods with pods built from the new template.
@@ -835,11 +844,12 @@ follows:
 | Until the progress deadline | `Available=True`, and `Progressing=True` with reason `ReplicaSetUpdated`, with two replicas Ready | `Progressing` |
 | 600 seconds without progress, the default `progressDeadlineSeconds` that Talos's Deployment keeps | `Progressing=False` with reason `ProgressDeadlineExceeded` | `Degraded`, as lines 39 to 58 of gitops-engine's [`health_deployment.go`](https://github.com/argoproj/argo-cd/blob/v3.5.5/gitops-engine/pkg/health/health_deployment.go#L39-L58) decide |
 
-The block's read-back checks from the node report that the cluster runs each
-component as the release states it. `ReadBack` in `rollout/rollout.go` wants
+The block's read-back checks from
+[the node report](#what-the-node-report-carries), which the cluster posts to
+the platform, that the cluster runs each component as the release states it. `ReadBack` in `rollout/rollout.go` wants
 every Application Healthy, so it keeps reporting `component-coredns` with
-that health. The read-back succeeds once a node of that location is Ready
-again, the replica starts there and the rollout finishes.
+that health. Once a node of that location is Ready again, the replica starts
+there and the rollout finishes, and the read-back then succeeds.
 
 No release may drop the component from a cluster that carries it. Argo CD's
 resources finalizer, the marker that has Argo CD delete every object an

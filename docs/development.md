@@ -169,6 +169,20 @@ needs the network.
 [The README's section on signatures](../README.md#how-a-cluster-checks-who-signed-an-image)
 says what CI's three runs of it prove.
 
+The `mitstack-verify-image-signatures-private-registry` case judges the same
+pods under a list that also names two repositories of a made-up private
+registry in Amazon ECR, `123456789012.dkr.ecr.eu-central-1.amazonaws.com`.
+Its `policy.yaml` reads the login copy that its `logins.yaml` keeps, and
+`TestSignaturePolicy_RendersForAPrivateRegistryThePolicyLoginCopiesAndEgressLimitTheKyvernoTestsRead`
+holds all three files to the render. The case shows that a policy which reads
+a login still judges `ghcr.io` images as the public case does. `kyverno test`
+reads Secrets only from a fake cluster of the case's own objects
+(`applyImageValidatingPolicies` in its
+[`test.go`](https://github.com/kyverno/kyverno/blob/v1.19.1/cmd/cli/kubectl-kyverno/commands/test/test.go)),
+and CI holds no private registry to read with one, so no CLI case reads a
+private registry's signature. Only a cluster with External Secrets and a
+registry that refuses an anonymous pull shows that read.
+
 No Kyverno case judges a debug container. The Kyverno CLI v1.19.1 sends no
 subresource with the request it builds for a ValidatingPolicy
 (`ApplyPoliciesOnResource` in its

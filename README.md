@@ -1012,13 +1012,18 @@ of those as Progressing, since CloudNativePG passes through them on its own.
 A digest says which image runs. It does not say who built it. A block can
 therefore give a cluster a signer list in `Plane.Signers`. Each entry is a
 `components.Signer`: one repository, and the issuer and subject of the build
-pipeline whose signature every image of that repository must carry. The
-signature is keyless, which means the pipeline signs with a short-lived
-certificate that Sigstore, a public signing service, issues for the
-pipeline's own identity. No signing key exists to keep or to lose.
+pipeline whose signature every image of that repository must carry. An entry
+for a repository in a private registry also names, in `PullSecret`, the
+Secret that holds a login for that registry. The signature is keyless, which
+means the pipeline signs with a short-lived certificate that Sigstore, a
+public signing service, issues for the pipeline's own identity. No signing key
+exists to keep or to lose.
 
 `components.SignaturePolicy` renders the list as one manifest,
-`mitstack-verify-image-signatures`, which holds three objects.
+`mitstack-verify-image-signatures`, which holds three objects, and the
+objects of
+[the section on private registries](#how-kyverno-reads-a-private-registry)
+when an entry names a pull Secret.
 
 | Object | What it does |
 |---|---|
@@ -1047,15 +1052,19 @@ those from the policy. A workflow in another repository that calls the same
 reusable workflow at the same branch gets the same subject. A subject
 therefore has to name a workflow that only the trusted pipeline can run.
 
-The kit reads signatures from `ghcr.io` alone, and with no login.
-`SignaturePolicy` refuses a repository in any other registry, since Kyverno
-would hold no credential for it and the egress limit would name no host for
-it, and the policy would then refuse every image of that repository. A listed
-repository must be public for the same reason, which the kit cannot check: a
-private one answers Kyverno no signature. `SignaturePolicy` also refuses more
-than 8 entries, a repository or issuer over 128 characters and a subject over
-256. Those limits keep the policy within the room the serving server's user
-data has.
+The kit reads signatures from two kinds of registry. It reads `ghcr.io` with
+no login, so a repository there must be public, which the kit cannot check: a
+private one answers Kyverno no signature. It reads a private Amazon ECR
+registry, `<account>.dkr.ecr.<region>.amazonaws.com`, with the login of the
+entry's pull Secret. `SignaturePolicy` refuses a repository in any other
+registry, an ECR entry that names no pull Secret and a `ghcr.io` entry that
+names one, each by its repository. Kyverno would otherwise hold no login or
+no egress host for the repository, and the policy would refuse every image of
+it. `SignaturePolicy` also refuses more than 8 entries, a repository or issuer
+over 128 characters, a subject over 256, more than 2 distinct pull Secrets,
+and a pull Secret whose namespace or name is not a lowercase name of 63
+characters at most. Those limits keep the policy within the room the serving
+server's user data has.
 
 | Host | Port | Why the admission controller reaches it |
 |---|---|---|
@@ -1063,6 +1072,8 @@ data has.
 | `kube-dns` in `kube-system`, through Cilium's DNS proxy | 53 | Cilium admits a host by name only after it has seen the name looked up |
 | `ghcr.io` | 443 | The signature's manifest |
 | `pkg-containers.githubusercontent.com` | 443 | The signature's layers, which `ghcr.io` redirects to |
+| `<account>.dkr.ecr.<region>.amazonaws.com`, for each ECR registry of the list | 443 | The signature's manifest |
+| `prod-<region>-starport-layer-bucket.s3.<region>.amazonaws.com`, for each region of those registries | 443 | The signature's layers, which ECR serves from the Amazon S3 bucket its [guide to VPC endpoints](https://docs.aws.amazon.com/AmazonECR/latest/userguide/vpc-endpoints.html) names |
 | `tuf-repo-cdn.sigstore.dev` | 443 | Sigstore's trust root |
 
 While Sigstore's trust root cannot be reached, Kyverno refuses every image of
@@ -1088,6 +1099,89 @@ the refusals `sigstore-unreachable.yaml` lists. `kyverno test` has no result
 to name for a pod an image policy leaves alone, so a fourth step applies the
 policy to the two pods of `system.yaml`, in `mitstack-node` and `kube-system`,
 and expects no result.
+
+The case
+`components/admission/tests/mitstack-verify-image-signatures-private-registry`
+judges the same pods under a list that adds two repositories of a made-up ECR
+registry, so it shows that a policy which reads a login judges `ghcr.io`
+images as before. No CLI case reads a private registry's signature, as
+`docs/development.md` explains.
+
+### How Kyverno reads a private registry
+
+This section is for an engineer who builds a block that passes a signer for a
+repository in Amazon ECR. It says how the login reaches Kyverno and what the
+block must grant.
+
+Kyverno v1.19.1 reads a registry login only from a Secret in its own
+namespace, `kyverno`, or in a namespace its `--imagePullSecrets` flag names.
+Its admission controller watches Secrets in those namespaces alone
+(`setupRegistryClient` in its
+[`registry.go`](https://github.com/kyverno/kyverno/blob/v1.19.1/cmd/internal/registry.go)).
+A policy that names a Secret elsewhere as `namespace/name`, as Kyverno's
+documentation shows, finds no Secret, and Kyverno then reads the registry with
+no login.
+
+The kit therefore copies each pull Secret the list names into `kyverno`, and
+the policy names the copies in `spec.credentials.secrets`. External Secrets
+makes the copies, and only a cluster that hosts the platform runs it, so the
+plane of a cluster that hosts none refuses a list with a pull Secret, naming
+the entry. The manifest holds one ServiceAccount, and a SecretStore and an
+ExternalSecret for each distinct pull Secret, numbered from 0 in the order the
+list first names them.
+
+| Object in `kyverno` | What it does |
+|---|---|
+| The ServiceAccount `mitstack-signature-logins` | The identity External Secrets reads each pull Secret as. The kit grants it nothing |
+| The SecretStore `mitstack-signature-login-<n>` | Reads the pull Secret's namespace through the API server, as that account |
+| The ExternalSecret `mitstack-signature-login-<n>` | Copies the pull Secret's `.dockerconfigjson` into a Secret of its own name and of type `kubernetes.io/dockerconfigjson`, and reads the pull Secret again every 15 minutes |
+
+The kit creates no Role in an app's namespace. The block that owns the pull
+Secret grants the account `get` on that one Secret, in the Secret's
+namespace. This Role and RoleBinding do it for a made-up Secret
+`registry-login` in `app-shop`.
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mitstack-signature-logins
+  namespace: app-shop
+rules:
+- apiGroups: [""]
+  resources: [secrets]
+  resourceNames: [registry-login]
+  verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mitstack-signature-logins
+  namespace: app-shop
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mitstack-signature-logins
+subjects:
+- kind: ServiceAccount
+  name: mitstack-signature-logins
+  namespace: kyverno
+```
+
+Until the grant exists, the SecretStore reports that it cannot validate and
+makes no copy. Kyverno then refuses every image of the entry's repository,
+since the registry refuses a read with no login, and judges a `ghcr.io` image
+as before.
+
+Kyverno reads the login at every check. It fetches each listed image's
+manifest with the policy's logins before it looks in its cache of checked
+images (`Evaluate` in its
+[`policy.go`](https://github.com/kyverno/kyverno/blob/v1.19.1/pkg/image/verification/evaluator/policy.go)).
+A copy whose login has expired therefore refuses every new pod of that
+registry's listed repositories, even one whose image Kyverno checked minutes
+before, and a pod that already runs keeps running. The copy follows the pull
+Secret within 15 minutes, so the block renews the pull Secret at least 15
+minutes before its login expires.
 
 ## How every call between pods proves who makes it
 
@@ -2208,11 +2302,14 @@ workers, and with and without the telemetry Collector's lease job. Each plane
 takes a proof script of `report.ProofScriptLimit` bytes of random printable
 text, which gzip shortens by about a sixth. Each also takes
 a signer list of `components.SignerLimit` entries, with every field at its
-limit and of random text, which the serving server carries. Every install in
+limit and of random text, which the serving server carries. On a cluster that
+hosts the platform each entry is in its own ECR registry and names one of
+`components.SignerLoginLimit` pull Secrets, whose namespace and name are at
+their limit too. Every install in
 the test takes one set of the cluster's keys and one draw of every other value
 an install mints, each from a fixed seed, so the builder logs the same size on
 every run. The serving server of a cluster that hosts the platform keeps one
-size within a test process, but moved by up to 8 bytes between the processes
+size within a test process, but moved by 4 bytes between the processes
 measured. The test fails when any server's user data leaves less than 1,024
 bytes of the limit, and it logs each size.
 
@@ -2235,9 +2332,9 @@ platform, so the largest builder, on a cluster that does both, takes 30,712.
 The signer list costs the builder only the address and key of the serving
 server. The
 serving server carries the policy, and takes about 10,900 bytes, or about
-30,600 on a cluster that hosts the platform. Test processes have read that
-second size at 30,595, 30,599 and 30,603 bytes, the 8 bytes it moves by
-between processes, so it leaves at least 2,165 bytes free. With a one-line proof script and no signer list, as the tests in
+31,300 on a cluster that hosts the platform. Test processes have read that
+second size at 31,283 and 31,287 bytes, so it leaves at least 1,481 bytes
+free. With a one-line proof script and no signer list, as the tests in
 `controlplane/render_test.go` and `controlplane/hosting_test.go` log it, the
 builder takes about 27,400 and 27,500 bytes.
 

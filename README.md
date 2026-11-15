@@ -41,7 +41,7 @@ the order a block uses them.
 
 | Package | What it does | Main entry points |
 |---|---|---|
-| `components` | Holds the pinned component set: Cilium, the custom resource definition (CRD) of Cilium's cluster-wide policy, Argo CD, the policy that keeps pods from Hetzner's metadata service at `169.254.169.254`, Istio's ambient mesh with its mesh-wide mutual TLS policy and the mesh probe's target, Kyverno with its four admission policies, the CloudNativePG operator with the database-slice policy, the local path provisioner behind the default StorageClass, and the node-local OpenTelemetry Collector. It also holds the boot set of a cluster that hosts the platform, and the telemetry Collector of a cluster that requires an OTLP backend, which [ships its events, metrics and app logs](#how-a-cluster-ships-its-events-metrics-and-app-logs) | `Default`, `Hosting`, `HostingServed`, `Set.PublishingIngress`, `Manifest` (whose `Name` is a component's name), `Set.Images`, `LogCollector`, `Set.TelemetryCollector`, `TelemetryExport`, `ParseImage` |
+| `components` | Holds the pinned component set: Cilium, the custom resource definition (CRD) of Cilium's cluster-wide policy, Argo CD, the policy that keeps pods from Hetzner's metadata service at `169.254.169.254`, Istio's ambient mesh with its mesh-wide mutual TLS policy and the mesh probe's target, Kyverno with the admission policies [How a cluster isolates each app](#how-a-cluster-isolates-each-app) lists, the CloudNativePG operator with the database-slice policy, the local path provisioner behind the default StorageClass, and the node-local OpenTelemetry Collector. It also holds the boot set of a cluster that hosts the platform, and the telemetry Collector of a cluster that requires an OTLP backend, which [ships its events, metrics and app logs](#how-a-cluster-ships-its-events-metrics-and-app-logs) | `Default`, `Hosting`, `HostingServed`, `Set.PublishingIngress`, `Manifest` (whose `Name` is a component's name), `Set.Images`, `LogCollector`, `Set.TelemetryCollector`, `TelemetryExport`, `ParseImage` |
 | `nodeconfig` | Renders a control-plane node's or a worker node's machine configuration with Talos's own `machinery` module and validates it against Talos's schema | `Render`, `RenderWorker`, `Cluster`, `Node`, `NewSecrets`, `ParseSecrets`, `Secrets.AdminTalosconfig` |
 | `image` | Runs imager, Sidero Labs' open-source image builder, with the `hcloud` or the `metal` profile, and discards its output | `Run`, `Build` |
 | `mirror` | Lists every image the nodes pull, each by digest | `List`, `Render` |
@@ -50,7 +50,7 @@ the order a block uses them.
 | `report` | Renders the node report, a CronJob that reads the cluster and posts what it read to the platform, signed for its exact body. [What the node report carries](#what-the-node-report-carries) lists its members, the nine checks it names and what happens when a read fails. It also renders the outside probe, a CronJob in `kube-system` that calls the mesh probe's target with no workload identity and reads each gateway's mirror from outside the mesh, the admission probe namespace and the daily security scan. The report holds no right on Secrets | `Manifests`, `Interval` |
 | `topology` | Renders the topology labeller, a CronJob that labels each Cloud node with its zone and region, and holds the two label names | `Manifests`, `Labels`, `ZoneLabel`, `RegionLabel`, `FieldManager` |
 | `openbaoinit` | Renders OpenBao's init Job, which the hosting set carries: it initialises a hosting cluster's OpenBao once, commits the root token and recovery key to the cluster repository as PGP messages, then writes the policy each slice's External Secrets reads with | `Manifests`, `Inputs`, `InitFile` |
-| `rollout` | Gives a running cluster a release's component set, the manifests one kit release carries; [How a running cluster takes a release's components](#how-a-running-cluster-takes-a-releases-components) defines each term. A block commits the set's files to the cluster repository, where Argo CD applies each component through an Application of its own, which is Argo CD's record of one repository directory it keeps applied to the cluster. Files that an earlier release committed and this release no longer states are retired, which means deleted. Each component's sync runs a handover Job, which has Talos give up the fields it set when it created the component's objects, so they hold only what the release states. After OpenBao's sync, OpenBao's rollout Job moves each member onto the StatefulSet's new revision. The read-back then checks from the node report that the cluster runs each component as the release states it | `Release.Files`, `Release.Retired`, `Release.ReadBack`, `Release.ToolsImage`, `LegacyFiles` |
+| `rollout` | Gives a running cluster a release's component set, the manifests one kit release carries; [How a running cluster takes a release's components](#how-a-running-cluster-takes-a-releases-components) defines each term. A block commits the set's files to the cluster repository, where Argo CD applies each component through an Application of its own, which is Argo CD's record of one repository directory it keeps applied to the cluster. Files that an earlier release committed and this release no longer states are retired, which means deleted. Each component's sync runs a handover Job, which has Talos give up the fields it set when it created the component's objects, so they hold only what the release states. After OpenBao's sync, OpenBao's rollout Job moves each member onto the StatefulSet's new revision, as [How OpenBao's members take a new revision](#how-openbaos-members-take-a-new-revision) explains, which also says what a member, a StatefulSet and a revision are. The read-back then checks from the node report that the cluster runs each component as the release states it | `Release.Files`, `Release.Retired`, `Release.ReadBack`, `Release.ToolsImage`, `LegacyFiles` |
 | `controlplane` | Builds and deletes a Talos control plane on Hetzner Cloud: a network, a firewall, a gateway in each of `fsn1`, `nbg1` and `hel1`, a builder that makes the cluster's own snapshot, a node in each of `fsn1`, `nbg1` and `hel1`, and an API and an ingress load balancer. Each call reads the resources by their labels and takes the one change still missing. A refusal is a `*Refusal` with a `Class` and a `Message`, which the block answers as its own framework's refusal | `Plane`, `Plane.Read`, `Plane.EnsureNetwork`, `Plane.NextStep`, `Plane.Problems`, `Plane.Unhealthy`, `Plane.Outputs`, `State.IngressAddresses`, `Plane.Release`, `ErrNoIngressAddress`, `Plane.GatewaysAwaitRelease`, `Plane.GatewaysServeRelease`, `Plane.Delete`, `NewAPI`, `Refusal`, `TopologyLabels`, `GatewayUpgradeBound`, `GatewayCertRenewBefore`, `KeyGatewayCertExpires` |
 | `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image carries and the gateway copies out of it, `tools/jq.env`, which pins the tools image's jq, and `tools/kube-bench-talos.yaml`, the settings kube-bench reads over its own on Talos. It names the tools image a release published and the directory in that image that holds the node report's, its outside probe's, the labeller's, the cluster tokens', the handover's and OpenBao's rollout's scripts, and where in that image each served manifest sits | `Env`, `Pin`, `Image`, `ScriptDir`, `ManifestPath` |
 | `redundant` | Carries a removal's redundant set, each member with its reading, to the guard the block passes, block-kit's `redundancy.Set.AllowRemoval`, which this module does not import | `Set`, `Guard`, `Held` |
@@ -388,8 +388,9 @@ adds the etcd bootstrap as a second, plain part. The plane refuses user data
 over the limit. `gateway.Render` refuses a cloud-config over the limit too,
 unless `Inputs.Gzipped` says its caller sends it gzipped and judges its size
 once compressed. Its tests log about 18,000 bytes for the install's first
-gateway and about 29,900 for a gateway keeping 300 images, or about 19,300 and
-31,300 on a cluster that hosts the platform.
+gateway and about 30,000 for a gateway keeping 300 images, or about 19,500 and
+31,500 on a cluster that hosts the platform. Each figure moves by up to about
+150 bytes from one run of the tests to the next.
 
 A gateway bounds its own build. Each image copy into its mirror must finish
 within 15 minutes. The tools image's read from the mirror, each file's copy
@@ -1138,8 +1139,10 @@ port, which ztunnel enforces, limits the ports again. One is
 
 Three kinds of caller hold no workload identity. The API server calls each
 admission webhook, a web client outside the cluster calls Traefik, and the
-telemetry Collector's cluster copy, which runs in `kube-system` outside the
-mesh, [scrapes Argo CD and OpenBao](#what-the-cluster-copy-scrapes).
+telemetry Collector's cluster copy, the one copy of the Collector that serves
+the whole cluster, which [What the Collector reads](#what-the-collector-reads)
+describes, runs in `kube-system` outside the mesh and
+[scrapes Argo CD and OpenBao](#what-the-cluster-copy-scrapes).
 A PeerAuthentication with a port-level exception lets that port alone take a
 call without an identity, and the Cilium policies still decide who reaches it.
 
@@ -1675,7 +1678,9 @@ plane.Telemetry = components.TelemetryExport{
 }
 ```
 
-`Plane.Release` then carries the Collector, and the build renders the lease job
+`Plane.Release` then carries the Collector, and the build renders the lease
+job, the CronJob that leases the Collector's push token as
+[How the push token stays fresh](#how-the-push-token-stays-fresh) describes,
 and its empty Secret into the cluster tokens. `Set.TelemetryCollector`
 refuses an export whose endpoint is not an https address with a host, whose
 header is no header name, or that names no resource. A plane that leaves
@@ -1699,11 +1704,15 @@ configuration restarts that copy, and a release that leaves it alone does not.
 
 ### What the cluster copy scrapes
 
-The cluster copy also reads two Prometheus endpoints, each at a fixed address,
-and keeps only the one series of each that an alert rule reads, beside the
-series the Collector adds about each scrape:
+The cluster copy also scrapes two Prometheus endpoints, which means it reads
+the measurements each serves over HTTP, each at a fixed address. A series is
+one measurement with its labels, such as one Application's `argocd_app_info`.
+An alert rule is a rule in Scaleway Cockpit that fires on a series. Each
+scrape job, the Collector's name for one endpoint and the addresses it reads
+it at, has a filter that keeps only the one series an alert rule reads, beside
+the series the Collector adds about each scrape:
 
-| Job | Where it reads | What an alert rule reads from it |
+| Scrape job | Where it reads | What an alert rule reads from it |
 |---|---|---|
 | `argocd` | `argocd-application-controller-metrics.argocd.svc:8082`, the Service Argo CD's chart renders for its application controller | `argocd_app_info`, one series per Application, with its `name`, `namespace`, `dest_namespace`, `sync_status` and `health_status` |
 | `openbao` | Only on a cluster that hosts the platform: `/v1/sys/metrics` on `openbao-0`, `openbao-1` and `openbao-2`, each at `<member>.openbao-internal.openbao.svc:9101` over TLS, which the Collector checks against the `openbao-ca` ConfigMap | `vault_core_unsealed`, 1 while the member is unsealed and 0 while it is sealed, with the member's pod as `k8s_pod_name` |
@@ -1712,7 +1721,7 @@ The filter judges only the series a target serves. On every scrape the
 Collector adds `up`, 1 when it read the target and 0 when it could not, and
 four series that time the scrape and count its samples. No filter drops them,
 so a target the Collector cannot reach reads `up` at 0 rather than going quiet,
-and the `openbao` job's `up` names the member as `k8s_pod_name`.
+and the `openbao` scrape job's `up` names the member as `k8s_pod_name`.
 
 Each scraped data point carries `mitstack.subscription.id` like every other
 metric, so a rule can group by it. Each OpenBao member serves its metrics on a
@@ -1720,8 +1729,9 @@ listener of its own, port 9101, which answers the metrics path alone and asks
 for no token. The Collector therefore holds no OpenBao token and reaches no
 other part of OpenBao's API. OpenBao opens a cluster port, the port its members
 call each other on, beside every TCP listener, so that listener binds its
-cluster port, 9102, to the loopback address alone. The `telemetry` stanza of OpenBao's configuration keeps its
-Prometheus metrics for 24 hours and leaves the host name out of each name.
+cluster port, 9102, to the loopback address alone. The `telemetry` stanza of
+OpenBao's configuration keeps its Prometheus metrics for 24 hours and leaves
+the host name out of each name.
 
 `kube-system` is outside the mesh, so the Collector presents no workload
 identity. A port-level exception lets 8082 on Argo CD's application controller
@@ -1738,9 +1748,10 @@ Each OpenBao member copies its configuration when it starts, so a member opens
 OpenBao's rollout Job moves each member onto a release's configuration after
 the sync, one member at a time, as
 [How OpenBao's members take a new revision](#how-openbaos-members-take-a-new-revision)
-describes. Until the Job has moved a member, the `openbao` job cannot reach it.
-That member then sends no `vault_core_unsealed`, and its `up` reads 0, so only
-a rule that also reads `up` sees it. `collector_test.go` starts OpenBao on its rendered configuration and sends the cluster copy's
+describes. Until the rollout Job has moved a member, the `openbao` scrape job
+cannot reach it. That member then sends no `vault_core_unsealed`, and its `up`
+reads 0, so only a rule that also reads `up` sees it. `collector_test.go`
+starts OpenBao on its rendered configuration and sends the cluster copy's
 request without a token: the sealed member answers with `vault_core_unsealed`
 at 0, and answers any other path on 9101 with 404. It also runs the cluster
 copy where no target answers, and the backend receives `up` at 0 for Argo CD
@@ -2161,8 +2172,9 @@ everything a control-plane node boots with.
 A script in the tools image costs no server any user data, because the
 gateway mirrors that image whole. A served manifest does cost some. The
 gateway's user data has the same limit, and it names each served manifest with
-its sha256 and its path, about 75 bytes once gzipped. The gateway of a cluster
-that hosts the platform takes about 31,500 bytes when it keeps 300 images.
+its sha256 and its path, about 75 bytes once gzipped.
+[How the gateways are kept](#how-the-gateways-are-kept) gives the gateway's
+measured size.
 
 `TestPlane_EveryServerOfAnInstallKeepsTheUserDataReserveWithTheLongestProofScriptUnderEachOptionOfThePlane`
 in `controlplane/render_test.go` keeps room free. It installs a cluster eight
@@ -2958,20 +2970,27 @@ missing.
 ### How OpenBao's members take a new revision
 
 This section is for you if you change OpenBao's configuration or its image, or
-read why a member restarted after a release. OpenBao's StatefulSet updates
-`OnDelete`, so Kubernetes replaces a member's pod only once something deletes
-it. OpenBao's Kubernetes guide asks for that strategy, because the standbys
-must be upgraded before the active member, and a failover to an older OpenBao
-must never happen. Nothing in Kubernetes deletes a member's pod for you, so
-the kit runs a Job that does.
+read why a member restarted after a release. OpenBao runs as three members,
+the pods `openbao-0`, `openbao-1` and `openbao-2` of the StatefulSet
+`openbao`, the Kubernetes object that runs a fixed set of named pods. One
+member is active and serves every request. The other two are standbys, which
+keep a copy of its data and take over if it fails.
 
-The chart's `server.configAnnotation` writes a checksum of the configuration
-into each member's pod template, as the annotation
+The StatefulSet updates `OnDelete`, so Kubernetes replaces a member's pod only
+once something deletes it. OpenBao's Kubernetes guide asks for that strategy,
+because the standbys must be upgraded before the active member, and a failover
+to an older OpenBao must never happen. Nothing in Kubernetes deletes a
+member's pod for you, so talos-cluster-kit runs a Job that does.
+
+The StatefulSet records each version of its pod template as a revision, and
+names the one it creates new pods from as its `updateRevision`. The chart's
+`server.configAnnotation` writes a checksum of the configuration into each
+member's pod template, as the annotation
 `openbao.hashicorp.com/config-checksum`. A release that changes the
 configuration therefore changes the template, and the StatefulSet records a
-new revision, its `updateRevision`. A new OpenBao image changes the template
-the same way. The release that first carries the checksum changes the template
-too, so it moves each member once.
+new revision. A new OpenBao image changes the template the same way. The
+release that first carries the checksum changes the template too, so it moves
+each member once.
 
 `Release.Files` adds the rollout Job to OpenBao's file as an Argo CD PostSync
 hook. Argo CD runs a PostSync hook once every Sync hook has succeeded and every
@@ -2980,27 +2999,39 @@ the handover can still change the StatefulSet's template. Argo CD reads an
 `OnDelete` StatefulSet Healthy once its pods are Ready, whatever revision they
 run.
 
-Each run of the Job takes one pass over the members:
+The Job moves one member in each pass, and each pass reads the members again,
+so a member that turns active or sealed during the run is judged as it then
+is. Raft is how the members agree on each write, and each write gets an
+index. A member's `raft_committed_index` is the last write the members have
+agreed on, and its `raft_applied_index` is the last one it has applied to its
+own copy.
 
-1. It reads the StatefulSet's `updateRevision` and its members. A member whose
-   label `controller-revision-hash` names that revision is up to date. When
-   every member is, the Job ends at once and evicts nothing.
-2. It moves no member unless all three exist, each reads Ready and unsealed,
-   and exactly one carries `openbao-active=true`. OpenBao's Kubernetes service
-   registration writes the labels `openbao-active` and `openbao-sealed`.
-3. It orders the outdated standbys by name and puts the active member last.
-4. For each member, it reads the leader's `raft_committed_index`. It waits
-   until OpenBao's disruption budget, `maxUnavailable: 1`, allows a
-   disruption. It then asks the API server to evict the member's pod through
-   the Eviction API.
+1. The Job reads the StatefulSet's `updateRevision` once. Each pass then reads
+   the members. A member whose label `controller-revision-hash` names that
+   revision is up to date, and when every member is, the Job ends.
+2. A pass moves no member unless all three exist, each reads Ready and
+   unsealed, and exactly one carries `openbao-active=true`. OpenBao's
+   Kubernetes service registration writes the labels `openbao-active` and
+   `openbao-sealed`.
+3. It picks the first outdated standby by name, or the active member once no
+   outdated standby is left.
+4. It reads `raft_committed_index` from the member that is active in that
+   pass. It waits until OpenBao's disruption budget allows a disruption, then
+   asks the API server to evict the picked member's pod through the Eviction
+   API. The budget is the PodDisruptionBudget `openbao`, Kubernetes's limit on
+   how many of the members may be down by choice at once, and its
+   `maxUnavailable: 1` allows one.
 5. It watches the member's pod until the StatefulSet controller has created it
    again at the new revision, Ready and unsealed.
-6. It reads the member's `raft_applied_index`, and moves to the next member
-   only once that index has reached the commit the leader held before the
-   eviction.
+6. It reads the member's `raft_applied_index`, and starts the next pass only
+   once that index has reached the commit it read before the eviction.
 
-For example, with `openbao-1` active and all three members outdated, one run
-evicts `openbao-0`, then `openbao-2`, then `openbao-1`.
+The Job takes at most as many passes as the StatefulSet has replicas, so a
+member that stays outdated fails the Job once the passes run out, rather than
+keep the Job evicting. For example, with `openbao-1` active and all three members
+outdated, the passes evict `openbao-0`, then `openbao-2`, then `openbao-1`.
+Should leadership move to `openbao-2` during the first pass, the second pass
+evicts `openbao-1`, now a standby, and the third evicts `openbao-2`.
 
 The Job reads `sys/leader` inside a member with
 `kubectl exec <member> -c openbao -- bao read -tls-skip-verify -format=json sys/leader`.
@@ -3016,9 +3047,9 @@ Argo CD's retry of the failed sync, after 30 seconds and doubling to at most
 
 | Wait | Bound |
 |---|---|
-| A member's return after its eviction | 300 seconds, for its preStop hook and grace period, its start, a new image's pull and its unseal |
-| Each read inside a member, each wait for the disruption budget, and each eviction | 30 seconds, under `timeout` |
-| The whole Job | An `activeDeadlineSeconds` of 1,320: 420 seconds for each of the three members, which is 300 for its return and 30 for each of its four calls, and 60 for the reads that open the run |
+| A member's return after its eviction | 300 seconds, for its preStop hook, the command Kubernetes runs in the container before stopping it, and its grace period, the 10 seconds Kubernetes then waits for the container to exit, and for its start, a new image's pull and its unseal |
+| Each read of the StatefulSet or the members, each read inside a member, each wait for the disruption budget, and each eviction | 30 seconds, under `timeout` |
+| The whole Job | An `activeDeadlineSeconds` of 1,410: 450 seconds for each of the three members' passes, which is 300 for its return and 30 for each of its five calls, and 60 for the StatefulSet's read and the members' last read |
 
 The script bounds each call with `timeout` rather than kubectl's
 `--request-timeout`. That flag takes kubectl off the pod's in-cluster
@@ -3036,10 +3067,15 @@ Once the controller counts all three members, the budget, with
 `maxUnavailable: 1`, allows one disruption, which is what the wait reads for.
 Without the wait, an eviction the API server refused would fail the Job. The
 `openbao` application's sync would then read red until Argo CD's retry ran
-the Job again, though nothing is wrong. Should the budget still allow no disruption
-after 30 seconds, the Job fails and evicts nothing. `timeout` bounds the wait,
-so kubectl's own `--timeout` is negative, which kubectl reads as a week. Its
-expiry would otherwise exit with the status a refusal does.
+the Job again, though nothing is wrong. Should the budget still allow no
+disruption after 30 seconds, the Job fails and evicts nothing.
+
+The script bounds that wait with `timeout`, as it bounds every call, and so
+turns kubectl's own time-out off. kubectl exits 1 both when its own time-out
+runs out and when the API server refuses, while `timeout` exits 124, so only
+`timeout` lets the script tell a missed bound from a refusal. kubectl has no
+setting for no time-out, so the script passes `--timeout=-1s`, which kubectl
+reads as a week.
 
 The Job runs in the `openbao` namespace under the ServiceAccount
 `mitstack-openbao-rollout`. The chart's `extraObjects`, in
@@ -3071,14 +3107,19 @@ pod, so the pod ends once its one container exits.
 
 `rollout/openbao_rollout_test.go` runs the script against a fake kubectl. It
 proves that the Job evicts nothing when every member is current, and evicts
-standby, standby, then leader. It proves that the Job waits on the budget
-before each eviction, and that a wait that misses its bound or is refused
-evicts nothing. It also proves that a member that returns behind the leader's
-commit, or not at all, stops the run.
+standby, standby, then leader. It proves that each pass reads the members
+again: leadership that moves to an outdated standby sends that member last,
+leadership that moves to a member already moved changes where the commit is
+read, and a member that reads sealed between passes stops the run. A member
+that never reads the new revision fails the Job after three passes. It
+proves that the Job waits on the budget before each eviction, and that a wait
+that misses its bound or is refused evicts nothing. It also proves that a
+member that returns behind the leader's commit, or not at all, stops the run.
 `apiserver_openbao_rollout_test.go` runs the Job's container from the tools
 image against a real API server under the Job's own account. It proves the
 account's rights, including a wait on the budget by name, and the order of
-the evictions. It proves that the Job waits while the budget allows no
+the evictions, with each pass reading the members the API server then holds.
+It proves that the Job waits while the budget allows no
 disruption and evicts once it allows one. A budget that allows none within
 the bound fails the Job before any eviction. That API server runs no kubelet,
 so a stand-in answers the exec once the API server has authorized it. The

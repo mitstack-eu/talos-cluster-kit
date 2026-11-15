@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Moves each OpenBao member whose pod runs an older revision of its StatefulSet onto the current one, one member at a
-# time, the standbys first and the active member last, and stops at the first member that does not return caught up.
+# Moves each OpenBao member whose pod runs an older revision of its StatefulSet onto the current one, one member a pass,
+# the standbys first and the active member last, and stops at the first member that does not return caught up. Each
+# pass reads the members again, so a member that turns active or sealed during the run is judged as it then is.
 # Usage: ROLLOUT_NAMESPACE=<namespace> ROLLOUT_STATEFULSET=<name> ROLLOUT_DISRUPTION_BUDGET=<name> \
 #   ROLLOUT_MEMBER_TIMEOUT=<seconds>s ROLLOUT_CALL_TIMEOUT=<seconds>s openbao-rollout.sh
 # It exists because OpenBao's StatefulSet updates OnDelete, as OpenBao requires so that no member fails over to an
@@ -87,7 +88,7 @@ await() {
   esac
 }
 
-kubectl get statefulset "$statefulset" -n "$namespace" -o json > "$work/statefulset.json" \
+timeout "$call_timeout" kubectl get statefulset "$statefulset" -n "$namespace" -o json > "$work/statefulset.json" \
   || fail "cannot read the StatefulSet $namespace/$statefulset"
 revision=$(jq -r '.status.updateRevision // empty' "$work/statefulset.json")
 [ -n "$revision" ] || fail "the StatefulSet $namespace/$statefulset names no update revision"
@@ -95,24 +96,28 @@ export ROLLOUT_REVISION=$revision
 replicas=$(jq -r '.spec.replicas' "$work/statefulset.json")
 container=$(jq -r '.spec.template.spec.containers[0].name' "$work/statefulset.json")
 selector=$(jq -r '.spec.selector.matchLabels | to_entries | map("\(.key)=\(.value)") | join(",")' "$work/statefulset.json")
-kubectl get pods -n "$namespace" -l "$selector" -o json > "$work/pods.json" || fail "cannot read the members of $namespace/$statefulset"
+passes=0
+while :; do
+  timeout "$call_timeout" kubectl get pods -n "$namespace" -l "$selector" -o json > "$work/pods.json" \
+    || fail "cannot read the members of $namespace/$statefulset"
+  mapfile -t stale < <(members "$outdated")
+  if [ "${#stale[@]}" -eq 0 ]; then
+    echo "openbao-rollout: every member runs revision $revision"
+    exit 0
+  fi
+  [ "$passes" -lt "$replicas" ] \
+    || fail "$passes passes, one for each of the $replicas members, left ${stale[*]} on an older revision than $revision, so the rollout stops"
+  mapfile -t all < <(members true)
+  [ "${#all[@]}" = "$replicas" ] || fail "${#all[@]} of $replicas members exist, so moving one now could cost the quorum"
+  down=$(members "($serving) | not" | paste -sd ' ' -)
+  [ -z "$down" ] || fail "$down is not Ready and unsealed, so moving another member now could cost the quorum"
+  mapfile -t leader < <(members "$active")
+  [ "${#leader[@]}" = 1 ] || fail "${#leader[@]} members are labelled active, want one, so the standbys cannot be told apart"
+  mapfile -t standbys < <(members "($outdated) and (($active) | not)")
+  # With no outdated standby left, the one outdated member is the active one.
+  member=${standbys[0]:-${leader[0]}}
+  echo "openbao-rollout: moving $member onto revision $revision, with ${stale[*]} outdated and ${leader[0]} active"
 
-mapfile -t stale < <(members "$outdated")
-if [ "${#stale[@]}" -eq 0 ]; then
-  echo "openbao-rollout: every member runs revision $revision"
-  exit 0
-fi
-mapfile -t all < <(members true)
-[ "${#all[@]}" = "$replicas" ] || fail "${#all[@]} of $replicas members exist, so moving one now could cost the quorum"
-down=$(members "($serving) | not" | paste -sd ' ' -)
-[ -z "$down" ] || fail "$down is not Ready and unsealed, so moving another member now could cost the quorum"
-mapfile -t leader < <(members "$active")
-[ "${#leader[@]}" = 1 ] || fail "${#leader[@]} members are labelled active, want one, so the standbys cannot be told apart"
-mapfile -t order < <(members "($outdated) and (($active) | not)")
-[[ " ${stale[*]} " != *" ${leader[0]} "* ]] || order+=("${leader[0]}")
-echo "openbao-rollout: moving ${order[*]} onto revision $revision one at a time, the active member ${leader[0]} last"
-
-for member in "${order[@]}"; do
   committed=$(raft_index "${leader[0]}" raft_committed_index)
   await_budget "$member"
   evict "$member"
@@ -122,4 +127,5 @@ for member in "${order[@]}"; do
   [ "$applied" -ge "$committed" ] \
     || fail "$member has applied Raft index $applied, short of the $committed ${leader[0]} committed before its eviction, so no other member moves"
   echo "openbao-rollout: $member runs revision $revision, unsealed, at Raft index $applied"
+  passes=$((passes + 1))
 done

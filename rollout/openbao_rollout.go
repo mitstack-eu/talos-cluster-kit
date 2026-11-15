@@ -18,12 +18,9 @@ const (
 	// memberSeconds bounds one member's return after its eviction: its preStop hook and grace period, its start on its
 	// own node, a new image's pull, and its unseal.
 	memberSeconds = 300
-	// callSeconds bounds each read inside a member, each wait for the disruption budget to allow a disruption, and each
-	// eviction, so a call that hangs ends the run there.
+	// callSeconds bounds each read of the StatefulSet or its members, each read inside a member, each wait for the
+	// disruption budget to allow a disruption, and each eviction, so a call that hangs ends the run there.
 	callSeconds = 30
-	// deadlineSlack is what the Job's deadline leaves past every member's bounds, for the reads of the StatefulSet and
-	// its members that open the run.
-	deadlineSlack = 60
 )
 
 //go:embed openbao-rollout.yaml
@@ -46,8 +43,9 @@ func renderOpenBaoRollout(heads []documentHead, toolsImage string) ([]byte, erro
 		"Name": openBaoRollout, "Namespace": members.Metadata.Namespace, "App": components.OpenBaoName, "Image": toolsImage,
 		"Script": openBaoRolloutScript, "StatefulSet": members.Metadata.Name, "DisruptionBudget": budget.Metadata.Name,
 		"MemberTimeout": strconv.Itoa(memberSeconds) + "s", "CallTimeout": strconv.Itoa(callSeconds) + "s",
-		// Each member takes a read of the leader, a wait for the budget, its eviction, its return and a read of its own.
-		"Deadline": strconv.Itoa(components.OpenBaoMembers*(memberSeconds+4*callSeconds) + deadlineSlack),
+		// Each member's pass takes a read of the members, a read of the leader, a wait for the budget, its eviction, its
+		// return and a read of its own, and the run adds the StatefulSet's read and the members' read that ends it.
+		"Deadline": strconv.Itoa(components.OpenBaoMembers*(memberSeconds+5*callSeconds) + 2*callSeconds),
 	})
 }
 

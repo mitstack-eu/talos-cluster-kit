@@ -146,6 +146,17 @@ func Named(t *testing.T, docs []map[string]any, kind, name string) map[string]an
 	return of[i]
 }
 
+// ScrapeJobs is each Prometheus scrape job of the telemetry Collector's cluster copy in docs, by the job's name.
+func ScrapeJobs(t *testing.T, docs []map[string]any) map[string]any {
+	t.Helper()
+	config := Documents(t, []byte(Field(t, Named(t, docs, "ConfigMap", "mitstack-telemetry-cluster"), "data", "config.yaml").(string)))[0]
+	jobs := map[string]any{}
+	for _, job := range Field(t, config, "receivers", "prometheus", "config", "scrape_configs").([]any) {
+		jobs[Field(t, job, "job_name").(string)] = job
+	}
+	return jobs
+}
+
 func Manifest(t *testing.T, name string, lists ...[]components.Manifest) components.Manifest {
 	t.Helper()
 	manifests := slices.Concat(lists...)

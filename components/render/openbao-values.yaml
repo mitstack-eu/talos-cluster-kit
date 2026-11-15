@@ -11,6 +11,9 @@ server:
     mitstack.dev/app: openbao
   extraEnvironmentVars:
     BAO_CACERT: /openbao/tls/ca.crt
+  # A checksum of the configuration in each member's pod template gives the StatefulSet a new revision whenever the
+  # configuration changes, which OpenBao's rollout Job then moves each member onto.
+  configAnnotation: true
   statefulSet:
     securityContext:
       pod:
@@ -56,6 +59,8 @@ server:
     raft:
       enabled: true
       setNodeId: true
+      # The second listener serves the metrics path alone, without a token, and binds the cluster port OpenBao opens
+      # beside every TCP listener to the loopback address alone.
       config: |
         ui = false
         listener "tcp" {
@@ -65,6 +70,22 @@ server:
           tls_key_file = "/openbao/tls/tls.key"
           tls_min_version = "tls13"
           tls_auto_reload = true
+        }
+        listener "tcp" {
+          address = "[::]:9101"
+          cluster_address = "127.0.0.1:9102"
+          tls_cert_file = "/openbao/tls/tls.crt"
+          tls_key_file = "/openbao/tls/tls.key"
+          tls_min_version = "tls13"
+          tls_auto_reload = true
+          telemetry {
+            metrics_only = true
+            unauthenticated_metrics_access = true
+          }
+        }
+        telemetry {
+          disable_hostname = true
+          prometheus_retention_time = "24h"
         }
         storage "raft" {
           path = "/openbao/data"
@@ -86,3 +107,43 @@ server:
           current_key = "file:///openbao/seal/key"
         }
         service_registration "kubernetes" {}
+# OpenBao's rollout Job runs under this account, which may read the members and their StatefulSet, read and watch
+# OpenBao's own disruption budget by name, evict a member and run a command inside one, in this namespace alone.
+extraObjects:
+  - apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: mitstack-openbao-rollout
+      namespace: openbao
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata:
+      name: mitstack-openbao-rollout
+      namespace: openbao
+    rules:
+      - apiGroups: [""]
+        resources: [pods]
+        verbs: [get, list, watch]
+      - apiGroups: [apps]
+        resources: [statefulsets]
+        verbs: [get]
+      - apiGroups: [policy]
+        resources: [poddisruptionbudgets]
+        resourceNames: ['{{ include "openbao.fullname" . }}']
+        verbs: [get, watch]
+      - apiGroups: [""]
+        resources: [pods/eviction, pods/exec]
+        verbs: [create]
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: mitstack-openbao-rollout
+      namespace: openbao
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: Role
+      name: mitstack-openbao-rollout
+    subjects:
+      - kind: ServiceAccount
+        name: mitstack-openbao-rollout
+        namespace: openbao

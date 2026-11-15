@@ -7,10 +7,12 @@ import (
 	"encoding/pem"
 	"fmt"
 	"maps"
+	"net"
 	"net/netip"
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -30,22 +32,60 @@ func hostingSet(t *testing.T, in components.HostingInputs) components.Set {
 
 func hclBlock(t *testing.T, config, header string) string {
 	t.Helper()
-	start := strings.Index(config, header+" {")
-	require.GreaterOrEqual(t, start, 0, "the configuration has no %s block", header)
-	depth := 0
-	for i := start + len(header); i < len(config); i++ {
-		switch config[i] {
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
-				return config[start+len(header)+2 : i]
+	blocks := hclBlocks(t, config, header)
+	require.NotEmpty(t, blocks, "the configuration has no %s block", header)
+	return blocks[0]
+}
+
+// hclBlocks is the body of each block that header opens in config, in the order config holds them.
+func hclBlocks(t *testing.T, config, header string) []string {
+	t.Helper()
+	var blocks []string
+	for rest := config; ; {
+		start := strings.Index(rest, header+" {")
+		if start < 0 {
+			return blocks
+		}
+		rest = rest[start+len(header)+2:]
+		depth, end := 1, -1
+		for i := 0; i < len(rest) && end < 0; i++ {
+			switch rest[i] {
+			case '{':
+				depth++
+			case '}':
+				if depth--; depth == 0 {
+					end = i
+				}
 			}
 		}
+		require.GreaterOrEqual(t, end, 0, "an unclosed %s block", header)
+		blocks, rest = append(blocks, rest[:end]), rest[end:]
 	}
-	require.Fail(t, "unclosed block", header)
-	return ""
+}
+
+func openBaoConfig(t *testing.T, set components.Set) string {
+	t.Helper()
+	return testutil.Field(t, namedDocument(t, testutil.Manifest(t, "openbao", set.Served), "ConfigMap", "openbao-config"), "data", "extraconfig-from-values.hcl").(string)
+}
+
+// openBaoMetricsListener is the body of the one OpenBao listener that serves the metrics path alone.
+func openBaoMetricsListener(t *testing.T, set components.Set) string {
+	t.Helper()
+	listeners := slices.DeleteFunc(hclBlocks(t, openBaoConfig(t, set), `listener "tcp"`), func(body string) bool {
+		return !regexp.MustCompile(`metrics_only\s*=\s*true`).MatchString(body)
+	})
+	require.Len(t, listeners, 1, "the OpenBao listeners that serve the metrics path alone")
+	return listeners[0]
+}
+
+func openBaoMetricsPort(t *testing.T, set components.Set) int {
+	t.Helper()
+	address := hclString(t, openBaoMetricsListener(t, set), "address")
+	_, port, err := net.SplitHostPort(address)
+	require.NoError(t, err, address)
+	n, err := strconv.Atoi(port)
+	require.NoError(t, err, address)
+	return n
 }
 
 func hclString(t *testing.T, block, key string) string {
@@ -89,6 +129,127 @@ func TestHosting_ListensOnlyOnTLSKeepsRaftOnTheUserVolumeAndUnsealsWithAStaticKe
 		assert.Equal(t, testutil.HostingNodes[i], node)
 	}
 	assert.Contains(t, set.UserVolumes, components.OpenBaoVolume)
+}
+
+func TestHosting_ServesEachMembersMetricsAloneWithoutATokenOnATLSListenerOfItsOwn(t *testing.T) {
+	set := hostingSet(t, testutil.HostingInputs(t))
+	config := openBaoConfig(t, set)
+
+	api, metrics := hclBlock(t, config, `listener "tcp"`), openBaoMetricsListener(t, set)
+
+	for _, key := range []string{"tls_cert_file", "tls_key_file", "tls_min_version"} {
+		assert.Equal(t, hclString(t, api, key), hclString(t, metrics, key), "the metrics listener's %s", key)
+	}
+	assert.Regexp(t, `unauthenticated_metrics_access\s*=\s*true`, hclBlock(t, metrics, "telemetry"), "a scrape needs no token")
+	assert.NotContains(t, api, "unauthenticated_metrics_access", "the API's own metrics path still needs a token")
+	assert.Regexp(t, `^127\.0\.0\.1:`, hclString(t, metrics, "cluster_address"), "the cluster port OpenBao opens beside each listener takes no call from outside the pod")
+	telemetry := hclBlock(t, config, "\ntelemetry")
+	assert.Regexp(t, `disable_hostname\s*=\s*true`, telemetry, "no metric's name holds its member's")
+	assert.NotEqual(t, "0", hclString(t, telemetry, "prometheus_retention_time"), "a retention of 0 builds no Prometheus sink")
+}
+
+func TestHosting_KeepsOpenBaosMembersOnDeleteAndGivesEachPodTemplateTheChecksumOfItsConfiguration(t *testing.T) {
+	openBao := testutil.Manifest(t, "openbao", hostingSet(t, testutil.HostingInputs(t)).Served)
+	members := namedDocument(t, openBao, "StatefulSet", "openbao")
+	config := namedDocument(t, openBao, "ConfigMap", "openbao-config")
+
+	podSum := testutil.Field(t, members, "spec", "template", "metadata", "annotations", "openbao.hashicorp.com/config-checksum")
+
+	assert.Equal(t, "OnDelete", testutil.Field(t, members, "spec", "updateStrategy", "type"),
+		"OpenBao moves its standbys before the active member, which the rollout Job orders and a rolling update would not")
+	assert.Regexp(t, `^[0-9a-f]{64}$`, podSum, "the chart's checksum of the configuration")
+	assert.Equal(t, testutil.Field(t, config, "metadata", "annotations", "vault.hashicorp.com/config-checksum"), podSum,
+		"the pod template carries the checksum of the configuration the ConfigMap holds, so a new configuration is a new revision")
+}
+
+// rbacRules are a Role's rules as one "<group> <resource> <verb>" line for each right they grant, followed by the
+// names a rule limits the right to.
+func rbacRules(t *testing.T, role map[string]any) []string {
+	t.Helper()
+	var rights []string
+	for _, rule := range testutil.Field(t, role, "rules").([]any) {
+		names, _ := rule.(map[string]any)["resourceNames"].([]any)
+		for _, group := range testutil.Field(t, rule, "apiGroups").([]any) {
+			for _, resource := range testutil.Field(t, rule, "resources").([]any) {
+				for _, verb := range testutil.Field(t, rule, "verbs").([]any) {
+					rights = append(rights, strings.TrimSpace(fmt.Sprintf("%q %s %s %s", group, resource, verb, strings.TrimSpace(fmt.Sprintln(names...)))))
+				}
+			}
+		}
+	}
+	slices.Sort(rights)
+	return rights
+}
+
+func TestHosting_GivesOpenBaosRolloutAnAccountThatMayReadTheMembersEvictOneAndRunACommandInsideItInOpenBaosNamespaceAlone(t *testing.T) {
+	set := hostingSet(t, testutil.HostingInputs(t))
+	openBao := testutil.Manifest(t, "openbao", set.Served)
+	account := map[string]any{"kind": "ServiceAccount", "name": "mitstack-openbao-rollout", "namespace": "openbao"}
+
+	role := namedDocument(t, openBao, "Role", "mitstack-openbao-rollout")
+	binding := namedDocument(t, openBao, "RoleBinding", "mitstack-openbao-rollout")
+	budgets := testutil.Kind(testutil.Documents(t, openBao.Bytes), "PodDisruptionBudget")
+	require.Len(t, budgets, 1, "OpenBao's disruption budgets")
+	budget := testutil.Field(t, budgets[0], "metadata", "name")
+	var bound []string
+	for _, m := range slices.Concat(set.Served, set.Inline) {
+		for _, doc := range testutil.Documents(t, m.Bytes) {
+			if subjects, ok := doc["subjects"].([]any); ok && slices.ContainsFunc(subjects, func(s any) bool { return assert.ObjectsAreEqual(account, s) }) {
+				bound = append(bound, fmt.Sprintf("%s %s/%s", doc["kind"], testutil.Field(t, doc, "metadata", "namespace"), testutil.Field(t, doc, "metadata", "name")))
+			}
+		}
+	}
+
+	assert.Equal(t, "openbao", testutil.Field(t, namedDocument(t, openBao, "ServiceAccount", "mitstack-openbao-rollout"), "metadata", "namespace"))
+	assert.Equal(t, "openbao", testutil.Field(t, role, "metadata", "namespace"))
+	assert.Equal(t, []string{
+		`"" pods get`, `"" pods list`, `"" pods watch`, `"" pods/eviction create`, `"" pods/exec create`, `"apps" statefulsets get`,
+		`"policy" poddisruptionbudgets get ` + budget.(string), `"policy" poddisruptionbudgets watch ` + budget.(string),
+	}, rbacRules(t, role), "the rights the rollout uses: read and watch the members, read their StatefulSet, read and watch OpenBao's one "+
+		"disruption budget, evict a member and read inside it")
+	assert.Equal(t, map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": "mitstack-openbao-rollout"}, testutil.Field(t, binding, "roleRef"))
+	assert.Equal(t, []string{"RoleBinding openbao/mitstack-openbao-rollout"}, bound, "every binding that grants the account a right, so it holds none outside OpenBao's namespace")
+}
+
+func TestHosting_LetsOpenBaosRolloutJobReachTheAPIServerAloneAndNoPodReachIt(t *testing.T) {
+	set := hostingSet(t, testutil.HostingInputs(t))
+	rollout := testutil.Endpoint("openbao", nil, map[string]string{"app.kubernetes.io/name": "mitstack-openbao-rollout", "mitstack.dev/app": "openbao"})
+	flows := namedDocument(t, testutil.Manifest(t, "mitstack-hosting-flows", set.Served), "CiliumClusterwideNetworkPolicy", "mitstack-hosting-flows")
+	pods := map[string]testutil.CiliumEndpoint{
+		"OpenBao":         testutil.Endpoint("openbao", nil, map[string]string{"app.kubernetes.io/name": "openbao", "component": "server"}),
+		"the rollout Job": rollout,
+	}
+
+	assert.Equal(t, []string{"egress to entity kube-apiserver"}, hostingEgress(t, rollout),
+		"the Job's reads, evictions and execs all go to the API server, which reaches the kubelet for an exec")
+	assert.Empty(t, slices.DeleteFunc(testutil.Grants(t, flows, pods, "the rollout Job"), func(g string) bool { return !strings.HasPrefix(g, "ingress") }),
+		"what reaches the Job")
+	assert.Empty(t, slices.DeleteFunc(testutil.Grants(t, flows, pods, "OpenBao"), func(g string) bool { return !strings.Contains(g, "the rollout Job") }),
+		"no flow between the Job and a member, whose port 8200 the Job never calls")
+}
+
+func TestHosting_LetsTheCollectorsClusterCopyAloneReachOpenBaosMetricsListenerAndOnlyFromOutsideTheMesh(t *testing.T) {
+	set := hostingSet(t, testutil.HostingInputs(t))
+	port := openBaoMetricsPort(t, set)
+	collector := collectorDocs(t, set, testutil.TelemetryExport())
+	pods := map[string]testutil.CiliumEndpoint{"OpenBao": testutil.Endpoint("openbao", nil, map[string]string{"app.kubernetes.io/name": "openbao"})}
+	for _, which := range collectorCopies {
+		labels := map[string]string{}
+		for k, v := range testutil.Field(t, podTemplate(t, collector, which), "metadata", "labels").(map[string]any) {
+			labels[k] = v.(string)
+		}
+		pods["the Collector's "+which+" copy"] = testutil.Endpoint("kube-system", nil, labels)
+	}
+	flows := namedDocument(t, testutil.Manifest(t, "mitstack-hosting-flows", set.Served), "CiliumClusterwideNetworkPolicy", "mitstack-hosting-flows")
+	ports := namedDocument(t, testutil.Manifest(t, "mitstack-hosting-mesh", set.Served), "AuthorizationPolicy", "mitstack-openbao-ports")
+
+	onMetrics := slices.DeleteFunc(testutil.Grants(t, flows, pods, "OpenBao"), func(g string) bool { return !strings.Contains(g, strconv.Itoa(port)) })
+
+	assert.Equal(t, []string{fmt.Sprintf("ingress with the Collector's cluster copy on %d/TCP", port)}, onMetrics, "who reaches OpenBao's metrics listener")
+	assert.False(t, testutil.Denies(t, ports, "", port), "the cluster copy's call, which carries no workload identity")
+	for _, principal := range []string{"cluster.local/ns/external-secrets/sa/external-secrets", "cluster.local/ns/openbao/sa/openbao"} {
+		assert.True(t, testutil.Denies(t, ports, principal, port), "a call from %s, which Cilium admits on 15008 inside the mesh", principal)
+	}
 }
 
 func secretForms(value []byte) []string {
@@ -411,6 +572,9 @@ func TestHosting_ServesOpenBaoACertificateForEveryAddressItsMembersAndClientsDia
 		hosts = append(hosts, m[1])
 	}
 	require.Len(t, hosts, 2+components.OpenBaoMembers)
+	for _, target := range testutil.Field(t, testutil.ScrapeJobs(t, collectorDocs(t, set, testutil.TelemetryExport()))["openbao"], "static_configs").([]any) {
+		hosts = append(hosts, strings.Split(testutil.Field(t, target, "targets", "0").(string), ":")[0])
+	}
 	for _, host := range hosts {
 		assert.True(t, slices.ContainsFunc(patterns, func(p string) bool { return regexp.MustCompile(p).MatchString(host) }), "the certificate does not name %s", host)
 	}

@@ -37,3 +37,19 @@ spec:
       mode: PERMISSIVE
     8443:
       mode: PERMISSIVE
+---
+# The hosting set's own exception for OpenBao's metrics listener, which the telemetry Collector calls from outside the mesh.
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: mitstack-openbao-metrics
+  namespace: openbao
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: openbao
+  mtls:
+    mode: STRICT
+  portLevelMtls:
+    9101:
+      mode: PERMISSIVE

@@ -135,7 +135,8 @@ var subscriptionIDRe = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,63}$`)
 func openBaoMembers() string {
 	members := make([]string, components.OpenBaoMembers)
 	for i := range members {
-		members[i] = fmt.Sprintf("openbao-%d=https://openbao-%d.openbao-internal.openbao.svc:8200", i, i)
+		pod, host := components.OpenBaoMember(i)
+		members[i] = fmt.Sprintf("%s=https://%s:8200", pod, host)
 	}
 	return strings.Join(members, " ")
 }

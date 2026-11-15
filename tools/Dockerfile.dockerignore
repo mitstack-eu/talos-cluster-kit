@@ -9,6 +9,7 @@
 !topology/scripts/label-nodes.sh
 !controlplane/scripts/cluster-tokens.sh
 !rollout/scripts/handover.sh
+!rollout/scripts/openbao-rollout.sh
 !components/cilium/cilium.yaml
 !components/cilium/policy-crd.yaml
 !components/argocd/argocd.yaml

@@ -1,11 +1,14 @@
 package components
 
 import (
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
+	"slices"
 
 	"github.com/mitstack-eu/talos-cluster-kit/internal/tmpl"
 )
@@ -51,23 +54,49 @@ var telemetryTemplate string
 
 var telemetryCollector = tmpl.Must("the telemetry Collector", telemetryTemplate)
 
-// TelemetryCollector renders the Collector pushing the cluster's events, metrics and app logs to e, tagged with subscription.
-func TelemetryCollector(e TelemetryExport, subscription string) ([]Manifest, error) {
+// TelemetryCollector renders the Collector that pushes the cluster's events, metrics and app logs to e, tagged with
+// subscription, and scrapes Argo CD's application controller and each OpenBao member the set runs.
+func (s Set) TelemetryCollector(e TelemetryExport, subscription string) ([]Manifest, error) {
 	if e.IsZero() {
 		return nil, nil
 	}
 	if err := e.validate(); err != nil {
 		return nil, err
 	}
-	out, err := tmpl.Execute(telemetryCollector, map[string]string{
+	data := map[string]any{
 		"Image":           logCollectorImage.Ref(),
 		"SubscriptionID":  subscription,
 		"MetricsEndpoint": e.MetricsEndpoint,
 		"LogsEndpoint":    e.LogsEndpoint,
 		"TokenHeader":     e.TokenHeader,
-	})
+		"OpenBaoMembers":  s.openBaoMembers(),
+	}
+	sums := map[string]string{}
+	for _, which := range []string{"node", "cluster"} {
+		config, err := tmpl.Execute(telemetryCollector.Lookup(which+"Config"), data)
+		if err != nil {
+			return nil, err
+		}
+		sum := sha256.Sum256(config)
+		sums[which] = hex.EncodeToString(sum[:])
+	}
+	data["ConfigSHA256"] = sums
+	out, err := tmpl.Execute(telemetryCollector, data)
 	if err != nil {
 		return nil, err
 	}
 	return []Manifest{{Name: TelemetryName, Path: "components/telemetry/collector.yaml", Bytes: out}}, nil
+}
+
+// openBaoMembers is the pod and host of each OpenBao member the set runs, or none for a set without OpenBao.
+func (s Set) openBaoMembers() []map[string]string {
+	if !slices.ContainsFunc(s.Served, func(m Manifest) bool { return m.Name == OpenBaoName }) {
+		return nil
+	}
+	members := make([]map[string]string, OpenBaoMembers)
+	for i := range members {
+		pod, host := OpenBaoMember(i)
+		members[i] = map[string]string{"Pod": pod, "Host": host}
+	}
+	return members
 }

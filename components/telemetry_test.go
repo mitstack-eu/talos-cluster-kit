@@ -24,7 +24,12 @@ var collectorCopies = []string{"node", "cluster"}
 
 func telemetryDocs(t *testing.T, export components.TelemetryExport) []map[string]any {
 	t.Helper()
-	manifests, err := components.TelemetryCollector(export, telemetrySubscription)
+	return collectorDocs(t, components.Default(), export)
+}
+
+func collectorDocs(t *testing.T, set components.Set, export components.TelemetryExport) []map[string]any {
+	t.Helper()
+	manifests, err := set.TelemetryCollector(export, telemetrySubscription)
 	require.NoError(t, err)
 	require.Len(t, manifests, 1, "the manifests the telemetry Collector renders")
 	assert.Equal(t, "mitstack-telemetry", manifests[0].Name)
@@ -41,8 +46,13 @@ func collectorConfig(t *testing.T, docs []map[string]any, which string) map[stri
 
 func podOf(t *testing.T, docs []map[string]any, which string) map[string]any {
 	t.Helper()
+	return testutil.Field(t, podTemplate(t, docs, which), "spec").(map[string]any)
+}
+
+func podTemplate(t *testing.T, docs []map[string]any, which string) map[string]any {
+	t.Helper()
 	kind := map[string]string{"node": "DaemonSet", "cluster": "Deployment"}[which]
-	return testutil.Field(t, testutil.Named(t, docs, kind, "mitstack-telemetry-"+which), "spec", "template", "spec").(map[string]any)
+	return testutil.Field(t, testutil.Named(t, docs, kind, "mitstack-telemetry-"+which), "spec", "template").(map[string]any)
 }
 
 func TestTelemetryCollector_RendersTheEventsLogsAndKubeletReceivers(t *testing.T) {
@@ -151,12 +161,69 @@ func TestTelemetryCollector_TheClusterCopyReadsClusterMetricsFromOneReplicaOnACo
 	deployment := testutil.Named(t, docs, "Deployment", "mitstack-telemetry-cluster")
 
 	assert.Equal(t, "serviceAccount", testutil.Field(t, cluster, "receivers", "k8s_cluster", "auth_type"))
-	assert.Equal(t, []any{"k8s_cluster"}, testutil.Field(t, cluster, "service", "pipelines", "metrics", "receivers"), "the node conditions and node list")
+	assert.Equal(t, []any{"k8s_cluster", "prometheus"}, testutil.Field(t, cluster, "service", "pipelines", "metrics", "receivers"),
+		"the node conditions and node list, and the metrics it scrapes")
 	assert.EqualValues(t, 1, testutil.Field(t, deployment, "spec", "replicas"), "a second replica would send each event twice")
 	assert.Equal(t, "Recreate", testutil.Field(t, deployment, "spec", "strategy", "type"), "a rollout never runs two replicas at once")
 	pod := podOf(t, docs, "cluster")
 	assert.Equal(t, map[string]any{controlPlaneRole: ""}, pod["nodeSelector"], "a stopped worker never takes the cluster copy down")
 	assert.Equal(t, []any{map[string]any{"key": controlPlaneRole, "operator": "Exists", "effect": "NoSchedule"}}, pod["tolerations"])
+}
+
+func TestTelemetryCollector_TheClusterCopyScrapesArgoCDsApplicationControllerThroughItsMetricsServiceAndNoOpenBaoWhereNoneRuns(t *testing.T) {
+	docs := telemetryDocs(t, testutil.TelemetryExport())
+	service := namedDocument(t, testutil.Manifest(t, "argocd", components.Default().Served), "Service", "argocd-application-controller-metrics")
+
+	jobs := testutil.ScrapeJobs(t, docs)
+
+	assert.Equal(t, map[string]any{"app.kubernetes.io/name": "argocd-application-controller", "app.kubernetes.io/instance": "argocd"},
+		testutil.Field(t, service, "spec", "selector"), "the Service the cluster copy scrapes selects the application controller")
+	assert.Equal(t, "metrics", testutil.Field(t, service, "spec", "ports", "0", "targetPort"))
+	target := fmt.Sprintf("argocd-application-controller-metrics.argocd.svc:%v", testutil.Field(t, service, "spec", "ports", "0", "port"))
+	assert.Equal(t, []any{map[string]any{"targets": []any{target}}}, testutil.Field(t, jobs["argocd"], "static_configs"))
+	assert.Equal(t, keepOnly("argocd_app_info"), testutil.Field(t, jobs["argocd"], "metric_relabel_configs"), "the one series an alert rule reads")
+	assert.NotContains(t, jobs, "openbao", "a cluster that runs no OpenBao scrapes none")
+	assert.NotContains(t, fmt.Sprint(podOf(t, docs, "cluster")["volumes"]), "openbao-ca")
+}
+
+func TestTelemetryCollector_OnAClusterThatHostsThePlatformTheClusterCopyScrapesEachOpenBaoMemberOnItsMetricsListenerAndNamesIt(t *testing.T) {
+	set := components.HostingServed()
+	docs := collectorDocs(t, set, testutil.TelemetryExport())
+
+	openbao := testutil.ScrapeJobs(t, docs)["openbao"]
+
+	var targets []any
+	for i := range components.OpenBaoMembers {
+		member := fmt.Sprintf("openbao-%d", i)
+		targets = append(targets, map[string]any{"targets": []any{fmt.Sprintf("%s.openbao-internal.openbao.svc:%d", member, openBaoMetricsPort(t, set))},
+			"labels": map[string]any{"k8s_pod_name": member}})
+	}
+	assert.Equal(t, targets, testutil.Field(t, openbao, "static_configs"), "one target for each member, so each sample names the member it came from")
+	assert.Equal(t, []any{"https", "/v1/sys/metrics", []any{"prometheus"}},
+		[]any{testutil.Field(t, openbao, "scheme"), testutil.Field(t, openbao, "metrics_path"), testutil.Field(t, openbao, "params", "format")})
+	pod := podOf(t, docs, "cluster")
+	assert.Contains(t, pod["volumes"], map[string]any{"name": "openbao-ca", "configMap": map[string]any{"name": "openbao-ca"}}, "the authority trust-manager publishes in every namespace")
+	assert.Contains(t, testutil.Field(t, pod, "containers", "0", "volumeMounts"), map[string]any{"name": "openbao-ca", "mountPath": "/etc/mitstack-telemetry-openbao", "readOnly": true})
+	assert.Equal(t, "/etc/mitstack-telemetry-openbao/ca.crt", testutil.Field(t, openbao, "tls_config", "ca_file"), "the members' certificate stays verified")
+	assert.Equal(t, keepOnly("vault_core_unsealed"), testutil.Field(t, openbao, "metric_relabel_configs"), "the one series an alert rule reads")
+	assert.NotContains(t, fmt.Sprint(podOf(t, docs, "node")["volumes"]), "openbao-ca")
+}
+
+func keepOnly(metric string) []any {
+	return []any{map[string]any{"source_labels": []any{"__name__"}, "regex": metric, "action": "keep"}}
+}
+
+func TestTelemetryCollector_EachCopysPodChangesWithItsConfigurationAndOnlyThenSinceTheCollectorReadsItAtStart(t *testing.T) {
+	export := testutil.TelemetryExport()
+	moved := export
+	moved.MetricsEndpoint = "https://4a5b6c7d.metrics.cockpit.fr-par.scw.cloud/otlp/v1/metrics"
+
+	once, again, changed := telemetryDocs(t, export), telemetryDocs(t, export), telemetryDocs(t, moved)
+
+	for _, which := range collectorCopies {
+		assert.Equal(t, podTemplate(t, once, which), podTemplate(t, again, which), "the %s copy's pod for the same configuration", which)
+		assert.NotEqual(t, podTemplate(t, once, which), podTemplate(t, changed, which), "the %s copy's pod for another configuration", which)
+	}
 }
 
 func TestTelemetryCollector_RefusesAnExportWithoutAnHTTPSEndpointOrAHeaderName(t *testing.T) {
@@ -179,7 +246,7 @@ func TestTelemetryCollector_RefusesAnExportWithoutAnHTTPSEndpointOrAHeaderName(t
 			export := testutil.TelemetryExport()
 			tc.edit(&export)
 
-			manifests, err := components.TelemetryCollector(export, telemetrySubscription)
+			manifests, err := components.Default().TelemetryCollector(export, telemetrySubscription)
 
 			require.Error(t, err, "TelemetryCollector(%+v) rendered %d manifests", export, len(manifests))
 			assert.ErrorContains(t, err, tc.names, "the refusal names what is wrong")
@@ -189,7 +256,7 @@ func TestTelemetryCollector_RefusesAnExportWithoutAnHTTPSEndpointOrAHeaderName(t
 }
 
 func TestTelemetryCollector_RendersNothingWithoutAnExport(t *testing.T) {
-	manifests, err := components.TelemetryCollector(components.TelemetryExport{}, telemetrySubscription)
+	manifests, err := components.Default().TelemetryCollector(components.TelemetryExport{}, telemetrySubscription)
 
 	require.NoError(t, err)
 	assert.Empty(t, manifests, "a cluster that requires no OTLP backend runs no Collector, since one with no exporter cannot start")

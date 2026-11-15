@@ -1,5 +1,6 @@
-# The API server and a web client outside the cluster hold no workload identity, so the ports they call alone take a
-# call without one: each webhook's port, and Traefik's two web ports.
+# The API server, a web client outside the cluster and the telemetry Collector in kube-system hold no workload identity,
+# so the ports they call alone take a call without one: each webhook's port, Traefik's two web ports and OpenBao's
+# metrics listener.
 apiVersion: security.istio.io/v1
 kind: PeerAuthentication
 metadata:
@@ -63,8 +64,24 @@ spec:
     8443:
       mode: PERMISSIVE
 ---
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: mitstack-openbao-metrics
+  namespace: openbao
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: openbao
+  mtls:
+    mode: STRICT
+  portLevelMtls:
+    9101:
+      mode: PERMISSIVE
+---
 # Cilium sees a mesh call only on ztunnel's port 15008, so the ports it names for OpenBao are kept here: the API on 8200,
-# and the members' own port 8201 for the members alone.
+# the members' own port 8201 for the members alone, and the metrics listener on 9101 for a caller outside the mesh
+# alone, which Cilium narrows to the telemetry Collector.
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
 metadata:
@@ -78,10 +95,16 @@ spec:
   rules:
   - to:
     - operation:
-        notPorts: ["8200", "8201"]
+        notPorts: ["8200", "8201", "9101"]
   - from:
     - source:
         notPrincipals: ["cluster.local/ns/openbao/sa/openbao"]
     to:
     - operation:
         ports: ["8201"]
+  - from:
+    - source:
+        principals: ["*"]
+    to:
+    - operation:
+        ports: ["9101"]

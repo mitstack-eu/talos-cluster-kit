@@ -32130,6 +32130,31 @@ subjects:
   name: argocd-server
   namespace: argocd
 ---
+# Source: argo-cd/templates/argocd-application-controller/metrics.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: argocd-application-controller-metrics
+  namespace: argocd
+  labels:
+    helm.sh/chart: argo-cd-10.10.5
+    app.kubernetes.io/name: argocd-metrics
+    app.kubernetes.io/instance: argocd
+    app.kubernetes.io/component: application-controller
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: argocd
+    app.kubernetes.io/version: "v3.5.5-sha256-13db7b10db23283b1b36f855046602e18539a8a8204c9f6f0"
+spec:
+  type: ClusterIP  
+  ports:
+  - name: http-metrics
+    protocol: TCP
+    port: 8082
+    targetPort: metrics
+  selector:
+    app.kubernetes.io/name: argocd-application-controller
+    app.kubernetes.io/instance: argocd
+---
 # Source: argo-cd/templates/argocd-applicationset/service.yaml
 apiVersion: v1
 kind: Service

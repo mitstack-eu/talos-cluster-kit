@@ -1,6 +1,8 @@
 # The cluster's telemetry Collector. The node copy reads each node's container
 # logs and its kubelet's metrics, and the one cluster copy reads the API
-# server's events and the cluster's metrics. Each tags a record with its
+# server's events and the cluster's metrics, and scrapes Argo CD's application
+# controller and, on a cluster that runs OpenBao, each of its members on its
+# own, so a sample names the member it came from. Each tags a record with its
 # namespace's app and the subscription, masks secrets and personal data, and
 # pushes to the backend the block requires, under the token the lease job writes.
 apiVersion: v1
@@ -138,14 +140,7 @@ subjects:
               - key: token
                 path: token
 {{- end }}
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: mitstack-telemetry-node
-  namespace: kube-system
-data:
-  config.yaml: |
+{{- define "nodeConfig" }}
     receivers:
       file_log:
         include: [/var/log/pods/*/*/*.log]
@@ -182,15 +177,8 @@ data:
           receivers: [kubelet_stats]
           processors: [memory_limiter, k8s_attributes, redaction, resource/subscription, transform/datapoints, batch]
           exporters: [otlp_http/metrics]
-# Talos trims each document before it decodes it, so this line keeps the value above whole.
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: mitstack-telemetry-cluster
-  namespace: kube-system
-data:
-  config.yaml: |
+{{- end }}
+{{- define "clusterConfig" }}
     receivers:
       k8s_objects:
         auth_type: serviceAccount
@@ -198,6 +186,30 @@ data:
           - {name: events, group: events.k8s.io, mode: watch}
       k8s_cluster:
         auth_type: serviceAccount
+      prometheus:
+        config:
+          scrape_configs:
+            - job_name: argocd
+              static_configs:
+                - targets: [argocd-application-controller-metrics.argocd.svc:8082]
+              metric_relabel_configs:
+                - {source_labels: [__name__], regex: argocd_app_info, action: keep}
+{{- with .OpenBaoMembers }}
+            - job_name: openbao
+              scheme: https
+              metrics_path: /v1/sys/metrics
+              params:
+                format: [prometheus]
+              tls_config:
+                ca_file: /etc/mitstack-telemetry-openbao/ca.crt
+              static_configs:
+{{- range . }}
+                - targets: [{{ .Host }}:9101]
+                  labels: {k8s_pod_name: {{ .Pod }}}
+{{- end }}
+              metric_relabel_configs:
+                - {source_labels: [__name__], regex: vault_core_unsealed, action: keep}
+{{- end }}
     processors:
       k8s_attributes:
         auth_type: serviceAccount
@@ -214,9 +226,29 @@ data:
           processors: [memory_limiter, k8s_attributes, redaction, resource/subscription, batch]
           exporters: [otlp_http/logs]
         metrics:
-          receivers: [k8s_cluster]
+          receivers: [k8s_cluster, prometheus]
           processors: [memory_limiter, k8s_attributes, redaction, resource/subscription, transform/datapoints, batch]
           exporters: [otlp_http/metrics]
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mitstack-telemetry-node
+  namespace: kube-system
+data:
+  config.yaml: |
+{{- template "nodeConfig" . }}
+# Talos trims each document before it decodes it, so this line keeps the value above whole.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mitstack-telemetry-cluster
+  namespace: kube-system
+data:
+  config.yaml: |
+{{- template "clusterConfig" . }}
 # Talos trims each document before it decodes it, so this line keeps the value above whole.
 ---
 apiVersion: apps/v1
@@ -232,6 +264,9 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: mitstack-telemetry-node
+      annotations:
+        # The Collector reads its configuration only when it starts, so this hash of it restarts the copy on a new one.
+        mitstack.dev/config-sha256: "{{ index .ConfigSHA256 "node" }}"
     spec:
       priorityClassName: system-node-critical
       tolerations:
@@ -268,6 +303,8 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: mitstack-telemetry-cluster
+      annotations:
+        mitstack.dev/config-sha256: "{{ index .ConfigSHA256 "cluster" }}"
     spec:
       priorityClassName: system-cluster-critical
       nodeSelector:
@@ -277,8 +314,18 @@ spec:
           operator: Exists
           effect: NoSchedule
 {{- template "container" . }}
+{{- if .OpenBaoMembers }}
+            - name: openbao-ca
+              mountPath: /etc/mitstack-telemetry-openbao
+              readOnly: true
+{{- end }}
       volumes:
         - name: config
           configMap:
             name: mitstack-telemetry-cluster
 {{- template "token" }}
+{{- if .OpenBaoMembers }}
+        - name: openbao-ca
+          configMap:
+            name: openbao-ca
+{{- end }}

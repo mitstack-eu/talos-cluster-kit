@@ -38,7 +38,7 @@ func (p Plane) Release(st State) (rollout.Release, error) {
 	if err != nil {
 		return rollout.Release{}, err
 	}
-	telemetry, err := components.TelemetryCollector(p.Telemetry, p.Subscription)
+	telemetry, err := set.TelemetryCollector(p.Telemetry, p.Subscription)
 	if err != nil {
 		return rollout.Release{}, err
 	}

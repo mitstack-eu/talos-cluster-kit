@@ -1170,9 +1170,12 @@ subjects:
 ```
 
 Until the grant exists, the SecretStore reports that it cannot validate and
-makes no copy. Kyverno then refuses every image of the entry's repository,
-since the registry refuses a read with no login, and judges a `ghcr.io` image
-as before.
+makes no copy. Both policies still load. Kyverno refuses every image of an
+entry that names that pull Secret, since the registry refuses a read with no
+login. It judges a `ghcr.io` image and an image no entry names as before,
+since it skips a login it cannot find. External Secrets watches no
+SecretStore, so after the grant the copy appears at its next retry of the
+failed read, which it spaces further apart the longer the read has failed.
 
 Kyverno reads the login at every check. It fetches each listed image's
 manifest with the policy's logins before it looks in its cache of checked

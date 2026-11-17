@@ -4098,10 +4098,11 @@ its requirement of the kit itself.
 ## How an operator shares its start-up and repository code
 
 hcloud-talos-cluster and hcloud-hrobot-talos-cluster each start the same way,
-read a request the same way, and keep their cluster repository on GitHub the
-same way. The operator module under `operator/` holds that code once, so a fix
-to it lands once and reaches both. This section is for an engineer who changes
-how either operator starts, reads a request, or handles the cluster repository.
+read a request and its node reports the same way, and keep their cluster
+repository on GitHub the same way. The operator module under `operator/` holds
+that code once, so a fix to it lands once and reaches both. This section is for
+an engineer who changes how either operator starts, reads a request, reads a
+node report, or handles the cluster repository.
 
 The rest of this repository imports no block framework, and its `go.mod` names
 none, which `TestPlane_TheKitRequiresNeitherBlockKitNorOperatorKit` checks.
@@ -4114,8 +4115,39 @@ no release of the kit itself.
 
 | Package | What it does | Main entry points |
 |---|---|---|
-| `operator` | Starts the operator. It refuses to start without `MITSTACK_JWKS_URL`, the address where mitstack publishes the keys it signs each request with. It listens on `LISTEN_ADDR` or port 8080, keeps the standard logger's last 500 lines for `/logs`, the route that serves the operator's recent log lines, and serves block-kit's lifecycle handler on the routes the operator passes. It also refuses a request without a Hetzner token or an app name, or one handled by an operator built against an unreleased kit, and gives an observation of state Unknown with its reason | `Main`, `ReadSettings`, `NewServer`, `HetznerToken`, `AppName`, `RefuseUnreleasedTools`, `Unknown`, `RefusalDetail`, `ObserverFunc` |
-| `operator/clusterrepo` | Handles the private repository the cluster's Argo CD syncs from, named for the app as `<app>-cluster`. It dials GitHub, taking the API host the request names only when block-kit's `ghapi.Base` allows it: `api.github.com`, or a public host the operator's own environment lists in `MITSTACK_GITHUB_API_HOSTS`. It refuses a request it cannot act on before any call. It reads whether the repository carries the subscription's mark, creates, marks and seeds it, deletes it, and observes it and its seed | `Dial`, `NewClient`, `For`, `Mark`, `CarriesMark`, `Access.Read`, `Access.Ensure`, `Access.RefuseUnmarked`, `Access.Delete`, `Observe`, `RepositoryObserver`, `SeedObserver` |
+| `operator` | Starts the operator. It refuses to start without `MITSTACK_JWKS_URL`, the address where mitstack publishes the keys it signs each request with. It listens on `LISTEN_ADDR` or port 8080, keeps the standard logger's last 500 lines for `/logs`, the route that serves the operator's recent log lines, and serves block-kit's lifecycle handler on the routes the operator passes. It also refuses a request without a Hetzner token or an app name, or one handled by an operator built against an unreleased kit, lists every secret a request carries so a log line can mask it, and gives an observation of state Unknown with its reason. It reads the newest node report a cluster sent after a given time, and the nodes that report names with whether each is Ready | `Main`, `ReadSettings`, `NewServer`, `HetznerToken`, `AppName`, `RefuseUnreleasedTools`, `RequestSecrets`, `Unknown`, `RefusalDetail`, `ObserverFunc`, `NewestReport`, `NewestReportNodes`, `ReportedNode` |
+| `operator/clusterrepo` | Handles the private repository the cluster's Argo CD syncs from, named for the app as `<app>-cluster`. It dials GitHub, taking the API host the request names only when block-kit's `ghapi.Base` allows it: `api.github.com`, or a public host the operator's own environment lists in `MITSTACK_GITHUB_API_HOSTS`. It refuses a request it cannot act on before any call, a request that names no app among them. It reads whether the repository carries the subscription's mark, creates, marks and seeds it, deletes it, and observes it and its seed | `Dial`, `DialApp`, `NewClient`, `For`, `Mark`, `CarriesMark`, `Access.Read`, `Access.Ensure`, `Access.RefuseUnmarked`, `Access.Delete`, `Observe`, `RepositoryObserver`, `SeedObserver` |
+
+The view below shows the operator module's two packages and what each Talos
+operator calls in them, in the form of a C4 Component view, the model's zoom
+on the parts inside one service.
+
+```mermaid
+C4Component
+    title The operator module and the Talos operators that call it
+    Container(hcloud, "hcloud-talos-cluster", "Go operator", "Its id, manifest, Hetzner Cloud control plane and wiring")
+    Container(hrobot, "hcloud-hrobot-talos-cluster", "Go operator", "Its id, manifest and wiring")
+    Container_Boundary(module, "talos-cluster-kit/operator") {
+        Component(op, "operator", "Go package", "Start-up, request reads, request secrets, newest node report")
+        Component(repo, "operator/clusterrepo", "Go package", "Dials, marks, seeds, observes and deletes the cluster repository")
+    }
+    System_Ext(platform, "mitstack", "Signs each request and serves the node reports")
+    System_Ext(github, "GitHub", "Holds the cluster repository")
+    Rel(hcloud, op, "Starts through and reads requests and node reports with")
+    Rel(hrobot, op, "Starts through and reads requests and node reports with")
+    Rel(hcloud, repo, "Keeps its cluster repository with")
+    Rel(hrobot, repo, "Keeps its cluster repository with")
+    Rel(op, platform, "Serves the lifecycle handler mitstack calls")
+    Rel(repo, github, "Calls the REST API of")
+```
+
+For example, an operator judges whether its cluster reports every node Ready
+since its last server was created:
+
+```go
+nodes, err := operator.NewestReportNodes(reports, lastCreated)
+// nodes is nil when no report came after lastCreated, and empty when the newest names no node.
+```
 
 A repository carries the subscription's mark when it holds two topics. One is
 `mitstack-` followed by the block's id. The other is `mitstack-` followed by

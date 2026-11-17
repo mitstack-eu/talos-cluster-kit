@@ -39,6 +39,23 @@ func RefuseUnreleasedTools(image string) error {
 	return nil
 }
 
+// RequestSecrets is every secret value the request carries, which a log line masks before it is written.
+func RequestSecrets(d contract.Desired) []string {
+	var out []string
+	for _, group := range d.Secrets {
+		for _, v := range group {
+			out = append(out, v)
+		}
+	}
+	for _, v := range d.SecretInputs {
+		out = append(out, v)
+	}
+	for _, v := range d.OwnSecrets {
+		out = append(out, v)
+	}
+	return out
+}
+
 func Unknown(detail string) contract.Observation {
 	return contract.Observation{State: contract.Unknown, StatusDetail: detail}
 }

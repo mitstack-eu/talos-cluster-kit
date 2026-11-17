@@ -54,7 +54,7 @@ func Decide(pool pools.CloudPool, members []controlplane.Server, reads []report.
 	if len(waiting) > 0 {
 		return grow(pool, len(members), len(waiting)), nil
 	}
-	return shrink(pool, members, reads)
+	return shrink(pool, members, reads, held)
 }
 
 func grow(pool pools.CloudPool, members, waiting int) Decision {
@@ -67,8 +67,7 @@ func grow(pool pools.CloudPool, members, waiting int) Decision {
 }
 
 // shrink chooses, of the members idle for the window, the newest of the location holding the most members.
-func shrink(pool pools.CloudPool, members []controlplane.Server, reads []report.Read) (Decision, error) {
-	held := Decision{Want: min(max(len(members), pool.Min), pool.Max)}
+func shrink(pool pools.CloudPool, members []controlplane.Server, reads []report.Read, held Decision) (Decision, error) {
 	if len(members) <= pool.Min {
 		return held, nil
 	}

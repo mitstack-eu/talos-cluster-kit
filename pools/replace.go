@@ -52,7 +52,6 @@ func (r workerReplacement) plan() string {
 	return workerReplacePlan + r.record()
 }
 
-// label is the network label that records r.
 func (r workerReplacement) label() string {
 	if r.removal {
 		return KeyWorkerRemove + r.key
@@ -60,7 +59,6 @@ func (r workerReplacement) label() string {
 	return KeyWorkerReplace + r.key
 }
 
-// noun and gerund name what r does to its worker in an event or a step.
 func (r workerReplacement) noun() string {
 	if r.removal {
 		return "removal"
@@ -253,7 +251,6 @@ func ReplacementProblems(ctx context.Context, plane controlplane.Plane, pool Clo
 	return out
 }
 
-// askedFor names r and when its call asked for it.
 func (r workerReplacement) askedFor() string {
 	if r.removal {
 		return "the removal the pool's scaling asked for at " + stamp(r.asked)

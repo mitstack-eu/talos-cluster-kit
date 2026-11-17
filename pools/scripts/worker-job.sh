@@ -55,14 +55,18 @@ drain() {
   exit 1
 }
 
-# keep_busy runs before any eviction, and the cordon comes before the read, so no pod can land between the two.
+# keep_busy runs before any eviction, and the cordon comes before the read, so no pod can land between the two. A pod is
+# the cluster's own by its controller's kind alone, as report.sh reads it, so the drain and the scaling agree.
 keep_busy() {
   local busy
   kubectl cordon "$NODE" >/dev/null
-  busy=$(kubectl get pods -A --field-selector "spec.nodeName=$NODE" -o json |
+  if ! busy=$(kubectl get pods -A --field-selector "spec.nodeName=$NODE" -o json |
     jq -r '.items[] | select(.status.phase != "Succeeded" and .status.phase != "Failed")
-      | select(all(.metadata.ownerReferences[]?; .kind != "DaemonSet" and .kind != "Node"))
-      | "\(.metadata.namespace)/\(.metadata.name)"' | paste -sd, -)
+      | select([.metadata.ownerReferences[]? | select(.controller == true) | .kind] | .[0] | . != "DaemonSet" and . != "Node")
+      | "\(.metadata.namespace)/\(.metadata.name)"' | paste -sd, -); then
+    kubectl uncordon "$NODE" >/dev/null
+    fail "could not read the pods on $NODE, so it was given back undrained"
+  fi
   if [ -n "$busy" ]; then
     kubectl uncordon "$NODE" >/dev/null
     fail "kept $NODE, which runs $busy, a pod that is not the cluster's own"

@@ -54,15 +54,6 @@ type workerJobSpec struct {
 	idleOnly bool
 }
 
-func renderWorkerJob(step, key, hostname string) ([]byte, error) {
-	return workerJobSpec{step: step, key: key, hostname: hostname}.render()
-}
-
-// renderIdleDrainJob is the drain an idle worker's removal writes, which evicts no pod of a workload that landed since.
-func renderIdleDrainJob(key, hostname string) ([]byte, error) {
-	return workerJobSpec{step: drainStep, key: key, hostname: hostname, idleOnly: true}.render()
-}
-
 func (s workerJobSpec) render() ([]byte, error) {
 	if err := check.DNS1123Label(s.hostname); err != nil {
 		return nil, fmt.Errorf("Cloud worker: %w", err)

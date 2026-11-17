@@ -100,3 +100,16 @@ func TestRefuseUnreleasedTools_RefusesOnlyTheToolsImagePlaceholderAnUnreleasedKi
 	assert.ErrorContains(t, err, placeholder)
 	assert.NoError(t, operator.RefuseUnreleasedTools("ghcr.io/mitstack-eu/talos-cluster-kit-tools:v0.81.0"+digest), "a released image")
 }
+
+func TestRequestSecrets_ListsEverySecretTheRequestCarriesSoALogLineCanMaskThem(t *testing.T) {
+	d := contract.Desired{
+		Secrets:      map[string]map[string]string{"hetzner": {"api_token": "hc-token"}, "github": {"token": "gh-token"}},
+		SecretInputs: map[string]string{"password": "input-secret"},
+		OwnSecrets:   map[string]string{"gatewayCaKey": "own-secret"},
+	}
+
+	secrets := operator.RequestSecrets(d)
+
+	assert.ElementsMatch(t, []string{"hc-token", "gh-token", "input-secret", "own-secret"}, secrets)
+	assert.Empty(t, operator.RequestSecrets(contract.Desired{}), "a request that carries no secret")
+}

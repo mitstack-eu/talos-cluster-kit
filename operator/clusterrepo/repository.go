@@ -102,6 +102,15 @@ func Dial(d contract.Desired, blockID, appName string, newClient func(base, toke
 	return &Access{Client: newClient(base.String(), token), Repo: repo, blockID: blockID, subID: d.SubscriptionID}, nil
 }
 
+// DialApp dials the repository of the app the request names, refusing a request that names none.
+func DialApp(d contract.Desired, blockID string, newClient func(base, token string) *ghapi.Client) (*Access, error) {
+	appName := d.Params["appName"]
+	if appName == "" {
+		return nil, handler.Refuse("missing-param", `the app name is required to name the cluster repository: params["appName"] is empty`)
+	}
+	return Dial(d, blockID, appName, newClient)
+}
+
 func (a *Access) SubscriptionID() string { return a.subID }
 
 // SubscriptionTopic lowercases first, since GitHub takes only lowercase topics and block-kit's helper keeps case.

@@ -101,6 +101,9 @@ func TestDecide_PodsThatWaitAddOneMemberForEachUpToTheMaximumAndNeverPastIt(t *t
 		{"a pool at its maximum with pods waiting creates no member and reads held at its maximum", scaled(0, 3), full,
 			[]pod{job("a", full[0]), job("b", full[1]), job("c", full[2]), waiting("d"), waiting("e")},
 			scaling.Decision{Want: 3, AtMaximum: true, Detail: "2 pods wait for a node, and the Cloud pool holds its maximum of 3: ci/d, ci/e"}},
+		{"a pool at its maximum names the first three of five waiting pods", scaled(0, 3), full,
+			[]pod{job("a", full[0]), job("b", full[1]), job("c", full[2]), waiting("d"), waiting("e"), waiting("f"), waiting("g"), waiting("h")},
+			scaling.Decision{Want: 3, AtMaximum: true, Detail: "5 pods wait for a node, and the Cloud pool holds its maximum of 3: ci/d, ci/e, ci/f and 2 more"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

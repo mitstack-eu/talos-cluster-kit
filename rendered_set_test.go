@@ -1,8 +1,13 @@
 package talosclusterkit
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/pem"
 	"fmt"
 	"maps"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -111,6 +116,37 @@ func TestDropEmptyMetadataMaps(t *testing.T) {
 				tc.want = tc.in
 			}
 			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestFetch(t *testing.T) {
+	const archive = "the chart archive's bytes"
+	sum := sha256.Sum256([]byte(archive))
+	pin := hex.EncodeToString(sum[:])
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/refused.tgz" {
+			http.Error(w, "Access denied.", http.StatusForbidden)
+			return
+		}
+		fmt.Fprint(w, archive)
+	}))
+	t.Cleanup(srv.Close)
+	caBundle := filepath.Join(t.TempDir(), "ca.pem")
+	require.NoError(t, os.WriteFile(caBundle, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}), 0o644))
+
+	for _, tc := range []struct{ name, path, pin, want string }{
+		{"an archive matching its pin lands at its destination and passes the check there", "/chart.tgz", pin, "exit=0"},
+		{"a URL that answers 403 stops with curl's exit status and names the URL", "/refused.tgz", pin, srv.URL + "/refused.tgz (curl exit 22)\nexit=22"},
+		{"an archive whose sha256 differs from its pin stops at the check", "/chart.tgz", strings.Repeat("0", 64), "did NOT match\nexit=1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dest := filepath.Join(t.TempDir(), "chart.tgz")
+
+			out, err := testutil.RunBash(t, `. "$1"; fetch "$2" "$3" "$4"; echo "exit=$?"`, append(os.Environ(), "CURL_CA_BUNDLE="+caBundle), "scripts/lib/fetch.sh", srv.URL+tc.path, tc.pin, dest)
+
+			require.NoError(t, err, out)
+			assert.Contains(t, out, tc.want, "fetch %s%s with pin %s", srv.URL, tc.path, tc.pin)
 		})
 	}
 }

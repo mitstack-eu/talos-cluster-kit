@@ -29,6 +29,12 @@ block-kit nor operator-kit, so any block framework can drive it. Keeping the
 install in one module means a fix to the boot, to etcd recovery or to the
 Cloud control plane lands once and reaches every block.
 
+The one exception is the operator module under `operator/`, a Go module of
+its own. It holds the start-up and repository code both Talos cluster
+operators run on block-kit, as
+[How an operator shares its start-up and repository code](#how-an-operator-shares-its-start-up-and-repository-code)
+describes.
+
 ## What a cluster is built from
 
 A node boots from a disk image that embeds its whole machine configuration, so
@@ -4083,6 +4089,58 @@ differs from the one the kit renders. A gateway's build therefore fetches
 nothing from outside the registries its mirror copies from, so an outage of
 GitHub's release downloads, of `raw.githubusercontent.com` or of `dl.k8s.io`
 cannot stop it.
+
+The same job tags that commit `operator/v` followed by the version, which is
+the operator module's release. A block requires it as
+`require github.com/mitstack-eu/talos-cluster-kit/operator v0.82.0`, beside
+its requirement of the kit itself.
+
+## How an operator shares its start-up and repository code
+
+hcloud-talos-cluster and hcloud-hrobot-talos-cluster each start the same way,
+read a request the same way, and keep their cluster repository on GitHub the
+same way. The operator module under `operator/` holds that code once, so a fix
+to it lands once and reaches both. This section is for an engineer who changes
+how either operator starts, reads a request, or handles the cluster repository.
+
+The rest of this repository imports no block framework, and its `go.mod` names
+none, which `TestPlane_TheKitRequiresNeitherBlockKitNorOperatorKit` checks.
+This code is built on block-kit's handler and request types, so it lives in a
+module with its own `go.mod`. A block that requires the kit inherits no
+block-kit release from it. A block that requires the operator module inherits
+block-kit v0.40.0, the oldest release either operator builds on, so the
+requirement moves neither operator's block-kit. The operator module requires
+no release of the kit itself.
+
+| Package | What it does | Main entry points |
+|---|---|---|
+| `operator` | Starts the operator. It refuses to start without `MITSTACK_JWKS_URL`, listens on `LISTEN_ADDR` or port 8080, keeps the standard logger's last 500 lines for `/logs`, and serves the lifecycle handler on the routes the operator passes. It also refuses a request without a Hetzner token or an app name, or one handled by an operator built against an unreleased kit, and reads a resource unknown with the reason | `Main`, `ReadSettings`, `NewServer`, `HetznerToken`, `AppName`, `RefuseUnreleasedTools`, `Unknown`, `RefusalDetail`, `ObserverFunc` |
+| `operator/clusterrepo` | Handles the private repository the cluster's Argo CD syncs from, named for the app as `<app>-cluster`. It dials GitHub, resolving the API host through block-kit's `ghapi.Base` and the operator's allowlist, and refuses a request it cannot act on before any call. It reads whether the repository carries the subscription's mark, creates, marks and seeds it, deletes it, and observes it and its seed | `Dial`, `NewClient`, `For`, `Mark`, `CarriesMark`, `Access.Read`, `Access.Ensure`, `Access.RefuseUnmarked`, `Access.Delete`, `Observe`, `RepositoryObserver`, `SeedObserver` |
+
+A repository carries the subscription's mark when it holds two topics. One is
+`mitstack-` followed by the block's id. The other is `mitstack-` followed by
+the subscription id in lowercase, with each underscore a hyphen. For example,
+subscription `sub_Ab12` of hcloud-talos-cluster marks `acme/shop-cluster` with
+`mitstack-hcloud-talos-cluster` and `mitstack-sub-ab12`. The first seed writes
+`cluster/README.md` and `repository-credentials/README.md`, which open the two
+directories the cluster's Argo CD Applications sync.
+
+Each operator keeps its own routes, with the `"/hook"` and `"/logs"` paths
+written out in its source. block-kit's `blockverify` requires the `/logs`
+secret-leak test only of a module whose own source names `"/logs"`, so the
+routes stay with the operator. An operator's `main` is then one call:
+
+```go
+func main() { operator.Main(handlerConfig, routes) }
+```
+
+The module's tests run from its own directory, since the root's `./...` does
+not reach a nested module:
+
+```bash
+go -C operator vet ./...
+go -C operator test -race ./...
+```
 
 ## How you change the module
 

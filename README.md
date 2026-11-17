@@ -3941,8 +3941,9 @@ the cluster, as
 [ADR 0095](https://github.com/mitstack-eu/mitstack/blob/main/docs/adr/0095-mitstack-clusters-run-talos-across-fsn1-nbg1-and-hel1-with-a-load-balancer-per-location.md)
 recommends. The cluster's report carries each pod's `ownerKind` and
 `unschedulable`, which [What the node report carries](#what-the-node-report-carries)
-describes. A pod is the cluster's own when a DaemonSet or the Node itself is
-its controller, since every node runs such pods and a drain leaves them. A
+describes. A pod is the cluster's own when its controller is a DaemonSet, which runs a
+copy on every node, or the Node object, as for a static pod Talos starts from
+the node's own config, since a drain leaves such pods. A
 finished pod counts for nothing.
 
 ### How the pool decides
@@ -3955,9 +3956,9 @@ platform keeps, in any order, and answers a `Decision`:
 2. While a member has not been read Ready by a report made since its
    creation, the pool holds its size, so a burst creates no second wave while
    the first joins.
-3. Each pod the newest report reads `unschedulable` adds one member, up to the
-   maximum. For example, five waiting pods grow an empty pool of at most three
-   to three.
+3. Each pod the newest report reads `unschedulable` adds one member to the
+   members the pool has, up to the maximum. For example, five waiting pods grow
+   a pool of no members and a maximum of three to three.
 4. A pool that holds its maximum while pods wait answers `AtMaximum`, with a
    `Detail` such as "2 pods wait for a node, and the Cloud pool holds its
    maximum of 3". The block shows `CauseAtMaximum` in the cluster resource's
@@ -3967,8 +3968,9 @@ platform keeps, in any order, and answers a `Decision`:
    One member goes at a time, down to the minimum. Of several idle members,
    the newest of the location holding the most goes first.
 
-`Want` is the size the pool should hold, and `Remove` is the member to take
-out when it is one below the members. A block runs the decision on each
+`Want` is the number of members the pool should hold. When `Want` is one
+fewer than the pool has, `Remove` names the member to take out, and otherwise
+it is empty. A block runs the decision on each
 subscribe and reports the next step from its validate, so the platform asks
 for that subscribe again. hcloud-hrobot-talos-cluster's pool step takes the
 three in this order, where `reads` is every node report the platform keeps:
@@ -4002,10 +4004,12 @@ removal through the stages a replacement takes, with these differences:
 1. Before it writes the drain, the removal reads the node report received
    since it began. A worker that report reads running a pod that is not the
    cluster's own is kept.
-2. The drain Job runs with `IDLE_ONLY=true`. It cordons the node first, so no
-   pod lands after it looks. While a pod that is not the cluster's own runs
-   there, the Job uncordons the node and fails naming the pod, and evicts
-   nothing. After the Job's last attempt, the pool keeps the worker.
+2. The drain Job runs with `IDLE_ONLY=true`. It first cordons the node, which
+   stops new pods landing there, so no pod lands after it looks. While a pod
+   that is not the cluster's own runs there, or when it cannot read the node's
+   pods, the Job uncordons the node, letting pods land again, and fails naming
+   why, evicting nothing. After the Job's last attempt, the pool keeps the
+   worker.
 3. A kept worker serves on, and the removal refuses nothing, since no customer
    asked for it. Its event begins "kept Cloud worker".
 4. Once the node report lists no Node object of the worker and its server is

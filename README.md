@@ -3970,18 +3970,28 @@ platform keeps, in any order, and answers a `Decision`:
 `Want` is the size the pool should hold, and `Remove` is the member to take
 out when it is one below the members. A block runs the decision on each
 subscribe and reports the next step from its validate, so the platform asks
-for that subscribe again:
+for that subscribe again. hcloud-hrobot-talos-cluster's pool step takes the
+three in this order, where `reads` is every node report the platform keeps:
 
 ```go
 if pools.ChangeUnderWay(st) {
-	return pools.ReplaceStep(ctx, plane, pool) // a removal or a replacement in flight goes first
+	return pools.ReplaceStep(ctx, plane, pool)
 }
 decision, err := scaling.Decide(pool, st.Servers[pools.RoleCloudWorker], reads)
-if decision.Remove != nil {
-	return pools.RemoveWorker(plane, st, decision.Remove.Labels[pools.KeyMember], decision.Detail)
+if err != nil {
+	return controlplane.Step{}, false, err
 }
-pool.Max = decision.Want // pools.PlanCloud then creates the members the pool lacks
+if decision.Remove != nil {
+	step, err := pools.RemoveWorker(plane, st, decision.Remove.Labels[pools.KeyMember], decision.Detail)
+	return step, err == nil, err
+}
+sized := pool
+sized.Max = decision.Want
+plan, err := pools.PlanCloud(ctx, plane, sized, drained)
 ```
+
+A removal or a replacement already in flight goes first, and `PlanCloud`
+then creates the members a pool of `Want` lacks.
 
 ### How a removal differs from a replacement
 

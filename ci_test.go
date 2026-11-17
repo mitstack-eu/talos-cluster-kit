@@ -160,3 +160,54 @@ func TestCI_RunsEachBoardCommandFromPlainDeliveryAtAReleaseTag(t *testing.T) {
 		assert.Equal(t, 1, runs, "the %s job runs %s from plain-delivery at a release tag", job, command)
 	}
 }
+
+func ciJobSteps(t *testing.T, job string) []ciStep {
+	t.Helper()
+	raw, err := os.ReadFile(".github/workflows/ci.yml")
+	require.NoError(t, err)
+	var ci struct {
+		Jobs map[string]struct {
+			Steps []ciStep `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	require.NoError(t, yaml.Unmarshal(raw, &ci))
+	require.NotEmpty(t, ci.Jobs[job].Steps, "the CI workflow has a %s job", job)
+	return ci.Jobs[job].Steps
+}
+
+// The root's go test never reaches a nested module, so the test job vets and tests the operator module from its own directory.
+func TestCI_TestJobVetsAndTestsTheOperatorModule(t *testing.T) {
+	steps := ciJobSteps(t, "test")
+
+	for _, run := range []string{"go vet ./...", "go test -race ./..."} {
+		at := slices.IndexFunc(steps, func(s ciStep) bool { return s.Run == run && s.WorkingDirectory == "operator" })
+
+		require.GreaterOrEqual(t, at, 0, "the test job runs `%s` in the operator module", run)
+		assert.Nil(t, steps[at].ContinueOnError, "a failed `%s` fails the job", run)
+	}
+}
+
+// A block requires the operator module by its own tag, so each release tags it at the commit the kit's tag names.
+func TestCI_ReleaseTagsTheOperatorModuleAtTheKitsReleaseCommit(t *testing.T) {
+	steps := ciJobSteps(t, "release")
+
+	at := slices.IndexFunc(steps, func(s ciStep) bool { return strings.Contains(s.Run, `git tag "$TAG"`) })
+
+	require.GreaterOrEqual(t, at, 0, "the release job tags the kit's release")
+	run := steps[at].Run
+	assert.Contains(t, run, `git tag "operator/$TAG"`, "the release tags the operator module beside the kit")
+	assert.Contains(t, run, `git push --atomic origin "refs/tags/$TAG" "refs/tags/operator/$TAG"`, "one atomic push carries both tags, so a rerun finds neither when the push failed")
+}
+
+// hcloud-talos-cluster builds on block-kit v0.40.0, so a higher floor here would move its block-kit with no change of its own.
+func TestOperatorModule_RequiresBlockKitAtTheOldestReleaseATalosClusterOperatorBuildsOnAndNotTheKitItself(t *testing.T) {
+	mod, err := os.ReadFile("operator/go.mod")
+	require.NoError(t, err, "the operator module has its own go.mod")
+
+	required := regexp.MustCompile(`(?m)^\s*(?:require\s+)?github\.com/mitstack-eu/block-kit (v\S+)`).FindSubmatch(mod)
+
+	require.NotNil(t, required, "operator/go.mod requires github.com/mitstack-eu/block-kit")
+	assert.Equal(t, "v0.40.0", string(required[1]), "the block-kit release operator/go.mod requires")
+	assert.NotRegexp(t, `github\.com/mitstack-eu/talos-cluster-kit\s+v`, string(mod),
+		"the operator module requires no release of the kit, so requiring it moves no block's kit")
+}

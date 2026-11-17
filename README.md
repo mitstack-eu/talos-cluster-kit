@@ -29,6 +29,12 @@ block-kit nor operator-kit, so any block framework can drive it. Keeping the
 install in one module means a fix to the boot, to etcd recovery or to the
 Cloud control plane lands once and reaches every block.
 
+The `operator/` directory is not part of this module and does import
+block-kit. It is a Go module of its own, holding the start-up and repository
+code both Talos cluster operators run, as
+[How an operator shares its start-up and repository code](#how-an-operator-shares-its-start-up-and-repository-code)
+describes.
+
 ## What a cluster is built from
 
 A node boots from a disk image that embeds its whole machine configuration, so
@@ -4083,6 +4089,64 @@ differs from the one the kit renders. A gateway's build therefore fetches
 nothing from outside the registries its mirror copies from, so an outage of
 GitHub's release downloads, of `raw.githubusercontent.com` or of `dl.k8s.io`
 cannot stop it.
+
+The same job tags that commit `operator/v` followed by the version, which is
+the operator module's release. A block requires it as
+`require github.com/mitstack-eu/talos-cluster-kit/operator v0.83.0`, beside
+its requirement of the kit itself.
+
+## How an operator shares its start-up and repository code
+
+hcloud-talos-cluster and hcloud-hrobot-talos-cluster each start the same way,
+read a request the same way, and keep their cluster repository on GitHub the
+same way. The operator module under `operator/` holds that code once, so a fix
+to it lands once and reaches both. This section is for an engineer who changes
+how either operator starts, reads a request, or handles the cluster repository.
+
+The rest of this repository imports no block framework, and its `go.mod` names
+none, which `TestPlane_TheKitRequiresNeitherBlockKitNorOperatorKit` checks.
+This code is built on block-kit's handler and request types, so it lives in a
+module with its own `go.mod`. A block that requires the kit inherits no
+block-kit release from it. A block that requires the operator module inherits
+block-kit v0.40.0, the oldest release either operator builds on, so the
+requirement moves neither operator's block-kit. The operator module requires
+no release of the kit itself.
+
+| Package | What it does | Main entry points |
+|---|---|---|
+| `operator` | Starts the operator. It refuses to start without `MITSTACK_JWKS_URL`, the address where mitstack publishes the keys it signs each request with. It listens on `LISTEN_ADDR` or port 8080, keeps the standard logger's last 500 lines for `/logs`, the route that serves the operator's recent log lines, and serves block-kit's lifecycle handler on the routes the operator passes. It also refuses a request without a Hetzner token or an app name, or one handled by an operator built against an unreleased kit, and gives an observation of state Unknown with its reason | `Main`, `ReadSettings`, `NewServer`, `HetznerToken`, `AppName`, `RefuseUnreleasedTools`, `Unknown`, `RefusalDetail`, `ObserverFunc` |
+| `operator/clusterrepo` | Handles the private repository the cluster's Argo CD syncs from, named for the app as `<app>-cluster`. It dials GitHub, taking the API host the request names only when block-kit's `ghapi.Base` allows it: `api.github.com`, or a public host the operator's own environment lists in `MITSTACK_GITHUB_API_HOSTS`. It refuses a request it cannot act on before any call. It reads whether the repository carries the subscription's mark, creates, marks and seeds it, deletes it, and observes it and its seed | `Dial`, `NewClient`, `For`, `Mark`, `CarriesMark`, `Access.Read`, `Access.Ensure`, `Access.RefuseUnmarked`, `Access.Delete`, `Observe`, `RepositoryObserver`, `SeedObserver` |
+
+A repository carries the subscription's mark when it holds two topics. One is
+`mitstack-` followed by the block's id. The other is `mitstack-` followed by
+the subscription id in lowercase, with each underscore a hyphen. For example,
+subscription `sub_Ab12` of hcloud-talos-cluster marks `acme/shop-cluster` with
+`mitstack-hcloud-talos-cluster` and `mitstack-sub-ab12`. The first seed writes
+`cluster/README.md` and `repository-credentials/README.md`, which open the two
+directories the cluster's Argo CD Applications sync.
+
+Each operator keeps its own routes, the paths its web service answers on:
+`/hook` for mitstack's requests, `/logs` and the health check. blockverify,
+block-kit's checker of a block's contract, requires the test that no token
+reaches `/logs` only of a module whose own source names `"/logs"`, so the
+routes stay with the operator. An operator's `main` is then one call:
+
+```go
+func main() { operator.Main(handlerConfig, routes) }
+```
+
+`handlerConfig` builds the operator's lifecycle handler configuration, its
+resource, manifest and observers, from the signing-key address and the log
+buffer `Main` hands it. `routes` mounts the handler on `/hook` and `/logs`
+beside the health check.
+
+The module's tests run from its own directory, since the root's `./...` does
+not reach a nested module:
+
+```bash
+go -C operator vet ./...
+go -C operator test -race ./...
+```
 
 ## How you change the module
 

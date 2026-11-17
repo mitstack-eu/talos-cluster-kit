@@ -342,6 +342,10 @@ and expects talosctl, kubectl and every served manifest with its pinned sha256:
 TOOLS_IMAGE=talos-tools:ci go test -tags toolsimage -count=1 -run '^TestToolsImage_' .
 ```
 
+The tests from `TestReadSettings_` to `TestSeedObserver_` belong to the operator
+module under `operator/`. They run with `go -C operator test -race ./...`, since
+the root's `./...` does not reach a nested module.
+
 | Test | What it proves | Against what |
 |---|---|---|
 | `TestRender_MatchesTheGoldenConfiguration` | The configuration for one and three control-plane nodes on the `hcloud` and the `metal` profile matches its recording | `nodeconfig/testdata/golden/` |
@@ -493,6 +497,27 @@ TOOLS_IMAGE=talos-tools:ci go test -tags toolsimage -count=1 -run '^TestToolsIma
 | `TestPlane_AppsOnWorkersKeepsTheControlPlanesTaint` | With `AppsOnWorkers` the control-plane configuration keeps Talos's `NoSchedule` taint, and without it the configuration carries no taint | The configuration the builder embeds |
 | `TestPlane_DeleteRemovesEveryResourceItBuilt` | `Delete` leaves nothing that carries the subscription's labels | The same fake |
 | `TestPlane_TheKitRequiresNeitherBlockKitNorOperatorKit` | The kit's `go.mod` names neither block framework | `go.mod` |
+| `TestOperatorModule_RequiresBlockKitAtTheOldestReleaseATalosClusterOperatorBuildsOnAndNotTheKitItself` | `operator/go.mod` requires block-kit v0.40.0, the release hcloud-talos-cluster builds on, and no release of the kit | `operator/go.mod` |
+| `TestCI_TestJobVetsAndTestsTheOperatorModule` | The `test` job runs `go vet ./...` and `go test -race ./...` from `operator/` | `.github/workflows/ci.yml` |
+| `TestCI_ReleaseTagsTheOperatorModuleAtTheKitsReleaseCommit` | The `release` job tags `operator/$TAG` beside `$TAG` and pushes both in one atomic push, so either both land or neither does | `.github/workflows/ci.yml` |
+| `TestReadSettings_ListensOnTheAddressItIsGivenOrPort8080` | An operator listens on `LISTEN_ADDR`, or on `:8080` when none is set | A stand-in environment |
+| `TestReadSettings_RefusesToStartWithoutTheJWKSURLTheTrustBoundaryReadsItsKeyFrom` | An operator without `MITSTACK_JWKS_URL` refuses to start, saying why | A stand-in environment |
+| `TestNewServer_ServesTheMuxOnTheAddressAndBoundsTheTimeToReadARequestsHeaders` | The server bounds the time a client takes to send its headers to 10 seconds | The returned `http.Server` |
+| `TestHetznerToken_ReadsTheConnectionsTokenAndRefusesARequestWithoutIt` | A request gives its `secrets.hetzner.api_token`, and one without it refuses with class `missing-hetzner-access` | Two requests |
+| `TestAppName_ReadsTheAppTheRequestNamesAndRefusesARequestThatNamesNone` | A request gives its `params.appName`, and one without it refuses with class `missing-param` | Two requests |
+| `TestRefuseUnreleasedTools_RefusesOnlyTheToolsImagePlaceholderAnUnreleasedKitCarries` | The `unreleased` placeholder refuses with class `tools-image-unreleased`, and a released image passes | Two image references |
+| `TestRefusalDetail_DropsTheRefusedPrefixAValidateAnswerDoesNotCarry` | A refusal, wrapped or not, gives its detail alone, and another error its whole text | Three errors |
+| `TestDial_RefusesARequestWhoseGitHubConnectionCannotBeActedOnBeforeAnyCall` | A missing token or owner, an unusable repository name, a subscription id too long for a topic, and an endpoint outside the allowlist each refuse with its class, and no client is built and no call made | A fake GitHub |
+| `TestDial_TakesGitHubsOwnAPIWhenTheRequestNamesNoEndpoint` | A request naming no endpoint reads `https://api.github.com` with its own token | A fake GitHub |
+| `TestRead_ReadsWhetherTheRepositoryExistsAndCarriesTheSubscriptionsMark` | No repository, one without the mark and one with it read as such | A fake GitHub |
+| `TestEnsure_CreatesAPrivateRepositoryMarksItBesideGitHubsOwnTopicsAndSeedsBothDirectories` | A missing repository is created private, marked beside the topics GitHub gave it, and seeded with both files, each commit message ending in the line `Mitstack-Subscription: <id>` | A fake GitHub |
+| `TestEnsure_SeedsOnlyTheFilesAMarkedRepositoryLacks` | A marked repository is neither created nor marked again, and a file already there is kept | A fake GitHub |
+| `TestEnsure_ACreateGitHubRefusesNamesTheRepositoryAndKeepsTheTokenOutOfTheError` | GitHub's refusal of the create names the repository and carries no token | A fake GitHub |
+| `TestRefuseUnmarked_RefusesOnlyARepositoryThatExistsWithoutTheMark` | An unmarked repository refuses with class `repository-not-marked`, naming both topics | A fake GitHub |
+| `TestCall_ReadsAtMostItsLimitOfAnAnswer` | A call reads at most 64 KiB of an answer, and a limited call at most its limit | A fake GitHub |
+| `TestObserve_ReadsTheClusterRepositorysStateAndSaysWhy` | A request that names no app or has no token reads unknown with the reason and no call, and a missing, unmarked or marked repository reads as such | A fake GitHub |
+| `TestRepositoryObserver_AMarkedRepositoryItsCheckFaultsReadsAbsentNamingEachProblem` | A marked repository the operator's own check faults reads absent, naming each problem | A fake GitHub |
+| `TestSeedObserver_ReadsTheSeedPresentWhileTheMarkedRepositoryHoldsIt` | The seed reads present only while the marked repository holds `cluster/README.md` | A fake GitHub |
 | `TestCluster_RendersTheRecordedComponentsMirrorAndBuilderApartFromTheNodeReport` | A default cluster's components, mirror list and builder user data match their recording | `controlplane/testdata/default-cluster.golden` |
 | `TestPlane_LeavesOneWorkerImageLabelledForTheSubscriptionAndNoWorkerBuilder` | An install leaves one available snapshot with the role `worker-image` and deletes its worker builder | `controlplane/cloudtest` |
 | `TestPlane_TheWorkerImageHoldsNoneOfTheClustersCAKeysAndItsUserDataFitsHetznersLimit` | The worker builder's configuration holds none of the control plane's CA or service-account keys, and its user data, whose size the test logs, fits in 32,768 bytes | The same fake and the control plane's rendered configuration |
@@ -601,17 +626,17 @@ and a manual run. Every job runs on the runner the repository variable
 
 | Job | What it proves |
 |---|---|
-| `test` | On a pull request, `checkpolls`, the check that block-kit, the shared kit every block builds on, ships for added sleeps and polling intervals, judges every line the change adds against its base commit and fails a `time.Sleep`, a ticker or a shell `sleep`, naming each file and line. It runs as a tool of the `ci` module, a Go module of its own under `ci/`. Its `ci/go.mod` alone names the block-kit release, because a tool in the kit's own `go.mod` would force that release on every block that requires the kit. A human reviewer judges the waits `checkpolls -help` says the check cannot see, such as a timer reset inside a loop or a `time.After` in a select. `go vet ./...` and `go test -race ./...` then pass on Go 1.26.10, and the `mirror check` step copies trust-manager's index through the gateway's skopeo into its registry |
+| `test` | On a pull request, `checkpolls`, the check that block-kit, the shared kit every block builds on, ships for added sleeps and polling intervals, judges every line the change adds against its base commit and fails a `time.Sleep`, a ticker or a shell `sleep`, naming each file and line. It runs as a tool of the `ci` module, a Go module of its own under `ci/`. Its `ci/go.mod` alone names the block-kit release, because a tool in the kit's own `go.mod` would force that release on every block that requires the kit. A human reviewer judges the waits `checkpolls -help` says the check cannot see, such as a timer reset inside a loop or a `time.After` in a select. `go vet ./...` and `go test -race ./...` then pass on Go 1.26.10, and again from `operator/`, since the root's `./...` does not reach the operator module, a Go module of its own. The `mirror check` step copies trust-manager's index through the gateway's skopeo into its registry |
 | `components` | Each rendered component matches a fresh render, and shellcheck passes on every script |
 | `tools image` | The tools image builds from the repository root, each of its commands runs, and it holds the report's, its outside probe's, the labeller's, the cluster tokens' and the handover's scripts byte for byte as the repository does. The outside probe and the security scan then write their ConfigMaps through a real API server, the scan's kube-bench step reading a stand-in control plane. A component's handover takes Talos's fields off Cilium's objects through that API server. A gateway's preparation then copies talosctl, kubectl and every served manifest out of it with their pins, as [the section on the tests](#how-the-tests-run-the-scripts) describes |
 | `pr key gate` | The pull request's title and at least one of its commits each name a board key, the `MIT-` number of an issue on Plain, mitstack's board. A key counts when it opens the subject followed by a colon, as in `MIT-123: fix the thing`, which delivers the issue, or when it closes the subject as `(refs MIT-123)`, which only names the issue and is the form the kit's commits and titles use. A change with no issue has no key to name, so the job fails it, and the issue is filed on the board first |
-| `release` | On a push to `main` with a new version in `.github/version`, and only after `test`, `components` and `tools image` pass, it pushes and signs the tools image and pulls it with no login. It then tags a commit on top that pins the image in `tools.Image`, as [the README](../README.md#how-a-release-is-versioned) describes |
+| `release` | On a push to `main` with a new version in `.github/version`, and only after `test`, `components` and `tools image` pass, it pushes and signs the tools image and pulls it with no login. It then tags a commit on top that pins the image in `tools.Image`, and tags the same commit `operator/` followed by the version for the operator module, as [the README](../README.md#how-a-release-is-versioned) describes |
 | `record delivery` | On a push to `main`, records on Plain each issue a commit of the push delivers, which means a subject that opens with `MIT-123:`. A subject that only ends with `(refs MIT-123)` records nothing |
 
 ## What the kit leaves to its blocks
 
-Every package but `controlplane` renders bytes, so each of these stays with
-the block that calls it:
+Every package of the root module but `controlplane` renders bytes, so each of
+these stays with the block that calls it:
 
 | Step | Why the kit does not do it |
 |---|---|

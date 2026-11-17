@@ -3943,8 +3943,9 @@ recommends. The cluster's report carries each pod's `ownerKind` and
 `unschedulable`, which [What the node report carries](#what-the-node-report-carries)
 describes. A pod is the cluster's own when its controller is a DaemonSet, which runs a
 copy on every node, or the Node object, as for a static pod Talos starts from
-the node's own config, since a drain leaves such pods. A
-finished pod counts for nothing.
+the node's own config, since a drain leaves such pods. Any pod in kube-system
+is the cluster's own too, such as CoreDNS, which a drain moves. A finished pod
+counts for nothing.
 
 ### How the pool decides
 
@@ -3964,7 +3965,7 @@ platform keeps, in any order, and answers a `Decision`:
    members and a maximum of three to three.
 4. A pool that holds its maximum while pods wait answers `AtMaximum`, with a
    `Detail` such as "2 pods wait for a node, and the Cloud pool holds its
-   maximum of 3". The block shows `CauseAtMaximum` in the cluster resource's
+   maximum of 3: ci/d, ci/e", which names the first three pods. The block shows `CauseAtMaximum` in the cluster resource's
    health, and that cause starts no change.
 5. With no pod waiting, a member goes when every report from the newest back
    over the idle window reads it running none but the cluster's own pods.
@@ -3978,19 +3979,26 @@ platform keeps, in any order, and answers a `Decision`:
 The decision cannot tell two things, so a builder plans for them:
 
 - A pod that no Cloud worker could take still counts as waiting, such as one
-  whose node selector names the dedicated worker. Such a pod grows the pool to
-  its maximum and keeps it there, and the held cause names it in the resource's
-  health.
-- A pod that a Deployment or a StatefulSet controls is a workload, even a
-  cluster add-on such as CoreDNS. A Cloud worker that runs one stays until the
-  pod moves, so add-ons belong on the dedicated worker.
+  whose node selector names the dedicated worker. One such pod grows the pool
+  by one worker each decision up to its maximum and keeps it there, since no
+  worker it adds ever takes the pod. The held `Detail` then names the pod, and
+  the cause's advice to raise the maximum does not apply to it: the pod's own
+  node selector or affinity is what to change.
+- A pod outside kube-system that a Deployment or a StatefulSet controls is a
+  workload, even a component the kit renders, such as Argo CD, cert-manager or
+  OpenBao. A Cloud worker that runs one stays until the pod moves. CoreDNS and
+  every other pod in kube-system count as the cluster's own, and the drain
+  moves them under their disruption budgets.
 
 `Want` is the number of members the pool should hold. When `Want` is one
 fewer than the pool has, `Remove` names the member to take out, and otherwise
 it is empty. A block runs the decision on each
 subscribe and reports the next step from its validate, so the platform asks
-for that subscribe again. hcloud-hrobot-talos-cluster's pool step takes the
-three in this order, where `reads` is every node report the platform keeps:
+for that subscribe again. hcloud-hrobot-talos-cluster's pool step takes these
+steps in this order: a change in flight first, then the decision, then a
+removal or a plan of the pool's size. Here `st`, `plane`, `ctx` and `drained`
+are the block's own state, control plane, call and drain check, and `reads` is
+every node report the platform keeps:
 
 ```go
 if pools.ChangeUnderWay(st) {

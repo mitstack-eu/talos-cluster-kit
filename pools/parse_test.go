@@ -3,6 +3,7 @@ package pools_test
 import (
 	"maps"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -33,6 +34,21 @@ func TestParse_ReadsBothPoolsAsTheCataloguePassesThem(t *testing.T) {
 		Dedicated: []pools.Dedicated{{ServerNumber: 3041839, RobotAccount: robotAccount}},
 		Cloud:     pools.CloudPool{ServerTypes: []string{"cpx32", "cx43"}, Locations: []string{"fsn1", "nbg1"}, Min: 2, Max: 2},
 	}, got)
+}
+
+func TestParse_APoolWhoseMinimumIsBelowItsMaximumScalesWithItsIdleWindow(t *testing.T) {
+	got, err := pools.Parse(params(map[string]string{"cloudPoolMin": "0", "cloudPoolMax": "3", "cloudPoolIdleMinutes": "15"}))
+
+	require.NoError(t, err)
+	assert.Equal(t, pools.CloudPool{ServerTypes: []string{"cpx32", "cx43"}, Locations: []string{"fsn1", "nbg1"}, Min: 0, Max: 3, IdleWindow: 15 * time.Minute}, got.Cloud)
+	assert.True(t, got.Cloud.Scales(), "whether a pool of 0 to 3 scales")
+}
+
+func TestParse_APoolOfASetSizeDoesNotScale(t *testing.T) {
+	got, err := pools.Parse(params(nil))
+
+	require.NoError(t, err)
+	assert.False(t, got.Cloud.Scales(), "whether a pool of 2 to 2 scales")
 }
 
 func TestParse_ASubscriptionWithNoPoolInputsHoldsNoPool(t *testing.T) {
@@ -66,7 +82,10 @@ func TestParse_RefusesEachInvalidPoolNamingTheInput(t *testing.T) {
 		{"a size that is no number", map[string]string{"cloudPoolMax": "two"}, `cloudPoolMax: "two"`},
 		{"no maximum", map[string]string{"cloudPoolMax": ""}, "cloudPoolMax: a Cloud pool needs a maximum"},
 		{"a maximum below the minimum", map[string]string{"cloudPoolMin": "3", "cloudPoolMax": "2"}, "cloudPoolMax 2 is below cloudPoolMin 3"},
-		{"unequal bounds before the scaling ships", map[string]string{"cloudPoolMin": "0", "cloudPoolMax": "3"}, "a Cloud pool's minimum and maximum must be equal until the pool scales itself"},
+		{"a pool that scales with no idle window", map[string]string{"cloudPoolMin": "0", "cloudPoolMax": "3"}, "cloudPoolIdleMinutes: a Cloud pool whose minimum is below its maximum needs an idle window"},
+		{"an idle window of no minutes", map[string]string{"cloudPoolMin": "0", "cloudPoolMax": "3", "cloudPoolIdleMinutes": "0"}, `cloudPoolIdleMinutes: "0"`},
+		{"an idle window past the reports the platform keeps", map[string]string{"cloudPoolMin": "0", "cloudPoolMax": "3", "cloudPoolIdleMinutes": "121"}, `cloudPoolIdleMinutes: "121"`},
+		{"an idle window that is no number", map[string]string{"cloudPoolMin": "0", "cloudPoolMax": "3", "cloudPoolIdleMinutes": "ten"}, `cloudPoolIdleMinutes: "ten"`},
 		{"a dedicated pool that is no list", map[string]string{"dedicatedPool": `{"serverNumber":"3041839"}`}, "dedicatedPool: "},
 		{"a dedicated entry with no server number", map[string]string{"dedicatedPool": `[{"robotAccount":"inst_robot_main"}]`}, "dedicatedPool entry 1: serverNumber is required"},
 		{"a dedicated entry with a server number of zero", map[string]string{"dedicatedPool": `[{"serverNumber":"0","robotAccount":"inst_robot_main"}]`}, `dedicatedPool entry 1: serverNumber "0"`},

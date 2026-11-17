@@ -1,6 +1,9 @@
 package pools
 
-var RenderWorkerJob = renderWorkerJob
+var (
+	RenderWorkerJob    = renderWorkerJob
+	RenderIdleDrainJob = renderIdleDrainJob
+)
 
 const (
 	DrainStep      = drainStep

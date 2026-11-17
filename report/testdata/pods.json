@@ -3,7 +3,8 @@
   "kind": "List",
   "items": [
     {
-      "metadata": {"name": "argocd-server-5d9c7b8f4-x2x7q", "namespace": "argocd", "labels": {"app.kubernetes.io/name": "argocd-server"}},
+      "metadata": {"name": "argocd-server-5d9c7b8f4-x2x7q", "namespace": "argocd", "labels": {"app.kubernetes.io/name": "argocd-server"},
+        "ownerReferences": [{"apiVersion": "apps/v1", "kind": "ReplicaSet", "name": "argocd-server-5d9c7b8f4", "controller": true}]},
       "spec": {"nodeName": "poc-talos4-cp1", "containers": [{"name": "server", "image": "quay.io/argoproj/argocd:v3.5.5@sha256:13db7b10db23283b1b36f855046602e18539a8a8204c9f6f0aa4a9a6ff5e4f3c"}]},
       "status": {"phase": "Running", "containerStatuses": [{"name": "server", "state": {"running": {"startedAt": "2026-10-23T09:00:00Z"}}}]}
     },
@@ -17,12 +18,15 @@
       }
     },
     {
-      "metadata": {"name": "shared-2", "namespace": "app-pg"},
+      "metadata": {"name": "shared-2", "namespace": "app-pg",
+        "ownerReferences": [{"apiVersion": "postgresql.cnpg.io/v1", "kind": "Cluster", "name": "shared", "controller": true}]},
       "spec": {"containers": [{"name": "postgres", "image": "ghcr.io/cloudnative-pg/postgresql:16.15"}]},
-      "status": {"phase": "Pending"}
+      "status": {"phase": "Pending", "conditions": [{"type": "PodScheduled", "status": "False", "reason": "Unschedulable",
+        "message": "0/4 nodes are available: 4 Insufficient memory. preemption: 0/4 nodes are available: 4 No preemption victims found for incoming pod."}]}
     },
     {
-      "metadata": {"name": "openbao-0", "namespace": "openbao"},
+      "metadata": {"name": "openbao-0", "namespace": "openbao",
+        "ownerReferences": [{"apiVersion": "v1", "kind": "Node", "name": "poc-talos4-cp1"}, {"apiVersion": "apps/v1", "kind": "StatefulSet", "name": "openbao", "controller": true}]},
       "spec": {"nodeName": "poc-talos4-cp1", "containers": [{"name": "openbao", "image": "quay.io/openbao/openbao:2.4.1"}]},
       "status": {"phase": "Running", "containerStatuses": [{"name": "openbao", "state": {"running": {"startedAt": "2026-10-23T09:02:00Z"}}}]}
     },

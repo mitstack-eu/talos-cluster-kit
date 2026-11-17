@@ -4,6 +4,8 @@
     "name": "component-traefik-handover-4kq2m",
     "node": "poc-talos4-cp1",
     "phase": "Failed",
+    "ownerKind": "Job",
+    "unschedulable": false,
     "containers": [
       {
         "name": "handover",
@@ -17,6 +19,8 @@
     "name": "component-traefik-handover-9xw7d",
     "node": "poc-talos4-cp2",
     "phase": "Failed",
+    "ownerKind": "Job",
+    "unschedulable": false,
     "containers": [
       {
         "name": "handover",
@@ -31,6 +35,8 @@
     "name": "migrate-z8r5t",
     "node": "poc-talos4-cp2",
     "phase": "Failed",
+    "ownerKind": "Job",
+    "unschedulable": false,
     "containers": [
       {
         "name": "migrate",
@@ -44,6 +50,8 @@
     "name": "mitstack-node-report-29381250-h2v6c",
     "node": "poc-talos4-cp1",
     "phase": "Failed",
+    "ownerKind": "Job",
+    "unschedulable": false,
     "containers": [
       {
         "name": "report",
@@ -58,6 +66,8 @@
     "name": "mitstack-security-scan-29381000-p5n8s",
     "node": "poc-talos4-cp3",
     "phase": "Failed",
+    "ownerKind": "Job",
+    "unschedulable": false,
     "containers": [
       {
         "name": "kube-bench",
@@ -77,6 +87,8 @@
     "name": "mitstack-node-topology-29381250-q2w4e",
     "node": "poc-talos4-cp2",
     "phase": "Failed",
+    "ownerKind": "Job",
+    "unschedulable": false,
     "containers": [
       {
         "name": "label-nodes",
@@ -91,6 +103,8 @@
     "name": "mitstack-enrolment-7hd2k",
     "node": "poc-talos4-cp2",
     "phase": "Failed",
+    "ownerKind": "Job",
+    "unschedulable": false,
     "containers": [
       {
         "name": "enrol",

@@ -438,6 +438,19 @@ func TestPlanCloud_PlansNothingWhileTheNetworkRecordsAWorkerReplacement(t *testi
 	assert.True(t, plan.Empty(), "the plan of a pool raised to two of another type while a replacement is recorded: %+v", plan)
 }
 
+func TestPlanCloud_PlansNothingWhileTheNetworkRecordsAWorkerRemoval(t *testing.T) {
+	s := newSite(t)
+	s.reach(cloudPool(1, "fsn1"))
+	labels := maps.Clone(s.network.Labels)
+	labels[pools.KeyWorkerRemove+"fsn1-1"] = "7-1794605517"
+	require.NoError(t, s.cloud.SetNetworkLabels(context.Background(), s.network.ID, labels))
+
+	plan, err := s.plan(cloudPool(3, "fsn1", "nbg1"))
+
+	require.NoError(t, err)
+	assert.True(t, plan.Empty(), "the plan of a pool raised to three while a removal is recorded: %+v", plan)
+}
+
 func TestPlanCloud_PassesOnAListFailureWithoutPlanningFromAPartialRead(t *testing.T) {
 	s := newSite(t)
 	s.cloud.FailNext = errors.New("hetzner is down")

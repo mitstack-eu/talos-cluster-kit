@@ -1,0 +1,6 @@
+{"items": [
+  {"metadata": {"namespace": "kube-system", "name": "cilium-x7k2q", "ownerReferences": [{"kind": "DaemonSet", "name": "cilium", "controller": true}]}, "status": {"phase": "Running"}},
+  {"metadata": {"namespace": "ci", "name": "done-1", "ownerReferences": [{"kind": "Job", "name": "done", "controller": true}]}, "status": {"phase": "Succeeded"}},
+  {"metadata": {"namespace": "shop", "name": "web-0", "ownerReferences": [{"kind": "ReplicaSet", "name": "web-5d8f", "controller": true}]}, "status": {"phase": "Running"}},
+  {"metadata": {"namespace": "shop", "name": "agent-0", "ownerReferences": [{"kind": "DaemonSet", "name": "agent", "controller": false}]}, "status": {"phase": "Running"}}
+]}

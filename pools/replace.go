@@ -26,12 +26,29 @@ const (
 	KeyWorkerReplace = "mitstack.dev/worker-replace-"
 	// workerReplacePlan, followed by that record, is the plan a replaced worker's removal labels name.
 	workerReplacePlan = "worker-replace-"
+	// KeyWorkerRemove on the network, followed by a member key, records the Cloud worker a scaling pool removes, which
+	// goes the way a replaced worker goes but leaves no successor.
+	KeyWorkerRemove  = "mitstack.dev/worker-remove-"
+	workerRemovePlan = "worker-remove-"
+	// KeyRemovalKept on a Cloud worker is when a removal last kept it, in Unix seconds, so its idle time starts again.
+	KeyRemovalKept = "mitstack.dev/removal-kept"
 )
 
+// KeptAt is when a removal last kept s, false when none has.
+func KeptAt(s controlplane.Server) (time.Time, bool) {
+	unix, err := strconv.ParseInt(s.Labels[KeyRemovalKept], 10, 64)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return time.Unix(unix, 0).UTC(), true
+}
+
+// workerReplacement is a recorded replacement, or with removal set, a recorded removal.
 type workerReplacement struct {
-	key   string
-	old   int64
-	asked time.Time
+	key     string
+	old     int64
+	asked   time.Time
+	removal bool
 }
 
 // record is the label value that holds r, which workerReplacePlan prefixes to give the plan its worker's removal labels name.
@@ -39,7 +56,33 @@ func (r workerReplacement) record() string {
 	return strconv.FormatInt(r.old, 10) + "-" + strconv.FormatInt(r.asked.Unix(), 10)
 }
 
-func (r workerReplacement) plan() string { return workerReplacePlan + r.record() }
+func (r workerReplacement) plan() string {
+	if r.removal {
+		return workerRemovePlan + r.record()
+	}
+	return workerReplacePlan + r.record()
+}
+
+func (r workerReplacement) label() string {
+	if r.removal {
+		return KeyWorkerRemove + r.key
+	}
+	return KeyWorkerReplace + r.key
+}
+
+func (r workerReplacement) noun() string {
+	if r.removal {
+		return "removal"
+	}
+	return "replacement"
+}
+
+func (r workerReplacement) gerund() string {
+	if r.removal {
+		return "removing"
+	}
+	return "replacing"
+}
 
 // location is where the worker of r's key runs, the part of the key before its sequence number.
 func (r workerReplacement) location() string {
@@ -53,29 +96,41 @@ func (r workerReplacement) named(err error) error {
 	if err == nil || errors.As(err, &refusal) {
 		return err
 	}
-	return fmt.Errorf("replacing the Cloud worker %s: %w", r.key, err)
+	return fmt.Errorf("%s the Cloud worker %s: %w", r.gerund(), r.key, err)
 }
 
+// recordsReplacement reports whether the network records a replacement or a removal, during which the pool plans none.
 func recordsReplacement(network controlplane.Network) bool {
 	return slices.ContainsFunc(slices.Collect(maps.Keys(network.Labels)), func(label string) bool {
-		return strings.HasPrefix(label, KeyWorkerReplace)
+		return strings.HasPrefix(label, KeyWorkerReplace) || strings.HasPrefix(label, KeyWorkerRemove)
 	})
+}
+
+// ChangeUnderWay reports whether the cluster's network records a Cloud worker's replacement or removal, which
+// ReplaceStep carries on before the pool may change again.
+func ChangeUnderWay(st controlplane.State) bool {
+	network, ok := st.Network()
+	return ok && recordsReplacement(network)
 }
 
 func workerReplacements(network controlplane.Network) ([]workerReplacement, error) {
 	var asked []workerReplacement
 	for _, label := range slices.Sorted(maps.Keys(network.Labels)) {
-		key, ok := strings.CutPrefix(label, KeyWorkerReplace)
-		if !ok {
+		key, replaces := strings.CutPrefix(label, KeyWorkerReplace)
+		removed, removes := strings.CutPrefix(label, KeyWorkerRemove)
+		if !replaces && !removes {
 			continue
 		}
 		id, unix, _ := strings.Cut(network.Labels[label], "-")
 		old, idErr := strconv.ParseInt(id, 10, 64)
 		at, atErr := strconv.ParseInt(unix, 10, 64)
 		if idErr != nil || atErr != nil {
-			return nil, fmt.Errorf("network %d carries the label %s=%q, which is no replacement the pool recorded", network.ID, label, network.Labels[label])
+			return nil, fmt.Errorf("network %d carries the label %s=%q, which is no replacement or removal the pool recorded", network.ID, label, network.Labels[label])
 		}
-		asked = append(asked, workerReplacement{key: key, old: old, asked: time.Unix(at, 0).UTC()})
+		if removes {
+			key = removed
+		}
+		asked = append(asked, workerReplacement{key: key, old: old, asked: time.Unix(at, 0).UTC(), removal: removes})
 	}
 	return asked, nil
 }
@@ -120,6 +175,9 @@ func ReplaceWorkers(pool CloudPool, keys []string) controlplane.Record {
 			if _, recorded := labels[KeyWorkerReplace+key]; recorded {
 				continue
 			}
+			if _, removing := labels[KeyWorkerRemove+key]; removing {
+				return "", refuse("worker-removal-under-way", "the upgrade names the Cloud worker %q to replace, and the pool's scaling is removing it, so nothing was changed; upgrade again once its removal ends", key)
+			}
 			if _, err := site.serverType(ctx, plane, pool, worker.Location); err != nil {
 				return "", err
 			}
@@ -139,6 +197,36 @@ func memberOf(members []controlplane.Server, key string) (controlplane.Server, b
 		return controlplane.Server{}, false
 	}
 	return members[i], true
+}
+
+// RemoveWorker is the step that records the removal of the Cloud worker of key, why naming the reason in its event.
+// ReplaceStep then carries the removal on as it carries a replacement, and leaves no successor.
+func RemoveWorker(plane controlplane.Plane, st controlplane.State, key, why string) (controlplane.Step, error) {
+	network, ok := st.Network()
+	if !ok {
+		return controlplane.Step{}, refuse("cluster-network-missing", "the cluster has no single network to record the removal of the Cloud worker %s on", key)
+	}
+	if class, what := lacks(plane); class != "" {
+		return controlplane.Step{}, refuse(class, "the Cloud worker %s would be removed, and the block passes %s, so nothing was changed", key, what)
+	}
+	members := st.Servers[RoleCloudWorker]
+	worker, ok := memberOf(members, key)
+	if !ok {
+		return controlplane.Step{}, refuse("worker-removal-unknown", "the Cloud pool holds no member of the key %q to remove, so nothing was changed; it holds %s",
+			key, strings.Join(slices.Sorted(maps.Keys(memberKeys(members))), ", "))
+	}
+	r := workerReplacement{key: key, old: worker.ID, asked: now(plane), removal: true}
+	return controlplane.Step{What: "record the removal of Cloud worker " + key + ", since " + why, Run: func(ctx context.Context) error {
+		labels := maps.Clone(network.Labels)
+		labels[r.label()] = r.record()
+		if err := plane.API.SetNetworkLabels(ctx, network.ID, labels); err != nil {
+			return fmt.Errorf("recording the removal of Cloud worker %s on the network: %w", key, err)
+		}
+		if plane.Notify != nil {
+			plane.Notify(ctx, fmt.Sprintf("recorded the removal of Cloud worker %d (%s), since %s", worker.ID, key, why))
+		}
+		return nil
+	}}, nil
 }
 
 // ReplaceStep is the next step of the first replacement the network records, false while it waits, so no second
@@ -161,7 +249,7 @@ func ReplacementProblems(ctx context.Context, plane controlplane.Plane, pool Clo
 	} else if !ok {
 		return nil
 	}
-	asked := "the replacement the upgrade asked for at " + stamp(x.r.asked)
+	asked := x.r.askedFor()
 	var out []string
 	switch g, err := x.next(ctx); {
 	case err != nil:
@@ -172,10 +260,16 @@ func ReplacementProblems(ctx context.Context, plane controlplane.Plane, pool Clo
 		out = append(out, fmt.Sprintf("the Cloud worker %s waits for %s: %s", x.r.key, asked, g.waits))
 	}
 	for _, r := range x.later {
-		out = append(out, fmt.Sprintf("the Cloud worker %s waits for the replacement the upgrade asked for at %s until the replacement before it has ended",
-			r.key, stamp(r.asked)))
+		out = append(out, fmt.Sprintf("the Cloud worker %s waits for %s until the change before it has ended", r.key, r.askedFor()))
 	}
 	return out
+}
+
+func (r workerReplacement) askedFor() string {
+	if r.removal {
+		return "the removal the pool's scaling asked for at " + stamp(r.asked)
+	}
+	return "the replacement the upgrade asked for at " + stamp(r.asked)
 }
 
 // replacer carries one recorded replacement on from what one call reads.
@@ -230,6 +324,8 @@ func (x replacer) next(ctx context.Context) (progress, error) {
 	})
 	worker, ok := memberOf(x.st.Servers[RoleCloudWorker], x.r.key)
 	switch {
+	case !ok && x.r.removal:
+		return x.endRemoval(ctx, held)
 	case !ok:
 		return x.createSuccessor(ctx, held)
 	case worker.ID != x.r.old:
@@ -245,13 +341,9 @@ func (x replacer) next(ctx context.Context) (progress, error) {
 }
 
 // running judges a running worker's removal by a node report since its replacement began, and refuses it before its
-// drain is written, which withdraws the replacement.
+// drain is written, which withdraws the replacement. A removal keeps a worker that report reads running a workload.
 func (x replacer) running(ctx context.Context, worker controlplane.Server) (progress, error) {
-	site, err := newSite(x.st)
-	if err == nil {
-		_, err = site.serverType(ctx, x.plane, x.pool, x.r.location())
-	}
-	if err != nil {
+	if err := x.successorOrderable(ctx); err != nil {
 		return x.refused(err)
 	}
 	began, begun := controlplane.RemovalBegan(worker, x.r.plan())
@@ -263,7 +355,16 @@ func (x replacer) running(ctx context.Context, worker controlplane.Server) (prog
 	case err != nil:
 		return progress{}, err
 	case read == nil:
-		return waitsOn("no node report was received since its replacement began at %s", stamp(began))
+		return waitsOn("no node report was received since its %s began at %s", x.r.noun(), stamp(began))
+	}
+	if x.r.removal {
+		pods, err := read.WorkloadPods()
+		if err != nil {
+			return progress{}, err
+		}
+		if busy := pods[worker.Name]; len(busy) > 0 {
+			return x.keep(fmt.Sprintf("the node report read at %s reads it running %s", stamp(read.At), strings.Join(busy, ", ")))
+		}
 	}
 	jobs, readable, err := read.AppliedJobs(controlplane.RemovalApplication)
 	switch {
@@ -284,6 +385,19 @@ func (x replacer) running(ctx context.Context, worker controlplane.Server) (prog
 		return x.powerOff(worker, "with no drain, since the node report read at "+stamp(read.At)+" reads its Node object not Ready")
 	}
 	return x.write(drainStep, worker.Name, "whose Job drains it under its pods' disruption budgets")
+}
+
+// successorOrderable checks that a replacement's location can order a successor, which a removal never creates.
+func (x replacer) successorOrderable(ctx context.Context) error {
+	if x.r.removal {
+		return nil
+	}
+	site, err := newSite(x.st)
+	if err != nil {
+		return err
+	}
+	_, err = site.serverType(ctx, x.plane, x.pool, x.r.location())
+	return err
 }
 
 // allowRemoval judges the worker's removal by block-kit's guard over every worker the report lists, whose minimum
@@ -321,21 +435,29 @@ func (x replacer) begin(worker controlplane.Server) (progress, error) {
 			return waitsOn("it begins once the upgrade has replaced the gateways and the control-plane nodes it names")
 		}
 	}
-	return next("begin replacing Cloud worker "+x.r.key+", so only a node report read after now judges the other workers", func(ctx context.Context) error {
+	named := "which the upgrade named"
+	if x.r.removal {
+		named = "which the pool's scaling chose"
+	}
+	return next("begin "+x.r.gerund()+" Cloud worker "+x.r.key+", so only a node report read after now judges the other workers", func(ctx context.Context) error {
 		if err := x.plane.API.SetServerLabels(ctx, worker.ID, controlplane.BeginRemoval(worker, now(x.plane), x.r.plan())); err != nil {
 			return err
 		}
-		x.notify(ctx, "began replacing Cloud worker %d (%s), which the upgrade named", worker.ID, x.r.key)
+		x.notify(ctx, "began %s Cloud worker %d (%s), %s", x.r.gerund(), worker.ID, x.r.key, named)
 		return nil
 	})
 }
 
 // refused withdraws the replacement when err refuses it, so a replacement refused before its drain leaves no record a
-// later call would carry on; any other error it answers as it is.
+// later call would carry on; any other error it answers as it is. A refused removal keeps its worker and refuses nothing,
+// since no customer asked for it.
 func (x replacer) refused(err error) (progress, error) {
 	var refusal *controlplane.Refusal
 	if !errors.As(err, &refusal) {
 		return progress{}, err
+	}
+	if x.r.removal {
+		return x.keep(refusal.Message)
 	}
 	return next("withdraw the replacement of Cloud worker "+x.r.key+", which still runs, since it is refused: "+refusal.Message, func(ctx context.Context) error {
 		if werr := x.unrecord(ctx); werr != nil {
@@ -348,11 +470,34 @@ func (x replacer) refused(err error) (progress, error) {
 
 func (x replacer) unrecord(ctx context.Context) error {
 	labels := maps.Clone(x.network.Labels)
-	delete(labels, KeyWorkerReplace+x.r.key)
+	delete(labels, x.r.label())
 	if err := x.plane.API.SetNetworkLabels(ctx, x.network.ID, labels); err != nil {
-		return fmt.Errorf("taking the replacement of Cloud worker %s off the network: %w", x.r.key, err)
+		return fmt.Errorf("taking the %s of Cloud worker %s off the network: %w", x.r.noun(), x.r.key, err)
 	}
 	return nil
+}
+
+// keep ends a removal with its worker still serving, taking each of paths out of the cluster repository first, and
+// stamps the worker, so the pool's scaling chooses it again only once it has stood idle a whole window since.
+func (x replacer) keep(why string, paths ...string) (progress, error) {
+	worker, _ := memberOf(x.st.Servers[RoleCloudWorker], x.r.key)
+	return next("keep Cloud worker "+x.r.key+" and end its removal, since "+why, func(ctx context.Context) error {
+		for _, path := range paths {
+			if err := x.plane.Removals.Commit(ctx, path, nil); err != nil {
+				return fmt.Errorf("taking %s out of the cluster repository: %w", path, err)
+			}
+		}
+		labels := controlplane.EndRemoval(worker)
+		labels[KeyRemovalKept] = strconv.FormatInt(now(x.plane).Unix(), 10)
+		if err := x.plane.API.SetServerLabels(ctx, worker.ID, labels); err != nil {
+			return fmt.Errorf("recording on Cloud worker %s that its removal kept it: %w", x.r.key, err)
+		}
+		if err := x.unrecord(ctx); err != nil {
+			return err
+		}
+		x.notify(ctx, "kept Cloud worker %s and ended its removal, since %s", x.r.key, why)
+		return nil
+	})
 }
 
 // draining waits on the drain Job's health in a node report, naming what its newest failed attempt ended with, and
@@ -393,6 +538,9 @@ func (x replacer) draining(ctx context.Context, worker controlplane.Server) (pro
 
 func (x replacer) drainFailed(job, at, why string) (progress, error) {
 	path := jobPath(drainStep, x.r.key)
+	if x.r.removal {
+		return x.keep(fmt.Sprintf("its drain Job %s failed its last attempt in the node report read at %s: %s", job, at, why), path)
+	}
 	refusal := &controlplane.Refusal{Class: "worker-drain-failed", Message: fmt.Sprintf(
 		"the drain Job %s of Cloud worker %s failed its last attempt in the node report read at %s, so the worker serves on and its replacement is withdrawn: %s",
 		job, x.r.key, at, why)}
@@ -482,7 +630,8 @@ func (x replacer) removal(read report.Read, hostname string, held []string) (pro
 }
 
 func (x replacer) write(step, hostname, why string) (progress, error) {
-	job, err := renderWorkerJob(step, x.r.key, hostname)
+	spec := workerJobSpec{step: step, key: x.r.key, hostname: hostname, idleOnly: x.r.removal && step == drainStep}
+	job, err := spec.render()
 	if err != nil {
 		return progress{}, err
 	}
@@ -511,8 +660,40 @@ func (x replacer) deleteServer(worker controlplane.Server, read report.Read) (pr
 		if err := x.plane.API.DeleteServer(ctx, worker.ID); err != nil {
 			return fmt.Errorf("deleting Cloud worker %d: %w", worker.ID, err)
 		}
-		x.notify(ctx, "deleted Cloud worker %d (%s), whose Node object the node report read at %s no longer lists, so a worker from the worker image takes its place",
-			worker.ID, x.r.key, stamp(read.At))
+		after := ", so a worker from the worker image takes its place"
+		if x.r.removal {
+			after = ""
+		}
+		x.notify(ctx, "deleted Cloud worker %d (%s), whose Node object the node report read at %s no longer lists%s", worker.ID, x.r.key, stamp(read.At), after)
+		return nil
+	})
+}
+
+// endRemoval takes the removal's record and its last Job's file off once a node report reads that Job complete, so
+// the pool may change again.
+func (x replacer) endRemoval(ctx context.Context, held []string) (progress, error) {
+	if drain := jobPath(drainStep, x.r.key); slices.Contains(held, drain) {
+		return x.takeOut(drain, "since Cloud worker "+x.r.key+" is gone")
+	}
+	read, err := x.plane.ReadReport(ctx, x.r.asked)
+	switch {
+	case err != nil:
+		return progress{}, err
+	case read == nil:
+		return waitsOn("no node report was received since the pool's scaling asked for its removal at %s", stamp(x.r.asked))
+	}
+	if g, removed, err := x.removal(*read, x.plane.LocatedName(RoleCloudWorker, x.r.key), held); err != nil || !removed {
+		return g, err
+	}
+	path := jobPath(removeNodeStep, x.r.key)
+	return next("take "+path+" out and end the removal of Cloud worker "+x.r.key+", whose server and Node object are gone", func(ctx context.Context) error {
+		if err := x.plane.Removals.Commit(ctx, path, nil); err != nil {
+			return fmt.Errorf("taking %s out of the cluster repository: %w", path, err)
+		}
+		if err := x.unrecord(ctx); err != nil {
+			return err
+		}
+		x.notify(ctx, "removed Cloud worker %s from the pool, whose server and Node object are gone", x.r.key)
 		return nil
 	})
 }

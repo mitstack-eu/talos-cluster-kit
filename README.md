@@ -54,6 +54,7 @@ the order a block uses them.
 | `controlplane` | Builds and deletes a Talos control plane on Hetzner Cloud: a network, a firewall, a gateway in each of `fsn1`, `nbg1` and `hel1`, a builder that makes the cluster's own snapshot, a node in each of `fsn1`, `nbg1` and `hel1`, and an API and an ingress load balancer. Each call reads the resources by their labels and takes the one change still missing. A refusal is a `*Refusal` with a `Class` and a `Message`, which the block answers as its own framework's refusal | `Plane`, `Plane.Read`, `Plane.EnsureNetwork`, `Plane.NextStep`, `Plane.Problems`, `Plane.Unhealthy`, `Plane.Outputs`, `State.IngressAddresses`, `Plane.Release`, `ErrNoIngressAddress`, `Plane.GatewaysAwaitRelease`, `Plane.GatewaysServeRelease`, `Plane.Delete`, `NewAPI`, `Refusal`, `TopologyLabels`, `GatewayUpgradeBound`, `GatewayCertRenewBefore`, `KeyGatewayCertExpires` |
 | `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image carries and the gateway copies out of it, `tools/jq.env`, which pins the tools image's jq, and `tools/kube-bench-talos.yaml`, the settings kube-bench reads over its own on Talos. It names the tools image a release published and the directory in that image that holds the node report's, its outside probe's, the labeller's, the cluster tokens', the handover's and OpenBao's rollout's scripts, and where in that image each served manifest sits | `Env`, `Pin`, `Image`, `ScriptDir`, `ManifestPath` |
 | `redundant` | Carries a removal's redundant set, each member with its reading, to the guard the block passes, block-kit's `redundancy.Set.AllowRemoval`, which this module does not import | `Set`, `Guard`, `Held` |
+| `scaling` | Decides from the node reports alone how a Cloud pool whose minimum is below its maximum follows its cluster's load, so only the block's operator, which holds the Hetzner token, changes the pool. [How a Cloud pool scales with the load](#how-a-cloud-pool-scales-with-the-load) gives the rules | `Decide`, `Decision`, `CauseAtMaximum` |
 | `testutil` | Holds the fixtures, fakes and decoders this module's tests and a block's tests share | `NewCluster`, `NewTools`, `Golden` |
 
 For example, this renders the configuration a Cloud cluster's image embeds,
@@ -1521,7 +1522,7 @@ change `report/scripts/report.sh`.
 | `systemVolumes` | How each node's `STATE` and `EPHEMERAL` volumes are encrypted | `talosctl get volumestatus` |
 | `argocd` | Each Application's health, sync, `revision`, the `operation` of its last sync and its applied objects, each object with Argo CD's health of it, as [the section on the revision](#how-the-report-names-the-revision-each-application-was-compared-against) and [the section on object health](#how-the-report-shows-each-objects-health-and-each-containers-state) describe, under `routes` the answer each of 17 routes gives a caller with no session, and the `argocd` namespace's Services and Ingresses. The settings route's entry also says [whether any account can sign in with a password](#how-the-report-shows-whether-a-password-signs-in-to-argo-cd) | The Applications, `ARGOCD_URL` and the Ingress read |
 | `kubernetes.argocdPods` | Each pod in `argocd` with its containers' images | The pod read |
-| `pods` | Every pod's namespace, name, node or `null`, phase, and `containers`, each init and app container with its state and reason. The newest failed pod of each Job the kit renders also gives each container that exited non-zero its `message`, as [the section on a failed kit Job](#how-the-report-carries-the-reason-a-kit-job-failed) describes | `kubectl get pods -A`, and the Jobs of the workload read |
+| `pods` | Every pod's namespace, name, node or `null`, phase, `ownerKind`, the kind of its controller or `null`, `unschedulable`, whether the scheduler found no node to take it, and `containers`, each init and app container with its state and reason. The newest failed pod of each Job the kit renders also gives each container that exited non-zero its `message`, as [the section on a failed kit Job](#how-the-report-carries-the-reason-a-kit-job-failed) describes | `kubectl get pods -A`, and the Jobs of the workload read |
 | `images` | Each image reference a pod or the pod template of a Deployment, StatefulSet, DaemonSet, Job or CronJob names, once, as `image` with the `digest` it names or that a pod's status reports it runs by, and otherwise `null`. A failed read leaves `{exitStatus, stderr}` with `read` naming `pods` or `workloads`, in place of a partial list | The pod read and `kubectl get deployments,statefulsets,daemonsets,jobs,cronjobs -A` |
 | `cloudNativePG` | Each Cluster with its phase, instance counts and `currentPrimary`, and each Database and DatabaseRole with whether it applied. A Cluster also carries `continuousArchiving` and `lastBackup`, its conditions `ContinuousArchiving` and `LastBackupSucceeded`, each as `{status, reason, message}` with the message cut to 256 characters, or `null` while the Cluster holds no such condition. The report cuts no entry from this list: it holds every object the read returned, or the read's failure in the list's place | CloudNativePG's objects |
 | `cloudNativePGPlugins` | The name of each plugin CloudNativePG can find, sorted: the `cnpg.io/pluginName` label of each Service in `cnpg-system`. A cluster with no plugin carries an empty list | The read of claims, StorageClasses and Services |
@@ -3674,20 +3675,25 @@ settings describes. A dedicated pool lists Hetzner Robot servers the org
 already rents, each with the Robot account it is rented under, and it changes
 only when the block is upgraded. A Cloud pool names Hetzner Cloud server types
 in order of preference, locations, and a minimum and a maximum number of
-servers. Until the pool scales itself, the two bounds must be equal, so a
-Cloud pool has a fixed size, and `Parse` refuses unequal bounds.
+servers. Equal bounds give a pool of a set size. A minimum below the maximum
+gives a pool that scales with the load, as
+[How a Cloud pool scales with the load](#how-a-cloud-pool-scales-with-the-load)
+describes, and such a pool also needs an idle window.
 [ADR 0118](https://github.com/mitstack-eu/mitstack/blob/main/docs/adr/0118-a-talos-cluster-block-grows-by-node-pools-from-talos-cluster-kit-and-a-manifest-declares-a-pools-servers-as-one-resource-entry-marked-many.md)
 sets these rules.
 
 `pools.Parse` is what a block calls first. It takes the settings the platform
 passes the block as strings: `dedicatedPool` is a JSON list of objects with a
 `serverNumber` and a `robotAccount`, the name of the Robot account's instance
-on the platform, and the four `cloudPool` settings are two comma-separated
-lists and two numbers. `Parse` answers every setting that breaks its rule in
+on the platform. The `cloudPool` settings are two comma-separated lists, two
+numbers of servers, and `cloudPoolIdleMinutes`, the idle window in whole
+minutes from 1 to 120. `Parse` answers every setting that breaks its rule in
 one error. It refuses a location other than `fsn1`, `nbg1` and `hel1`, a server
-type outside `controlplane.ServerTypes`, a negative or missing size, and a
-dedicated entry with no server number, no Robot account, or a server number
-listed twice.
+type outside `controlplane.ServerTypes`, a negative or missing size, a maximum
+below the minimum, a pool that scales with no idle window, and a dedicated
+entry with no server number, no Robot account, or a server number listed
+twice. The idle window stops at 120 minutes because the platform keeps about
+four hours of node reports, and the window must fit inside them.
 
 ```go
 p, err := pools.Parse(map[string]string{
@@ -3921,6 +3927,126 @@ any pod in the cluster, since the claims it releases are known only once the
 worker is off. Its script, which
 the kit renders and pins with the tools image, deletes only those the rules
 above name.
+
+## How a Cloud pool scales with the load
+
+A Cloud pool whose minimum is below its maximum adds Cloud workers while pods
+wait for room and hands back a worker that has stood idle, so the org pays for
+burst servers only while they work. This section is for the author of a block
+on the node pools, and for whoever reads the events a scaling step records.
+
+The decision reads only the node reports, because the Hetzner token that
+creates and deletes servers stays in the block's operator and never enters
+the cluster, as
+[ADR 0095](https://github.com/mitstack-eu/mitstack/blob/main/docs/adr/0095-mitstack-clusters-run-talos-across-fsn1-nbg1-and-hel1-with-a-load-balancer-per-location.md)
+recommends. The cluster's report carries each pod's `ownerKind` and
+`unschedulable`, which [What the node report carries](#what-the-node-report-carries)
+describes. A pod is the cluster's own when its controller is a DaemonSet, which runs a
+copy on every node, or the Node object, as for a static pod Talos starts from
+the node's own config, since a drain leaves such pods. Any pod in kube-system
+is the cluster's own too, such as CoreDNS, which a drain moves. A finished pod
+counts for nothing.
+
+### How the pool decides
+
+`scaling.Decide` takes the pool, its members and every node report the
+platform keeps, in any order, and answers a `Decision`:
+
+1. A pool of a set size answers its maximum and nothing else, so a block that
+   takes this release sees no change in such a pool.
+2. While a member has not been read Ready by a report made since its
+   creation, the pool holds its size, so a burst creates no second wave while
+   the first joins. It also holds while `PlanCloud` removes a member for a
+   lowered maximum or a dropped type or location, which
+   `pools.RemovalUnderWay` reads.
+3. Each pod the newest report reads `unschedulable` adds one member to the
+   members the pool has, up to the maximum, and a pool below its minimum grows
+   to its minimum at least. For example, five waiting pods grow a pool of no
+   members and a maximum of three to three.
+4. A pool that holds its maximum while pods wait answers `AtMaximum`, with a
+   `Detail` such as "2 pods wait for a node, and the Cloud pool holds its
+   maximum of 3: ci/d, ci/e", which names the first three pods. The block shows `CauseAtMaximum` in the cluster resource's
+   health, and that cause starts no change.
+5. With no pod waiting, a member goes when every report from the newest back
+   over the idle window reads it running none but the cluster's own pods.
+   One member goes at a time, down to the minimum. Of several idle members,
+   `pools.NewestOfFullest` picks the newest of the location holding the most,
+   the rule `PlanCloud` uses for a lowered maximum.
+6. An older report whose nodes or pods could not be read counts as no idle
+   time, and proves no member joined, so one failed read stalls no later
+   decision. A newest report that cannot be read fails the decision, naming it.
+
+The decision cannot tell two things, so a builder plans for them:
+
+- A pod that no Cloud worker could take still counts as waiting, such as one
+  whose node selector names the dedicated worker. One such pod grows the pool
+  by one worker each decision up to its maximum and keeps it there, since no
+  worker it adds ever takes the pod. The held `Detail` then names the pod, and
+  the cause's advice to raise the maximum does not apply to it: the pod's own
+  node selector or affinity is what to change.
+- A pod outside kube-system that a Deployment or a StatefulSet controls is a
+  workload, even a component the kit renders, such as Argo CD, cert-manager or
+  OpenBao. A Cloud worker that runs one stays until the pod moves. CoreDNS and
+  every other pod in kube-system count as the cluster's own, and the drain
+  moves them under their disruption budgets.
+
+`Want` is the number of members the pool should hold. When `Want` is one
+fewer than the pool has, `Remove` names the member to take out, and otherwise
+it is empty. A block runs the decision on each
+subscribe and reports the next step from its validate, so the platform asks
+for that subscribe again. hcloud-hrobot-talos-cluster's pool step takes these
+steps in this order: a change in flight first, then the decision, then a
+removal or a plan of the pool's size. Here `st`, `plane`, `ctx` and `drained`
+are the block's own state, control plane, call and drain check, and `reads` is
+every node report the platform keeps:
+
+```go
+if pools.ChangeUnderWay(st) {
+	return pools.ReplaceStep(ctx, plane, pool)
+}
+decision, err := scaling.Decide(pool, st.Servers[pools.RoleCloudWorker], reads)
+if err != nil {
+	return controlplane.Step{}, false, err
+}
+if decision.Remove != nil {
+	step, err := pools.RemoveWorker(plane, st, decision.Remove.Labels[pools.KeyMember], decision.Detail)
+	return step, err == nil, err
+}
+sized := pool
+sized.Max = decision.Want
+plan, err := pools.PlanCloud(ctx, plane, sized, drained)
+```
+
+A removal or a replacement already in flight goes first, and `PlanCloud`
+then creates the members a pool of `Want` lacks.
+
+### How a removal differs from a replacement
+
+`pools.RemoveWorker` labels the network with
+`mitstack.dev/worker-remove-<key>`, and `pools.ReplaceStep` then carries the
+removal through the stages a replacement takes, with these differences:
+
+1. Before it writes the drain, the removal reads the node report received
+   since it began. A worker that report reads running a pod that is not the
+   cluster's own is kept.
+2. The drain Job runs with `IDLE_ONLY=true`. It first cordons the node, which
+   stops new pods landing there, so no pod lands after it looks. While a pod
+   that is not the cluster's own runs there, or when it cannot read the node's
+   pods, the Job uncordons the node, letting pods land again, and fails naming
+   why, evicting nothing. After the Job's last attempt, the pool keeps the
+   worker.
+3. A kept worker serves on, and the removal refuses nothing, since no customer
+   asked for it. Its event begins "kept Cloud worker". The worker carries
+   `mitstack.dev/removal-kept` with the time, which `pools.KeptAt` reads, so
+   the pool chooses it again only once it has stood idle a whole window since.
+   An upgrade that names a worker under removal is refused until the removal
+   ends.
+4. Once the node report lists no Node object of the worker and its server is
+   deleted, the pool takes the removal Job's file and the label off and
+   creates no successor. Its last event begins "removed Cloud worker".
+
+`pools.PlanCloud` plans nothing while a removal is recorded, as it does during
+a replacement.
 
 ## How a release is versioned
 

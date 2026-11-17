@@ -1,6 +1,7 @@
 package pools
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -32,6 +33,12 @@ type CloudPlan struct {
 
 // removalPlan is the plan a Cloud worker's removal labels name.
 const removalPlan = "cloud-pool"
+
+// RemovalUnderWay reports whether the pool's own removal of s, for a lowered maximum or a dropped type or location, began.
+func RemovalUnderWay(s controlplane.Server) bool {
+	_, began := controlplane.RemovalBegan(s, removalPlan)
+	return began
+}
 
 // Empty reports whether the pool already stands as wanted.
 func (p CloudPlan) Empty() bool {
@@ -136,19 +143,7 @@ func splitMembers(members []controlplane.Server, pool CloudPool) (keep, leaving 
 		}
 	}
 	for len(keep) > pool.Max {
-		loc := most(keep, pool.Locations)
-		var inLoc []controlplane.Server
-		for _, srv := range keep {
-			if srv.Location == loc {
-				inLoc = append(inLoc, srv)
-			}
-		}
-		newest := slices.MaxFunc(inLoc, func(a, b controlplane.Server) int {
-			if c := a.Created.Compare(b.Created); c != 0 {
-				return c
-			}
-			return int(a.ID - b.ID)
-		})
+		newest := NewestOfFullest(keep, keep, pool.Locations)
 		keep = slices.DeleteFunc(keep, func(srv controlplane.Server) bool { return srv.ID == newest.ID })
 		leaving = append(leaving, newest)
 	}
@@ -159,15 +154,14 @@ func count(servers []controlplane.Server, loc string) int {
 	return len(slices.DeleteFunc(slices.Clone(servers), func(srv controlplane.Server) bool { return srv.Location != loc }))
 }
 
-// most is the location holding the most servers, the later one listed on a tie.
-func most(servers []controlplane.Server, locations []string) string {
-	best := locations[0]
-	for _, loc := range locations {
-		if count(servers, loc) >= count(servers, best) {
-			best = loc
-		}
-	}
-	return best
+// NewestOfFullest is the newest of candidates in the location where members hold the most, the later one listed on a
+// tie, so a pool that loses a member keeps the rest spread over its locations.
+func NewestOfFullest(members, candidates []controlplane.Server, locations []string) controlplane.Server {
+	return slices.MaxFunc(candidates, func(a, b controlplane.Server) int {
+		return cmp.Or(count(members, a.Location)-count(members, b.Location),
+			slices.Index(locations, a.Location)-slices.Index(locations, b.Location),
+			a.Created.Compare(b.Created), cmp.Compare(a.ID, b.ID))
+	})
 }
 
 // fewest is the location holding the fewest servers, the earlier one listed on a tie.

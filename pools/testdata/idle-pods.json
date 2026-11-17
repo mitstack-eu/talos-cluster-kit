@@ -1,0 +1,6 @@
+{"items": [
+  {"metadata": {"namespace": "kube-system", "name": "cilium-x7k2q", "ownerReferences": [{"kind": "DaemonSet", "name": "cilium", "controller": true}]}, "status": {"phase": "Running"}},
+  {"metadata": {"namespace": "kube-system", "name": "kube-proxy-shop-cloud-worker-fsn1-1", "ownerReferences": [{"kind": "Node", "name": "shop-cloud-worker-fsn1-1", "controller": true}]}, "status": {"phase": "Running"}},
+  {"metadata": {"namespace": "kube-system", "name": "coredns-fsn1-7d9f", "ownerReferences": [{"kind": "ReplicaSet", "name": "coredns-fsn1-5c8b", "controller": true}]}, "status": {"phase": "Running"}},
+  {"metadata": {"namespace": "ci", "name": "done-1", "ownerReferences": [{"kind": "Job", "name": "done", "controller": true}]}, "status": {"phase": "Failed"}}
+]}

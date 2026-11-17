@@ -4,6 +4,8 @@
     "name": "argocd-server-5d9c7b8f4-x2x7q",
     "node": "poc-talos4-cp1",
     "phase": "Running",
+    "ownerKind": "ReplicaSet",
+    "unschedulable": false,
     "containers": [
       {
         "name": "server",
@@ -16,6 +18,8 @@
     "name": "shared-1",
     "node": "poc-talos4-cp2",
     "phase": "Running",
+    "ownerKind": null,
+    "unschedulable": false,
     "containers": [
       {
         "name": "bootstrap-controller",
@@ -33,6 +37,8 @@
     "name": "shared-2",
     "node": null,
     "phase": "Pending",
+    "ownerKind": "Cluster",
+    "unschedulable": true,
     "containers": []
   },
   {
@@ -40,6 +46,8 @@
     "name": "openbao-0",
     "node": "poc-talos4-cp1",
     "phase": "Running",
+    "ownerKind": "StatefulSet",
+    "unschedulable": false,
     "containers": [
       {
         "name": "openbao",
@@ -52,6 +60,8 @@
     "name": "shop-7d4b9c6f5-k8x2p",
     "node": "poc-talos4-cp2",
     "phase": "Pending",
+    "ownerKind": null,
+    "unschedulable": false,
     "containers": [
       {
         "name": "shop",

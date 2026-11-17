@@ -43,6 +43,8 @@ type workers struct {
 	files   map[string][]byte
 	commits []string
 	events  []string
+	// written keeps the first content committed to each path, which Argo CD's pruning takes out of files.
+	written map[string][]byte
 	// objects names each Node object, down those that read not Ready, and pods each app pod's node.
 	objects, down map[string]bool
 	pods          map[string]string
@@ -63,7 +65,7 @@ func withWorkers(t *testing.T) (*site, *workers) {
 	t.Helper()
 	s := newSite(t)
 	s.reach(pool2)
-	w := &workers{s: s, argo: testutil.BuildCluster(t), files: map[string][]byte{}, objects: map[string]bool{robot: true},
+	w := &workers{s: s, argo: testutil.BuildCluster(t), files: map[string][]byte{}, written: map[string][]byte{}, objects: map[string]bool{robot: true},
 		down: map[string]bool{}, pods: map[string]string{}, held: map[string]bool{}, attempts: 6, failed: map[string]int{}, jobs: map[string]string{}}
 	w.argo.Commit(map[string][]byte{"cluster/namespace.yaml": []byte("apiVersion: v1\nkind: Namespace\nmetadata:\n  name: mitstack-node\n")})
 	w.argo.Sync()
@@ -89,6 +91,9 @@ func (w *workers) Commit(_ context.Context, path string, content []byte) error {
 	if content != nil {
 		verb = "write "
 		w.files[path] = content
+		if _, kept := w.written[path]; !kept {
+			w.written[path] = content
+		}
 	}
 	w.argo.Commit(map[string][]byte{path: content})
 	w.commits = append(w.commits, verb+path)
@@ -114,13 +119,14 @@ func (w *workers) read(context.Context, time.Time) (*report.Read, error) {
 			delete(w.failed, name)
 		} else if w.jobs[name] == "" {
 			env := testutil.ContainerEnv(w.s.t, testutil.Field(w.s.t, job, "spec", "template", "spec", "containers", "0"))
-			w.run(name, env["STEP"], env["NODE"])
+			w.run(name, env)
 		}
 	}
 	return &report.Read{Body: w.body(), At: w.s.tick()}, nil
 }
 
-func (w *workers) run(job, step, node string) {
+func (w *workers) run(job string, env map[string]string) {
+	step, node := env["STEP"], env["NODE"]
 	if step == pools.RemoveNodeStep && w.failure != "" {
 		w.failed[job]++
 		w.jobs[job] = "Degraded"
@@ -135,7 +141,7 @@ func (w *workers) run(job, step, node string) {
 		return
 	}
 	for pod, on := range w.pods {
-		if on == node && w.held[pod] {
+		if on == node && (w.held[pod] || env["IDLE_ONLY"] == "true") {
 			if w.failed[job]++; w.failed[job] >= w.attempts {
 				w.jobs[job] = "Degraded"
 			}
@@ -232,8 +238,26 @@ func (w *workers) recorded(key string) bool {
 
 func (w *workers) replacing() bool {
 	return slices.ContainsFunc(slices.Collect(maps.Keys(w.network().Labels)), func(key string) bool {
-		return strings.HasPrefix(key, pools.KeyWorkerReplace)
+		return strings.HasPrefix(key, pools.KeyWorkerReplace) || strings.HasPrefix(key, pools.KeyWorkerRemove)
 	})
+}
+
+func idleWorkers(t *testing.T) (*site, *workers) {
+	t.Helper()
+	s, w := withWorkers(t)
+	delete(w.pods, "shop/web-0")
+	return s, w
+}
+
+func (w *workers) remove(key string) error {
+	ctx := context.Background()
+	st, err := w.s.plane.Read(ctx)
+	require.NoError(w.s.t, err)
+	step, err := pools.RemoveWorker(w.s.plane, st, key, "it ran no pod but the cluster's own past the pool's idle window")
+	if err != nil {
+		return err
+	}
+	return step.Run(ctx)
 }
 
 // upgrade is the upgrade's own call, which records the workers it names in the network's one write.
@@ -575,4 +599,87 @@ func TestReplaceStep_NamesADrainJobArgoCDHasNotAppliedYet(t *testing.T) {
 
 	assert.Contains(t, w.problems(), "lists no Job mitstack-drain-fsn1-1, so the Application cluster has not applied its file", "where the replacement stands")
 	assert.NotContains(t, w.problems(), "has not finished", "where the replacement stands")
+}
+
+func TestReplaceStep_AnIdleWorkersRemovalDrainsItRemovesItsNodeObjectAndDeletesItsServerWithNoSuccessor(t *testing.T) {
+	s, w := idleWorkers(t)
+	old, other := w.worker("fsn1-1"), w.worker("nbg1-1")
+	created := len(s.cloud.ServerSpecs)
+	idleDrain, err := pools.RenderIdleDrainJob("fsn1-1", old.Name)
+	require.NoError(t, err)
+	require.NoError(t, w.remove("fsn1-1"))
+
+	require.NoError(t, w.replace(pool2, nil))
+
+	_, stands := s.cloud.Servers[old.ID]
+	assert.False(t, stands, "the removed worker's server still stands")
+	assert.Equal(t, []int64{other.ID}, ids(s.members()), "the pool's members after the removal")
+	assert.Len(t, s.cloud.ServerSpecs, created, "a removal creates no server")
+	assert.False(t, w.removedWhileRunning, "a Node object went while its server ran")
+	assert.Equal(t, []string{"write " + drainPath, "delete " + drainPath, "write " + removePath, "delete " + removePath}, w.commits,
+		"the removal's commits to the cluster repository")
+	assert.Equal(t, string(idleDrain), string(w.written[drainPath]), "the drain a removal writes is the one that keeps a node running a pod")
+	assert.False(t, w.replacing(), "the network still records a removal: %v", w.network().Labels)
+	for _, event := range []string{"began removing", "powered off", "deleted Cloud worker", "removed Cloud worker fsn1-1"} {
+		assert.Len(t, w.eventsNaming(event), 1, "the events naming %q: %v", event, w.events)
+	}
+	assert.Empty(t, w.eventsNaming("took the place of"), "the events of a removal")
+}
+
+func TestReplaceStep_AnIdleWorkersRemovalKeepsAWorkerTheNodeReportSinceItBeganReadsRunningAnAppsPod(t *testing.T) {
+	s, w := withWorkers(t)
+	old := w.worker("fsn1-1")
+	require.NoError(t, w.remove("fsn1-1"))
+
+	require.NoError(t, w.replace(pool2, nil), "a removal of a busy worker refuses nothing")
+
+	assert.Equal(t, controlplane.ServerRunning, s.cloud.Servers[old.ID].Status, "the busy worker's server")
+	assert.Empty(t, w.commits, "the removal of a busy worker writes no drain")
+	assert.Equal(t, old.Name, w.pods["shop/web-0"], "the app's pod stays where it runs")
+	assert.False(t, w.replacing(), "the network still records the removal: %v", w.network().Labels)
+	assert.Len(t, w.eventsNaming("kept Cloud worker fsn1-1"), 1, "the events: %v", w.events)
+	assert.NotEmpty(t, s.cloud.Servers[old.ID].Labels[pools.KeyRemovalKept], "a kept worker records when, so its idle time starts again")
+}
+
+func TestReplaceStep_AnIdleWorkersRemovalWhoseDrainFindsAPodThatLandedSinceKeepsTheWorkerUntilThePodEnds(t *testing.T) {
+	s, w := idleWorkers(t)
+	old := w.worker("fsn1-1")
+	landed := func() bool {
+		if slices.Contains(w.commits, "write "+drainPath) && w.pods["ci/build-1"] == "" {
+			w.pods["ci/build-1"] = old.Name
+		}
+		return false
+	}
+	require.NoError(t, w.remove("fsn1-1"))
+
+	require.NoError(t, w.replace(pool2, landed), "a removal whose drain finds a pod refuses nothing")
+
+	assert.Equal(t, controlplane.ServerRunning, s.cloud.Servers[old.ID].Status, "the worker a pod landed on")
+	assert.Equal(t, old.Name, w.pods["ci/build-1"], "the pod that landed runs on where it landed")
+	assert.Equal(t, []string{"write " + drainPath, "delete " + drainPath}, w.commits, "the removal's commits to the cluster repository")
+	assert.False(t, w.replacing(), "the network still records the removal: %v", w.network().Labels)
+	assert.Len(t, w.eventsNaming("kept Cloud worker fsn1-1"), 1, "the events: %v", w.events)
+	kept := s.cloud.Servers[old.ID].Labels
+	assert.NotEmpty(t, kept[pools.KeyRemovalKept], "a kept worker records when, so its idle time starts again")
+	assert.NotContains(t, kept, controlplane.KeyRemovalBegan, "a kept worker's labels name no removal under way")
+}
+
+func TestReplaceWorkers_RefusesAWorkerThePoolsScalingIsRemoving(t *testing.T) {
+	_, w := idleWorkers(t)
+	require.NoError(t, w.remove("fsn1-1"))
+	before := w.network().Labels
+
+	err := w.upgrade(pool2, "fsn1-1")
+
+	assert.Equal(t, "worker-removal-under-way", refusalClass(t, err), "the refusal's class: %v", err)
+	assert.Equal(t, before, w.network().Labels, "the network's labels after a refused upgrade")
+}
+
+func TestRemoveWorker_RefusesAKeyNoMemberOfThePoolHolds(t *testing.T) {
+	_, w := idleWorkers(t)
+
+	err := w.remove("hel1-1")
+
+	assert.Equal(t, "worker-removal-unknown", refusalClass(t, err), "the refusal of an unknown member: %v", err)
+	assert.False(t, w.replacing(), "the network records a removal: %v", w.network().Labels)
 }

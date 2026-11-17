@@ -47,16 +47,24 @@ func IsRemovalPath(path string) bool {
 	return false
 }
 
-func renderWorkerJob(step, key, hostname string) ([]byte, error) {
-	if err := check.DNS1123Label(hostname); err != nil {
+// workerJobSpec is one step's Job for the Cloud worker of key, whose node is hostname.
+type workerJobSpec struct {
+	step, key, hostname string
+	// idleOnly drains only a node that runs no pod but the cluster's own, and gives a busy one back to the scheduler.
+	idleOnly bool
+}
+
+func (s workerJobSpec) render() ([]byte, error) {
+	if err := check.DNS1123Label(s.hostname); err != nil {
 		return nil, fmt.Errorf("Cloud worker: %w", err)
 	}
 	attempts := removalAttempts
-	if step == drainStep {
+	if s.step == drainStep {
 		attempts = drainAttempts
 	}
 	return tmpl.Execute(workerJob, map[string]any{
-		"Name": jobName(step, key), "Namespace": nodeconfig.TalosAPINamespace, "Hostname": hostname, "Step": step,
+		"Name": jobName(s.step, s.key), "Namespace": nodeconfig.TalosAPINamespace, "Hostname": s.hostname, "Step": s.step,
 		"Image": tools.Image, "Script": workerJobScript, "BackoffLimit": attempts - 1, "Attempts": attempts, "DrainTimeout": drainTimeout,
+		"IdleOnly": s.idleOnly,
 	})
 }

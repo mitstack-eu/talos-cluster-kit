@@ -40,7 +40,9 @@ readonly local_path_archive_sha256=2b95efae90cd01de97dd9809739d24b0ad2ccaded6e86
 readonly local_path_archive_url="https://github.com/rancher/local-path-provisioner/archive/${local_path_commit}.tar.gz"
 
 readonly istio_version=1.30.7
-# Each Istio chart is chart, file and the sha256 the repository's index.yaml publishes, in the order a node applies them.
+# Istio publishes its charts on GitHub's registry, where each chart's layer digest is the sha256 its pin names.
+readonly istio_chart_registry=oci://ghcr.io/istio/release/charts
+# Each Istio chart is chart, file and the sha256 Istio publishes for its archive, in the order a node applies them.
 readonly istio_charts=(
   "base istio-base 0c025584cd86f193cdd7bbca8a68b39024f4e5ca800ccb04db4fa316158c72ec"
   "istiod istiod d84a9599a2a192858b2fde4a3c3ff6b86fe61fcc83101f98314026a003036404"
@@ -147,10 +149,20 @@ render_local_path() {
   } > "$work/local-path-provisioner.yaml"
 }
 
+# pull_istio_chart <chart> <sha256> <dest> pulls one Istio chart from its registry and refuses it unless it has the
+# pinned sha256. helm's own error names the chart's reference when the pull fails.
+pull_istio_chart() {
+  local dir="$work/pull-$1"
+  mkdir "$dir"
+  "$helm" pull "$istio_chart_registry/$1" --version "$istio_version" --destination "$dir"
+  mv "$dir/$1-${istio_version}.tgz" "$3"
+  echo "$2  $3" | sha256sum -c --quiet -
+}
+
 # render_istio_chart <chart> <file> <sha256> renders one Istio chart into istio-system. The base chart comes first and
 # creates the namespace at the privileged Pod Security level, since ztunnel and the CNI agent change each pod's network.
 render_istio_chart() {
-  fetch "https://istio-release.storage.googleapis.com/charts/$1-${istio_version}.tgz" "$3" "$work/$2.tgz"
+  pull_istio_chart "$1" "$3" "$work/$2.tgz"
   {
     header "the istio $1 ${istio_version} chart"
     if [ "$1" = base ]; then

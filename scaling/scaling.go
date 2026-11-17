@@ -6,6 +6,7 @@ package scaling
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
@@ -52,18 +53,26 @@ func Decide(pool pools.CloudPool, members []controlplane.Server, reads []report.
 		return held, nil
 	}
 	if len(waiting) > 0 {
-		return grow(pool, len(members), len(waiting)), nil
+		return grow(pool, len(members), waiting), nil
 	}
 	return shrink(pool, members, looks, held), nil
 }
 
-func grow(pool pools.CloudPool, members, waiting int) Decision {
+func grow(pool pools.CloudPool, members int, waiting []string) Decision {
 	if members >= pool.Max {
-		return Decision{Want: pool.Max, AtMaximum: true,
-			Detail: fmt.Sprintf("%d pods wait for a node, and the Cloud pool holds its maximum of %d", waiting, pool.Max)}
+		return Decision{Want: pool.Max, AtMaximum: true, Detail: fmt.Sprintf("%d pods wait for a node, and the Cloud pool holds its maximum of %d: %s",
+			len(waiting), pool.Max, named(waiting))}
 	}
-	want := min(max(members+waiting, pool.Min), pool.Max)
-	return Decision{Want: want, Detail: fmt.Sprintf("%d pods wait for a node, so the Cloud pool grows from %d to %d of at most %d", waiting, members, want, pool.Max)}
+	want := min(max(members+len(waiting), pool.Min), pool.Max)
+	return Decision{Want: want, Detail: fmt.Sprintf("%d pods wait for a node, so the Cloud pool grows from %d to %d of at most %d", len(waiting), members, want, pool.Max)}
+}
+
+// named lists the first three waiting pods, so a pool held at its maximum shows which pods no node takes.
+func named(pods []string) string {
+	if len(pods) <= 3 {
+		return strings.Join(pods, ", ")
+	}
+	return fmt.Sprintf("%s and %d more", strings.Join(pods[:3], ", "), len(pods)-3)
 }
 
 // shrink chooses, of the members idle for the window, the newest of the location holding the most members.

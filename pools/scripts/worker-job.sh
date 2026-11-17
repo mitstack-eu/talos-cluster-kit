@@ -56,12 +56,14 @@ drain() {
 }
 
 # keep_busy runs before any eviction, and the cordon comes before the read, so no pod can land between the two. A pod is
-# the cluster's own by its controller's kind alone, as report.sh reads it, so the drain and the scaling agree.
+# the cluster's own by its namespace and its controller's kind, as the kit's report reader judges it, so the drain and
+# the scaling agree.
 keep_busy() {
   local busy
   kubectl cordon "$NODE" >/dev/null
   if ! busy=$(kubectl get pods -A --field-selector "spec.nodeName=$NODE" -o json |
     jq -r '.items[] | select(.status.phase != "Succeeded" and .status.phase != "Failed")
+      | select(.metadata.namespace != "kube-system")
       | select([.metadata.ownerReferences[]? | select(.controller == true) | .kind] | .[0] | . != "DaemonSet" and . != "Node")
       | "\(.metadata.namespace)/\(.metadata.name)"' | paste -sd, -); then
     kubectl uncordon "$NODE" >/dev/null

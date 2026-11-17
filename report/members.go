@@ -81,10 +81,10 @@ type reportedPod struct {
 
 func (p reportedPod) qualifiedName() string { return p.Namespace + "/" + p.Name }
 
-// clustersOwn is whether every node runs a pod of this kind, which a drain leaves: a DaemonSet's, or a static pod,
-// whose controller is the Node itself.
+// clustersOwn is whether a pod keeps no node busy: a DaemonSet's or a static pod, whose controller is the Node itself,
+// which every node runs, or any pod in kube-system, the cluster's own namespace, which a drain moves under its budgets.
 func (p reportedPod) clustersOwn() bool {
-	return p.OwnerKind != nil && (*p.OwnerKind == "DaemonSet" || *p.OwnerKind == "Node")
+	return p.Namespace == "kube-system" || p.OwnerKind != nil && (*p.OwnerKind == "DaemonSet" || *p.OwnerKind == "Node")
 }
 
 func (p reportedPod) finished() bool { return p.Phase == "Succeeded" || p.Phase == "Failed" }

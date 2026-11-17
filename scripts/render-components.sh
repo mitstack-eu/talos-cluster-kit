@@ -156,7 +156,7 @@ pull_istio_chart() {
   mkdir "$dir"
   "$helm" pull "$istio_chart_registry/$1" --version "$istio_version" --destination "$dir"
   mv "$dir/$1-${istio_version}.tgz" "$3"
-  echo "$2  $3" | sha256sum -c --quiet -
+  check_pin "$2" "$3"
 }
 
 # render_istio_chart <chart> <file> <sha256> renders one Istio chart into istio-system. The base chart comes first and

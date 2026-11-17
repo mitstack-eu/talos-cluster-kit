@@ -4092,7 +4092,7 @@ cannot stop it.
 
 The same job tags that commit `operator/v` followed by the version, which is
 the operator module's release. A block requires it as
-`require github.com/mitstack-eu/talos-cluster-kit/operator v0.82.0`, beside
+`require github.com/mitstack-eu/talos-cluster-kit/operator v0.83.0`, beside
 its requirement of the kit itself.
 
 ## How an operator shares its start-up and repository code

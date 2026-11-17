@@ -68,6 +68,18 @@ func TestDial_TakesGitHubsOwnAPIWhenTheRequestNamesNoEndpoint(t *testing.T) {
 	assert.Equal(t, testSub, a.SubscriptionID())
 }
 
+func TestDialApp_DialsTheRepositoryOfTheAppTheRequestNamesAndRefusesARequestThatNamesNone(t *testing.T) {
+	gh := newFakeGitHub(t)
+
+	a, err := clusterrepo.DialApp(desired(), testBlock, gh.client)
+	require.NoError(t, err)
+	_, missing := clusterrepo.DialApp(desired(withParam("appName", "")), testBlock, gh.client)
+
+	assert.Equal(t, clusterrepo.Repo{Owner: testOwner, Name: "shop-cluster"}, a.Repo)
+	assert.Equal(t, "missing-param", refusal(t, missing).Class)
+	assert.Equal(t, `the app name is required to name the cluster repository: params["appName"] is empty`, refusal(t, missing).Detail)
+}
+
 func TestFor_NamesTheAppsClusterRepositoryAndItsAddress(t *testing.T) {
 	repo := clusterrepo.For("acme", "shop")
 

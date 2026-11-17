@@ -199,6 +199,31 @@ func TestCI_ReleaseTagsTheOperatorModuleAtTheKitsReleaseCommit(t *testing.T) {
 	assert.Contains(t, run, `git push --atomic origin "refs/tags/$TAG" "refs/tags/operator/$TAG"`, "one atomic push carries both tags, so a rerun finds neither when the push failed")
 }
 
+// The robot cluster module is nested in the operator module, whose ./... skips it, so the test job vets and tests it from its own directory.
+func TestCI_TestJobVetsAndTestsTheRobotClusterModule(t *testing.T) {
+	steps := ciJobSteps(t, "test")
+
+	for _, run := range []string{"go vet ./...", "go test -race ./..."} {
+		at := slices.IndexFunc(steps, func(s ciStep) bool { return s.Run == run && s.WorkingDirectory == "operator/robotcluster" })
+
+		require.GreaterOrEqual(t, at, 0, "the test job runs `%s` in the robot cluster module", run)
+		assert.Nil(t, steps[at].ContinueOnError, "a failed `%s` fails the job", run)
+	}
+}
+
+// An operator requires the robot cluster module by its own tag, so each release tags it in the same atomic push as the kit.
+func TestCI_ReleaseTagsTheRobotClusterModuleInTheSamePushAsTheKit(t *testing.T) {
+	steps := ciJobSteps(t, "release")
+
+	at := slices.IndexFunc(steps, func(s ciStep) bool { return strings.Contains(s.Run, `git tag "$TAG"`) })
+
+	require.GreaterOrEqual(t, at, 0, "the release job tags the kit's release")
+	run := steps[at].Run
+	assert.Contains(t, run, `git tag "operator/robotcluster/$TAG"`, "the release tags the robot cluster module beside the kit")
+	assert.Contains(t, run, `git push --atomic origin "refs/tags/$TAG" "refs/tags/operator/$TAG" "refs/tags/operator/robotcluster/$TAG"`,
+		"one atomic push carries all three tags, so a rerun finds none when the push failed")
+}
+
 // hcloud-talos-cluster builds on block-kit v0.40.0, so a higher floor here would move its block-kit with no change of its own.
 func TestOperatorModule_RequiresBlockKitAtTheOldestReleaseATalosClusterOperatorBuildsOnAndNotTheKitItself(t *testing.T) {
 	mod, err := os.ReadFile("operator/go.mod")

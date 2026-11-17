@@ -80,52 +80,75 @@ func every(t *testing.T, since, until time.Time, members []controlplane.Server, 
 
 func TestDecide_PodsThatWaitAddOneMemberForEachUpToTheMaximumAndNeverPastIt(t *testing.T) {
 	joined := member(1, "fsn1-1", start)
+	full := []controlplane.Server{joined, member(2, "nbg1-1", start), member(3, "fsn1-2", start)}
 	cases := []struct {
 		name    string
+		pool    pools.CloudPool
 		members []controlplane.Server
 		pods    []pod
-		want    int
+		want    scaling.Decision
 	}{
-		{"an empty pool of at most 3 with two pods waiting grows to 2", nil, []pod{waiting("a"), waiting("b")}, 2},
-		{"an empty pool of at most 3 with five pods waiting grows to 3 and no more", nil, []pod{waiting("a"), waiting("b"), waiting("c"), waiting("d"), waiting("e")}, 3},
-		{"a pool of one busy member with one pod waiting grows to 2", []controlplane.Server{joined}, []pod{job("busy", joined), waiting("a")}, 2},
-		{"a pool with no pod waiting keeps its size", []controlplane.Server{joined}, []pod{job("busy", joined)}, 1},
+		{"an empty pool of at most 3 with two pods waiting grows to 2", scaled(0, 3), nil, []pod{waiting("a"), waiting("b")},
+			scaling.Decision{Want: 2, Detail: "2 pods wait for a node, so the Cloud pool grows from 0 to 2 of at most 3"}},
+		{"an empty pool of at most 3 with five pods waiting grows to 3 and no more", scaled(0, 3), nil, []pod{waiting("a"), waiting("b"), waiting("c"), waiting("d"), waiting("e")},
+			scaling.Decision{Want: 3, Detail: "5 pods wait for a node, so the Cloud pool grows from 0 to 3 of at most 3"}},
+		{"a pool of one busy member with one pod waiting grows to 2", scaled(0, 3), []controlplane.Server{joined}, []pod{job("busy", joined), waiting("a")},
+			scaling.Decision{Want: 2, Detail: "1 pods wait for a node, so the Cloud pool grows from 1 to 2 of at most 3"}},
+		{"a pool with no pod waiting keeps its size", scaled(0, 3), []controlplane.Server{joined}, []pod{job("busy", joined)}, scaling.Decision{Want: 1}},
+		{"one waiting pod grows a pool of at least 3 holding none to its minimum", scaled(3, 6), nil, []pod{waiting("a")},
+			scaling.Decision{Want: 3, Detail: "1 pods wait for a node, so the Cloud pool grows from 0 to 3 of at most 6"}},
+		{"a pool at its maximum with pods waiting creates no member and reads held at its maximum", scaled(0, 3), full,
+			[]pod{job("a", full[0]), job("b", full[1]), job("c", full[2]), waiting("d"), waiting("e")},
+			scaling.Decision{Want: 3, AtMaximum: true, Detail: "2 pods wait for a node, and the Cloud pool holds its maximum of 3"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			reads := []report.Read{read(t, start.Add(5*time.Minute), tc.members, tc.pods...)}
-
-			got, err := scaling.Decide(scaled(0, 3), tc.members, reads)
+			got, err := scaling.Decide(tc.pool, tc.members, []report.Read{read(t, start.Add(5*time.Minute), tc.members, tc.pods...)})
 
 			require.NoError(t, err)
-			assert.Equal(t, tc.want, got.Want, "the members the pool wants")
-			assert.Nil(t, got.Remove, "the member the pool removes")
-			assert.False(t, got.AtMaximum, "whether pods wait at the maximum")
+			assert.Equal(t, tc.want, got, "the pool's decision")
 		})
 	}
 }
+const unreadPods = `{"nodes": [], "pods": {"exitStatus": 1, "stderr": "the server was unable to return a response"}}`
 
-func TestDecide_APoolAtItsMaximumWithPodsWaitingCreatesNoMemberAndReadsHeldAtItsMaximum(t *testing.T) {
-	members := []controlplane.Server{member(1, "fsn1-1", start), member(2, "nbg1-1", start), member(3, "fsn1-2", start)}
-	pods := []pod{job("a", members[0]), job("b", members[1]), job("c", members[2]), waiting("d"), waiting("e")}
+func TestDecide_HoldsThePoolWhenNoRuleChangesIt(t *testing.T) {
+	m, kept := member(1, "fsn1-1", start), member(1, "fsn1-1", start)
+	kept.Labels[pools.KeyRemovalKept] = strconv.FormatInt(start.Add(20*time.Minute).Unix(), 10)
+	pair := []controlplane.Server{member(1, "fsn1-1", start), member(2, "nbg1-1", start)}
+	pair[0].Labels = controlplane.BeginRemoval(pair[0], start.Add(28*time.Minute), "cloud-pool")
+	idle := func(members ...controlplane.Server) []report.Read {
+		return every(t, start.Add(5*time.Minute), start.Add(30*time.Minute), members)
+	}
+	gap := idle(m)
+	gap[4].Body = []byte(unreadPods)
+	cases := []struct {
+		name    string
+		pool    pools.CloudPool
+		members []controlplane.Server
+		reads   []report.Read
+		want    int
+	}{
+		{"a member created since the newest report, not yet read Ready, while pods wait", scaled(0, 3),
+			[]controlplane.Server{member(1, "fsn1-1", start.Add(6*time.Minute))}, []report.Read{read(t, start.Add(5*time.Minute), nil, waiting("a"), waiting("b"))}, 1},
+		{"a member idle for 10 minutes of a 15-minute window", scaled(0, 3), []controlplane.Server{m}, append([]report.Read{read(t, start.Add(5*time.Minute), []controlplane.Server{m}, job("a", m))},
+			every(t, start.Add(10*time.Minute), start.Add(20*time.Minute), []controlplane.Server{m})...), 1},
+		{"a member running a Job's pod in every report", scaled(0, 3), []controlplane.Server{m}, every(t, start.Add(5*time.Minute), start.Add(time.Hour), []controlplane.Server{m}, job("long", m)), 1},
+		{"a member read idle for 25 minutes but not by the report at 25 minutes, which could not be read", scaled(0, 3), []controlplane.Server{m}, gap, 1},
+		{"a member idle for 25 minutes and kept from its removal 10 minutes ago", scaled(0, 3), []controlplane.Server{kept}, idle(kept), 1},
+		{"two idle members while the pool removes fsn1-1 for a lowered maximum", scaled(0, 3), pair, idle(pair...), 2},
+		{"a pool of at least 1 before any report", scaled(1, 3), nil, nil, 1},
+		{"a pool of at least 1 keeps its one idle member, never falling below its minimum", scaled(1, 3), []controlplane.Server{m}, idle(m), 1},
+		{"a pool of at least 2 holding none grows to its minimum with no pod waiting", scaled(2, 3), nil, idle(), 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := scaling.Decide(tc.pool, tc.members, tc.reads)
 
-	got, err := scaling.Decide(scaled(0, 3), members, []report.Read{read(t, start.Add(5*time.Minute), members, pods...)})
-
-	require.NoError(t, err)
-	assert.Equal(t, 3, got.Want, "the members the pool wants")
-	assert.True(t, got.AtMaximum, "whether pods wait at the maximum")
-	assert.Equal(t, "2 pods wait for a node, and the Cloud pool holds its maximum of 3", got.Detail)
-}
-
-func TestDecide_AddsNoMemberWhileAMemberCreatedSinceTheNewestReportHasNotBeenReadReady(t *testing.T) {
-	joining := member(1, "fsn1-1", start.Add(6*time.Minute))
-	reads := []report.Read{read(t, start.Add(5*time.Minute), nil, waiting("a"), waiting("b"))}
-
-	got, err := scaling.Decide(scaled(0, 3), []controlplane.Server{joining}, reads)
-
-	require.NoError(t, err)
-	assert.Equal(t, 1, got.Want, "the members the pool wants while fsn1-1 joins")
-	assert.Nil(t, got.Remove, "the member the pool removes")
+			require.NoError(t, err)
+			assert.Equal(t, scaling.Decision{Want: tc.want}, got, "the pool's decision")
+		})
+	}
 }
 
 func TestDecide_AMemberIdlePastTheWindowIsRemovedDownToTheMinimum(t *testing.T) {
@@ -141,96 +164,10 @@ func TestDecide_AMemberIdlePastTheWindowIsRemovedDownToTheMinimum(t *testing.T) 
 	assert.Equal(t, "Cloud worker fsn1-1 has run no pod but the cluster's own for 20m0s, past the pool's idle window of 15m0s, so the pool shrinks from 1 to 0", got.Detail)
 }
 
-func TestDecide_AMemberIdleForLessThanTheWindowStays(t *testing.T) {
-	m := member(1, "fsn1-1", start)
-	reads := append([]report.Read{read(t, start.Add(5*time.Minute), []controlplane.Server{m}, job("a", m))},
-		every(t, start.Add(10*time.Minute), start.Add(20*time.Minute), []controlplane.Server{m})...)
-
-	got, err := scaling.Decide(scaled(0, 3), []controlplane.Server{m}, reads)
-
-	require.NoError(t, err)
-	assert.Nil(t, got.Remove, "a member idle for 10 minutes of a 15-minute window")
-	assert.Equal(t, 1, got.Want, "the members the pool wants")
-}
-
-func TestDecide_AMemberRunningAPodIsNeverIdle(t *testing.T) {
-	m := member(1, "fsn1-1", start)
-	reads := every(t, start.Add(5*time.Minute), start.Add(time.Hour), []controlplane.Server{m}, job("long", m))
-
-	got, err := scaling.Decide(scaled(0, 3), []controlplane.Server{m}, reads)
-
-	require.NoError(t, err)
-	assert.Nil(t, got.Remove, "a member that runs a Job's pod in every report")
-}
-
-func TestDecide_ThePoolNeverFallsBelowItsMinimum(t *testing.T) {
-	idle := member(1, "fsn1-1", start)
-	cases := []struct {
-		name    string
-		pool    pools.CloudPool
-		members []controlplane.Server
-		want    int
-	}{
-		{"a pool of at least 1 keeps its one idle member", scaled(1, 3), []controlplane.Server{idle}, 1},
-		{"a pool of at least 2 holding none grows to 2", scaled(2, 3), nil, 2},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			reads := every(t, start.Add(5*time.Minute), start.Add(time.Hour), tc.members)
-
-			got, err := scaling.Decide(tc.pool, tc.members, reads)
-
-			require.NoError(t, err)
-			assert.Nil(t, got.Remove, "the member the pool removes")
-			assert.Equal(t, tc.want, got.Want, "the members the pool wants")
-		})
-	}
-}
-
-func TestDecide_PodsThatWaitGrowAPoolBelowItsMinimumToItsMinimumAtLeast(t *testing.T) {
-	got, err := scaling.Decide(scaled(3, 6), nil, []report.Read{read(t, start, nil, waiting("a"))})
-
-	require.NoError(t, err)
-	assert.Equal(t, 3, got.Want, "the members a pool of at least 3 holding none wants for one waiting pod")
-}
-
-func TestDecide_AnOlderReportWhosePodsCouldNotBeReadCountsAsNoIdleTimeAndStopsNoGrowth(t *testing.T) {
-	m := []controlplane.Server{member(1, "fsn1-1", start)}
-	reads := every(t, start.Add(5*time.Minute), start.Add(30*time.Minute), m)
-	reads[4].Body = []byte(`{"nodes": [], "pods": {"exitStatus": 1, "stderr": "the server was unable to return a response"}}`)
-
-	got, err := scaling.Decide(scaled(0, 3), m, reads)
-	require.NoError(t, err)
-	assert.Nil(t, got.Remove, "a member read idle for 25 minutes but not at 25 minutes, of a 15-minute window")
-
-	got, err = scaling.Decide(scaled(0, 3), m, append(reads, read(t, start.Add(35*time.Minute), m, waiting("a"))))
-	require.NoError(t, err)
-	assert.Equal(t, 2, got.Want, "the members the pool wants for the pod the newest report reads waiting")
-}
-
-func TestDecide_AMemberKeptFromItsRemovalIsIdleOnlyFromWhenItWasKept(t *testing.T) {
-	m := member(1, "fsn1-1", start)
-	m.Labels[pools.KeyRemovalKept] = strconv.FormatInt(start.Add(20*time.Minute).Unix(), 10)
-
-	got, err := scaling.Decide(scaled(0, 3), []controlplane.Server{m}, every(t, start.Add(5*time.Minute), start.Add(30*time.Minute), []controlplane.Server{m}))
-
-	require.NoError(t, err)
-	assert.Nil(t, got.Remove, "a member idle for 25 minutes and kept 10 minutes ago, of a 15-minute window")
-}
-
-func TestDecide_HoldsThePoolWhileTheRemovalOfAMemberIsUnderWay(t *testing.T) {
-	members := []controlplane.Server{member(1, "fsn1-1", start), member(2, "nbg1-1", start)}
-	members[0].Labels = controlplane.BeginRemoval(members[0], start.Add(28*time.Minute), "cloud-pool")
-
-	got, err := scaling.Decide(scaled(0, 3), members, every(t, start.Add(5*time.Minute), start.Add(30*time.Minute), members))
-
-	require.NoError(t, err)
-	assert.Equal(t, scaling.Decision{Want: 2}, got, "two idle members while the pool removes fsn1-1 for a lowered maximum")
-}
-
-func TestDecide_RemovesNoMemberWhilePodsWait(t *testing.T) {
+func TestDecide_RemovesNoMemberWhilePodsWaitAndGrowsPastAnOlderReportThatCouldNotBeRead(t *testing.T) {
 	idle := member(1, "fsn1-1", start)
 	reads := every(t, start.Add(5*time.Minute), start.Add(25*time.Minute), []controlplane.Server{idle})
+	reads[2].Body = []byte(unreadPods)
 	reads = append(reads, read(t, start.Add(30*time.Minute), []controlplane.Server{idle}, waiting("a")))
 
 	got, err := scaling.Decide(scaled(0, 3), []controlplane.Server{idle}, reads)
@@ -261,14 +198,6 @@ func TestDecide_APoolOfASetSizeNeitherGrowsNorShrinksNorReadsHeld(t *testing.T) 
 
 	require.NoError(t, err)
 	assert.Equal(t, scaling.Decision{Want: 2}, got, "a pool of two whose members idle while a pod waits")
-}
-
-func TestDecide_WithNoReportKeepsThePoolWithinItsBounds(t *testing.T) {
-	got, err := scaling.Decide(scaled(1, 3), nil, nil)
-
-	require.NoError(t, err)
-	assert.Equal(t, 1, got.Want, "the members a pool of at least 1 wants before any report")
-	assert.Nil(t, got.Remove, "the member the pool removes")
 }
 
 func TestDecide_FailsOnAReportThatIsNotTheNodeReportsJSON(t *testing.T) {

@@ -499,9 +499,9 @@ TOOLS_IMAGE=talos-tools:ci go test -tags toolsimage -count=1 -run '^TestToolsIma
 | `TestReadSettings_ListensOnTheAddressItIsGivenOrPort8080` | An operator listens on `LISTEN_ADDR`, or on `:8080` when none is set | A stand-in environment |
 | `TestReadSettings_RefusesToStartWithoutTheJWKSURLTheTrustBoundaryReadsItsKeyFrom` | An operator without `MITSTACK_JWKS_URL` refuses to start, saying why | A stand-in environment |
 | `TestNewServer_ServesTheMuxOnTheAddressAndBoundsTheTimeToReadARequestsHeaders` | The server bounds the time a client takes to send its headers to 10 seconds | The returned `http.Server` |
-| `TestHetznerToken_RefusesARequestWithoutTheHetznerConnection` | A request without `secrets.hetzner.api_token` refuses with class `missing-hetzner-access` | A request |
-| `TestAppName_RefusesARequestThatNamesNoApp` | A request without `params.appName` refuses with class `missing-param` | A request |
-| `TestRefuseUnreleasedTools_RefusesTheToolsImagePlaceholderAnUnreleasedKitCarries` | The `unreleased` placeholder refuses with class `tools-image-unreleased`, and a released image passes | Two image references |
+| `TestHetznerToken_ReadsTheConnectionsTokenAndRefusesARequestWithoutIt` | A request gives its `secrets.hetzner.api_token`, and one without it refuses with class `missing-hetzner-access` | Two requests |
+| `TestAppName_ReadsTheAppTheRequestNamesAndRefusesARequestThatNamesNone` | A request gives its `params.appName`, and one without it refuses with class `missing-param` | Two requests |
+| `TestRefuseUnreleasedTools_RefusesOnlyTheToolsImagePlaceholderAnUnreleasedKitCarries` | The `unreleased` placeholder refuses with class `tools-image-unreleased`, and a released image passes | Two image references |
 | `TestRefusalDetail_DropsTheRefusedPrefixAValidateAnswerDoesNotCarry` | A refusal, wrapped or not, gives its detail alone, and another error its whole text | Three errors |
 | `TestDial_RefusesARequestWhoseGitHubConnectionCannotBeActedOnBeforeAnyCall` | A missing token or owner, an unusable repository name, a subscription id too long for a topic, and an endpoint outside the allowlist each refuse with its class, and no client is built and no call made | A fake GitHub |
 | `TestDial_TakesGitHubsOwnAPIWhenTheRequestNamesNoEndpoint` | A request naming no endpoint reads `https://api.github.com` with its own token | A fake GitHub |

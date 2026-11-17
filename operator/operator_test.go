@@ -29,36 +29,20 @@ func refusalClass(t *testing.T, err error) string {
 }
 
 func TestReadSettings_ListensOnTheAddressItIsGivenOrPort8080(t *testing.T) {
-	cases := []struct {
-		name string
-		env  map[string]string
-		want operator.Settings
-	}{
-		{
-			name: "an operator given no LISTEN_ADDR listens on port 8080",
-			env:  map[string]string{"MITSTACK_JWKS_URL": "https://api.mitstack.test/.well-known/jwks.json"},
-			want: operator.Settings{JWKSURL: "https://api.mitstack.test/.well-known/jwks.json", Addr: ":8080"},
-		},
-		{
-			name: "an operator given a LISTEN_ADDR listens there",
-			env:  map[string]string{"MITSTACK_JWKS_URL": "https://api.mitstack.test/jwks", "LISTEN_ADDR": ":9090"},
-			want: operator.Settings{JWKSURL: "https://api.mitstack.test/jwks", Addr: ":9090"},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := operator.ReadSettings(env(tc.env))
+	jwks := "https://api.mitstack.test/jwks"
 
-			require.NoError(t, err)
-			assert.Equal(t, tc.want, got, "ReadSettings(%v)", tc.env)
-		})
-	}
+	byDefault, err := operator.ReadSettings(env(map[string]string{"MITSTACK_JWKS_URL": jwks}))
+	require.NoError(t, err)
+	given, err := operator.ReadSettings(env(map[string]string{"MITSTACK_JWKS_URL": jwks, "LISTEN_ADDR": ":9090"}))
+	require.NoError(t, err)
+
+	assert.Equal(t, operator.Settings{JWKSURL: jwks, Addr: ":8080"}, byDefault, "an operator given no LISTEN_ADDR")
+	assert.Equal(t, operator.Settings{JWKSURL: jwks, Addr: ":9090"}, given, "an operator given a LISTEN_ADDR")
 }
 
 func TestReadSettings_RefusesToStartWithoutTheJWKSURLTheTrustBoundaryReadsItsKeyFrom(t *testing.T) {
 	_, err := operator.ReadSettings(env(map[string]string{"LISTEN_ADDR": ":9090"}))
 
-	require.Error(t, err)
 	assert.EqualError(t, err, "MITSTACK_JWKS_URL is required: the trust boundary resolves mitstack's signing key from it")
 }
 
@@ -69,88 +53,50 @@ func TestNewServer_ServesTheMuxOnTheAddressAndBoundsTheTimeToReadARequestsHeader
 	assert.Equal(t, 10*time.Second, srv.ReadHeaderTimeout, "the server bounds the time a client may take to send its headers")
 }
 
-func TestUnknown_ReadsUnknownWithTheDetail(t *testing.T) {
-	obs := operator.Unknown("no Hetzner token on this call")
-
-	assert.Equal(t, contract.Observation{State: contract.Unknown, StatusDetail: "no Hetzner token on this call"}, obs)
-}
-
 func TestRefusalDetail_DropsTheRefusedPrefixAValidateAnswerDoesNotCarry(t *testing.T) {
-	cases := []struct {
-		name string
-		err  error
-		want string
-	}{
-		{"a refusal gives its detail alone", handler.Refuse("missing-param", "the app name is required"), "the app name is required"},
-		{"a wrapped refusal gives its detail alone", fmt.Errorf("dialling: %w", handler.Refuse("missing-param", "no owner")), "no owner"},
-		{"any other error gives its whole text", errors.New("github unreachable"), "github unreachable"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, operator.RefusalDetail(tc.err), "RefusalDetail(%v)", tc.err)
-		})
-	}
+	assert.Equal(t, "the app name is required", operator.RefusalDetail(handler.Refuse("missing-param", "the app name is required")))
+	assert.Equal(t, "no owner", operator.RefusalDetail(fmt.Errorf("dialling: %w", handler.Refuse("missing-param", "no owner"))))
+	assert.Equal(t, "github unreachable", operator.RefusalDetail(errors.New("github unreachable")), "any other error gives its whole text")
 }
 
-func TestObserverFunc_AnswersTheObservationOfTheRequestItIsHanded(t *testing.T) {
-	observe := operator.ObserverFunc(func(_ context.Context, d contract.Desired) (contract.Observation, error) {
+func TestObserverFunc_AnswersTheUnknownObservationOfTheRequestItIsHanded(t *testing.T) {
+	var observe handler.Observer = operator.ObserverFunc(func(_ context.Context, d contract.Desired) (contract.Observation, error) {
 		return operator.Unknown("observed " + d.SubscriptionID), nil
 	})
-	var _ handler.Observer = observe
 
 	obs, err := observe.ObserveResource(context.Background(), contract.ResourceRef{Desired: contract.Desired{Identity: contract.Identity{SubscriptionID: "sub_1"}}})
 
 	require.NoError(t, err)
-	assert.Equal(t, "observed sub_1", obs.StatusDetail)
+	assert.Equal(t, contract.Observation{State: contract.Unknown, StatusDetail: "observed sub_1"}, obs)
 }
 
-func TestHetznerToken_RefusesARequestWithoutTheHetznerConnection(t *testing.T) {
-	_, err := operator.HetznerToken(contract.Desired{})
-
-	assert.Equal(t, "missing-hetzner-access", refusalClass(t, err))
-	assert.ErrorContains(t, err, "secrets.hetzner.api_token is empty, so the cluster cannot be reached")
-}
-
-func TestHetznerToken_ReadsTheConnectionsToken(t *testing.T) {
+func TestHetznerToken_ReadsTheConnectionsTokenAndRefusesARequestWithoutIt(t *testing.T) {
 	token, err := operator.HetznerToken(contract.Desired{Secrets: map[string]map[string]string{"hetzner": {"api_token": "hc-token"}}})
-
 	require.NoError(t, err)
+	_, missing := operator.HetznerToken(contract.Desired{})
+
 	assert.Equal(t, "hc-token", token)
+	assert.Equal(t, "missing-hetzner-access", refusalClass(t, missing))
+	assert.ErrorContains(t, missing, "secrets.hetzner.api_token is empty, so the cluster cannot be reached")
 }
 
-func TestAppName_RefusesARequestThatNamesNoApp(t *testing.T) {
-	_, err := operator.AppName(contract.Desired{})
-
-	assert.Equal(t, "missing-param", refusalClass(t, err))
-	assert.ErrorContains(t, err, `the app name is required: params["appName"] is empty`)
-}
-
-func TestAppName_ReadsTheAppTheRequestNames(t *testing.T) {
+func TestAppName_ReadsTheAppTheRequestNamesAndRefusesARequestThatNamesNone(t *testing.T) {
 	name, err := operator.AppName(contract.Desired{Params: map[string]string{"appName": "shop"}})
-
 	require.NoError(t, err)
+	_, missing := operator.AppName(contract.Desired{})
+
 	assert.Equal(t, "shop", name)
+	assert.Equal(t, "missing-param", refusalClass(t, missing))
+	assert.ErrorContains(t, missing, `the app name is required: params["appName"] is empty`)
 }
 
-func TestRefuseUnreleasedTools_RefusesTheToolsImagePlaceholderAnUnreleasedKitCarries(t *testing.T) {
-	cases := []struct {
-		name, image, class string
-	}{
-		{"the placeholder between releases is refused", "ghcr.io/mitstack-eu/talos-cluster-kit-tools:unreleased@sha256:" + zeros, "tools-image-unreleased"},
-		{"a released image passes", "ghcr.io/mitstack-eu/talos-cluster-kit-tools:v0.81.0@sha256:" + zeros, ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := operator.RefuseUnreleasedTools(tc.image)
+func TestRefuseUnreleasedTools_RefusesOnlyTheToolsImagePlaceholderAnUnreleasedKitCarries(t *testing.T) {
+	const digest = "@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	placeholder := "ghcr.io/mitstack-eu/talos-cluster-kit-tools:unreleased" + digest
 
-			if tc.class == "" {
-				assert.NoError(t, err, "RefuseUnreleasedTools(%s)", tc.image)
-				return
-			}
-			assert.Equal(t, tc.class, refusalClass(t, err))
-			assert.ErrorContains(t, err, tc.image)
-		})
-	}
+	err := operator.RefuseUnreleasedTools(placeholder)
+
+	assert.Equal(t, "tools-image-unreleased", refusalClass(t, err))
+	assert.ErrorContains(t, err, placeholder)
+	assert.NoError(t, operator.RefuseUnreleasedTools("ghcr.io/mitstack-eu/talos-cluster-kit-tools:v0.81.0"+digest), "a released image")
 }
-
-const zeros = "0000000000000000000000000000000000000000000000000000000000000000"

@@ -89,16 +89,16 @@ func (p reportedPod) clustersOwn() bool {
 
 func (p reportedPod) finished() bool { return p.Phase == "Succeeded" || p.Phase == "Failed" }
 
-// WorkloadPods names each pod on node, as namespace/name, that has not finished and is not the cluster's own.
-func (r Read) WorkloadPods(node string) ([]string, error) {
+// WorkloadPods names, by node, each pod as namespace/name that has not finished and is not the cluster's own.
+func (r Read) WorkloadPods() (map[string][]string, error) {
 	m, err := r.members()
 	if err != nil {
 		return nil, err
 	}
-	var out []string
+	out := map[string][]string{}
 	for _, p := range m.Pods {
-		if p.Node != nil && *p.Node == node && !p.finished() && !p.clustersOwn() {
-			out = append(out, p.qualifiedName())
+		if p.Node != nil && !p.finished() && !p.clustersOwn() {
+			out[*p.Node] = append(out[*p.Node], p.qualifiedName())
 		}
 	}
 	return out, nil

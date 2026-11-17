@@ -30,7 +30,18 @@ const (
 	// goes the way a replaced worker goes but leaves no successor.
 	KeyWorkerRemove  = "mitstack.dev/worker-remove-"
 	workerRemovePlan = "worker-remove-"
+	// KeyRemovalKept on a Cloud worker is when a removal last kept it, in Unix seconds, so its idle time starts again.
+	KeyRemovalKept = "mitstack.dev/removal-kept"
 )
+
+// KeptAt is when a removal last kept s, false when none has.
+func KeptAt(s controlplane.Server) (time.Time, bool) {
+	unix, err := strconv.ParseInt(s.Labels[KeyRemovalKept], 10, 64)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return time.Unix(unix, 0).UTC(), true
+}
 
 // workerReplacement is a recorded replacement, or with removal set, a recorded removal.
 type workerReplacement struct {
@@ -163,6 +174,9 @@ func ReplaceWorkers(pool CloudPool, keys []string) controlplane.Record {
 			}
 			if _, recorded := labels[KeyWorkerReplace+key]; recorded {
 				continue
+			}
+			if _, removing := labels[KeyWorkerRemove+key]; removing {
+				return "", refuse("worker-removal-under-way", "the upgrade names the Cloud worker %q to replace, and the pool's scaling is removing it, so nothing was changed; upgrade again once its removal ends", key)
 			}
 			if _, err := site.serverType(ctx, plane, pool, worker.Location); err != nil {
 				return "", err
@@ -344,11 +358,11 @@ func (x replacer) running(ctx context.Context, worker controlplane.Server) (prog
 		return waitsOn("no node report was received since its %s began at %s", x.r.noun(), stamp(began))
 	}
 	if x.r.removal {
-		busy, err := read.WorkloadPods(worker.Name)
+		pods, err := read.WorkloadPods()
 		if err != nil {
 			return progress{}, err
 		}
-		if len(busy) > 0 {
+		if busy := pods[worker.Name]; len(busy) > 0 {
 			return x.keep(fmt.Sprintf("the node report read at %s reads it running %s", stamp(read.At), strings.Join(busy, ", ")))
 		}
 	}
@@ -463,14 +477,20 @@ func (x replacer) unrecord(ctx context.Context) error {
 	return nil
 }
 
-// keep ends a removal with its worker still serving, taking each of paths out of the cluster repository first, so the
-// pool's scaling may choose a member again once a node report reads one idle past the window.
+// keep ends a removal with its worker still serving, taking each of paths out of the cluster repository first, and
+// stamps the worker, so the pool's scaling chooses it again only once it has stood idle a whole window since.
 func (x replacer) keep(why string, paths ...string) (progress, error) {
+	worker, _ := memberOf(x.st.Servers[RoleCloudWorker], x.r.key)
 	return next("keep Cloud worker "+x.r.key+" and end its removal, since "+why, func(ctx context.Context) error {
 		for _, path := range paths {
 			if err := x.plane.Removals.Commit(ctx, path, nil); err != nil {
 				return fmt.Errorf("taking %s out of the cluster repository: %w", path, err)
 			}
+		}
+		labels := controlplane.EndRemoval(worker)
+		labels[KeyRemovalKept] = strconv.FormatInt(now(x.plane).Unix(), 10)
+		if err := x.plane.API.SetServerLabels(ctx, worker.ID, labels); err != nil {
+			return fmt.Errorf("recording on Cloud worker %s that its removal kept it: %w", x.r.key, err)
 		}
 		if err := x.unrecord(ctx); err != nil {
 			return err

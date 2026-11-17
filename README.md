@@ -29,9 +29,9 @@ block-kit nor operator-kit, so any block framework can drive it. Keeping the
 install in one module means a fix to the boot, to etcd recovery or to the
 Cloud control plane lands once and reaches every block.
 
-The one exception is the operator module under `operator/`, a Go module of
-its own. It holds the start-up and repository code both Talos cluster
-operators run on block-kit, as
+The `operator/` directory is not part of this module and does import
+block-kit. It is a Go module of its own, holding the start-up and repository
+code both Talos cluster operators run, as
 [How an operator shares its start-up and repository code](#how-an-operator-shares-its-start-up-and-repository-code)
 describes.
 
@@ -4114,8 +4114,8 @@ no release of the kit itself.
 
 | Package | What it does | Main entry points |
 |---|---|---|
-| `operator` | Starts the operator. It refuses to start without `MITSTACK_JWKS_URL`, listens on `LISTEN_ADDR` or port 8080, keeps the standard logger's last 500 lines for `/logs`, and serves the lifecycle handler on the routes the operator passes. It also refuses a request without a Hetzner token or an app name, or one handled by an operator built against an unreleased kit, and reads a resource unknown with the reason | `Main`, `ReadSettings`, `NewServer`, `HetznerToken`, `AppName`, `RefuseUnreleasedTools`, `Unknown`, `RefusalDetail`, `ObserverFunc` |
-| `operator/clusterrepo` | Handles the private repository the cluster's Argo CD syncs from, named for the app as `<app>-cluster`. It dials GitHub, resolving the API host through block-kit's `ghapi.Base` and the operator's allowlist, and refuses a request it cannot act on before any call. It reads whether the repository carries the subscription's mark, creates, marks and seeds it, deletes it, and observes it and its seed | `Dial`, `NewClient`, `For`, `Mark`, `CarriesMark`, `Access.Read`, `Access.Ensure`, `Access.RefuseUnmarked`, `Access.Delete`, `Observe`, `RepositoryObserver`, `SeedObserver` |
+| `operator` | Starts the operator. It refuses to start without `MITSTACK_JWKS_URL`, the address where mitstack publishes the keys it signs each request with. It listens on `LISTEN_ADDR` or port 8080, keeps the standard logger's last 500 lines for `/logs`, the route that serves the operator's recent log lines, and serves block-kit's lifecycle handler on the routes the operator passes. It also refuses a request without a Hetzner token or an app name, or one handled by an operator built against an unreleased kit, and gives an observation of state Unknown with its reason | `Main`, `ReadSettings`, `NewServer`, `HetznerToken`, `AppName`, `RefuseUnreleasedTools`, `Unknown`, `RefusalDetail`, `ObserverFunc` |
+| `operator/clusterrepo` | Handles the private repository the cluster's Argo CD syncs from, named for the app as `<app>-cluster`. It dials GitHub, taking the API host the request names only when block-kit's `ghapi.Base` allows it: `api.github.com`, or a public host the operator's own environment lists in `MITSTACK_GITHUB_API_HOSTS`. It refuses a request it cannot act on before any call. It reads whether the repository carries the subscription's mark, creates, marks and seeds it, deletes it, and observes it and its seed | `Dial`, `NewClient`, `For`, `Mark`, `CarriesMark`, `Access.Read`, `Access.Ensure`, `Access.RefuseUnmarked`, `Access.Delete`, `Observe`, `RepositoryObserver`, `SeedObserver` |
 
 A repository carries the subscription's mark when it holds two topics. One is
 `mitstack-` followed by the block's id. The other is `mitstack-` followed by
@@ -4125,14 +4125,20 @@ subscription `sub_Ab12` of hcloud-talos-cluster marks `acme/shop-cluster` with
 `cluster/README.md` and `repository-credentials/README.md`, which open the two
 directories the cluster's Argo CD Applications sync.
 
-Each operator keeps its own routes, with the `"/hook"` and `"/logs"` paths
-written out in its source. block-kit's `blockverify` requires the `/logs`
-secret-leak test only of a module whose own source names `"/logs"`, so the
+Each operator keeps its own routes, the paths its web service answers on:
+`/hook` for mitstack's requests, `/logs` and the health check. blockverify,
+block-kit's checker of a block's contract, requires the test that no token
+reaches `/logs` only of a module whose own source names `"/logs"`, so the
 routes stay with the operator. An operator's `main` is then one call:
 
 ```go
 func main() { operator.Main(handlerConfig, routes) }
 ```
+
+`handlerConfig` builds the operator's lifecycle handler configuration, its
+resource, manifest and observers, from the signing-key address and the log
+buffer `Main` hands it. `routes` mounts the handler on `/hook` and `/logs`
+beside the health check.
 
 The module's tests run from its own directory, since the root's `./...` does
 not reach a nested module:

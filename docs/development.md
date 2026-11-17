@@ -342,6 +342,10 @@ and expects talosctl, kubectl and every served manifest with its pinned sha256:
 TOOLS_IMAGE=talos-tools:ci go test -tags toolsimage -count=1 -run '^TestToolsImage_' .
 ```
 
+The tests from `TestReadSettings_` to `TestSeedObserver_` belong to the operator
+module under `operator/`. They run with `go -C operator test -race ./...`, since
+the root's `./...` does not reach a nested module.
+
 | Test | What it proves | Against what |
 |---|---|---|
 | `TestRender_MatchesTheGoldenConfiguration` | The configuration for one and three control-plane nodes on the `hcloud` and the `metal` profile matches its recording | `nodeconfig/testdata/golden/` |
@@ -506,7 +510,7 @@ TOOLS_IMAGE=talos-tools:ci go test -tags toolsimage -count=1 -run '^TestToolsIma
 | `TestDial_RefusesARequestWhoseGitHubConnectionCannotBeActedOnBeforeAnyCall` | A missing token or owner, an unusable repository name, a subscription id too long for a topic, and an endpoint outside the allowlist each refuse with its class, and no client is built and no call made | A fake GitHub |
 | `TestDial_TakesGitHubsOwnAPIWhenTheRequestNamesNoEndpoint` | A request naming no endpoint reads `https://api.github.com` with its own token | A fake GitHub |
 | `TestRead_ReadsWhetherTheRepositoryExistsAndCarriesTheSubscriptionsMark` | No repository, one without the mark and one with it read as such | A fake GitHub |
-| `TestEnsure_CreatesAPrivateRepositoryMarksItBesideGitHubsOwnTopicsAndSeedsBothDirectories` | A missing repository is created private, marked beside the topics GitHub gave it, and seeded with both files, each commit carrying the subscription's trailer | A fake GitHub |
+| `TestEnsure_CreatesAPrivateRepositoryMarksItBesideGitHubsOwnTopicsAndSeedsBothDirectories` | A missing repository is created private, marked beside the topics GitHub gave it, and seeded with both files, each commit message ending in the line `Mitstack-Subscription: <id>` | A fake GitHub |
 | `TestEnsure_SeedsOnlyTheFilesAMarkedRepositoryLacks` | A marked repository is neither created nor marked again, and a file already there is kept | A fake GitHub |
 | `TestEnsure_ACreateGitHubRefusesNamesTheRepositoryAndKeepsTheTokenOutOfTheError` | GitHub's refusal of the create names the repository and carries no token | A fake GitHub |
 | `TestRefuseUnmarked_RefusesOnlyARepositoryThatExistsWithoutTheMark` | An unmarked repository refuses with class `repository-not-marked`, naming both topics | A fake GitHub |

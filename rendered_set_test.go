@@ -1,9 +1,16 @@
 package talosclusterkit
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/pem"
+	"errors"
 	"fmt"
 	"maps"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -115,7 +122,53 @@ func TestDropEmptyMetadataMaps(t *testing.T) {
 	}
 }
 
-var podRefusingPolicies = []string{"mitstack-disallow-host-path", "mitstack-require-resource-limits", "mitstack-restrict-image-registries"}
+func TestFetch(t *testing.T) {
+	const archive = "the chart archive's bytes"
+	sum := sha256.Sum256([]byte(archive))
+	pin := hex.EncodeToString(sum[:])
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/refused.tgz" {
+			http.Error(w, "Access denied.", http.StatusForbidden)
+			return
+		}
+		fmt.Fprint(w, archive)
+	}))
+	t.Cleanup(srv.Close)
+	caBundle := filepath.Join(t.TempDir(), "ca.pem")
+	require.NoError(t, os.WriteFile(caBundle, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}), 0o644))
+	env := append(os.Environ(), "CURL_CA_BUNDLE="+caBundle)
+
+	for _, tc := range []struct {
+		name, path, pin string
+		wantExit        int
+		wantOutput      string
+	}{
+		{"an archive matching its pin lands at its destination", "/chart.tgz", pin, 0, ""},
+		{"a URL that answers 403 stops with curl's exit status and names the URL", "/refused.tgz", pin, 22, srv.URL + "/refused.tgz"},
+		{"an archive whose sha256 differs from its pin stops at the check", "/chart.tgz", strings.Repeat("0", 64), 1, "FAILED"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dest := filepath.Join(t.TempDir(), "chart.tgz")
+
+			out, err := testutil.RunBash(t, `set -euo pipefail; . "$1"; fetch "$2" "$3" "$4"`, env, "scripts/lib/fetch.sh", srv.URL+tc.path, tc.pin, dest)
+
+			exit := 0
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) {
+				exit = exitErr.ExitCode()
+			}
+			require.Equal(t, tc.wantExit, exit, "fetch %s%s exited %d; want %d, output:\n%s", srv.URL, tc.path, exit, tc.wantExit, out)
+			assert.Contains(t, out, tc.wantOutput)
+			if tc.wantExit == 0 {
+				got, readErr := os.ReadFile(dest)
+				require.NoError(t, readErr)
+				assert.Equal(t, archive, string(got))
+			}
+		})
+	}
+}
+
+var podRefusingPolicies =[]string{"mitstack-disallow-host-path", "mitstack-require-resource-limits", "mitstack-restrict-image-registries"}
 
 // renderedPod is a pod spec the kit renders in a document, or in a pod template a ConfigMap of the kit holds, with the
 // manifest and the object that hold it and the namespace it starts in.

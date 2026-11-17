@@ -196,7 +196,7 @@ func TestCI_ReleaseTagsTheOperatorModuleAtTheKitsReleaseCommit(t *testing.T) {
 	require.GreaterOrEqual(t, at, 0, "the release job tags the kit's release")
 	run := steps[at].Run
 	assert.Contains(t, run, `git tag "operator/$TAG"`, "the release tags the operator module beside the kit")
-	assert.Contains(t, run, `git push origin "refs/tags/$TAG" "refs/tags/operator/$TAG"`, "one push carries both tags")
+	assert.Contains(t, run, `git push --atomic origin "refs/tags/$TAG" "refs/tags/operator/$TAG"`, "one atomic push carries both tags, so a rerun finds neither when the push failed")
 }
 
 // hcloud-talos-cluster builds on block-kit v0.40.0, so a higher floor here would move its block-kit with no change of its own.

@@ -242,7 +242,6 @@ func (w *workers) replacing() bool {
 	})
 }
 
-// idleWorkers is withWorkers with no app pod on the worker in fsn1, which then runs only the cluster's own pods.
 func idleWorkers(t *testing.T) (*site, *workers) {
 	t.Helper()
 	s, w := withWorkers(t)
@@ -250,7 +249,6 @@ func idleWorkers(t *testing.T) (*site, *workers) {
 	return s, w
 }
 
-// remove is the call that begins the removal of the worker of key, as a block's scaling decision asks for it.
 func (w *workers) remove(key string) error {
 	ctx := context.Background()
 	st, err := w.s.plane.Read(ctx)

@@ -47,7 +47,7 @@ func job(name string, on controlplane.Server) pod {
 	return pod{Namespace: "ci", Name: name, Node: ptr(on.Name), Phase: "Running", OwnerKind: ptr("Job")}
 }
 
-// daemons are the pods every node runs, which leave a node idle: a DaemonSet's, a static pod's, and a finished Job's.
+// daemons are the pods that leave a node idle: a DaemonSet's, a static pod's and a finished pod's.
 func daemons(on controlplane.Server) []pod {
 	return []pod{
 		{Namespace: "kube-system", Name: "cilium-" + on.Name, Node: ptr(on.Name), Phase: "Running", OwnerKind: ptr("DaemonSet")},
@@ -56,7 +56,6 @@ func daemons(on controlplane.Server) []pod {
 	}
 }
 
-// read is a node report made at, listing each member Ready with the pods it runs and the pods that wait.
 func read(t *testing.T, at time.Time, members []controlplane.Server, pods ...pod) report.Read {
 	t.Helper()
 	nodes := []map[string]any{{"name": "node-fsn1", "ready": true}}
@@ -69,7 +68,6 @@ func read(t *testing.T, at time.Time, members []controlplane.Server, pods ...pod
 	return report.Read{Body: body, At: at}
 }
 
-// every is a report every five minutes from since to until, in which the members run the cluster's own pods and pods.
 func every(t *testing.T, since, until time.Time, members []controlplane.Server, pods ...pod) []report.Read {
 	t.Helper()
 	var reads []report.Read

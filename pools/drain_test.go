@@ -52,7 +52,6 @@ func runWorkerJob(t *testing.T, step, node string, fakes ...string) (string, err
 	return runJob(t, rendered, node, fakes...)
 }
 
-// runIdleDrain runs the drain Job an idle worker's removal writes, as the kubelet would on node.
 func runIdleDrain(t *testing.T, node string, fakes ...string) (string, error, []string) {
 	t.Helper()
 	rendered, err := pools.RenderIdleDrainJob("fsn1-1", worker)
@@ -124,10 +123,19 @@ func TestWorkerJob_AnIdleDrainUncordonsTheNodeAndFailsNamingEachPodThatIsNotTheC
 
 	require.Error(t, err, "the idle drain of a node that runs an app's pod")
 	assert.Contains(t, out, "shop/web-0", "the Job's last words name the pod that keeps the node")
+	assert.Contains(t, out, "shop/agent-0", "a pod a DaemonSet owns but does not control is no pod of the cluster's own, as the node report reads it")
 	assert.NotContains(t, out, "kube-system/cilium-x7k2q", "the Job's last words name no DaemonSet's pod")
 	assert.NotContains(t, out, "ci/done-1", "the Job's last words name no finished pod")
 	assert.Equal(t, []string{"kubectl cordon " + worker, "kubectl uncordon " + worker}, withoutReads(calls),
 		"an idle drain cordons the node first and gives it back with no eviction")
+}
+
+func TestWorkerJob_AnIdleDrainThatCannotReadTheNodesPodsUncordonsItAndFails(t *testing.T) {
+	out, err, calls := runIdleDrain(t, "shop-node-hel1", "FAKE_PODS=testdata/no-such-file.json")
+
+	require.Error(t, err, "the idle drain whose read of the node's pods fails")
+	assert.Equal(t, []string{"kubectl cordon " + worker, "kubectl uncordon " + worker}, withoutReads(calls),
+		"an idle drain gives the node back when it cannot tell whether a pod runs there: %s", out)
 }
 
 func TestWorkerJob_AnIdleDrainDrainsANodeThatRunsOnlyTheClustersOwnPodsAndFinishedOnes(t *testing.T) {

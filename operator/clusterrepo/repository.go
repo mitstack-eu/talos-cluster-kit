@@ -1,6 +1,5 @@
-// Package clusterrepo handles the private GitHub repository a Talos cluster's Argo CD syncs from: it names, dials,
-// reads, creates, marks, seeds and deletes it, and observes it. block-kit's ghapi.Client has no topics or contents
-// call, so those calls go to its allowlisted base directly.
+// Package clusterrepo names, dials, reads, creates, marks, seeds, deletes and observes a Talos cluster's GitHub
+// repository, calling ghapi's allowlisted base directly for the topics and contents calls ghapi.Client lacks.
 package clusterrepo
 
 import (
@@ -31,9 +30,7 @@ const (
 	githubTimeout        = 30 * time.Second
 	maxGitHubAnswerBytes = 64 << 10
 	defaultGitHubAPI     = "https://" + ghapi.APIGitHubHost
-
-	// SeedMarkerFile is the file every seed writes, which the seed commit's observer reads.
-	SeedMarkerFile = "cluster/README.md"
+	SeedMarkerFile       = "cluster/README.md"
 )
 
 // seedFiles open the two directories the cluster's Argo CD Applications sync, so each syncs from its first commit.
@@ -45,12 +42,10 @@ var seedFiles = map[string]string{
 
 var repoTopicRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,49}$`)
 
-// Repo is the private repository Argo CD syncs the cluster from.
 type Repo struct {
 	Owner, Name string
 }
 
-// For names the cluster repository of an app.
 func For(owner, appName string) Repo {
 	return Repo{Owner: owner, Name: appName + "-cluster"}
 }
@@ -75,9 +70,8 @@ func NewClient(base, token string) *ghapi.Client {
 	return ghapi.NewClient(base, token, &http.Client{Timeout: githubTimeout})
 }
 
-// Dial refuses, before any request, a request whose GitHub connection cannot be acted on. It resolves the GitHub API
-// base through the operator's allowlist, never from the request alone. newClient is a parameter so a test can point
-// it at a fake whose base the allowlist names.
+// Dial refuses, before any request, a request whose GitHub connection cannot be acted on, and resolves the API base
+// through the operator's allowlist, never from the request alone; newClient lets a test use an allowlisted fake.
 func Dial(d contract.Desired, blockID, appName string, newClient func(base, token string) *ghapi.Client) (*Access, error) {
 	token := d.Secrets["github"]["token"]
 	if token == "" {
@@ -108,7 +102,6 @@ func Dial(d contract.Desired, blockID, appName string, newClient func(base, toke
 	return &Access{Client: newClient(base.String(), token), Repo: repo, blockID: blockID, subID: d.SubscriptionID}, nil
 }
 
-// SubscriptionID is the subscription whose repository this access reads and writes.
 func (a *Access) SubscriptionID() string { return a.subID }
 
 // SubscriptionTopic lowercases first, since GitHub takes only lowercase topics and block-kit's helper keeps case.
@@ -131,7 +124,6 @@ func CarriesMark(topics []string, blockID, subID string) bool {
 	return true
 }
 
-// Read is whether the cluster repository exists and carries the subscription's mark.
 type Read struct {
 	Exists, Marked bool
 }
@@ -292,7 +284,6 @@ func (a *Access) Call(ctx context.Context, method, path string, payload any) (in
 	return a.CallLimited(ctx, method, path, payload, maxGitHubAnswerBytes)
 }
 
-// CallLimited reads at most limit bytes of the body.
 func (a *Access) CallLimited(ctx context.Context, method, path string, payload any, limit int64) (int, []byte, error) {
 	req, err := a.newRequest(ctx, method, path, payload)
 	if err != nil {

@@ -1,5 +1,4 @@
-// Package operator holds the start-up wiring and the request reads that every Talos cluster operator built on
-// block-kit shares, so a fix to either lands once and reaches every such operator.
+// Package operator holds the start-up and the request reads every Talos cluster operator built on block-kit shares.
 package operator
 
 import (
@@ -20,13 +19,10 @@ const (
 	readHeaderTimeout = 10 * time.Second
 )
 
-// ConfigFunc builds an operator's lifecycle handler configuration from the JWKS URL and the buffer its /logs serves.
 type ConfigFunc func(jwksURL string, logs *webhook.LogBuffer) handler.Config
 
-// RoutesFunc mounts the lifecycle handler on the operator's routes.
 type RoutesFunc func(hook http.HandlerFunc) *http.ServeMux
 
-// Settings are what an operator reads from its environment at start-up.
 type Settings struct {
 	JWKSURL string
 	Addr    string
@@ -49,8 +45,7 @@ func NewServer(addr string, mux http.Handler) *http.Server {
 	return &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: readHeaderTimeout}
 }
 
-// Main serves the operator until its server stops, and exits on any error. /logs serves only what passes through the
-// standard logger.
+// Main serves the operator until its server stops, and /logs serves only what passes through the standard logger.
 func Main(config ConfigFunc, routes RoutesFunc) {
 	settings, err := ReadSettings(os.Getenv)
 	if err != nil {

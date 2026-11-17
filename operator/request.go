@@ -12,7 +12,6 @@ import (
 // unreleasedToolsTag is the tag of the zero-digest placeholder tools.Image carries between the kit's releases.
 const unreleasedToolsTag = ":unreleased@"
 
-// HetznerToken refuses a request without the Hetzner Cloud project token the cluster is reached with.
 func HetznerToken(d contract.Desired) (string, error) {
 	token := d.Secrets["hetzner"]["api_token"]
 	if token == "" {
@@ -31,8 +30,7 @@ func AppName(d contract.Desired) (string, error) {
 	return name, nil
 }
 
-// RefuseUnreleasedTools refuses an operator built against a kit whose tools image is the placeholder, since the node
-// report runs from that image.
+// RefuseUnreleasedTools refuses the placeholder tools image an unreleased kit carries, which the node report runs from.
 func RefuseUnreleasedTools(image string) error {
 	if strings.Contains(image, unreleasedToolsTag) {
 		return handler.Refuse("tools-image-unreleased",
@@ -41,7 +39,6 @@ func RefuseUnreleasedTools(image string) error {
 	return nil
 }
 
-// Unknown reads a resource unknown, saying why.
 func Unknown(detail string) contract.Observation {
 	return contract.Observation{State: contract.Unknown, StatusDetail: detail}
 }
@@ -55,7 +52,6 @@ func RefusalDetail(err error) string {
 	return err.Error()
 }
 
-// ObserverFunc reads a resource by observing the whole request, as a cluster's own resource is read.
 type ObserverFunc func(ctx context.Context, d contract.Desired) (contract.Observation, error)
 
 func (f ObserverFunc) ObserveResource(ctx context.Context, r contract.ResourceRef) (contract.Observation, error) {

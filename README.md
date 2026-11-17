@@ -3955,10 +3955,13 @@ platform keeps, in any order, and answers a `Decision`:
    takes this release sees no change in such a pool.
 2. While a member has not been read Ready by a report made since its
    creation, the pool holds its size, so a burst creates no second wave while
-   the first joins.
+   the first joins. It also holds while `PlanCloud` removes a member for a
+   lowered maximum or a dropped type or location, which
+   `pools.RemovalUnderWay` reads.
 3. Each pod the newest report reads `unschedulable` adds one member to the
-   members the pool has, up to the maximum. For example, five waiting pods grow
-   a pool of no members and a maximum of three to three.
+   members the pool has, up to the maximum, and a pool below its minimum grows
+   to its minimum at least. For example, five waiting pods grow a pool of no
+   members and a maximum of three to three.
 4. A pool that holds its maximum while pods wait answers `AtMaximum`, with a
    `Detail` such as "2 pods wait for a node, and the Cloud pool holds its
    maximum of 3". The block shows `CauseAtMaximum` in the cluster resource's
@@ -3966,7 +3969,21 @@ platform keeps, in any order, and answers a `Decision`:
 5. With no pod waiting, a member goes when every report from the newest back
    over the idle window reads it running none but the cluster's own pods.
    One member goes at a time, down to the minimum. Of several idle members,
-   the newest of the location holding the most goes first.
+   `pools.NewestOfFullest` picks the newest of the location holding the most,
+   the rule `PlanCloud` uses for a lowered maximum.
+6. An older report whose nodes or pods could not be read counts as no idle
+   time, and proves no member joined, so one failed read stalls no later
+   decision. A newest report that cannot be read fails the decision, naming it.
+
+The decision cannot tell two things, so a builder plans for them:
+
+- A pod that no Cloud worker could take still counts as waiting, such as one
+  whose node selector names the dedicated worker. Such a pod grows the pool to
+  its maximum and keeps it there, and the held cause names it in the resource's
+  health.
+- A pod that a Deployment or a StatefulSet controls is a workload, even a
+  cluster add-on such as CoreDNS. A Cloud worker that runs one stays until the
+  pod moves, so add-ons belong on the dedicated worker.
 
 `Want` is the number of members the pool should hold. When `Want` is one
 fewer than the pool has, `Remove` names the member to take out, and otherwise
@@ -4011,7 +4028,11 @@ removal through the stages a replacement takes, with these differences:
    why, evicting nothing. After the Job's last attempt, the pool keeps the
    worker.
 3. A kept worker serves on, and the removal refuses nothing, since no customer
-   asked for it. Its event begins "kept Cloud worker".
+   asked for it. Its event begins "kept Cloud worker". The worker carries
+   `mitstack.dev/removal-kept` with the time, which `pools.KeptAt` reads, so
+   the pool chooses it again only once it has stood idle a whole window since.
+   An upgrade that names a worker under removal is refused until the removal
+   ends.
 4. Once the node report lists no Node object of the worker and its server is
    deleted, the pool takes the removal Job's file and the label off and
    creates no successor. Its last event begins "removed Cloud worker".

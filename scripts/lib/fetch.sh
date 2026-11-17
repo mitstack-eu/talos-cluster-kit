@@ -4,7 +4,7 @@
 # sha256 check that every pinned file the render reads passes.
 # Usage: . scripts/lib/fetch.sh; fetch <url> <sha256> <dest>; check_pin <sha256> <file>
 # It exists so a refused download says which of a render's many URLs it was,
-# since curl's own error names none.
+# since curl's own error for an HTTP refusal names no URL.
 
 fetch() {
   local status=0

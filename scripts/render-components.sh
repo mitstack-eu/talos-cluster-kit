@@ -149,8 +149,7 @@ render_local_path() {
   } > "$work/local-path-provisioner.yaml"
 }
 
-# pull_istio_chart <chart> <sha256> <dest> pulls one Istio chart from its registry and refuses it unless it has the
-# pinned sha256. helm's own error names the chart's reference when the pull fails.
+# pull_istio_chart <chart> <sha256> <dest> pulls one pinned Istio chart; helm's error names its reference on failure.
 pull_istio_chart() {
   local dir="$work/pull-$1"
   mkdir "$dir"

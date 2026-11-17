@@ -1,6 +1,6 @@
 package operator_test
 
-// The start-up wiring and the request reads both Talos cluster operators share answer as each operator answered before.
+// The start-up wiring and the request reads both Talos cluster operators share.
 
 import (
 	"context"

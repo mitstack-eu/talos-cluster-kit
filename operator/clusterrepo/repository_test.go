@@ -1,6 +1,6 @@
 package clusterrepo_test
 
-// A Talos cluster's repository is dialled, read, created, marked, seeded and deleted as both operators did before the move.
+// A Talos cluster's repository is dialled, read, created, marked, seeded and deleted.
 
 import (
 	"net/http"

@@ -1,6 +1,6 @@
 package clusterrepo_test
 
-// An observe reads the cluster repository and its seed from GitHub alone, as both operators read them before the move.
+// An observe reads the cluster repository and its seed from GitHub alone.
 
 import (
 	"context"

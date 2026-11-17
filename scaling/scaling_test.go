@@ -5,6 +5,7 @@ package scaling_test
 
 import (
 	"encoding/json"
+	"strconv"
 	"testing"
 	"time"
 
@@ -184,6 +185,47 @@ func TestDecide_ThePoolNeverFallsBelowItsMinimum(t *testing.T) {
 			assert.Equal(t, tc.want, got.Want, "the members the pool wants")
 		})
 	}
+}
+
+func TestDecide_PodsThatWaitGrowAPoolBelowItsMinimumToItsMinimumAtLeast(t *testing.T) {
+	got, err := scaling.Decide(scaled(3, 6), nil, []report.Read{read(t, start, nil, waiting("a"))})
+
+	require.NoError(t, err)
+	assert.Equal(t, 3, got.Want, "the members a pool of at least 3 holding none wants for one waiting pod")
+}
+
+func TestDecide_AnOlderReportWhosePodsCouldNotBeReadCountsAsNoIdleTimeAndStopsNoGrowth(t *testing.T) {
+	m := []controlplane.Server{member(1, "fsn1-1", start)}
+	reads := every(t, start.Add(5*time.Minute), start.Add(30*time.Minute), m)
+	reads[4].Body = []byte(`{"nodes": [], "pods": {"exitStatus": 1, "stderr": "the server was unable to return a response"}}`)
+
+	got, err := scaling.Decide(scaled(0, 3), m, reads)
+	require.NoError(t, err)
+	assert.Nil(t, got.Remove, "a member read idle for 25 minutes but not at 25 minutes, of a 15-minute window")
+
+	got, err = scaling.Decide(scaled(0, 3), m, append(reads, read(t, start.Add(35*time.Minute), m, waiting("a"))))
+	require.NoError(t, err)
+	assert.Equal(t, 2, got.Want, "the members the pool wants for the pod the newest report reads waiting")
+}
+
+func TestDecide_AMemberKeptFromItsRemovalIsIdleOnlyFromWhenItWasKept(t *testing.T) {
+	m := member(1, "fsn1-1", start)
+	m.Labels[pools.KeyRemovalKept] = strconv.FormatInt(start.Add(20*time.Minute).Unix(), 10)
+
+	got, err := scaling.Decide(scaled(0, 3), []controlplane.Server{m}, every(t, start.Add(5*time.Minute), start.Add(30*time.Minute), []controlplane.Server{m}))
+
+	require.NoError(t, err)
+	assert.Nil(t, got.Remove, "a member idle for 25 minutes and kept 10 minutes ago, of a 15-minute window")
+}
+
+func TestDecide_HoldsThePoolWhileTheRemovalOfAMemberIsUnderWay(t *testing.T) {
+	members := []controlplane.Server{member(1, "fsn1-1", start), member(2, "nbg1-1", start)}
+	members[0].Labels = controlplane.BeginRemoval(members[0], start.Add(28*time.Minute), "cloud-pool")
+
+	got, err := scaling.Decide(scaled(0, 3), members, every(t, start.Add(5*time.Minute), start.Add(30*time.Minute), members))
+
+	require.NoError(t, err)
+	assert.Equal(t, scaling.Decision{Want: 2}, got, "two idle members while the pool removes fsn1-1 for a lowered maximum")
 }
 
 func TestDecide_RemovesNoMemberWhilePodsWait(t *testing.T) {

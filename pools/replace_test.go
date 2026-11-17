@@ -638,6 +638,7 @@ func TestReplaceStep_AnIdleWorkersRemovalKeepsAWorkerTheNodeReportSinceItBeganRe
 	assert.Equal(t, old.Name, w.pods["shop/web-0"], "the app's pod stays where it runs")
 	assert.False(t, w.replacing(), "the network still records the removal: %v", w.network().Labels)
 	assert.Len(t, w.eventsNaming("kept Cloud worker fsn1-1"), 1, "the events: %v", w.events)
+	assert.NotEmpty(t, s.cloud.Servers[old.ID].Labels[pools.KeyRemovalKept], "a kept worker records when, so its idle time starts again")
 }
 
 func TestReplaceStep_AnIdleWorkersRemovalWhoseDrainFindsAPodThatLandedSinceKeepsTheWorkerUntilThePodEnds(t *testing.T) {
@@ -658,6 +659,20 @@ func TestReplaceStep_AnIdleWorkersRemovalWhoseDrainFindsAPodThatLandedSinceKeeps
 	assert.Equal(t, []string{"write " + drainPath, "delete " + drainPath}, w.commits, "the removal's commits to the cluster repository")
 	assert.False(t, w.replacing(), "the network still records the removal: %v", w.network().Labels)
 	assert.Len(t, w.eventsNaming("kept Cloud worker fsn1-1"), 1, "the events: %v", w.events)
+	kept := s.cloud.Servers[old.ID].Labels
+	assert.NotEmpty(t, kept[pools.KeyRemovalKept], "a kept worker records when, so its idle time starts again")
+	assert.NotContains(t, kept, controlplane.KeyRemovalBegan, "a kept worker's labels name no removal under way")
+}
+
+func TestReplaceWorkers_RefusesAWorkerThePoolsScalingIsRemoving(t *testing.T) {
+	_, w := idleWorkers(t)
+	require.NoError(t, w.remove("fsn1-1"))
+	before := w.network().Labels
+
+	err := w.upgrade(pool2, "fsn1-1")
+
+	assert.Equal(t, "worker-removal-under-way", refusalClass(t, err), "the refusal's class: %v", err)
+	assert.Equal(t, before, w.network().Labels, "the network's labels after a refused upgrade")
 }
 
 func TestRemoveWorker_RefusesAKeyNoMemberOfThePoolHolds(t *testing.T) {

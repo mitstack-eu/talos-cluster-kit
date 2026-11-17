@@ -1,5 +1,5 @@
-# Step {{ .Step }} of the replacement of the Cloud worker {{ .Hostname }}. A
-# drain evicts its pods under their disruption budgets, and a removal releases
+# Step {{ .Step }} of the replacement or removal of the Cloud worker {{ .Hostname }}.
+# A drain evicts its pods under their disruption budgets, and a removal releases
 # each claim on a local volume of it, then deletes its Node object. Only the
 # Node object's rights name the one worker, since its pods and claims live in
 # every namespace.
@@ -114,6 +114,10 @@ spec:
               value: "{{ .Attempts }}"
             - name: DRAIN_TIMEOUT
               value: {{ .DrainTimeout }}
+{{- if .IdleOnly }}
+            - name: IDLE_ONLY
+              value: "true"
+{{- end }}
             - name: SERVICE_ACCOUNT_DIR
               value: /var/run/secrets/kubernetes.io/serviceaccount
             - name: HOME

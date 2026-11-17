@@ -57,15 +57,7 @@ type members struct {
 			Healthy  bool   `json:"healthy"`
 		} `json:"members"`
 	} `json:"etcd"`
-	Pods []struct {
-		Namespace  string  `json:"namespace"`
-		Name       string  `json:"name"`
-		Node       *string `json:"node"`
-		Phase      string  `json:"phase"`
-		Containers []struct {
-			Message string `json:"message"`
-		} `json:"containers"`
-	} `json:"pods"`
+	Pods    []reportedPod `json:"pods"`
 	OpenBao struct {
 		Members []struct {
 			Name        string `json:"name"`
@@ -73,6 +65,58 @@ type members struct {
 			Sealed      *bool  `json:"sealed"`
 		} `json:"members"`
 	} `json:"openbao"`
+}
+
+type reportedPod struct {
+	Namespace     string  `json:"namespace"`
+	Name          string  `json:"name"`
+	Node          *string `json:"node"`
+	Phase         string  `json:"phase"`
+	OwnerKind     *string `json:"ownerKind"`
+	Unschedulable bool    `json:"unschedulable"`
+	Containers    []struct {
+		Message string `json:"message"`
+	} `json:"containers"`
+}
+
+func (p reportedPod) qualifiedName() string { return p.Namespace + "/" + p.Name }
+
+// clustersOwn is whether every node runs a pod of this kind, which a drain leaves: a DaemonSet's, or a static pod,
+// whose controller is the Node itself.
+func (p reportedPod) clustersOwn() bool {
+	return p.OwnerKind != nil && (*p.OwnerKind == "DaemonSet" || *p.OwnerKind == "Node")
+}
+
+func (p reportedPod) finished() bool { return p.Phase == "Succeeded" || p.Phase == "Failed" }
+
+// WorkloadPods names each pod on node, as namespace/name, that has not finished and is not the cluster's own.
+func (r Read) WorkloadPods(node string) ([]string, error) {
+	m, err := r.members()
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, p := range m.Pods {
+		if p.Node != nil && *p.Node == node && !p.finished() && !p.clustersOwn() {
+			out = append(out, p.qualifiedName())
+		}
+	}
+	return out, nil
+}
+
+// Unschedulable names each pod, as namespace/name, that the scheduler found no node for.
+func (r Read) Unschedulable() ([]string, error) {
+	m, err := r.members()
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, p := range m.Pods {
+		if p.Unschedulable && !p.finished() {
+			out = append(out, p.qualifiedName())
+		}
+	}
+	return out, nil
 }
 
 func (r Read) members() (members, error) {

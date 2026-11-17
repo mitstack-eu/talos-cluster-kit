@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
 )
@@ -31,7 +32,12 @@ type CloudPool struct {
 	ServerTypes []string
 	Locations   []string
 	Min, Max    int
+	// IdleWindow is how long a member of a pool that scales runs no pod but the cluster's own before it goes.
+	IdleWindow time.Duration
 }
+
+// Scales reports whether the pool grows and shrinks with the load, which a minimum below its maximum asks for.
+func (p CloudPool) Scales() bool { return p.Min < p.Max }
 
 const (
 	inputDedicated = "dedicatedPool"
@@ -39,6 +45,9 @@ const (
 	inputLocations = "cloudPoolLocations"
 	inputMin       = "cloudPoolMin"
 	inputMax       = "cloudPoolMax"
+	inputIdle      = "cloudPoolIdleMinutes"
+	// maxIdleMinutes keeps the window inside the node reports the platform keeps, about four hours of them.
+	maxIdleMinutes = 120
 )
 
 // Parse reads and checks the pool inputs, answering every one that breaks its rule in one error.
@@ -101,7 +110,7 @@ func dedicatedEntry(entry map[string]string) (Dedicated, error) {
 }
 
 func parseCloud(params map[string]string) (CloudPool, error) {
-	if !slices.ContainsFunc([]string{inputTypes, inputLocations, inputMin, inputMax}, func(in string) bool { return params[in] != "" }) {
+	if !slices.ContainsFunc([]string{inputTypes, inputLocations, inputMin, inputMax, inputIdle}, func(in string) bool { return params[in] != "" }) {
 		return CloudPool{}, nil
 	}
 	var pool CloudPool
@@ -124,7 +133,24 @@ func parseCloud(params map[string]string) (CloudPool, error) {
 	if minErr == nil && maxErr == nil {
 		add(checkBounds(pool))
 	}
+	pool.IdleWindow, err = idleWindow(params[inputIdle], pool.Scales())
+	add(err)
 	return pool, errors.Join(errs...)
+}
+
+// idleWindow reads the minutes a member of a pool that scales may idle, which only such a pool needs.
+func idleWindow(value string, scales bool) (time.Duration, error) {
+	if value == "" {
+		if scales {
+			return 0, fmt.Errorf("%s: a Cloud pool whose minimum is below its maximum needs an idle window", inputIdle)
+		}
+		return 0, nil
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 1 || n > maxIdleMinutes {
+		return 0, fmt.Errorf("%s: %q is no whole number of minutes from 1 to %d", inputIdle, value, maxIdleMinutes)
+	}
+	return time.Duration(n) * time.Minute, nil
 }
 
 // oneOf reads a comma-separated list whose items each sit in allowed, once.
@@ -161,13 +187,9 @@ func size(input, what, value string) (int, error) {
 	return n, nil
 }
 
-// checkBounds refuses unequal bounds, since only a pool of a set size can be kept until the scaling ships.
 func checkBounds(pool CloudPool) error {
-	switch {
-	case pool.Max < pool.Min:
+	if pool.Max < pool.Min {
 		return fmt.Errorf("%s %d is below %s %d", inputMax, pool.Max, inputMin, pool.Min)
-	case pool.Max > pool.Min:
-		return fmt.Errorf("%s %d differs from %s %d, and a Cloud pool's minimum and maximum must be equal until the pool scales itself", inputMax, pool.Max, inputMin, pool.Min)
 	}
 	return nil
 }

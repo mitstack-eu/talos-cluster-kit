@@ -4,8 +4,8 @@
 # of each Application and each object it applied, what each Argo CD route answers a caller without a session, Argo CD's
 # Services, Ingresses and pod images, every Ingress with its class and the addresses its status holds, CloudNativePG's
 # objects with each cluster's primary, archiving and last backup, the plugins it finds and each ObjectStore's recovery
-# windows, each CronJob a block labels with its last success and newest failure since, every pod's node, phase and
-# container states with the message of each failed container in the newest failed pod of each Job the kit renders, each
+# windows, each CronJob a block labels with its last success and newest failure since, every pod's node, phase,
+# controller's kind, whether no node can take it, and container states with the message of each failed container in the newest failed pod of each Job the kit renders, each
 # image reference the pods and the workloads' pod templates name, each OpenBao member's seal state and the active one,
 # each claim with its size and the default storage classes, every Service's type, each default-deny NetworkPolicy,
 # the objects labelled mitstack.dev/subscription, the API server's key set, the mesh probe's
@@ -452,6 +452,8 @@ body() {
       | group_by(.job) | map(sort_by([.at, .name]) | last | {key, value: true}) | from_entries;
     def pod($carried): $carried[qualified_name] as $carries | {
       namespace: .metadata.namespace, name: .metadata.name, node: (.spec.nodeName // null), phase: (.status.phase // null),
+      ownerKind: ([.metadata.ownerReferences[]? | select(.controller == true) | .kind] | .[0]),
+      unschedulable: any(.status.conditions[]?; .type == "PodScheduled" and .status == "False" and .reason == "Unschedulable"),
       containers: [(.status.initContainerStatuses // []) + (.status.containerStatuses // []) | .[] | container + if $carries then failed_message else {} end]
     };
     def etcd_status_rows: [$etcd_status | split("\n") | .[1:][] | sub("\\s+$"; "") | select(test("\\S"))

@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# Takes the Cloud worker NODE out of the cluster for its replacement, one STEP at a time. "drain" evicts every pod but
-# a DaemonSet's under the pods' disruption budgets and ends naming the budget that holds one. "remove-node" releases
-# each claim on a local volume of NODE, whose data goes with its server, then deletes the Node object.
+# Takes the Cloud worker NODE out of the cluster for its replacement or removal, one STEP at a time. "drain" evicts
+# every pod but a DaemonSet's under the pods' disruption budgets and ends naming the budget that holds one; with
+# IDLE_ONLY=true it first cordons NODE and, while a pod that is not the cluster's own runs there, uncordons it and fails
+# naming that pod. "remove-node" releases each claim on a local volume of NODE, whose data goes with its server, then
+# deletes the Node object.
 # Usage: STEP=drain|remove-node NODE=<worker> NODE_NAME=<this pod's node> JOB=<this Job> JOB_NAMESPACE=<its namespace>
-#   ATTEMPTS=<the Job's attempts> DRAIN_TIMEOUT=<one attempt's drain> SERVICE_ACCOUNT_DIR=<the pod's token> worker-job.sh
+#   ATTEMPTS=<the Job's attempts> DRAIN_TIMEOUT=<one attempt's drain> SERVICE_ACCOUNT_DIR=<the pod's token>
+#   [IDLE_ONLY=true] worker-job.sh
 # It exists because a replacement must not strand a pod: a released claim lets its workload make a new one on another
 # node and fill it from its own copies, where a claim left bound would hold its pod to a volume that is gone.
 set -euo pipefail
@@ -52,6 +55,20 @@ drain() {
   exit 1
 }
 
+# keep_busy runs before any eviction, and the cordon comes before the read, so no pod can land between the two.
+keep_busy() {
+  local busy
+  kubectl cordon "$NODE" >/dev/null
+  busy=$(kubectl get pods -A --field-selector "spec.nodeName=$NODE" -o json |
+    jq -r '.items[] | select(.status.phase != "Succeeded" and .status.phase != "Failed")
+      | select(all(.metadata.ownerReferences[]?; .kind != "DaemonSet" and .kind != "Node"))
+      | "\(.metadata.namespace)/\(.metadata.name)"' | paste -sd, -)
+  if [ -n "$busy" ]; then
+    kubectl uncordon "$NODE" >/dev/null
+    fail "kept $NODE, which runs $busy, a pod that is not the cluster's own"
+  fi
+}
+
 release_local_claims() {
   local volumes namespace claim uid current pods pod
   volumes=$(kubectl get pv -o json | jq -r --arg node "$NODE" '.items[]
@@ -76,7 +93,10 @@ release_local_claims() {
 
 [ "$NODE" != "$NODE_NAME" ] || fail "refused, since this pod runs on $NODE, the node it acts on"
 case "$STEP" in
-  drain) drain ;;
+  drain)
+    [ "${IDLE_ONLY:-}" != true ] || keep_busy
+    drain
+    ;;
   remove-node)
     release_local_claims
     kubectl delete node "$NODE" --ignore-not-found

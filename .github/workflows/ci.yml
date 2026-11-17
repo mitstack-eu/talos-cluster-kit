@@ -307,7 +307,7 @@ jobs:
             commit -q -m "$TAG: pin the tools image $REF" tools/tools.go
           git tag "$TAG"
           git tag "operator/$TAG"
-          git push origin "refs/tags/$TAG" "refs/tags/operator/$TAG"
+          git push --atomic origin "refs/tags/$TAG" "refs/tags/operator/$TAG"
           echo "released $TAG at $(git rev-parse HEAD), on top of $GITHUB_SHA"
 
   # A push that cuts no tag still delivers its keys, so this needs both jobs to succeed and reads no output of release.

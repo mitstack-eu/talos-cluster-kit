@@ -499,7 +499,7 @@ the root's `./...` does not reach a nested module.
 | `TestPlane_TheKitRequiresNeitherBlockKitNorOperatorKit` | The kit's `go.mod` names neither block framework | `go.mod` |
 | `TestOperatorModule_RequiresBlockKitAtTheOldestReleaseATalosClusterOperatorBuildsOnAndNotTheKitItself` | `operator/go.mod` requires block-kit v0.40.0, the release hcloud-talos-cluster builds on, and no release of the kit | `operator/go.mod` |
 | `TestCI_TestJobVetsAndTestsTheOperatorModule` | The `test` job runs `go vet ./...` and `go test -race ./...` from `operator/` | `.github/workflows/ci.yml` |
-| `TestCI_ReleaseTagsTheOperatorModuleAtTheKitsReleaseCommit` | The `release` job tags `operator/$TAG` beside `$TAG` and pushes both in one push | `.github/workflows/ci.yml` |
+| `TestCI_ReleaseTagsTheOperatorModuleAtTheKitsReleaseCommit` | The `release` job tags `operator/$TAG` beside `$TAG` and pushes both in one atomic push, so either both land or neither does | `.github/workflows/ci.yml` |
 | `TestReadSettings_ListensOnTheAddressItIsGivenOrPort8080` | An operator listens on `LISTEN_ADDR`, or on `:8080` when none is set | A stand-in environment |
 | `TestReadSettings_RefusesToStartWithoutTheJWKSURLTheTrustBoundaryReadsItsKeyFrom` | An operator without `MITSTACK_JWKS_URL` refuses to start, saying why | A stand-in environment |
 | `TestNewServer_ServesTheMuxOnTheAddressAndBoundsTheTimeToReadARequestsHeaders` | The server bounds the time a client takes to send its headers to 10 seconds | The returned `http.Server` |

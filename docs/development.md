@@ -507,8 +507,13 @@ the root's `./...` does not reach a nested module.
 | `TestAppName_ReadsTheAppTheRequestNamesAndRefusesARequestThatNamesNone` | A request gives its `params.appName`, and one without it refuses with class `missing-param` | Two requests |
 | `TestRefuseUnreleasedTools_RefusesOnlyTheToolsImagePlaceholderAnUnreleasedKitCarries` | The `unreleased` placeholder refuses with class `tools-image-unreleased`, and a released image passes | Two image references |
 | `TestRefusalDetail_DropsTheRefusedPrefixAValidateAnswerDoesNotCarry` | A refusal, wrapped or not, gives its detail alone, and another error its whole text | Three errors |
+| `TestRequestSecrets_ListsEverySecretTheRequestCarriesSoALogLineCanMaskThem` | A request's connection secrets, secret inputs and the block's own secrets are each listed, and a request with none lists none | Two requests |
+| `TestNewestReport_IsTheLastReportReceivedAfterSinceAndNilWhenNoneIs` | The report received last after a time is the newest, wherever it sits in the list, and none is nil | Three reports |
+| `TestNewestReportNodes_ReadsTheNodesTheNewestReportNamesWithTheirReadiness` | The newest report's nodes are read with whether each is Ready, and an older report's are not | Two reports |
+| `TestNewestReportNodes_TellsAReportNamingNoNodeFromNoReportAndRefusesOneThatIsNotJSON` | A report naming no node reads as an empty list, no report as nil, and a body that is not JSON as an error | Three reads |
 | `TestDial_RefusesARequestWhoseGitHubConnectionCannotBeActedOnBeforeAnyCall` | A missing token or owner, an unusable repository name, a subscription id too long for a topic, and an endpoint outside the allowlist each refuse with its class, and no client is built and no call made | A fake GitHub |
 | `TestDial_TakesGitHubsOwnAPIWhenTheRequestNamesNoEndpoint` | A request naming no endpoint reads `https://api.github.com` with its own token | A fake GitHub |
+| `TestDialApp_DialsTheRepositoryOfTheAppTheRequestNamesAndRefusesARequestThatNamesNone` | A request's `params.appName` names the repository dialled, and a request without it refuses with class `missing-param` | A fake GitHub |
 | `TestRead_ReadsWhetherTheRepositoryExistsAndCarriesTheSubscriptionsMark` | No repository, one without the mark and one with it read as such | A fake GitHub |
 | `TestEnsure_CreatesAPrivateRepositoryMarksItBesideGitHubsOwnTopicsAndSeedsBothDirectories` | A missing repository is created private, marked beside the topics GitHub gave it, and seeded with both files, each commit message ending in the line `Mitstack-Subscription: <id>` | A fake GitHub |
 | `TestEnsure_SeedsOnlyTheFilesAMarkedRepositoryLacks` | A marked repository is neither created nor marked again, and a file already there is kept | A fake GitHub |

@@ -70,6 +70,8 @@ readonly kube_version=${KUBERNETES_VERSION#v}
 . "$root/scripts/lib/digests.sh"
 # shellcheck source=scripts/lib/empty-maps.sh
 . "$root/scripts/lib/empty-maps.sh"
+# shellcheck source=scripts/lib/fetch.sh
+. "$root/scripts/lib/fetch.sh"
 helm=${HELM:-helm}
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -77,12 +79,6 @@ trap 'rm -rf "$work"' EXIT
 usage() {
   echo "usage: $0 [--check]" >&2
   exit 2
-}
-
-# fetch <url> <sha256> <dest> downloads a file and refuses it unless it has the pinned sha256.
-fetch() {
-  curl -fsSL --proto '=https' -o "$3" "$1"
-  echo "$2  $3" | sha256sum -c --quiet -
 }
 
 # header <source> prints the two lines that open every rendered file.

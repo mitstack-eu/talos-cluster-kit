@@ -48,11 +48,12 @@ func job(name string, on controlplane.Server) pod {
 	return pod{Namespace: "ci", Name: name, Node: ptr(on.Name), Phase: "Running", OwnerKind: ptr("Job")}
 }
 
-// daemons are the pods that leave a node idle: a DaemonSet's, a static pod's and a finished pod's.
+// daemons are the pods that leave a node idle: a DaemonSet's, a static pod's, any in kube-system and a finished pod's.
 func daemons(on controlplane.Server) []pod {
 	return []pod{
 		{Namespace: "kube-system", Name: "cilium-" + on.Name, Node: ptr(on.Name), Phase: "Running", OwnerKind: ptr("DaemonSet")},
 		{Namespace: "kube-system", Name: "static-" + on.Name, Node: ptr(on.Name), Phase: "Running", OwnerKind: ptr("Node")},
+		{Namespace: "kube-system", Name: "coredns-" + on.Name, Node: ptr(on.Name), Phase: "Running", OwnerKind: ptr("ReplicaSet")},
 		{Namespace: "ci", Name: "done-" + on.Name, Node: ptr(on.Name), Phase: "Succeeded", OwnerKind: ptr("Job")},
 	}
 }
@@ -99,7 +100,7 @@ func TestDecide_PodsThatWaitAddOneMemberForEachUpToTheMaximumAndNeverPastIt(t *t
 			scaling.Decision{Want: 3, Detail: "1 pods wait for a node, so the Cloud pool grows from 0 to 3 of at most 6"}},
 		{"a pool at its maximum with pods waiting creates no member and reads held at its maximum", scaled(0, 3), full,
 			[]pod{job("a", full[0]), job("b", full[1]), job("c", full[2]), waiting("d"), waiting("e")},
-			scaling.Decision{Want: 3, AtMaximum: true, Detail: "2 pods wait for a node, and the Cloud pool holds its maximum of 3"}},
+			scaling.Decision{Want: 3, AtMaximum: true, Detail: "2 pods wait for a node, and the Cloud pool holds its maximum of 3: ci/d, ci/e"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -110,6 +111,7 @@ func TestDecide_PodsThatWaitAddOneMemberForEachUpToTheMaximumAndNeverPastIt(t *t
 		})
 	}
 }
+
 const unreadPods = `{"nodes": [], "pods": {"exitStatus": 1, "stderr": "the server was unable to return a response"}}`
 
 func TestDecide_HoldsThePoolWhenNoRuleChangesIt(t *testing.T) {

@@ -113,6 +113,59 @@ func TestPlane_AppsOnWorkersWithNoWorkerAddressIsAProblem(t *testing.T) {
 		"apps run on workers, but the plane names no worker address for the ingress load balancer to target")
 }
 
+// appsOnCloudPool runs apps on the Cloud pool's workers alone, as a cluster with no Robot worker does.
+func appsOnCloudPool(h *harness) {
+	h.plane.AppsOnWorkers, h.plane.IngressTargetsCloudPool = true, true
+}
+
+// alsoOnCloudPool makes the ingress load balancer target the Cloud pool's workers beside any worker address.
+func alsoOnCloudPool(h *harness) { h.plane.IngressTargetsCloudPool = true }
+
+func TestPlane_TheIngressTargetsTheCloudPoolsWorkersByLabelWhenThePlaneSaysSo(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		opts          []func(*harness)
+		wantAddresses []string
+	}{
+		{name: "a plane whose apps run on the Cloud pool's workers alone", opts: []func(*harness){appsOnCloudPool}},
+		{name: "a plane whose apps run on a Robot worker and the Cloud pool's workers",
+			opts: []func(*harness){appsOnWorkers, alsoOnCloudPool}, wantAddresses: []string{workerAddress}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, tc.opts...)
+
+			h.built()
+
+			ingress := h.loadBalancer(controlplane.RoleIngress)
+			assert.Equal(t, []string{h.plane.RoleSelector(controlplane.RoleCloudWorker)}, ingress.TargetSelectors,
+				"the ingress load balancer's label targets")
+			assert.Equal(t, tc.wantAddresses, ingress.TargetIPs, "the ingress load balancer's address targets")
+			api := h.loadBalancer(controlplane.RoleAPI)
+			assert.Equal(t, []string{h.plane.RoleSelector(controlplane.RoleNode)}, api.TargetSelectors, "the API load balancer's label targets")
+			assert.Empty(t, api.TargetIPs, "the API load balancer's address targets")
+		})
+	}
+}
+
+func TestPlane_AClusterBuiltWithItsIngressOnTheControlPlaneMovesItToTheCloudPoolsWorkers(t *testing.T) {
+	h := newHarness(t)
+	h.built()
+	ctx := context.Background()
+	appsOnCloudPool(h)
+	ingress := h.loadBalancer(controlplane.RoleIngress)
+
+	before := h.plane.Problems(ctx, h.read())
+	require.NoError(t, h.converge())
+
+	assert.Contains(t, before, fmt.Sprintf("load balancer %d does not target the subscription's nodes by label", ingress.ID),
+		"the problems of an ingress not yet on the Cloud pool's workers")
+	assert.Contains(t, before, fmt.Sprintf("load balancer %d still targets the servers %s selects", ingress.ID,
+		h.plane.RoleSelector(controlplane.RoleNode)), "the problems of an ingress still on the control plane")
+	assert.Equal(t, []string{h.plane.RoleSelector(controlplane.RoleCloudWorker)}, h.loadBalancer(controlplane.RoleIngress).TargetSelectors,
+		"the ingress load balancer's label targets once moved")
+	assert.Empty(t, h.plane.Problems(ctx, h.read()), "the plane's problems once the ingress targets the Cloud pool's workers")
+}
+
 // robotWorkerRecord is what a golden file holds of a plane whose apps run on a Robot worker: every step it took, both
 // load balancers it built, its problems and its detail.
 type robotWorkerRecord struct {

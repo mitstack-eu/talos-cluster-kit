@@ -974,6 +974,17 @@ func TestRerender_RefusesARunningConfigurationItCannotReadBackWholeNamingWhatItC
 		{"a second set of trusted roots beside the gateways'", withDocument(t, controlPlane, map[string]any{
 			"apiVersion": "v1alpha1", "kind": "TrustedRootsConfig", "name": "corp-proxy", "certificates": string(testutil.ReadTestdata(t, "logs-ca.pem")),
 		}), "corp-proxy"},
+		{"a worker running the control plane's taint", edit(worker, "KubeNodeConfig", func(doc map[string]any) {
+			doc["taints"] = map[string]any{"node-role.kubernetes.io/control-plane": "NoSchedule"}
+		}), "worker"},
+		{"no gateway roots, with registries that trust no CA", editDocuments(t, controlPlane, func(doc map[string]any) {
+			switch doc["kind"] {
+			case "TrustedRootsConfig":
+				clear(doc)
+			case "RegistryTLSConfig":
+				delete(doc, "ca")
+			}
+		}), "mitstack-gateway"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

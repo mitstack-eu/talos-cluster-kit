@@ -878,6 +878,12 @@ func TestRerender_RefusesARunningNodeWhoseSettingItTakesOnlyAtRebootTheReleaseCh
 				delete(doc, "encryption")
 			}
 		}, "VolumeConfig EPHEMERAL"},
+		{"a user volume's kind of volume", func(doc map[string]any) {
+			if doc["kind"] == "UserVolumeConfig" && doc["name"] == "local-path-provisioner" {
+				doc["volumeType"] = "partition"
+				doc["provisioning"] = map[string]any{"diskSelector": map[string]any{"match": "system_disk"}, "minSize": "1GiB"}
+			}
+		}, "UserVolumeConfig local-path-provisioner"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -915,6 +921,48 @@ func TestRerender_RefusesWhatIsNoRunningNodesConfigurationOrNamesNoRelease(t *te
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := nodeconfig.Rerender(tc.running, tc.release)
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantText)
+			assert.Nil(t, got)
+		})
+	}
+}
+
+func TestRerender_RefusesARunningConfigurationItCannotReadBackWholeNamingWhatItCannotRead(t *testing.T) {
+	cluster := testutil.NewCluster(t)
+	controlPlane, err := nodeconfig.Render(cluster, nodeconfig.Node{})
+	require.NoError(t, err)
+	worker, err := nodeconfig.RenderWorker(cluster, nodeconfig.Node{})
+	require.NoError(t, err)
+	edit := func(config []byte, kind string, change func(map[string]any)) []byte {
+		return editDocuments(t, config, func(doc map[string]any) {
+			if doc["kind"] == kind {
+				change(doc)
+			}
+		})
+	}
+	drop := func(doc map[string]any) { clear(doc) }
+	cases := []struct {
+		name     string
+		running  []byte
+		wantText string
+	}{
+		{"a document this release does not render", append(slices.Clone(controlPlane),
+			"---\napiVersion: v1alpha1\nkind: StaticHostConfig\nname: 10.0.0.9\nhostnames:\n    - added-by-hand\n"...), "StaticHostConfig"},
+		{"no cluster document", edit(controlPlane, "KubeClusterConfig", drop), "KubeClusterConfig"},
+		{"an API endpoint that names a host in place of an address", edit(controlPlane, "KubeClusterConfig", func(doc map[string]any) {
+			doc["endpoint"] = "https://api.shop.example:6443"
+		}), "api.shop.example"},
+		{"no node document", edit(controlPlane, "KubeNodeConfig", drop), "KubeNodeConfig"},
+		{"a kubelet image from another registry", edit(controlPlane, "KubeletConfig", func(doc map[string]any) {
+			doc["image"] = "registry.example/kubelet:v1.37.1"
+		}), "registry.example/kubelet:v1.37.1"},
+		{"a worker that trusts no API server CA", edit(worker, "KubeAPIServerCAConfig", drop), "API server"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := nodeconfig.Rerender(tc.running, release)
 
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.wantText)

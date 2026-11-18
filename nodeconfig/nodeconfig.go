@@ -54,6 +54,25 @@ type Cluster struct {
 	// AppsOnWorkers keeps Talos's NoSchedule taint on the control-plane nodes, so only a pod that tolerates it, such as
 	// Cilium's, ztunnel's, the CNI agent's and the log collector's, runs there.
 	AppsOnWorkers bool
+	// Release names the kit release the configuration is rendered from, which Talos sets as the node's
+	// MachineConfigAnnotation; with none the node carries no such annotation.
+	Release string
+	// running holds what Rerender keeps of a running node's configuration in place of rendering it.
+	running *runningDocuments
+}
+
+// runningDocuments are the manifests a running node applied at install, and whether it ran the node-local Collector.
+type runningDocuments struct {
+	manifests []config.Document
+	logs      bool
+}
+
+// collectsLogs reports whether the node runs the node-local Collector, which takes its logs and its kernel's.
+func (c Cluster) collectsLogs() bool {
+	if c.running != nil {
+		return c.running.logs
+	}
+	return !c.Logs.IsZero()
 }
 
 type Node struct {
@@ -101,7 +120,7 @@ func InlineManifests(manifests []components.Manifest) ([]byte, error) {
 }
 
 func (c Cluster) render(role machine.Type, n Node) ([]byte, error) {
-	if err := c.validate(n); err != nil {
+	if err := c.validate(role, n); err != nil {
 		return nil, err
 	}
 	base, err := c.generate(role)
@@ -148,7 +167,7 @@ func (c Cluster) endpoint() string {
 	return "https://" + netip.AddrPortFrom(c.APIAddresses[0], apiServerPort).String()
 }
 
-func (c Cluster) validate(n Node) error {
+func (c Cluster) validate(role machine.Type, n Node) error {
 	var errs []error
 	if c.Secrets == nil {
 		errs = append(errs, errors.New("the cluster has no secrets"))
@@ -165,7 +184,8 @@ func (c Cluster) validate(n Node) error {
 	if err := check.PEMCertificate(c.GatewayCA); err != nil {
 		errs = append(errs, fmt.Errorf("gateway CA: %w", err))
 	}
-	if err := checkIssuer(c.ServiceAccountIssuer); err != nil {
+	// Only a control-plane node signs service-account tokens, so a worker's configuration names no issuer.
+	if err := checkIssuer(c.ServiceAccountIssuer); role.IsControlPlane() && err != nil {
 		errs = append(errs, err)
 	}
 	if err := c.validateNode(n); err != nil {

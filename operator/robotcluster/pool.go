@@ -24,6 +24,10 @@ const (
 	memberSeparator     = "/"
 )
 
+// CauseHeldForSteady is the resource-health cause of a pool that holds while pods wait whose placement refuses every
+// burst member, which only a steady member takes.
+const CauseHeldForSteady = "the Cloud pool holds while pods wait whose placement refuses every burst member; raise cloudPoolMin so a steady member takes them"
+
 func readCloudPool(d contract.Desired) (pools.CloudPool, error) {
 	parsed, err := pools.Parse(d.Params)
 	if err != nil {
@@ -108,12 +112,16 @@ func leavingNames(plan pools.CloudPlan) []string {
 	return slices.Compact(names)
 }
 
-// poolStep removes the worker the scaling chose, else creates the workers the pool lacks, once the install has built the
-// cluster and its worker image and while no worker's replacement or removal is under way.
+// poolStep relabels the members whose burst label the pool's minimum no longer matches, else removes the worker the
+// scaling chose, else creates the workers the pool lacks, once the install has built the cluster and its worker image
+// and while no worker's replacement or removal is under way.
 func (c convergence) poolStep(ctx context.Context) (controlplane.Step, bool, error) {
 	pool := c.req.params.cloud
 	if !c.clusterBuilt() || pool.Max == 0 || workerImageOf(c.state) != workerImageReady || pools.ChangeUnderWay(c.state) {
 		return controlplane.Step{}, false, nil
+	}
+	if marks := pools.Reclassify(pool, c.state.Servers[pools.RoleCloudWorker]); len(marks) > 0 {
+		return c.relabelStep(marks), true, nil
 	}
 	decision, err := c.scaling(ctx)
 	if err != nil {
@@ -150,6 +158,30 @@ func (c convergence) poolStep(ctx context.Context) (controlplane.Step, bool, err
 	}}, true, nil
 }
 
+// relabelStep gives each member its new burst label, which the labeller carries to its node at the next release.
+func (c convergence) relabelStep(marks []controlplane.Server) controlplane.Step {
+	changes := make([]string, 0, len(marks))
+	for _, srv := range marks {
+		changes = append(changes, srv.Name+" "+burstWord(srv))
+	}
+	return controlplane.Step{What: "mark the Cloud pool's workers " + strings.Join(changes, ", "), Run: func(ctx context.Context) error {
+		for _, srv := range marks {
+			if err := c.plane.API.SetServerLabels(ctx, srv.ID, srv.Labels); err != nil {
+				return fmt.Errorf("marking the Cloud pool's worker %s %s: %w", srv.Name, burstWord(srv), err)
+			}
+			c.req.k.narrate(ctx, c.req.d, fmt.Sprintf("marked Cloud worker %s %s, since the pool keeps %d steady", srv.Name, burstWord(srv), c.req.params.cloud.Min))
+		}
+		return nil
+	}}
+}
+
+func burstWord(srv controlplane.Server) string {
+	if pools.IsBurst(srv) {
+		return "burst"
+	}
+	return "steady"
+}
+
 // scaling is what the pool should hold by the node reports, its size for a pool of a set size.
 func (c convergence) scaling(ctx context.Context) (scaling.Decision, error) {
 	pool := c.req.params.cloud
@@ -163,8 +195,9 @@ func (c convergence) scaling(ctx context.Context) (scaling.Decision, error) {
 	return scaling.Decide(pool, c.state.Servers[pools.RoleCloudWorker], reads)
 }
 
-// heldAtMaximum names a pool that holds its maximum while pods wait for a node, the cluster resource's health cause.
-func heldAtMaximum(ctx context.Context, d contract.Desired, st controlplane.State, reports *GatewayReports) (cause, detail string, err error) {
+// poolHold names a pool that holds while pods wait for a node, at its maximum or for want of a steady member, the
+// cluster resource's health cause.
+func poolHold(ctx context.Context, d contract.Desired, st controlplane.State, reports *GatewayReports) (cause, detail string, err error) {
 	pool, err := readCloudPool(d)
 	if err != nil || !pool.Scales() {
 		return "", "", nil
@@ -173,11 +206,17 @@ func heldAtMaximum(ctx context.Context, d contract.Desired, st controlplane.Stat
 	if err != nil {
 		return "", "", err
 	}
-	decision, err := scaling.Decide(pool, st.Servers[pools.RoleCloudWorker], reads)
-	if err != nil || !decision.AtMaximum {
+	members := st.Servers[pools.RoleCloudWorker]
+	decision, err := scaling.Decide(pool, members, reads)
+	switch {
+	case err != nil:
 		return "", "", err
+	case decision.AtMaximum:
+		return scaling.CauseAtMaximum, decision.Detail, nil
+	case decision.Detail != "" && decision.Remove == nil && decision.Want <= len(members):
+		return CauseHeldForSteady, decision.Detail, nil
 	}
-	return scaling.CauseAtMaximum, decision.Detail, nil
+	return "", "", nil
 }
 
 func describeCreations(specs []controlplane.ServerSpec) string {

@@ -393,6 +393,30 @@ func TestRelease_AClusterRequiringNoOTLPBackendCarriesNoTelemetryCollectorAndNoE
 	}
 }
 
+func TestPlane_OutputsTheCollectorsOTLPReceiverOnlyForAClusterRequiringAnOTLPBackend(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		options []func(*harness)
+		want    map[string]string
+	}{
+		{"a cluster requiring an OTLP backend", []func(*harness){telemetry}, map[string]string{"otlpEndpoint": components.TelemetryOTLPEndpoint}},
+		{"a cluster requiring none", nil, map[string]string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, tc.options...)
+			h.built()
+
+			outputs, _ := h.plane.Outputs(h.read())
+
+			got := map[string]string{}
+			if endpoint, present := outputs["otlpEndpoint"]; present {
+				got["otlpEndpoint"] = endpoint
+			}
+			assert.Equal(t, tc.want, got, "the otlpEndpoint output of %s", tc.name)
+		})
+	}
+}
+
 func TestRelease_AClusterInFsn1Nbg1AndHel1RunsThreeCoreDNSReplicasWithASpreadThatAllowsNoTwoInOneLocation(t *testing.T) {
 	require.Equal(t, []string{"fsn1", "nbg1", "hel1"}, controlplane.Locations, "the locations a node of the cluster runs in")
 	h := newHarness(t)

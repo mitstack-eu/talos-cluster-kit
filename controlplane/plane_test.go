@@ -339,6 +339,45 @@ func TestPlane_RefusesOneServerForAClusterThatHostsThePlatformNamingTheRestoreDr
 	assert.Zero(t, h.cloud.Writes(), "changes after the refusal")
 }
 
+func TestPlane_SizeRefusalJudgesASizeFromAStateHoldingOnlyTheSubscriptionsNetworks(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		built, hosts       bool
+		asked              int
+		wantClass, wantMsg string
+	}{
+		{name: "a three-server cluster asked for one", built: true, asked: 1,
+			wantClass: "control-plane-size-fixed", wantMsg: "subscribed with controlPlaneSize 3, and a control plane keeps its size after subscribe"},
+		{name: "a three-server cluster asked for three", built: true, asked: 3},
+		{name: "a cluster with no network yet asked for one", asked: 1},
+		{name: "a hosting cluster with no network yet asked for one", hosts: true, asked: 1,
+			wantClass: "restore-drill-missing", wantMsg: "ADR 0125 restore drill"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var opts []func(*harness)
+			if tc.hosts {
+				opts = append(opts, hosting)
+			}
+			h := newHarness(t, opts...)
+			var st controlplane.State
+			if tc.built {
+				h.built()
+				st.Networks = h.read().Networks
+			}
+			h.plane.Size = tc.asked
+
+			err := h.plane.SizeRefusal(st)
+
+			if tc.wantClass == "" {
+				assert.NoError(t, err)
+				return
+			}
+			assert.Equal(t, tc.wantClass, refusalClass(t, err))
+			assert.ErrorContains(t, err, tc.wantMsg)
+		})
+	}
+}
+
 func TestPlane_AOneServerClusterWhoseNodeIsLostNamesTheLostNodeAndNoOtherLocation(t *testing.T) {
 	h := newHarness(t, func(h *harness) { h.plane.Size = 1 })
 	h.built()

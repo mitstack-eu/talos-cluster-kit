@@ -41,6 +41,11 @@ func (k *Cluster) PlanReplacements(ctx context.Context, d contract.Desired) ([]s
 	if err := k.refuseUndeclaredSize(size); err != nil {
 		return nil, err
 	}
+	if k.cloudOnly(d) {
+		if _, err := k.readPool(d); err != nil {
+			return nil, err
+		}
+	}
 	locs, keys := namedNodes(d.Replace), namedWorkers(d.Replace)
 	_, err = requestedServerTypes(d)
 	p, _, ok := k.hetznerReader(d)

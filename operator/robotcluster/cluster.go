@@ -39,6 +39,9 @@ type Config struct {
 	// DeclaredSize is the one control-plane size the block's manifest lists servers for, since the platform waits on
 	// every server it lists; zero takes 1 or 3.
 	DeclaredSize int
+	// DedicatedServerOptional lets a request whose robotServerNumber is empty run on Hetzner Cloud alone, its apps on
+	// the Cloud pool.
+	DedicatedServerOptional bool
 
 	Now             func() time.Time
 	CloudAPI        func(token string) controlplane.API
@@ -123,8 +126,22 @@ func (k *Cluster) NewPlane(api controlplane.API, subID, appName string) controlp
 // PlaneFor is NewPlane for the request's subscription and app, of the size the request names; a size the request cannot
 // run reads as the default, since its own verb refuses it.
 func (k *Cluster) PlaneFor(api controlplane.API, d contract.Desired) controlplane.Plane {
-	p := k.NewPlane(api, d.SubscriptionID, d.Params["appName"])
+	p := k.placeApps(k.NewPlane(api, d.SubscriptionID, d.Params["appName"]), d)
 	p.Size, _ = operator.ControlPlaneSize(d)
+	return p
+}
+
+// cloudOnly is whether the request runs on Hetzner Cloud alone, naming no dedicated server to an operator that makes
+// it optional.
+func (k *Cluster) cloudOnly(d contract.Desired) bool {
+	return k.cfg.DedicatedServerOptional && d.Params[ParamRobotServer] == ""
+}
+
+// placeApps points the ingress load balancer of a cluster with no dedicated server at the Cloud pool's workers.
+func (k *Cluster) placeApps(p controlplane.Plane, d contract.Desired) controlplane.Plane {
+	if k.cloudOnly(d) {
+		p.WorkerAddresses, p.IngressTargetsCloudPool = nil, true
+	}
 	return p
 }
 

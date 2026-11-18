@@ -168,6 +168,11 @@ func setWorkerProgress(ctx context.Context, p controlplane.Plane, networkID int6
 
 func workerProgress(n controlplane.Network) string { return n.Labels[KeyWorkerInstall] }
 
+// workerDone is whether the Robot worker is written, or the cluster has none to write.
+func (c convergence) workerDone(n controlplane.Network) bool {
+	return c.req.params.cloudOnly || workerProgress(n) == WorkerWritten
+}
+
 func workerProgressAt(n controlplane.Network) string {
 	at, err := strconv.ParseInt(n.Labels[KeyWorkerInstallAt], 10, 64)
 	if err != nil {
@@ -179,6 +184,9 @@ func workerProgressAt(n controlplane.Network) string {
 // workerRefusal refuses an install that failed or that a restart of this process lost, since the cluster's keys it
 // needs are gone, and before the install a dedicated server the worker cannot run on.
 func (c convergence) workerRefusal(ctx context.Context) error {
+	if c.req.params.cloudOnly {
+		return nil
+	}
 	network, _ := c.state.Network()
 	switch workerProgress(network) {
 	case WorkerFailed:

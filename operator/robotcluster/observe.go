@@ -196,8 +196,12 @@ func judgeRobotFirewall(t robotTarget, st robotState) contract.Observation {
 	return contract.Observation{State: contract.Present, StatusDetail: fmt.Sprintf("the firewall of dedicated server %d is active and admits the cluster's network", t.server)}
 }
 
-// robotReader answers Unknown, before any call, for a request the worker's Robot resources cannot be read with.
+// robotReader answers Absent, before any call, for a cluster with no dedicated server, and Unknown for a request the
+// worker's Robot resources cannot be read with.
 func (k *Cluster) robotReader(d contract.Desired) (robotTarget, contract.Observation, bool) {
+	if k.cloudOnly(d) {
+		return robotTarget{}, contract.Observation{State: contract.Absent, StatusDetail: "the cluster has no dedicated server, as its request names none"}, false
+	}
 	rb, err := k.robotLogin(d)
 	if err != nil {
 		return robotTarget{}, operator.Unknown("the dedicated server cannot be read: " + operator.RefusalDetail(err)), false
@@ -289,11 +293,14 @@ func (k *Cluster) observeCluster(ctx context.Context, d contract.Desired) (contr
 	if repo.State != clusterrepo.Present {
 		problems = append(problems, repo.Describe())
 	}
-	if network, ok := st.Network(); ok && workerProgress(network) != WorkerWritten {
+	worker := p.Name("worker")
+	if k.cloudOnly(d) {
+		worker = ""
+	} else if network, ok := st.Network(); ok && workerProgress(network) != WorkerWritten {
 		problems = append(problems, workerDetail(network))
 	}
 	if len(problems) == 0 {
-		if problem := k.reportProblem(ctx, d, st, p.Name("worker")); problem != "" {
+		if problem := k.reportProblem(ctx, d, st, worker); problem != "" {
 			problems = append(problems, problem)
 		}
 	}
@@ -338,7 +345,10 @@ func (k *Cluster) observeCluster(ctx context.Context, d contract.Desired) (contr
 	outputs, detail := p.Outputs(st)
 	outputs["clusterRepoUrl"] = repo.URL
 	maps.Copy(outputs, recovery)
-	detail += ", the Robot worker is written, and the newest node report reads every node Ready"
+	if worker != "" {
+		detail += ", the Robot worker is written"
+	}
+	detail += ", and the newest node report reads every node Ready"
 	if hosting != "" {
 		detail += ", and " + hosting
 	}

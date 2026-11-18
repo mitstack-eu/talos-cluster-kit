@@ -4435,6 +4435,12 @@ Its apps run on the Cloud pool alone, so such a request must set
 `invalid-param` before it changes anything, and the dry run of an upgrade
 refuses it too.
 
+A cluster built on a dedicated server keeps it. A later request that leaves
+`robotServerNumber` empty is refused with `dedicated-server-removed`, and
+removing the cluster then deletes its Cloud resources but leaves the server
+and its vSwitch in place, refusing with `robot-left-in-place`. Name the server
+again to release it.
+
 ## How you change the module
 
 The tests compare each rendered configuration and the gateway's cloud-config

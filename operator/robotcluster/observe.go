@@ -313,8 +313,10 @@ func (k *Cluster) observeCluster(ctx context.Context, d contract.Desired) (contr
 	worker := p.Name("worker")
 	if k.cloudOnly(d) {
 		worker = ""
-		if network, ok := st.Network(); ok && serverDropped(network) != "" {
-			problems = append(problems, serverDropped(network))
+		if network, ok := st.Network(); ok {
+			if dropped := serverDropped(network); dropped != "" {
+				problems = append(problems, dropped)
+			}
 		}
 	} else if network, ok := st.Network(); ok && workerProgress(network) != WorkerWritten {
 		problems = append(problems, workerDetail(network))

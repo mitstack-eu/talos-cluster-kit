@@ -141,10 +141,13 @@ func TestPlane_TheIngressTargetsTheCloudPoolsWorkersByLabelWhenThePlaneSaysSo(t 
 		name          string
 		opts          []func(*harness)
 		wantAddresses []string
+		wantDetail    string
 	}{
-		{name: "a plane whose apps run on the Cloud pool's workers alone", opts: []func(*harness){appsOnCloudPool}},
+		{name: "a plane whose apps run on the Cloud pool's workers alone", opts: []func(*harness){appsOnCloudPool},
+			wantDetail: "an API load balancer in fsn1 reaches them, and its ingress load balancer the Cloud pool's workers"},
 		{name: "a plane whose apps run on a Robot worker and the Cloud pool's workers",
-			opts: []func(*harness){appsOnWorkers, alsoOnCloudPool}, wantAddresses: []string{workerAddress}},
+			opts: []func(*harness){appsOnWorkers, alsoOnCloudPool}, wantAddresses: []string{workerAddress},
+			wantDetail: "an API load balancer in fsn1 reaches them, and its ingress load balancer the Cloud pool's workers and the workers at " + workerAddress},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t, tc.opts...)
@@ -158,8 +161,27 @@ func TestPlane_TheIngressTargetsTheCloudPoolsWorkersByLabelWhenThePlaneSaysSo(t 
 			api := h.loadBalancer(controlplane.RoleAPI)
 			assert.Equal(t, []string{h.plane.RoleSelector(controlplane.RoleNode)}, api.TargetSelectors, "the API load balancer's label targets")
 			assert.Empty(t, api.TargetIPs, "the API load balancer's address targets")
+			_, detail := h.plane.Outputs(h.read())
+			assert.True(t, strings.HasSuffix(detail, tc.wantDetail), "the detail %q ends %q", detail, tc.wantDetail)
 		})
 	}
+}
+
+func TestPlane_ALoadBalancerOfAPlaneWhoseIngressIsNotOnTheCloudPoolDropsAStaleLabelTargetWhileNoNodeStands(t *testing.T) {
+	h := newHarness(t)
+	h.built()
+	ctx := context.Background()
+	const stale = "mitstack.dev/role=retired"
+	require.NoError(t, h.cloud.AddLoadBalancerTarget(ctx, h.loadBalancer(controlplane.RoleAPI).ID, stale))
+	for _, node := range h.byRole(controlplane.RoleNode) {
+		require.NoError(t, h.cloud.DeleteServer(ctx, node.ID))
+	}
+	h.steps = nil
+
+	require.NoError(t, h.ensure())
+
+	assert.Equal(t, []string{"stop the api load balancer in fsn1 targeting the servers " + stale + " selects"}, h.steps,
+		"the step a plane takes while no node stands")
 }
 
 func TestPlane_AClusterBuiltWithItsIngressOnTheControlPlaneMovesItToTheCloudPoolsWorkers(t *testing.T) {

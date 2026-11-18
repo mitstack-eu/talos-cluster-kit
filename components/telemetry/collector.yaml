@@ -171,13 +171,15 @@ subjects:
 {{- template "nodeTagger" }}
       # The tagger never overwrites a value it finds, and falls back to the
       # namespace a record names, so a pushed record loses its own claims first.
+      # A backend may turn any separator into the underscore a label name holds.
+{{- $claim := "^(k8s|mitstack)[^A-Za-z0-9]" }}
       transform/sender:
         log_statements:
-          - delete_matching_keys(resource.attributes, "^(k8s|mitstack)[^A-Za-z0-9]")
-          - delete_matching_keys(log.attributes, "^(k8s|mitstack)[^A-Za-z0-9]")
+          - delete_matching_keys(resource.attributes, "{{ $claim }}")
+          - delete_matching_keys(log.attributes, "{{ $claim }}")
         metric_statements:
-          - delete_matching_keys(resource.attributes, "^(k8s|mitstack)[^A-Za-z0-9]")
-          - delete_matching_keys(datapoint.attributes, "^(k8s|mitstack)[^A-Za-z0-9]")
+          - delete_matching_keys(resource.attributes, "{{ $claim }}")
+          - delete_matching_keys(datapoint.attributes, "{{ $claim }}")
       k8s_attributes/otlp:
 {{- template "nodeTagger" }}
         pod_association:

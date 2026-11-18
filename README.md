@@ -2069,25 +2069,26 @@ password and e-mail address masked.
 
 ### How an app on the cluster pushes its own telemetry
 
-An app on the cluster can send its own metrics and logs to the OTLP backend
-the cluster is bound to, such as Scaleway Cockpit, without holding a push
-token. The node copy, the Collector that runs on every node, takes OTLP over
-HTTP on port 4318 of its own pod's address. The Service
-`mitstack-telemetry-otlp` in `kube-system` sets
+An app on the cluster can send its own metrics and logs to the cluster's OTLP
+backend, such as Scaleway Cockpit, whose push address and token the block
+hands the kit as [What the block hands the kit](#what-the-block-hands-the-kit)
+describes. The app holds no push token of its own. The node copy, the
+Collector that runs on every node, takes OTLP over HTTP on port 4318 of its
+own pod's address. The Service `mitstack-telemetry-otlp` in `kube-system` sets
 `internalTrafficPolicy: Local`, which Kubernetes documents as sending a pod's
 traffic only to an endpoint on that pod's own node. Each node copy watches the
-pods of its own node.
+pods of its own node, so it can tell which of them a push comes from.
 
-A plane that sets `Telemetry` outputs the receiver's base URL as
-`otlpEndpoint`:
+A block whose `Plane.Telemetry` is set outputs the receiver's base URL as the
+resource output `otlpEndpoint`, which the block's resource type declares:
 
 ```text
 http://mitstack-telemetry-otlp.kube-system.svc.cluster.local:4318
 ```
 
 A sender appends `/v1/metrics` or `/v1/logs`, as an OpenTelemetry SDK does
-with the base URL in `OTEL_EXPORTER_OTLP_ENDPOINT`. A plane that leaves
-`Telemetry` at zero outputs no `otlpEndpoint`, and its cluster runs no
+with the base URL in `OTEL_EXPORTER_OTLP_ENDPOINT`. A block that leaves
+`Plane.Telemetry` at zero outputs no `otlpEndpoint`, and its cluster runs no
 receiver and no Service.
 
 The Collector decides which app a pushed record belongs to, whatever the
@@ -2099,22 +2100,24 @@ four steps:
 1. `transform/sender` deletes every attribute whose name is `k8s` or
    `mitstack` followed by any character but a letter or a digit, such as
    `mitstack.app`, `mitstack_app` or `mitstack-app`. It does so on the
-   resource, on each log record and on each data point. The tagger keeps any
-   value it finds, so a claim left in place would stand. A classic Prometheus
+   resource, on each log record and on each data point. The next step keeps
+   any value it finds, so a claim left in place would stand. A classic Prometheus
    label name holds only letters, digits and underscores, so a backend may
    turn each of those names into the label `mitstack_app`, and a claim under
    any of them would reach the same label.
-2. `k8s_attributes/otlp` finds the sending pod by the address its connection
-   comes from. It tags the record with that pod's name, its namespace and
-   `mitstack.app`, before any batch forms, since a batch drops that address.
+2. `k8s_attributes/otlp`, the tagger, finds the sending pod by the address its
+   connection comes from. It tags the record with that pod's name, its
+   namespace and `mitstack.app`. It runs before the `batch` processor groups
+   records for sending, since a batch no longer carries that address.
 3. `filter/unattributed` drops a record that carries no pod name after the
    tagger. Only the tagger sets one, so such a record came from an address no
    pod on the node holds, such as a process on the host network or a pod on
    another node that pushes to the node copy's own address. Kept, it would
    arrive with the subscription tag alone and pass for the cluster's own
    telemetry.
-4. The record then takes the same masking and subscription tag as every other
-   record.
+4. The record then takes the masking and subscription tag that
+   [How each record is tagged and masked](#how-each-record-is-tagged-and-masked)
+   describes.
 
 `collector_test.go` proves the tagging and the drop on the pinned Collector. A
 fixture pod in `app-shop` pushes a metric and a log record that claim
@@ -2129,10 +2132,17 @@ mode, still comes from the sender's own address. If either changed it, the
 tagger would find no pod and the push would be dropped rather than tagged
 wrongly.
 
-The receiver speaks plain HTTP, since a push through the Service is routed
-only to the node copy on the sender's own node.
-Kyverno's `mitstack-default-deny` blocks an app namespace's egress, so a
-sender there needs a policy of its own that admits `kube-system` on 4318.
+The receiver speaks plain HTTP and asks for no token, because it reads who
+sent a record from the connection's address rather than from anything the
+sender presents. That choice rests on the Service keeping a push on the
+sender's own node, as Kubernetes documents for `internalTrafficPolicy: Local`,
+so the push never crosses the network between nodes. No test here proves that
+routing.
+
+Kyverno gives every app namespace the NetworkPolicy `mitstack-default-deny`,
+which blocks each connection its pods make until a policy of the app's own
+allows it. A sender there therefore needs its own NetworkPolicy that allows
+egress to `kube-system` on port 4318.
 
 ### How the push token stays fresh
 

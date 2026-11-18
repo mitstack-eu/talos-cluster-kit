@@ -79,7 +79,7 @@ type pushedPoint struct {
 }
 
 // otherApp is what a sender writes to pass its records off as another app's, on the resource and on each record.
-var otherApp = map[string]string{"mitstack.app": "other", "k8s.namespace.name": "app-other", "k8s.pod.name": "other-web"}
+var otherApp = map[string]string{"mitstack.app": "other", "mitstack_app": "other", "k8s.namespace.name": "app-other", "k8s.pod.name": "other-web"}
 
 func TestCollector_TagsAMetricAndALogRecordAPodPushesWithItsOwnNamespacesAppWhateverAppTheyClaimAndMasksThem(t *testing.T) {
 	server := startAPIServer(t)
@@ -108,6 +108,9 @@ func TestCollector_TagsAMetricAndALogRecordAPodPushesWithItsOwnNamespacesAppWhat
 		assert.Equal(t, "app-shop", got["k8s.namespace.name"])
 		assert.Equal(t, "shop-web", got["k8s.pod.name"])
 		assert.Equal(t, collectorSubscription, got["mitstack.subscription.id"])
+	}
+	for _, got := range []map[string]string{record.attributes, record.recordAttributes, point.resource, point.attributes} {
+		assert.NotContains(t, got, "mitstack_app", "an app claimed under the label name a backend stores mitstack.app as")
 	}
 	assert.NotContains(t, record.recordAttributes, "mitstack.app", "the log record keeps no app it claimed")
 	assert.NotContains(t, record.recordAttributes, "k8s.namespace.name")
@@ -167,7 +170,6 @@ func pushedDataPoint() proto.Message {
 	}}}
 }
 
-// push sends message to address as an OTLP/HTTP exporter does, and fails unless the receiver accepts it.
 func push(t *testing.T, address string, message proto.Message) {
 	t.Helper()
 	body, err := proto.Marshal(message)

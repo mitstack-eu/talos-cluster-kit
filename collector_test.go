@@ -79,29 +79,16 @@ type pushedPoint struct {
 }
 
 // otherApp is what a sender writes to pass its records off as another app's, on the resource and on each record.
-var otherApp = map[string]string{"mitstack.app": "other", "mitstack_app": "other", "k8s.namespace.name": "app-other", "k8s.pod.name": "other-web"}
+var otherApp = map[string]string{"mitstack.app": "other", "mitstack_app": "other", "mitstack-app": "other", "k8s.namespace.name": "app-other",
+	"k8s.pod.name": "other-web"}
 
 func TestCollector_TagsAMetricAndALogRecordAPodPushesWithItsOwnNamespacesAppWhateverAppTheyClaimAndMasksThem(t *testing.T) {
-	server := startAPIServer(t)
-	sender := bridgeGateway(t, server.etcd)
-	backend := startOTLPBackend(t, sender)
-	export := testutil.TelemetryExport()
-	export.MetricsEndpoint, export.LogsEndpoint = backend.url+"/otlp/v1/metrics", backend.url+"/otlp/v1/logs"
-	rendered := renderedCollector(t, components.Default(), export)
-	server.admin(t, builtInObjects(t, rendered), "apply", "-f", "-")
-	server.admin(t, []byte(appShopNamespace+"\n---\n"+appOtherNamespace), "apply", "-f", "-")
-	server.admin(t, nil, "create", "serviceaccount", "default", "-n", "app-shop")
-	server.admin(t, []byte(shopPod), "apply", "-f", "-")
-	server.admin(t, nil, "patch", "pod", "shop-web", "-n", "app-shop", "--subresource=status", "--type=merge",
-		"-p", `{"status":{"phase":"Running","podIP":"`+sender.String()+`","podIPs":[{"ip":"`+sender.String()+`"}]}}`)
-	collector := startCollector(t, server, testutil.Documents(t, rendered), "node", map[string]string{"pods": sharedDir(t)}, backend.caDir, rand.Text())
-	collector.await(t, time.Minute, "Everything is ready")
-	receiver := "http://" + containerAddress(t, server.etcd).String() + ":4318"
+	rig := startPushRig(t, true)
 	marker := rand.Text()
 
-	push(t, receiver+"/v1/logs", pushedLogRecord(marker))
-	push(t, receiver+"/v1/metrics", pushedDataPoint())
-	record, point := awaitRecord(t, backend, collector, marker), awaitPoint(t, backend, collector)
+	push(t, rig.receiver+"/v1/logs", pushedLogRecord(marker))
+	push(t, rig.receiver+"/v1/metrics", pushedDataPoint())
+	record, point := awaitRecord(t, rig.backend, rig.collector, marker), awaitPoint(t, rig.backend, rig.collector)
 
 	for _, got := range []map[string]string{record.attributes, point.resource} {
 		assert.Equal(t, "shop", got["mitstack.app"], "the app of the namespace the pushing pod runs in")
@@ -110,7 +97,9 @@ func TestCollector_TagsAMetricAndALogRecordAPodPushesWithItsOwnNamespacesAppWhat
 		assert.Equal(t, collectorSubscription, got["mitstack.subscription.id"])
 	}
 	for _, got := range []map[string]string{record.attributes, record.recordAttributes, point.resource, point.attributes} {
-		assert.NotContains(t, got, "mitstack_app", "an app claimed under the label name a backend stores mitstack.app as")
+		for _, claimed := range []string{"mitstack_app", "mitstack-app"} {
+			assert.NotContains(t, got, claimed, "an app claimed under a name a backend stores as the label mitstack.app becomes")
+		}
 	}
 	assert.NotContains(t, record.recordAttributes, "mitstack.app", "the log record keeps no app it claimed")
 	assert.NotContains(t, record.recordAttributes, "k8s.namespace.name")
@@ -118,6 +107,87 @@ func TestCollector_TagsAMetricAndALogRecordAPodPushesWithItsOwnNamespacesAppWhat
 	assert.Equal(t, "shop", point.attributes["mitstack.app"], "the data point carries the app its resource was tagged with")
 	assert.Equal(t, "app-shop", point.attributes["k8s.namespace.name"])
 	assert.Equal(t, "paid", point.attributes["outcome"], "an attribute the sender owns")
+}
+
+func TestCollector_DropsWhatAnAddressNoPodOnTheNodeHoldsPushesSoNoRecordLeavesWithoutAnApp(t *testing.T) {
+	rig := startPushRig(t, false)
+
+	push(t, rig.receiver+"/v1/logs", pushedLogRecord(rand.Text()))
+	push(t, rig.receiver+"/v1/metrics", pushedDataPoint())
+	rig.placeShopPod(t, rig.sender)
+	records, points := rig.receivedOnceTagged(t)
+
+	for _, got := range records {
+		assert.Equal(t, "shop", got.attributes["mitstack.app"], "every log record the backend received, of %q", got.body)
+	}
+	for _, got := range points {
+		assert.Equal(t, "shop", got.resource["mitstack.app"], "every point the backend received")
+	}
+}
+
+type pushRig struct {
+	server    *apiServer
+	sender    netip.Addr
+	backend   otlpBackend
+	collector *followedContainer
+	receiver  string
+}
+
+// startPushRig starts a node copy and its backend, with shop-web at this host's address only when matched.
+func startPushRig(t *testing.T, matched bool) pushRig {
+	t.Helper()
+	server := startAPIServer(t)
+	rig := pushRig{server: server, sender: bridgeGateway(t, server.etcd)}
+	rig.backend = startOTLPBackend(t, rig.sender)
+	export := testutil.TelemetryExport()
+	export.MetricsEndpoint, export.LogsEndpoint = rig.backend.url+"/otlp/v1/metrics", rig.backend.url+"/otlp/v1/logs"
+	rendered := renderedCollector(t, components.Default(), export)
+	server.admin(t, builtInObjects(t, rendered), "apply", "-f", "-")
+	server.admin(t, []byte(appShopNamespace+"\n---\n"+appOtherNamespace), "apply", "-f", "-")
+	server.admin(t, nil, "create", "serviceaccount", "default", "-n", "app-shop")
+	server.admin(t, []byte(shopPod), "apply", "-f", "-")
+	rig.placeShopPod(t, netip.MustParseAddr("192.0.2.10"))
+	if matched {
+		rig.placeShopPod(t, rig.sender)
+	}
+	rig.collector = startCollector(t, server, testutil.Documents(t, rendered), "node", map[string]string{"pods": sharedDir(t)}, rig.backend.caDir, rand.Text())
+	rig.collector.await(t, time.Minute, "Everything is ready")
+	rig.receiver = "http://" + containerAddress(t, server.etcd).String() + ":4318"
+	return rig
+}
+
+func (r pushRig) placeShopPod(t *testing.T, address netip.Addr) {
+	t.Helper()
+	r.server.admin(t, nil, "patch", "pod", "shop-web", "-n", "app-shop", "--subresource=status", "--type=merge",
+		"-p", `{"status":{"phase":"Running","podIP":"`+address.String()+`","podIPs":[{"ip":"`+address.String()+`"}]}}`)
+}
+
+// receivedOnceTagged pushes from shop-web until the tagger knows its address, and returns all the backend received by
+// then, which includes any earlier push the Collector let through.
+func (r pushRig) receivedOnceTagged(t *testing.T) ([]shipped, []pushedPoint) {
+	t.Helper()
+	var records []shipped
+	var points []pushedPoint
+	for deadline := time.Now().Add(time.Minute); len(records) == 0 || len(points) == 0; {
+		require.True(t, time.Now().Before(deadline), "the backend received no push from shop-web in a minute; the Collector printed:\n%s", r.collector.log())
+		push(t, r.receiver+"/v1/logs", pushedLogRecord(rand.Text()))
+		push(t, r.receiver+"/v1/metrics", pushedDataPoint())
+		time.Sleep(2 * time.Second)
+		records, points = append(records, waiting(r.backend.records)...), append(points, waiting(r.backend.points)...)
+	}
+	return records, points
+}
+
+func waiting[T any](from <-chan T) []T {
+	var got []T
+	for {
+		select {
+		case item := <-from:
+			got = append(got, item)
+		default:
+			return got
+		}
+	}
 }
 
 // containerAddress is container's own address on its network, which a pod sharing its network listens on.

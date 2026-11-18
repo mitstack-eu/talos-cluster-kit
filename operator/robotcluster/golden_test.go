@@ -13,6 +13,7 @@ import (
 
 	"github.com/mitstack-eu/block-kit/capabilities/hetzner/robot/robottest"
 	"github.com/mitstack-eu/block-kit/contract"
+	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
 	"github.com/mitstack-eu/talos-cluster-kit/operator/robotcluster"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 	"github.com/stretchr/testify/require"
@@ -55,6 +56,41 @@ func assertDedicatedServerGolden(t *testing.T, opts ...envOption) {
 	require.False(t, e.github.exists(e.repo()), "the cluster repository after the unsubscribe")
 
 	testutil.Golden(t, "testdata/dedicated-server-cluster.golden", []byte(golden.String()))
+}
+
+func TestDedicatedServerCluster_WithProductionsSetSizeCloudPoolKeepsItsMemberSteadyAsItsGoldenRecords(t *testing.T) {
+	steps := captureSteps(t)
+	e := newEnv(t, productionSub, withParams(map[string]string{
+		robotcluster.ParamRobotServer: fmt.Sprint(productionServer), "serverType": "cx23,cpx22,cpx32",
+		"cloudPoolServerTypes": "cpx32", "cloudPoolLocations": "fsn1", "cloudPoolMin": "1", "cloudPoolMax": "1",
+	}))
+	e.robot.AddServer(robottest.Server{Number: productionServer, IP: "203.0.113.50", DC: "FSN1-DC14"})
+
+	obs, err := e.settle()
+	require.NoError(t, err, "the subscribe: %s", obs.StatusDetail)
+	e.ensureOrWait("the subscribe that carries the release")
+	present := len(steps.steps())
+	var golden strings.Builder
+	section(&golden, "steps to present", steps.steps())
+	var members []string
+	for _, w := range e.byRole(controlplane.RoleCloudWorker) {
+		labels := slices.Sorted(maps.Keys(w.Labels))
+		for i, k := range labels {
+			labels[i] = k + "=" + w.Labels[k]
+		}
+		members = append(members, w.Name+": "+strings.Join(labels, ","))
+	}
+	section(&golden, "cloud pool members", members)
+	section(&golden, "labeller burst nodes", []string{e.labellerBurstNodes()})
+
+	for range 3 {
+		e.progress()
+		e.ensureOrWait("a further subscribe")
+	}
+	section(&golden, "steps of further subscribes", steps.steps()[present:])
+	section(&golden, "observed", []string{string(e.observe().State) + ": " + e.observe().StatusDetail})
+
+	testutil.Golden(t, "testdata/production-cloud-pool.golden", []byte(golden.String()))
 }
 
 func section(b *strings.Builder, title string, lines []string) {

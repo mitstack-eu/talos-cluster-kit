@@ -1,0 +1,43 @@
+## steps to present
+create the firewall (took)
+create the api load balancer in fsn1 (took)
+attach the api load balancer in fsn1 to the network (took)
+disable the api load balancer in fsn1's public interface (took)
+add port 6443 to the api load balancer in fsn1 (took)
+target the nodes from the api load balancer in fsn1 (took)
+create the ingress load balancer in fsn1 (took)
+attach the ingress load balancer in fsn1 to the network (took)
+add port 80 to the ingress load balancer in fsn1 (took)
+add port 443 to the ingress load balancer in fsn1 (took)
+create the gateway and the builders (took)
+attach the gateway in fsn1 to the network at its fixed address before its first boot (took)
+target the worker at 10.0.1.2 from the ingress load balancer in fsn1 (took)
+attach the gateway in nbg1 to the network at its fixed address before its first boot (took)
+attach the gateway in hel1 to the network at its fixed address before its first boot (took)
+attach the builder to the network at its fixed address (took)
+power on the gateway (took)
+power on the gateway in nbg1 (took)
+power on the gateway in hel1 (took)
+power on the builder (took)
+attach the worker builder to the network at its fixed address (took)
+power on the worker builder (took)
+start the snapshot of the builder's disk (took)
+start the snapshot of the worker builder's disk (took)
+delete the builder, whose disk holds every key of the cluster, beside its snapshot (took)
+create the node in fsn1 from the snapshot (took)
+create the node in nbg1 from the snapshot (took)
+create the node in hel1 from the snapshot (took)
+delete the worker builder beside its snapshot (took)
+create the Cloud pool's workers shop-sub-0466-cloud-worker-fsn1-1 as cpx32 in fsn1 (took)
+
+## cloud pool members
+shop-sub-0466-cloud-worker-fsn1-1: mitstack.dev/block=test-robot-cluster,mitstack.dev/member=fsn1-1,mitstack.dev/role=cloud-worker,mitstack.dev/subscription=sub_0466391a571e
+
+## labeller burst nodes
+
+
+## steps of further subscribes
+
+## observed
+present: nodes 1013 in fsn1 at 10.0.0.5, 1014 in nbg1 at 10.0.0.6, 1015 in hel1 at 10.0.0.7 are on network 1001 behind gateways 1005 in fsn1, 1006 in nbg1, 1007 in hel1, its default route via 10.0.0.2, and an API load balancer in fsn1 reaches them, and its ingress load balancer the workers at 10.0.1.2, the Robot worker is written, and the newest node report reads every node Ready, and Argo CD's component Applications hold each of the release's 321 objects
+

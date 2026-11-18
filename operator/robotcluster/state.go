@@ -34,7 +34,7 @@ func (k *Cluster) readCreated(ctx context.Context, d contract.Desired) ([]contra
 		return nil, err
 	}
 	out := createdResources(st, d.SubscriptionID, clusterrepo.For(d.Secrets["github"]["owner"], d.Params["appName"]))
-	t, _, ok := k.robotReader(d)
+	t, _, ok := k.robotReader(ctx, d)
 	if !ok {
 		return out, nil
 	}

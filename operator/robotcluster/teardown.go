@@ -23,8 +23,9 @@ func (k *Cluster) Delete(ctx context.Context, d contract.Desired) (map[string]st
 	if err != nil {
 		return nil, err
 	}
-	cloudOnly := k.cloudOnly(d)
-	if !cloudOnly {
+	// The reading comes before the Cloud delete, since a dropped server is told by the network the delete removes.
+	server, reading, readable := k.robotReader(ctx, d)
+	if reading.State != contract.Absent {
 		k.narrate(ctx, d, "stopping the dedicated server's install, if one runs")
 		if err := k.StopJob(ctx, subID); err != nil {
 			return nil, err
@@ -36,8 +37,8 @@ func (k *Cluster) Delete(ctx context.Context, d contract.Desired) (map[string]st
 		return nil, err
 	}
 	deleted := "the cluster's Hetzner Cloud resources are deleted"
-	if !cloudOnly {
-		if err := k.releaseDedicatedServer(ctx, d); err != nil {
+	if reading.State != contract.Absent {
+		if err := k.releaseDedicatedServer(ctx, d, server, reading, readable); err != nil {
 			return nil, err
 		}
 		deleted = "the cluster's Hetzner resources are deleted and the dedicated server is released"
@@ -50,8 +51,7 @@ func (k *Cluster) Delete(ctx context.Context, d contract.Desired) (map[string]st
 
 // releaseDedicatedServer cancels the vSwitch and releases the dedicated server, and refuses, the Cloud resources
 // already deleted, a request they cannot be read with.
-func (k *Cluster) releaseDedicatedServer(ctx context.Context, d contract.Desired) error {
-	t, refused, ok := k.robotReader(d)
+func (k *Cluster) releaseDedicatedServer(ctx context.Context, d contract.Desired, t robotTarget, refused contract.Observation, ok bool) error {
 	if !ok {
 		return handler.Refuse("robot-left-in-place",
 			"the cluster's Hetzner Cloud resources are deleted, but the dedicated server and its vSwitch were left in place: %s", refused.StatusDetail)

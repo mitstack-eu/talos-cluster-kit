@@ -151,7 +151,7 @@ type robotObserver struct {
 }
 
 func (o robotObserver) ObserveResource(ctx context.Context, r contract.ResourceRef) (contract.Observation, error) {
-	t, refused, ok := o.k.robotReader(r.Desired)
+	t, refused, ok := o.k.robotReader(ctx, r.Desired)
 	if !ok {
 		return refused, nil
 	}
@@ -196,11 +196,11 @@ func judgeRobotFirewall(t robotTarget, st robotState) contract.Observation {
 	return contract.Observation{State: contract.Present, StatusDetail: fmt.Sprintf("the firewall of dedicated server %d is active and admits the cluster's network", t.server)}
 }
 
-// robotReader answers Absent, before any call, for a cluster with no dedicated server, and Unknown for a request the
-// worker's Robot resources cannot be read with.
-func (k *Cluster) robotReader(d contract.Desired) (robotTarget, contract.Observation, bool) {
+// robotReader answers Absent for a cluster with no dedicated server, and Unknown for a request the worker's Robot
+// resources cannot be read with, or one that names no server while the cluster network records a server's install.
+func (k *Cluster) robotReader(ctx context.Context, d contract.Desired) (robotTarget, contract.Observation, bool) {
 	if k.cloudOnly(d) {
-		return robotTarget{}, contract.Observation{State: contract.Absent, StatusDetail: "the cluster has no dedicated server, as its request names none"}, false
+		return robotTarget{}, k.noServerReading(ctx, d), false
 	}
 	rb, err := k.robotLogin(d)
 	if err != nil {
@@ -215,6 +215,23 @@ func (k *Cluster) robotReader(d contract.Desired) (robotTarget, contract.Observa
 	}
 	p := k.PlaneFor(nil, d)
 	return robotTarget{robot: rb, server: number, name: RobotName(d.SubscriptionID), plane: p}, contract.Observation{}, true
+}
+
+func (k *Cluster) noServerReading(ctx context.Context, d contract.Desired) contract.Observation {
+	p, refused, ok := k.hetznerReader(d)
+	if !ok {
+		return refused
+	}
+	networks, err := p.API.ListNetworks(ctx, p.Selector())
+	if err != nil {
+		return operator.Unknown("the cluster network cannot be read, so whether it records a dedicated server is not known: " + err.Error())
+	}
+	for _, n := range networks {
+		if detail := serverDropped(n); detail != "" {
+			return operator.Unknown(detail)
+		}
+	}
+	return contract.Observation{State: contract.Absent, StatusDetail: "the cluster has no dedicated server, as its request names none"}
 }
 
 func deployKeyCheck(ctx context.Context, d contract.Desired, a *clusterrepo.Access) ([]string, error) {
@@ -296,6 +313,9 @@ func (k *Cluster) observeCluster(ctx context.Context, d contract.Desired) (contr
 	worker := p.Name("worker")
 	if k.cloudOnly(d) {
 		worker = ""
+		if network, ok := st.Network(); ok && serverDropped(network) != "" {
+			problems = append(problems, serverDropped(network))
+		}
 	} else if network, ok := st.Network(); ok && workerProgress(network) != WorkerWritten {
 		problems = append(problems, workerDetail(network))
 	}

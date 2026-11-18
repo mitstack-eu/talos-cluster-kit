@@ -11,6 +11,7 @@ import (
 	"github.com/mitstack-eu/block-kit/observe"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
 	"github.com/mitstack-eu/talos-cluster-kit/etcd"
+	"github.com/mitstack-eu/talos-cluster-kit/operator"
 	"github.com/mitstack-eu/talos-cluster-kit/pools"
 )
 
@@ -31,9 +32,17 @@ func namedNodes(replace []string) (locs []string) {
 
 // PlanReplacements names the nodes and the Cloud workers the request names that the cluster runs, so the platform
 // refuses any other name before the upgrade, and none for a request the upgrade would refuse before it reads the cluster.
+// It refuses a control-plane size the cluster cannot run, so the platform's dry run shows that refusal.
 func (k *Cluster) PlanReplacements(ctx context.Context, d contract.Desired) ([]string, error) {
+	size, err := operator.ControlPlaneSize(d)
+	if err != nil {
+		return nil, err
+	}
+	if err := k.refuseUndeclaredSize(size); err != nil {
+		return nil, err
+	}
 	locs, keys := namedNodes(d.Replace), namedWorkers(d.Replace)
-	_, err := requestedServerTypes(d)
+	_, err = requestedServerTypes(d)
 	p, _, ok := k.hetznerReader(d)
 	if len(locs)+len(keys) == 0 || err != nil || !ok {
 		return nil, nil

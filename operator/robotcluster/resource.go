@@ -53,6 +53,8 @@ const (
 
 type clusterParams struct {
 	appName string
+	// size is how many control-plane nodes the cluster runs.
+	size int
 	// serverTypes are the Cloud servers' types by preference, each server taking the first its location can order.
 	serverTypes []string
 	robotServer int64
@@ -70,6 +72,9 @@ func readParams(d contract.Desired) (clusterParams, error) {
 	appName, err := operator.AppName(d)
 	p := clusterParams{appName: appName}
 	if err != nil {
+		return p, err
+	}
+	if p.size, err = operator.ControlPlaneSize(d); err != nil {
 		return p, err
 	}
 	if p.serverTypes, err = requestedServerTypes(d); err != nil {
@@ -169,6 +174,9 @@ func (k *Cluster) readEnsureRequest(d contract.Desired) (ensureRequest, error) {
 	if req.params, err = readParams(d); err != nil {
 		return req, err
 	}
+	if err = k.refuseUndeclaredSize(req.params.size); err != nil {
+		return req, err
+	}
 	if err = operator.RefuseUnreleasedTools(k.cfg.ToolsImage()); err != nil {
 		return req, err
 	}
@@ -185,7 +193,7 @@ func (k *Cluster) readEnsureRequest(d contract.Desired) (ensureRequest, error) {
 // plane installs the Robot worker and keeps the gateway CA, in the one call the install renders them.
 func (req ensureRequest) plane(ctx context.Context, api controlplane.API) controlplane.Plane {
 	p := withTelemetry(req.k.withReports(ctx, req.k.NewPlane(api, req.subID, req.params.appName), req.d, req.reports), req.d)
-	p.ServerTypes, p.RepoURL, p.Removals = req.params.serverTypes, req.gh.Repo.URL(), req.gh.removals()
+	p.Size, p.ServerTypes, p.RepoURL, p.Removals = req.params.size, req.params.serverTypes, req.gh.Repo.URL(), req.gh.removals()
 	if req.params.hosting {
 		p.Hosting = req.hosting()
 	}

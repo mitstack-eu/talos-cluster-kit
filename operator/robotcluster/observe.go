@@ -209,7 +209,7 @@ func (k *Cluster) robotReader(d contract.Desired) (robotTarget, contract.Observa
 	if !controlplane.ValidLabelValue(d.SubscriptionID) {
 		return robotTarget{}, operator.Unknown("the subscription id is not a valid label value, so the worker's Robot names cannot be formed"), false
 	}
-	p := k.NewPlane(nil, d.SubscriptionID, d.Params["appName"])
+	p := k.PlaneFor(nil, d)
 	return robotTarget{robot: rb, server: number, name: RobotName(d.SubscriptionID), plane: p}, contract.Observation{}, true
 }
 
@@ -233,7 +233,7 @@ func (k *Cluster) hetznerReader(d contract.Desired) (controlplane.Plane, contrac
 	if !controlplane.ValidLabelValue(d.SubscriptionID) {
 		return controlplane.Plane{}, operator.Unknown("the subscription id is not a valid Hetzner label value, so the cluster's resources cannot be found by it"), false
 	}
-	return k.NewPlane(k.cfg.CloudAPI(token), d.SubscriptionID, d.Params["appName"]), contract.Observation{}, true
+	return k.PlaneFor(k.cfg.CloudAPI(token), d), contract.Observation{}, true
 }
 
 // Observe reads the whole cluster: present once the control plane stands as the block makes it, no Cloud worker's

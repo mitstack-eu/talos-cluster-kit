@@ -17,6 +17,7 @@ import (
 	"github.com/mitstack-eu/block-kit/helpers/reportproof"
 	"github.com/mitstack-eu/block-kit/observe"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
+	"github.com/mitstack-eu/talos-cluster-kit/operator"
 	"github.com/mitstack-eu/talos-cluster-kit/operator/clusterrepo"
 	"github.com/mitstack-eu/talos-cluster-kit/tools"
 )
@@ -35,6 +36,9 @@ type Config struct {
 	Boundary string
 	// InstallWorker writes the cluster's worker image onto the Robot server from its rescue system.
 	InstallWorker func(ctx context.Context, install WorkerInstall) error
+	// DeclaredSize is the one control-plane size the block's manifest lists servers for, since the platform waits on
+	// every server it lists; zero takes 1 or 3.
+	DeclaredSize int
 
 	Now             func() time.Time
 	CloudAPI        func(token string) controlplane.API
@@ -114,6 +118,22 @@ func (k *Cluster) NewPlane(api controlplane.API, subID, appName string) controlp
 		AppsOnWorkers:     true,
 		WorkerAddresses:   []string{workerAddress.Addr().String()},
 	}
+}
+
+// PlaneFor is NewPlane for the request's subscription and app, of the size the request names; a size the request cannot
+// run reads as the default, since its own verb refuses it.
+func (k *Cluster) PlaneFor(api controlplane.API, d contract.Desired) controlplane.Plane {
+	p := k.NewPlane(api, d.SubscriptionID, d.Params["appName"])
+	p.Size, _ = operator.ControlPlaneSize(d)
+	return p
+}
+
+// refuseUndeclaredSize refuses a size other than the one the block's manifest lists servers for, when it lists one.
+func (k *Cluster) refuseUndeclaredSize(size int) error {
+	if k.cfg.DeclaredSize == 0 {
+		return nil
+	}
+	return operator.RefuseUndeclaredSize(size, k.cfg.DeclaredSize)
 }
 
 // RobotName keeps the whole subscription id, so no other subscription's name can match it. Robot holds no labels, so

@@ -6,8 +6,10 @@ package robotcluster_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
+	"github.com/mitstack-eu/block-kit/capabilities/hetzner/robot/robottest"
 	"github.com/mitstack-eu/block-kit/contract"
 	"github.com/mitstack-eu/block-kit/handler"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
@@ -162,4 +164,28 @@ func TestDedicatedServerRequired_RefusesARequestNamingNoServerWithTodaysMessage(
 
 func TestDedicatedServerCluster_OnAnOperatorWithTheServerOptionalTakesTheSameGolden(t *testing.T) {
 	assertDedicatedServerGolden(t, func(e *env) { e.cfg.DedicatedServerOptional = true })
+}
+
+func TestCloudOnlyRequest_OnAClusterBuiltOnADedicatedServerIsRefusedAndLeavesTheServerInPlace(t *testing.T) {
+	e := newEnv(t, productionSub, withParams(map[string]string{
+		robotcluster.ParamRobotServer: fmt.Sprint(productionServer), "serverType": "cx23,cpx22,cpx32",
+		"cloudPoolServerTypes": "cpx32", "cloudPoolLocations": "fsn1", "cloudPoolMin": "1", "cloudPoolMax": "1",
+	}), func(e *env) { e.cfg.DedicatedServerOptional = true })
+	e.robot.AddServer(robottest.Server{Number: productionServer, IP: "203.0.113.50", DC: "FSN1-DC14"})
+	_, err := e.settle()
+	require.NoError(t, err)
+	e.params[robotcluster.ParamRobotServer] = ""
+	requests := len(e.robot.Requests())
+
+	refused := refusedAs(t, e.k.Ensure(context.Background(), e.desired()), "dedicated-server-removed")
+	assert.Contains(t, refused.Detail, `params["robotServerNumber"]`, "the refusal names the input")
+	assert.Equal(t, contract.Unknown, e.observe().State, "the cluster")
+	for _, name := range []string{robotcluster.ResourceDedicatedServer, robotcluster.ResourceVSwitch, robotcluster.ResourceRobotFirewall} {
+		obs, err := e.k.Observers()[name].ObserveResource(context.Background(), contract.ResourceRef{Desired: e.desired()})
+		require.NoError(t, err, name)
+		assert.Equal(t, contract.Unknown, obs.State, "%s: %s", name, obs.StatusDetail)
+	}
+	refusedAs(t, e.delete(), "robot-left-in-place")
+	assert.Zero(t, e.cloud.Count(), "the Cloud resources left after the unsubscribe")
+	assert.Len(t, e.robot.Requests(), requests, "the Robot fake's calls after the number was dropped")
 }

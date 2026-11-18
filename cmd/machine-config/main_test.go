@@ -59,8 +59,8 @@ func TestRun_RefusesNamingWhatIsWrongWhenItCannotRenderTheNode(t *testing.T) {
 	}{
 		{"no release", nil, string(running), exitUsage, "--release"},
 		{"an argument beside the release", []string{"--release", release, "extra"}, string(running), exitUsage, "extra"},
-		{"no configuration on stdin", []string{"--release", release}, "", exitFailed, "configuration"},
-		{"no machine configuration on stdin", []string{"--release", release}, "kind: ConfigMap\napiVersion: v1\n", exitFailed, "configuration"},
+		{"no configuration on stdin", []string{"--release", release}, "", exitFailed, "config not found"},
+		{"no machine configuration on stdin", []string{"--release", release}, "kind: ConfigMap\napiVersion: v1\n", exitFailed, "v1/ConfigMap"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

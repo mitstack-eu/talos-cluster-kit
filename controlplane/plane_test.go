@@ -245,6 +245,18 @@ func TestPlane_ASizeOfOneBuildsOneNodeBesideOneGatewayInFsn1AndJudgesNoOtherLoca
 	assert.Equal(t, "1", h.network().Labels[controlplane.KeySize], "the size the network records")
 }
 
+func TestPlane_NodeLocationsGivesACopyAChangeToWhichReachesNeitherLocationsNorTheNextCall(t *testing.T) {
+	for _, size := range []int{1, 3} {
+		plane := controlplane.Plane{Size: size}
+		given := plane.NodeLocations()
+
+		given[0] = "changed"
+
+		assert.Equal(t, []string{"fsn1", "nbg1", "hel1"}, controlplane.Locations, "Locations after a change to a size-%d plane's node locations", size)
+		assert.Equal(t, "fsn1", plane.NodeLocations()[0], "a size-%d plane's next node locations", size)
+	}
+}
+
 func TestPlane_ASizeOfThreeBuildsThePlaneAPlaneGivenNoSizeBuilds(t *testing.T) {
 	for _, tc := range []struct {
 		name string

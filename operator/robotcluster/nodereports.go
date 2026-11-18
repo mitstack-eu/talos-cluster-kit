@@ -96,10 +96,13 @@ func (k *Cluster) reportProblem(ctx context.Context, d contract.Desired, st cont
 	if newest == nil {
 		return "the cluster has sent no node report since the last node's creation at " + since
 	}
-	if want := len(nodes) + 1; len(newest) < want {
+	if worker == "" {
+		if len(newest) < len(nodes) {
+			return fmt.Sprintf("the newest node report names %d nodes, and the cluster has %d", len(newest), len(nodes))
+		}
+	} else if want := len(nodes) + 1; len(newest) < want {
 		return fmt.Sprintf("the newest node report names %d nodes, and the cluster has %d with its Robot worker", len(newest), want)
-	}
-	if !slices.ContainsFunc(newest, func(n operator.ReportedNode) bool { return n.Name == worker }) {
+	} else if !slices.ContainsFunc(newest, func(n operator.ReportedNode) bool { return n.Name == worker }) {
 		return fmt.Sprintf("the newest node report does not name the Robot worker %s", worker)
 	}
 	for _, n := range newest {

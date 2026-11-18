@@ -4408,6 +4408,39 @@ go -C operator/robotcluster vet ./...
 go -C operator/robotcluster test -race ./...
 ```
 
+### A cluster with no dedicated server
+
+An operator can let a cluster start on Hetzner Cloud servers alone, and take
+its dedicated server later, by setting `Config.DedicatedServerOptional`. The
+setting is off by default, so an operator that leaves it out, as
+hcloud-hrobot-talos-cluster does, refuses a request whose `robotServerNumber`
+is empty, as it always has.
+
+With the setting on, an empty `robotServerNumber` means the cluster has no
+dedicated server. A request that names a number still builds the Robot worker
+as before. A cluster with no dedicated server:
+
+- needs no Robot login on the Hetzner connection, and makes no Robot call to
+  adopt, install, read or release a server;
+- still builds the worker image at install, since its Cloud workers boot from
+  it;
+- creates its Cloud pool's workers as soon as the control plane is up, and its
+  ingress load balancer targets those workers, through the plane's
+  `IngressTargetsCloudPool`;
+- reads its dedicated server, vSwitch and Robot firewall as absent;
+- deletes only its Cloud resources and its repository when it is removed.
+
+Its apps run on the Cloud pool alone, so such a request must set
+`cloudPoolMin` to 1 or more. The module refuses a lower minimum with
+`invalid-param` before it changes anything, and the dry run of an upgrade
+refuses it too.
+
+A cluster built on a dedicated server keeps it. A later request that leaves
+`robotServerNumber` empty is refused with `dedicated-server-removed`. If such
+a request removes the cluster, the module deletes its Cloud resources, keeps
+the server and its vSwitch, and then refuses with `robot-left-in-place`. A
+later removal that sets `robotServerNumber` again releases the server.
+
 ## How you change the module
 
 The tests compare each rendered configuration and the gateway's cloud-config

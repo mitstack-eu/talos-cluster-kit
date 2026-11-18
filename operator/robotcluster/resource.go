@@ -57,6 +57,8 @@ type clusterParams struct {
 	size int
 	// serverTypes are the Cloud servers' types by preference, each server taking the first its location can order.
 	serverTypes []string
+	// cloudOnly is whether the cluster runs on Hetzner Cloud alone, with no robotServer.
+	cloudOnly   bool
 	robotServer int64
 	// cloud is the Cloud pool of workers made from the worker image, empty when its inputs are left out.
 	cloud pools.CloudPool
@@ -68,9 +70,9 @@ type clusterParams struct {
 // HostsPlatform is whether the request asks for a cluster that hosts the platform.
 func HostsPlatform(d contract.Desired) bool { return d.Params[ParamHostsPlatform] == "true" }
 
-func readParams(d contract.Desired) (clusterParams, error) {
+func (k *Cluster) readParams(d contract.Desired) (clusterParams, error) {
 	appName, err := operator.AppName(d)
-	p := clusterParams{appName: appName}
+	p := clusterParams{appName: appName, cloudOnly: k.cloudOnly(d)}
 	if err != nil {
 		return p, err
 	}
@@ -85,13 +87,27 @@ func readParams(d contract.Desired) (clusterParams, error) {
 			return p, err
 		}
 	}
-	number, err := robotServerNumber(d)
-	p.robotServer = number
-	if err != nil {
-		return p, err
+	if !p.cloudOnly {
+		number, err := robotServerNumber(d)
+		p.robotServer = number
+		if err != nil {
+			return p, err
+		}
 	}
-	p.cloud, err = readCloudPool(d)
+	p.cloud, err = k.readPool(d)
 	return p, err
+}
+
+// readPool reads the Cloud pool, refusing on a cluster with no dedicated server one that can shrink to no worker,
+// since its apps run on the pool alone.
+func (k *Cluster) readPool(d contract.Desired) (pools.CloudPool, error) {
+	pool, err := readCloudPool(d)
+	if err == nil && k.cloudOnly(d) && pool.Min < 1 {
+		return pool, handler.Refuse("invalid-param",
+			`params["cloudPoolMin"] is %q, and a cluster with no dedicated server runs its apps on the Cloud pool alone, so the pool keeps at least 1 worker`,
+			d.Params["cloudPoolMin"])
+	}
+	return pool, err
 }
 
 // readServerTypes reads one type or an ordered, comma-separated list, refusing any type the cluster does not run on.
@@ -171,7 +187,7 @@ func (k *Cluster) readEnsureRequest(d contract.Desired) (ensureRequest, error) {
 	if req.subID, err = subscriptionID(d); err != nil {
 		return req, err
 	}
-	if req.params, err = readParams(d); err != nil {
+	if req.params, err = k.readParams(d); err != nil {
 		return req, err
 	}
 	if err = k.refuseUndeclaredSize(req.params.size); err != nil {
@@ -180,26 +196,32 @@ func (k *Cluster) readEnsureRequest(d contract.Desired) (ensureRequest, error) {
 	if err = operator.RefuseUnreleasedTools(k.cfg.ToolsImage()); err != nil {
 		return req, err
 	}
-	if req.robot, err = k.robotLogin(d); err != nil {
-		return req, err
-	}
-	if req.egress, err = egressAddress(); err != nil {
-		return req, err
+	if !req.params.cloudOnly {
+		if req.robot, err = k.robotLogin(d); err != nil {
+			return req, err
+		}
+		if req.egress, err = egressAddress(); err != nil {
+			return req, err
+		}
 	}
 	req.gh, err = k.dialGitHub(d, req.params.appName)
 	return req, err
 }
 
-// plane installs the Robot worker and keeps the gateway CA, in the one call the install renders them.
+// plane installs the Robot worker, when the cluster has one, and keeps the gateway CA, in the one call the install
+// renders them.
 func (req ensureRequest) plane(ctx context.Context, api controlplane.API) controlplane.Plane {
-	p := withTelemetry(req.k.withReports(ctx, req.k.NewPlane(api, req.subID, req.params.appName), req.d, req.reports), req.d)
+	p := req.k.placeApps(req.k.NewPlane(api, req.subID, req.params.appName), req.d)
+	p = withTelemetry(req.k.withReports(ctx, p, req.d, req.reports), req.d)
 	p.Size, p.ServerTypes, p.RepoURL, p.Removals = req.params.size, req.params.serverTypes, req.gh.Repo.URL(), req.gh.removals()
 	if req.params.hosting {
 		p.Hosting = req.hosting()
 	}
 	p.Installed = func(ctx context.Context, network controlplane.Network, cluster nodeconfig.Cluster, ca gateway.CA) error {
-		if err := req.k.startWorkerInstall(ctx, req, p, network, cluster); err != nil {
-			return err
+		if !req.params.cloudOnly {
+			if err := req.k.startWorkerInstall(ctx, req, p, network, cluster); err != nil {
+				return err
+			}
 		}
 		*req.minted = ca
 		return nil
@@ -296,15 +318,18 @@ func (c convergence) refusal(ctx context.Context) error {
 	return c.poolRefusal(ctx)
 }
 
-// nextStep is the control plane's next step, and once the worker is written, the step that puts back a lost Robot
-// resource, then a Cloud worker's next replacement stage, then the one that creates the Cloud pool's missing workers.
+// nextStep is the control plane's next step, and once the worker is written or the cluster has none, the step that puts
+// back a lost Robot resource on a cluster with a dedicated server, then a Cloud worker's next replacement stage, then the
+// one that creates the Cloud pool's missing workers.
 func (c convergence) nextStep(ctx context.Context, network controlplane.Network) (controlplane.Step, bool, error) {
 	s, ok, err := c.plane.NextStep(ctx, c.state, network)
-	if err != nil || ok || workerProgress(network) != WorkerWritten {
+	if err != nil || ok || !c.workerDone(network) {
 		return s, ok, refusal(err)
 	}
-	if repair, repairs, err := c.robotTarget().repairStep(ctx); err != nil || repairs {
-		return repair, repairs, err
+	if !c.req.params.cloudOnly {
+		if repair, repairs, err := c.robotTarget().repairStep(ctx); err != nil || repairs {
+			return repair, repairs, err
+		}
 	}
 	if pools.ChangeUnderWay(c.state) {
 		if replace, replaces, err := pools.ReplaceStep(ctx, c.plane, c.req.params.cloud); err != nil || replaces {

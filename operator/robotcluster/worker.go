@@ -168,6 +168,22 @@ func setWorkerProgress(ctx context.Context, p controlplane.Plane, networkID int6
 
 func workerProgress(n controlplane.Network) string { return n.Labels[KeyWorkerInstall] }
 
+// serverDropped names a network that records a dedicated server's install although the request names no server, and
+// is empty otherwise.
+func serverDropped(n controlplane.Network) string {
+	if workerProgress(n) == "" {
+		return ""
+	}
+	return fmt.Sprintf(`the cluster network records the install of a dedicated server as %s, but params["robotServerNumber"] is empty, `+
+		"so the server and its vSwitch would be left outside the cluster; name the server again, or unsubscribe with it named to release it",
+		workerProgress(n))
+}
+
+// workerDone is whether the Robot worker is written, or the cluster has none to write.
+func (c convergence) workerDone(n controlplane.Network) bool {
+	return c.req.params.cloudOnly || workerProgress(n) == WorkerWritten
+}
+
 func workerProgressAt(n controlplane.Network) string {
 	at, err := strconv.ParseInt(n.Labels[KeyWorkerInstallAt], 10, 64)
 	if err != nil {
@@ -180,6 +196,12 @@ func workerProgressAt(n controlplane.Network) string {
 // needs are gone, and before the install a dedicated server the worker cannot run on.
 func (c convergence) workerRefusal(ctx context.Context) error {
 	network, _ := c.state.Network()
+	if c.req.params.cloudOnly {
+		if detail := serverDropped(network); detail != "" {
+			return handler.Refuse("dedicated-server-removed", "%s", detail)
+		}
+		return nil
+	}
 	switch workerProgress(network) {
 	case WorkerFailed:
 		return handler.Refuse("worker-install-failed",

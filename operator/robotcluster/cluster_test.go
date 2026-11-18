@@ -1,7 +1,7 @@
 package robotcluster_test
 
-// A cluster needs its operator's id, boundary and worker install, and names to replace only the nodes and Cloud
-// workers a request names that the cluster runs.
+// A cluster needs its operator's id, boundary and worker install, names to replace only the nodes and Cloud workers a
+// request names that the cluster runs, and refuses a control-plane size its block declares no servers for.
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mitstack-eu/block-kit/contract"
+	"github.com/mitstack-eu/block-kit/handler"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane/cloudtest"
 	"github.com/mitstack-eu/talos-cluster-kit/operator/robotcluster"
@@ -71,4 +72,82 @@ func TestPlanReplacements_NamesOnlyTheNodesAndCloudWorkersTheRequestNamesThatThe
 	names, err = k.PlanReplacements(ctx, d)
 	require.NoError(t, err)
 	assert.Empty(t, names, "a request without a Hetzner token names nothing, since the upgrade refuses it before it reads the cluster")
+}
+
+func sizeRequest(params map[string]string) contract.Desired {
+	params["appName"] = "shop"
+	return contract.Desired{
+		Identity: contract.Identity{SubscriptionID: "sub_0123456789ab"},
+		Params:   params,
+		Secrets:  map[string]map[string]string{"hetzner": {"api_token": "test-token"}},
+	}
+}
+
+func sizedCluster(declared int) *robotcluster.Cluster {
+	cloud := cloudtest.New(time.Now)
+	return robotcluster.New(robotcluster.Config{
+		Block: testBlock, Boundary: "test-boundary", InstallWorker: installNothing, DeclaredSize: declared,
+		CloudAPI: func(string) controlplane.API { return cloud },
+	})
+}
+
+func TestPlanReplacements_RefusesAControlPlaneSizeTheBlockDeclaresNoServersForNamingTheSizeItKeeps(t *testing.T) {
+	k := sizedCluster(3)
+	for _, tc := range []struct {
+		name, class, text string
+		params            map[string]string
+	}{
+		{"one server", "control-plane-size-undeclared", "this block lists a control-plane server in each of 3 locations, and mitstack waits for each one",
+			map[string]string{"controlPlaneSize": "1"}},
+		{"two servers", "invalid-param", "a control plane runs 1 or 3 servers", map[string]string{"controlPlaneSize": "2"}},
+		{"one server for a cluster that hosts the platform", "restore-drill-missing", "ADR 0125 restore drill",
+			map[string]string{"controlPlaneSize": "1", "hostsPlatform": "true"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := k.PlanReplacements(context.Background(), sizeRequest(tc.params))
+
+			var refused *handler.Refused
+			require.ErrorAs(t, err, &refused, "an upgrade asking for %v", tc.params)
+			assert.Equal(t, tc.class, refused.Class)
+			assert.ErrorContains(t, err, tc.text)
+		})
+	}
+	for _, size := range []string{"3", ""} {
+		_, err := k.PlanReplacements(context.Background(), sizeRequest(map[string]string{"controlPlaneSize": size}))
+		assert.NoError(t, err, "an upgrade asking for controlPlaneSize %q", size)
+	}
+}
+
+func TestEnsure_RefusesAControlPlaneSizeTheBlockDeclaresNoServersForBeforeAnyChange(t *testing.T) {
+	cloud := cloudtest.New(time.Now)
+	k := robotcluster.New(robotcluster.Config{
+		Block: testBlock, Boundary: "test-boundary", InstallWorker: installNothing, DeclaredSize: 3,
+		CloudAPI: func(string) controlplane.API { return cloud },
+	})
+
+	err := k.Ensure(context.Background(), sizeRequest(map[string]string{"controlPlaneSize": "1", robotcluster.ParamRobotServer: "1234567"}))
+
+	var refused *handler.Refused
+	require.ErrorAs(t, err, &refused)
+	assert.Equal(t, "control-plane-size-undeclared", refused.Class, "the size is refused before the Robot login: %v", err)
+	assert.Zero(t, cloud.Writes(), "a refused subscribe changes nothing in Hetzner Cloud")
+}
+
+func TestPlanReplacements_TakesOneOrThreeServersForABlockThatDeclaresNoSize(t *testing.T) {
+	k := sizedCluster(0)
+	for _, size := range []string{"1", "3"} {
+		_, err := k.PlanReplacements(context.Background(), sizeRequest(map[string]string{"controlPlaneSize": size}))
+		assert.NoError(t, err, "an upgrade asking for controlPlaneSize %q", size)
+	}
+}
+
+func TestPlaneFor_RunsTheSizeTheRequestNamesAndThreeForARequestThatNamesNone(t *testing.T) {
+	k := sizedCluster(0)
+
+	one := k.PlaneFor(nil, sizeRequest(map[string]string{"controlPlaneSize": "1"}))
+	unnamed := k.PlaneFor(nil, sizeRequest(map[string]string{}))
+
+	assert.Equal(t, []string{"fsn1"}, one.NodeLocations(), "the locations of a cluster asked for one server")
+	assert.Equal(t, controlplane.Locations, unnamed.NodeLocations(), "the locations of a cluster that names no size")
+	assert.Equal(t, "shop", one.AppName)
 }

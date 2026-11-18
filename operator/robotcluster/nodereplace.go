@@ -32,7 +32,7 @@ func namedNodes(replace []string) (locs []string) {
 
 // PlanReplacements names the nodes and the Cloud workers the request names that the cluster runs, so the platform
 // refuses any other name before the upgrade, and none for a request the upgrade would refuse before it reads the cluster.
-// It refuses a control-plane size the cluster cannot run, so the platform's dry run shows that refusal.
+// It refuses a size the cluster cannot run or was not subscribed with, so the platform's dry run shows that refusal.
 func (k *Cluster) PlanReplacements(ctx context.Context, d contract.Desired) ([]string, error) {
 	size, err := operator.ControlPlaneSize(d)
 	if err != nil {
@@ -49,7 +49,17 @@ func (k *Cluster) PlanReplacements(ctx context.Context, d contract.Desired) ([]s
 	locs, keys := namedNodes(d.Replace), namedWorkers(d.Replace)
 	_, err = requestedServerTypes(d)
 	p, _, ok := k.hetznerReader(d)
-	if len(locs)+len(keys) == 0 || err != nil || !ok {
+	if err != nil || !ok {
+		return nil, nil
+	}
+	networks, err := p.API.ListNetworks(ctx, p.Selector())
+	if err != nil {
+		return nil, fmt.Errorf("reading the cluster's network to judge the control-plane size an upgrade asks for: %w", err)
+	}
+	if err := refusal(p.SizeRefusal(controlplane.State{Networks: networks})); err != nil {
+		return nil, err
+	}
+	if len(locs)+len(keys) == 0 {
 		return nil, nil
 	}
 	nodes, err := p.API.ListServers(ctx, p.RoleSelector(controlplane.RoleNode))

@@ -526,6 +526,11 @@ and the plane then reports no missing worker address. A cluster with both sets
 both, and its ingress reaches the pool's workers by label and the other
 workers by address.
 
+The plane reports a problem while the pool has no worker, and keeps any
+control-plane target the load balancer holds until one joins. It also reports
+a problem when `IngressTargetsCloudPool` is set without `AppsOnWorkers`, since
+apps would then run on control-plane nodes the ingress no longer reaches.
+
 The load balancer forwards ports 80 and 443 to Traefik's NodePorts 30080 and
 30081, where Traefik's two entry points listen: `web` for HTTP and `websecure`
 for HTTPS. On both ports it sends a PROXY protocol header, which carries the

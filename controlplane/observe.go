@@ -192,6 +192,12 @@ func (p Plane) loadBalancerProblems(st State, network Network) []string {
 	if p.AppsOnWorkers && len(p.WorkerAddresses) == 0 && !p.IngressTargetsCloudPool {
 		missing = append(missing, "apps run on workers, but the plane names no worker address for the ingress load balancer to target")
 	}
+	if p.IngressTargetsCloudPool && len(st.Servers[RoleCloudWorker]) == 0 {
+		missing = append(missing, "the ingress load balancer targets the Cloud pool's workers, but the pool has no worker")
+	}
+	if p.IngressTargetsCloudPool && !p.AppsOnWorkers {
+		missing = append(missing, "the ingress load balancer targets the Cloud pool's workers, but apps also run on the control-plane nodes")
+	}
 	for _, want := range []LoadBalancerSpec{p.apiLoadBalancer(network.ID), p.ingressLoadBalancer(network.ID)} {
 		role := want.Labels[KeyRole]
 		found, ok := st.LoadBalancerIn(Role(role), GatewayLocation)

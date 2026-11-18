@@ -410,8 +410,7 @@ func (p Plane) apiLoadBalancer(networkID int64) LoadBalancerSpec {
 }
 
 // ingressLoadBalancer serves ports 80 and 443 on its public address to the edge NodePorts, with PROXY protocol, of
-// every node, or of every worker when apps run on workers, since the edge runs only where apps do. It reaches the
-// Cloud pool's workers by label and every other worker by address.
+// every node, or of every worker when apps run on workers, since the edge runs only where apps do.
 func (p Plane) ingressLoadBalancer(networkID int64) LoadBalancerSpec {
 	spec := LoadBalancerSpec{
 		Name:            p.LocatedName(RoleIngress, GatewayLocation),
@@ -437,7 +436,8 @@ func (p Plane) ingressLoadBalancer(networkID int64) LoadBalancerSpec {
 
 // loadBalancerStep is the next step the load balancer lacks. It is attached before its public interface is disabled or
 // its private target added, since Hetzner refuses either on a load balancer not yet attached to a network. A label
-// target it should not hold goes only once it holds every address target, so it is never left with none it had.
+// target it should not hold goes only once it holds every address target and its own label selects a server, so it
+// is never left with none it had.
 func (p Plane) loadBalancerStep(st State, network Network, want LoadBalancerSpec, address string) (Step, bool) {
 	what := want.Labels[KeyRole] + " load balancer in " + want.Location
 	lb, ok := st.LoadBalancerIn(Role(want.Labels[KeyRole]), want.Location)
@@ -475,7 +475,7 @@ func (p Plane) loadBalancerStep(st State, network Network, want LoadBalancerSpec
 			}}, true
 		}
 	}
-	if !targetsEvery(lb.TargetIPs, want.TargetIPs) {
+	if !targetsEvery(lb.TargetIPs, want.TargetIPs) || want.TargetSelector != "" && !p.selectsAServer(st, want.TargetSelector) {
 		return Step{}, false
 	}
 	for _, sel := range lb.TargetSelectors {
@@ -486,6 +486,16 @@ func (p Plane) loadBalancerStep(st State, network Network, want LoadBalancerSpec
 		}
 	}
 	return Step{}, false
+}
+
+// selectsAServer reports whether selector is the selector of a role some server of the cluster holds.
+func (p Plane) selectsAServer(st State, selector string) bool {
+	for role, servers := range st.Servers {
+		if len(servers) > 0 && p.RoleSelector(role) == selector {
+			return true
+		}
+	}
+	return false
 }
 
 func targetsEvery(have, want []string) bool {

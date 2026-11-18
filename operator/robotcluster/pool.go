@@ -10,13 +10,16 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mitstack-eu/block-kit/contract"
 	"github.com/mitstack-eu/block-kit/handler"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
+	"github.com/mitstack-eu/talos-cluster-kit/nodeconfig"
 	"github.com/mitstack-eu/talos-cluster-kit/operator"
 	"github.com/mitstack-eu/talos-cluster-kit/pools"
 	"github.com/mitstack-eu/talos-cluster-kit/scaling"
+	"github.com/mitstack-eu/talos-cluster-kit/topology"
 )
 
 const (
@@ -27,6 +30,10 @@ const (
 // CauseHeldForSteady is the resource-health cause of a pool that holds while pods wait whose placement refuses every
 // burst member, which only a steady member takes.
 const CauseHeldForSteady = "the Cloud pool holds while pods wait whose placement refuses every burst member; raise cloudPoolMin so a steady member takes them"
+
+// CauseLabellerFailed is the resource-health cause of a pool whose node labeller's newest finished run failed, with the
+// run's last line, which names a pod a disruption budget holds on a burst member and the budget, as its detail.
+const CauseLabellerFailed = "the node labeller's newest run failed, so a pod whose placement refuses every burst member may still run on one"
 
 func readCloudPool(d contract.Desired) (pools.CloudPool, error) {
 	parsed, err := pools.Parse(d.Params)
@@ -195,8 +202,8 @@ func (c convergence) scaling(ctx context.Context) (scaling.Decision, error) {
 	return scaling.Decide(pool, c.state.Servers[pools.RoleCloudWorker], reads)
 }
 
-// poolHold names a pool that holds while pods wait for a node, at its maximum or for want of a steady member, the
-// cluster resource's health cause.
+// poolHold names a pool that holds while pods wait for a node, at its maximum or for want of a steady member, or whose
+// node labeller's newest run failed, the cluster resource's health cause.
 func poolHold(ctx context.Context, d contract.Desired, st controlplane.State, reports *GatewayReports) (cause, detail string, err error) {
 	pool, err := readCloudPool(d)
 	if err != nil || !pool.Scales() {
@@ -216,7 +223,16 @@ func poolHold(ctx context.Context, d contract.Desired, st controlplane.State, re
 	case decision.Detail != "" && decision.Remove == nil && decision.Want <= len(members):
 		return CauseHeldForSteady, decision.Detail, nil
 	}
-	return "", "", nil
+	newest, err := reports.ReadReport(ctx, time.Time{})
+	if err != nil || newest == nil {
+		return "", "", err
+	}
+	failure, err := newest.ScheduledFailure(nodeconfig.TalosAPINamespace, topology.FieldManager)
+	if err != nil || failure == "" {
+		return "", "", err
+	}
+	lines := strings.Split(strings.TrimRight(failure, "\n"), "\n")
+	return CauseLabellerFailed, lines[len(lines)-1], nil
 }
 
 func describeCreations(specs []controlplane.ServerSpec) string {

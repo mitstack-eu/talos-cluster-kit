@@ -740,8 +740,11 @@ label-nodes: pod argocd/argocd-server-0 stays on burst node fsn1-3 until a later
 
 The node report keeps the last 256 bytes of a failed kit Job's log, and
 `report.Read.ScheduledFailure` reads that line back from the newest finished
-run of a CronJob. A run that succeeded after it clears it. A pod that has left
-before its eviction counts as moved.
+run of a CronJob. A run that succeeded after it clears it. While the newest
+finished run failed, the robot cluster module shows
+`robotcluster.CauseLabellerFailed` in the health of a cluster whose Cloud pool
+scales, with that line as the detail. A pod that has left before its eviction
+counts as moved.
 Any other refused eviction, or pods it cannot read, stops the run there, with
 every node already labelled.
 
@@ -4440,7 +4443,7 @@ describes.
 | Lifecycle | Answers each call mitstack makes to the operator. `Ensure` builds or upgrades the cluster one step per call. `EnsureOwning` does the same and also returns the block's own secrets the call minted, the values mitstack keeps for the block such as the gateway CA's key. `EnsureResourcesOwning` also lists the resources the call created. `Observe` reads the whole cluster, `Observers` and `TypeObservers` read one resource by its name or by its type, and `Delete` tears the cluster down | `New`, `Config`, `Cluster.Ensure`, `Cluster.EnsureOwning`, `Cluster.EnsureResourcesOwning`, `Cluster.Observe`, `Cluster.Observers`, `Cluster.TypeObservers`, `Cluster.Delete` |
 | Control plane and gateways | Builds the one or three Cloud nodes the request's size names and the gateways in front of them through the kit's `controlplane` package, and reads each gateway's newest report. A gateway is the Cloud server in each node's location that the nodes route out through and pull their images from | `Cluster.NewPlane`, `Cluster.PlaneFor`, `Cluster.WithGateways`, `GatewayReports`, `NewGatewayReports`, `GuardRemoval` |
 | Robot worker | Refuses a Robot server that is missing, cancelled, outside the cluster's locations or named for another subscription, before anything is written. It then joins the server to the cluster's network over a vSwitch, Hetzner's private link between Robot and Cloud servers, sets its firewall, and runs the install `Config` names in the background | `RobotName`, `Worker`, `WorkerInstall`, `WorkerFirewall`, `WorkerFirewallFor`, `HoldsWorkerRules`, `WaitOutRobotLimit`, `Cluster.JobRunning`, `Cluster.StopJob` |
-| Cloud pool and node replace | Scales the pool of Cloud workers through the kit's `pools` package, and names the control-plane nodes and Cloud workers an upgrade's request asks to replace that the cluster runs. Before it scales, it relabels each member `pools.Reclassify` names, so the pool again holds its minimum of steady members, and the labeller carries the change to the nodes at the next release | `MemberName`, `Located`, `Cluster.PlanReplacements`, `CauseHeldForSteady` |
+| Cloud pool and node replace | Scales the pool of Cloud workers through the kit's `pools` package, and names the control-plane nodes and Cloud workers an upgrade's request asks to replace that the cluster runs. Before it scales, it relabels each member `pools.Reclassify` names, so the pool again holds its minimum of steady members, and the labeller carries the change to the nodes at the next release. It names in the cluster's health a hold for pods only a steady member takes, and a failed labeller run | `MemberName`, `Located`, `Cluster.PlanReplacements`, `CauseHeldForSteady`, `CauseLabellerFailed` |
 | Rollout | Writes a release's components to the cluster repository and reads them back from the cluster's node report. It keeps the blob SHA of each file a release renders, the hash Git names a file's content by, so each release is rendered once. `Rendering.Blobs` gives those hashes | `ReleaseFor`, `Cluster.RenderingOf`, `Rendering.Blobs` |
 | Hosting | For the cluster that hosts mitstack itself, commits the keys that recover the cluster's OpenBao store and its sealed secrets to its repository. Each is encrypted with OpenPGP to the owner's public key, so only the owner's private key opens it. It also creates the two deploy keys that repository is read and written with | `HostsPlatform`, `EncryptTo`, `DeployKey` |
 

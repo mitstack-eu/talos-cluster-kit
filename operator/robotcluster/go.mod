@@ -5,8 +5,8 @@ go 1.26.10
 require (
 	github.com/ProtonMail/go-crypto v1.4.1
 	github.com/mitstack-eu/block-kit v0.76.0
-	github.com/mitstack-eu/talos-cluster-kit v0.91.0
-	github.com/mitstack-eu/talos-cluster-kit/operator v0.91.0
+	github.com/mitstack-eu/talos-cluster-kit v0.94.0
+	github.com/mitstack-eu/talos-cluster-kit/operator v0.94.0
 	github.com/stretchr/testify v1.12.1
 	golang.org/x/crypto v0.59.0
 )

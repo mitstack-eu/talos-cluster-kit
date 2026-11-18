@@ -35,6 +35,14 @@ case "$1 $2" in
 esac
 `
 
+// fakeCurl answers FAKE_ANSWER, or a dry-run eviction of FAKE_REFUSED as the API does one a disruption budget refuses.
+const fakeCurl = `
+[ -z "${FAKE_ANSWER:-}" ] || { printf '%s' "$FAKE_ANSWER"; exit; }
+case "${*: -1}" in "https://10.96.0.1:443/api/v1/namespaces/argocd/pods/${FAKE_REFUSED:-}/eviction?dryRun=All") cat testdata/eviction-429.json ;; esac
+`
+
+const budgetRefusal = "Error from server (TooManyRequests): Cannot evict pod as it would violate the pod's disruption budget."
+
 var shop = topology.Inputs{
 	Region:     "eu-central",
 	Nodes:      []topology.Node{{Name: "shop-sub-0123-node-fsn1", Zone: "fsn1"}, {Name: "shop-sub-0123-node-nbg1", Zone: "nbg1"}},
@@ -72,12 +80,15 @@ func runLabeller(t *testing.T, in topology.Inputs, env ...string) (*testutil.Too
 		"the CronJob runs the labeller the tools image carries")
 	script, err := os.ReadFile(filepath.Join("scripts", "label-nodes.sh"))
 	require.NoError(t, err)
-	fakes := testutil.NewTools(t, map[string]string{"kubectl": fakeKubectl})
+	fakes := testutil.NewTools(t, map[string]string{"kubectl": fakeKubectl, "curl": fakeCurl})
 	fakes.AddImageJq(t)
 	vars := []string{}
 	for name, value := range testutil.ContainerEnv(t, c) {
 		vars = append(vars, name+"="+value)
 	}
+	account := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(account, "token"), []byte("token-of-the-labeller"), 0o600))
+	vars = append(vars, "SERVICE_ACCOUNT_DIR="+account, "KUBERNETES_SERVICE_HOST=10.96.0.1", "KUBERNETES_SERVICE_PORT=443")
 	out, err := testutil.RunBash(t, string(script), fakes.Env(append(vars, env...)...))
 	return fakes, out, err
 }
@@ -126,26 +137,40 @@ func TestManifests_LabelsABurstNodeBurstThenEvictsEachPodOnItWhosePlacementRefus
 
 func TestManifests_ARefusedEvictionFailsTheRun(t *testing.T) {
 	cases := []struct {
-		name, refusal string
-		rest          bool
+		name, refusal, answer, says string
+		rest                        bool
 	}{
-		{"a pod its disruption budget holds is named with the budget's refusal, the rest are evicted and the run fails",
-			"Error from server (TooManyRequests): Cannot evict pod as it would violate the pod's disruption budget.", true},
-		{"any other refusal fails the run before the next eviction", "Error from server (Forbidden): pods is forbidden", false},
+		{"a pod its disruption budget holds is named with the budget's refusal, the rest are evicted and the run fails", budgetRefusal, "", "", true},
+		{"a dry-run eviction the API refuses fails the run on the API's answer before the next eviction", budgetRefusal,
+			`{"kind":"Status","status":"Failure","message":"pods/eviction is forbidden","code":403}`, "answered 403: pods/eviction is forbidden", false},
+		{"any other refusal fails the run before the next eviction", "Error from server (Forbidden): pods is forbidden", "", "", false},
 		{"a NotFound that names no pod fails the run before the next eviction",
-			"Error from server (NotFound): the server could not find the requested resource", false},
+			"Error from server (NotFound): the server could not find the requested resource", "", "", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tools, out, err := runLabeller(t, withBurst, "FAKE_JOINED=shop-sub-0123-node-nbg1", "FAKE_PODS="+onBurst,
-				"FAKE_REFUSED=argocd-server-0", "FAKE_EVICT_ERR="+tc.refusal)
+				"FAKE_REFUSED=argocd-server-0", "FAKE_EVICT_ERR="+tc.refusal, "FAKE_ANSWER="+tc.answer)
 
 			require.Error(t, err, out)
 			assert.Contains(t, out, "argocd/argocd-server-0")
 			assert.Contains(t, out, tc.refusal)
+			assert.Contains(t, out, tc.says)
 			assert.Equal(t, tc.rest, slices.Contains(tools.Calls(t), eviction("logs", "loki-0")), "whether the next pod is evicted")
 		})
 	}
+}
+
+func TestManifests_ARunABudgetHoldsAPodInEndsOnALineTheReportKeepsNamingThePodItsBurstNodeAndTheBudget(t *testing.T) {
+	tools, out, err := runLabeller(t, withBurst, "FAKE_JOINED=shop-sub-0123-node-nbg1", "FAKE_PODS="+onBurst,
+		"FAKE_REFUSED=argocd-server-0", "FAKE_EVICT_ERR="+budgetRefusal)
+
+	require.Error(t, err, out)
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	last := lines[len(lines)-1]
+	assert.Regexp(t, `argocd/argocd-server-0 .*shop-sub-0123-node-nbg1 .*The disruption budget argocd-server needs`, last, "the run's last line")
+	assert.Less(t, len(last), 256, "the line whose last 256 bytes the node report keeps of a failed run")
+	assert.Contains(t, strings.Join(tools.Calls(t), "\n"), "Authorization: Bearer token-of-the-labeller", "the dry-run eviction's credential")
 }
 
 func TestManifests_ARefusedEvictionLeavesNoLaterNodeUnlabelled(t *testing.T) {
@@ -227,6 +252,7 @@ func TestManifests_RunsTheToolsImageOnAControlPlaneNodeAsANonRootUserWithAReadOn
 
 	assert.Equal(t, "mitstack-node", testutil.Field(t, cronJob, "metadata", "namespace"))
 	assert.Equal(t, "Forbid", testutil.Field(t, cronJob, "spec", "concurrencyPolicy"))
+	assert.Equal(t, "talos-cluster-kit", testutil.Field(t, cronJob, "spec", "jobTemplate", "metadata", "labels", "mitstack.dev/rendered-by"))
 	assert.Equal(t, testutil.ToolsImage, testutil.Field(t, c, "image"))
 	assert.Equal(t, "mitstack-node-topology", testutil.Field(t, pod, "serviceAccountName"))
 	assert.Equal(t, map[string]any{"node-role.kubernetes.io/control-plane": ""}, testutil.Field(t, pod, "nodeSelector"))
@@ -237,6 +263,7 @@ func TestManifests_RunsTheToolsImageOnAControlPlaneNodeAsANonRootUserWithAReadOn
 		"TOPOLOGY_NODES":         "shop-sub-0123-node-fsn1=fsn1 shop-sub-0123-node-nbg1=nbg1",
 		"TOPOLOGY_REGION":        "eu-central",
 		"TOPOLOGY_FIELD_MANAGER": topology.FieldManager,
+		"SERVICE_ACCOUNT_DIR":    "/var/run/secrets/kubernetes.io/serviceaccount",
 		"HOME":                   "/tmp",
 	}, testutil.ContainerEnv(t, c), "no burst node to name")
 	assert.Equal(t, "shop-sub-0123-node-nbg1", testutil.ContainerEnv(t, container(t, render(t, withBurst)))["TOPOLOGY_BURST_NODES"])

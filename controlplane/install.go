@@ -56,7 +56,7 @@ func (p Plane) install(ctx context.Context, s site) error {
 	}
 	orderable := &OrderableTypes{API: p.API}
 	var specs []ServerSpec
-	for _, loc := range Locations {
+	for _, loc := range p.NodeLocations() {
 		spec, err := p.gatewaySpec(ctx, orderable, loc, inst.gateways[loc], s, inst.enrolmentDigest, inst.issuerBucket, inst.listDigest)
 		if err != nil {
 			return err
@@ -93,7 +93,7 @@ func (p Plane) install(ctx context.Context, s site) error {
 			return p.rollBackInstall(ctx, err)
 		}
 	}
-	for _, loc := range Locations {
+	for _, loc := range p.NodeLocations() {
 		p.notify(ctx, "%s", inst.gateways[loc].certificate.event)
 	}
 	return nil
@@ -144,7 +144,7 @@ func (p Plane) render(ctx context.Context, apiAddr, ingressAddr netip.Addr, now 
 	if err != nil {
 		return installation{}, err
 	}
-	gatewayCA, err := gateway.NewCA(now, gatewayCAValidity, gatewayAddrs())
+	gatewayCA, err := gateway.NewCA(now, gatewayCAValidity, p.gatewayAddrs())
 	if err != nil {
 		return installation{}, err
 	}
@@ -195,7 +195,7 @@ func (p Plane) renderNodes(ctx context.Context, apiAddr netip.Addr, now time.Tim
 		Secrets:              secrets,
 		Network:              netip.MustParsePrefix(NetworkIPRange),
 		APIAddresses:         []netip.Addr{apiAddr},
-		Gateways:             gatewayAddrs(),
+		Gateways:             p.gatewayAddrs(),
 		GatewayCA:            p.GatewayCA.Cert,
 		ServiceAccountIssuer: issuerURL(bucket, p.Subscription),
 		AppsOnWorkers:        p.AppsOnWorkers,
@@ -246,7 +246,7 @@ func (p Plane) renderGateways(inst *installation, set components.Set, apiAddr, i
 		return err
 	}
 	bootstrap := &firstNodeBootstrap{talosconfig: talosconfig, deadline: now.Add(adminTalosconfigTTL)}
-	for _, loc := range Locations {
+	for _, loc := range p.NodeLocations() {
 		if loc != GatewayLocation {
 			bootstrap = nil
 		}

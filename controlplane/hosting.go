@@ -61,8 +61,8 @@ func (p Plane) hostingSet(ctx context.Context, now time.Time) (components.Set, e
 	if err != nil {
 		return components.Set{}, err
 	}
-	nodes := make([]string, len(Locations))
-	for i, loc := range Locations {
+	nodes := make([]string, len(p.NodeLocations()))
+	for i, loc := range p.NodeLocations() {
 		nodes[i] = p.LocatedName(RoleNode, loc)
 	}
 	return components.Hosting(components.HostingInputs{

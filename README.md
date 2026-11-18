@@ -57,7 +57,7 @@ the order a block uses them.
 | `topology` | Renders the topology labeller, a CronJob that labels each Cloud node with its zone and region, and holds the two label names | `Manifests`, `Labels`, `ZoneLabel`, `RegionLabel`, `FieldManager` |
 | `openbaoinit` | Renders OpenBao's init Job, which the hosting set carries. On a hosting cluster, a cluster that runs mitstack's own control plane, it initialises OpenBao once, commits the root token and recovery key to the cluster repository as PGP messages, then writes the policy that External Secrets reads with in each slice, the namespace a block gives one app | `Manifests`, `Inputs`, `InitFile` |
 | `rollout` | Gives a running cluster a release's component set, the manifests one kit release carries; [How a running cluster takes a release's components](#how-a-running-cluster-takes-a-releases-components) defines each term. A block commits the set's files to the cluster repository, where Argo CD applies each component through an Application of its own, which is Argo CD's record of one repository directory it keeps applied to the cluster. Files that an earlier release committed and this release no longer states are retired, which means deleted. Each component's sync runs a handover Job, which has Talos give up the fields it set when it created the component's objects, so they hold only what the release states. After OpenBao's sync, OpenBao's rollout Job moves each member onto the StatefulSet's new revision, as [How OpenBao's members take a new revision](#how-openbaos-members-take-a-new-revision) explains, which also says what a member, a StatefulSet and a revision are. The read-back then checks from the node report that the cluster runs each component as the release states it | `Release.Files`, `Release.Retired`, `Release.ReadBack`, `Release.ToolsImage`, `LegacyFiles` |
-| `controlplane` | Builds and deletes a Talos control plane on Hetzner Cloud: a network, a firewall, a gateway in each of `fsn1`, `nbg1` and `hel1`, a builder that makes the cluster's own snapshot, a node in each of `fsn1`, `nbg1` and `hel1`, and an API and an ingress load balancer. Each call reads the resources by their labels and takes the one change still missing. A refusal is a `*Refusal` with a `Class` and a `Message`, which the block answers as its own framework's refusal | `Plane`, `Plane.Read`, `Plane.EnsureNetwork`, `Plane.NextStep`, `Plane.Problems`, `Plane.Unhealthy`, `Plane.Outputs`, `State.IngressAddresses`, `Plane.Release`, `ErrNoIngressAddress`, `Plane.GatewaysAwaitRelease`, `Plane.GatewaysServeRelease`, `Plane.Delete`, `NewAPI`, `Refusal`, `TopologyLabels`, `GatewayUpgradeBound`, `GatewayCertRenewBefore`, `KeyGatewayCertExpires` |
+| `controlplane` | Builds and deletes a Talos control plane on Hetzner Cloud: a network, a firewall, a builder that makes the cluster's own snapshot, one or three nodes with a gateway beside each, and an API and an ingress load balancer. Three nodes run in `fsn1`, `nbg1` and `hel1`, and one node runs in `fsn1`. Each call reads the resources by their labels and takes the one change still missing. A refusal is a `*Refusal` with a `Class` and a `Message`, which the block answers as its own framework's refusal | `Plane`, `Plane.NodeLocations`, `DefaultSize`, `KeySize`, `Plane.Read`, `Plane.EnsureNetwork`, `Plane.NextStep`, `Plane.Problems`, `Plane.Unhealthy`, `Plane.Outputs`, `State.IngressAddresses`, `Plane.Release`, `ErrNoIngressAddress`, `Plane.GatewaysAwaitRelease`, `Plane.GatewaysServeRelease`, `Plane.Delete`, `NewAPI`, `Refusal`, `TopologyLabels`, `GatewayUpgradeBound`, `GatewayCertRenewBefore`, `KeyGatewayCertExpires` |
 | `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image carries and the gateway copies out of it, `tools/jq.env`, which pins the tools image's jq, and `tools/kube-bench-talos.yaml`, the settings kube-bench reads over its own on Talos. It names the tools image a release published and the directory in that image that holds the node report's, its outside probe's, the labeller's, the cluster tokens', the handover's and OpenBao's rollout's scripts, and where in that image each served manifest sits | `Env`, `Pin`, `Image`, `ScriptDir`, `ManifestPath` |
 | `redundant` | Carries a removal's redundant set, each member with its reading, to the guard the block passes, block-kit's `redundancy.Set.AllowRemoval`, which this module does not import | `Set`, `Guard`, `Held` |
 | `scaling` | Decides from the node reports alone how a Cloud pool whose minimum is below its maximum follows its cluster's load, so only the block's operator, which holds the Hetzner token, changes the pool. [How a Cloud pool scales with the load](#how-a-cloud-pool-scales-with-the-load) gives the rules | `Decide`, `Decision`, `CauseAtMaximum` |
@@ -133,8 +133,8 @@ node without `VSwitch` runs Talos's default DHCP on every link.
 ## How a block drives the Cloud control plane
 
 The Cloud control plane is the part of a cluster that runs on Hetzner Cloud
-servers: a Talos node in each of `fsn1`, `nbg1` and `hel1`, which run
-Kubernetes itself, and a gateway in each location, a Cloud server that gives
+servers: one or three Talos nodes, which run Kubernetes itself, and a gateway
+in each node's location, a Cloud server that gives
 the nodes their only route out and serves them their images and manifests. The plane builds
 the nodes from the cluster's own snapshot, a Hetzner disk image that a
 short-lived builder server writes and that holds every key of the cluster.
@@ -156,6 +156,7 @@ plane := controlplane.Plane{
 	Block:             "hcloud-hrobot-talos-cluster",
 	Subscription:      "sub_0123456789ab",
 	AppName:           "shop",
+	Size:              3,                         // 1 or 3 control-plane nodes; 0 builds 3
 	ServerTypes:       []string{"cx23", "cpx22"}, // each node and builder takes the first its location can order
 	Boundary:          "mitstack-hcloud-hrobot-talos-cluster", // separates the parts of the gateway's user data
 	PlatformURL:       "https://api.mitstack.dev",             // where every node registers and reports
@@ -187,8 +188,9 @@ none of the list in a location, the call refuses with the class
 
 A call then runs in this order:
 
-1. `plane.Refusal(st)` returns a `*Refusal` when the labelled resources are
-   ambiguous, such as two gateways. The block stops and answers it as its
+1. `plane.Refusal(st)` returns a `*Refusal` when the plane's size is one it
+   cannot build or differs from the size the cluster was subscribed with, or
+   when the labelled resources are ambiguous, such as two gateways. The block stops and answers it as its
    framework's refusal, with the `Class` and `Message` it carries, before any
    change.
 2. `plane.EnsureNetwork(ctx, st)` creates the network when none exists and
@@ -210,6 +212,36 @@ so a block that adds workers renders them there with
 `nodeconfig.RenderWorker`. When `Installed` returns an error, the plane
 deletes the gateways and builders it just created, and a later call starts the
 install again.
+
+### How many control-plane nodes a plane runs
+
+`Plane.Size` is how many control-plane nodes the plane runs, 1 or 3, and a
+plane given none runs 3, as every cluster built before the size was a choice
+does. Three nodes keep etcd, Kubernetes' store, serving while one is down,
+since two of the three members still agree. One node holds one etcd member,
+so a lost node stops the cluster until a replacement comes back. The node
+replace in [How a control-plane node is replaced](#how-a-control-plane-node-is-replaced)
+refuses that replacement, since the redundancy guard finds no other member
+serving.
+
+`Plane.NodeLocations` gives the locations the plane builds in:
+
+| Size | Nodes | Gateways | What else changes |
+|---|---|---|---|
+| 1 | One in `fsn1` | One in `fsn1`, at `10.0.0.2` | Every node, the node report and the gateway CA name the one gateway. CoreDNS keeps the Deployment Talos created, and the labeller names the one node |
+| 3 | One in each of `fsn1`, `nbg1` and `hel1` | One beside each node | Nothing: the plane is the one a cluster built before the size was a choice runs |
+
+The network records the size at its creation under the label
+`mitstack.dev/control-plane-size`, and a network created before the size was
+a choice reads as 3. `Plane.Refusal` refuses a size other than the recorded
+one with the class `control-plane-size-fixed`, naming the recorded size, so
+an upgrade never rebuilds a cluster in another shape. It refuses a size other
+than 1 or 3 with `invalid-param`, and one node for a plane that hosts the
+platform, since OpenBao there runs a member on each of three nodes.
+
+A block reads the size from its request with the operator module's
+`operator.ControlPlaneSize`, which the section on
+[the operator module](#how-an-operator-shares-its-start-up-and-repository-code) describes.
 
 ### Which public address a load balancer holds
 
@@ -4118,7 +4150,7 @@ no release of the kit itself.
 
 | Package | What it does | Main entry points |
 |---|---|---|
-| `operator` | Starts the operator. It refuses to start without `MITSTACK_JWKS_URL`, the address where mitstack publishes the keys it signs each request with. It listens on `LISTEN_ADDR` or port 8080, keeps the standard logger's last 500 lines for `/logs`, the route that serves the operator's recent log lines, and serves block-kit's lifecycle handler on the routes the operator passes. It also refuses a request without a Hetzner token or an app name, or one handled by an operator built against an unreleased kit, lists every secret a request carries so a log line can mask it, and gives an observation of state Unknown with its reason. It reads the newest node report a cluster sent after a given time, and the nodes that report names with whether each is Ready | `Main`, `ReadSettings`, `NewServer`, `HetznerToken`, `AppName`, `RefuseUnreleasedTools`, `RequestSecrets`, `Unknown`, `RefusalDetail`, `ObserverFunc`, `NewestReport`, `NewestReportNodes`, `ReportedNode` |
+| `operator` | Starts the operator. It refuses to start without `MITSTACK_JWKS_URL`, the address where mitstack publishes the keys it signs each request with. It listens on `LISTEN_ADDR` or port 8080, keeps the standard logger's last 500 lines for `/logs`, the route that serves the operator's recent log lines, and serves block-kit's lifecycle handler on the routes the operator passes. It also refuses a request without a Hetzner token or an app name, or one handled by an operator built against an unreleased kit, lists every secret a request carries so a log line can mask it, and gives an observation of state Unknown with its reason. It reads the newest node report a cluster sent after a given time, and the nodes that report names with whether each is Ready. It reads a request's `controlPlaneSize` as 1 or 3, with 3 when the request names none, and refuses any other value, one server for a cluster that hosts the platform until an ADR 0125 restore drill has passed for it, and a size other than the one a block's manifest lists a server in each location for | `Main`, `ReadSettings`, `NewServer`, `HetznerToken`, `AppName`, `ControlPlaneSize`, `ControlPlaneSizes`, `DefaultControlPlaneSize`, `ParamControlPlaneSize`, `RefuseUndeclaredSize`, `RefuseUnreleasedTools`, `RequestSecrets`, `Unknown`, `RefusalDetail`, `ObserverFunc`, `NewestReport`, `NewestReportNodes`, `ReportedNode` |
 | `operator/clusterrepo` | Handles the private repository the cluster's Argo CD syncs from, named for the app as `<app>-cluster`. It dials GitHub, taking the API host the request names only when block-kit's `ghapi.Base` allows it: `api.github.com`, or a public host the operator's own environment lists in `MITSTACK_GITHUB_API_HOSTS`. It refuses a request it cannot act on before any call, a request that names no app among them. It reads whether the repository carries the subscription's mark, creates, marks and seeds it, deletes it, and observes it and its seed | `Dial`, `DialApp`, `NewClient`, `For`, `Mark`, `CarriesMark`, `Access.Read`, `Access.Ensure`, `Access.RefuseUnmarked`, `Access.Delete`, `Observe`, `RepositoryObserver`, `SeedObserver` |
 
 The view below shows the operator module's two packages and what each Talos

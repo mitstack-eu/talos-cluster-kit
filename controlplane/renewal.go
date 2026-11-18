@@ -88,7 +88,7 @@ func (p Plane) dueForRenewal(ctx context.Context, st State, network Network) ([]
 		return nil, err
 	}
 	var due []Server
-	for _, loc := range Locations {
+	for _, loc := range p.NodeLocations() {
 		gw, ok := st.GatewayIn(loc)
 		if !ok || !p.reachedRenewal(gw) {
 			continue

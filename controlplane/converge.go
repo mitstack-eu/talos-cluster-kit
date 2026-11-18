@@ -7,11 +7,15 @@ import (
 	"maps"
 	"net/netip"
 	"slices"
+	"strconv"
 	"strings"
 )
 
 // Refusal refuses, before any change, a plane it cannot act on unambiguously.
 func (p Plane) Refusal(st State) error {
+	if err := p.sizeRefusal(st); err != nil {
+		return err
+	}
 	if dups := st.Duplicates(); len(dups) > 0 {
 		return refuse("ambiguous-cluster",
 			"the cluster is ambiguous, so nothing was changed: %s; delete the extra ones from the Hetzner project and retry", strings.Join(dups, "; "))
@@ -28,10 +32,12 @@ func (p Plane) EnsureNetwork(ctx context.Context, st State) (Network, error) {
 	if n, ok := st.Network(); ok {
 		return n, nil
 	}
+	labels := p.Labels("network")
+	labels[KeySize] = strconv.Itoa(p.size())
 	n, err := p.API.CreateNetwork(ctx, NetworkSpec{
 		Name:    p.Name("network"),
 		IPRange: NetworkIPRange,
-		Labels:  p.Labels("network"),
+		Labels:  labels,
 		Subnet:  Subnet{NetworkZone: NetworkZone, IPRange: subnetIPRange},
 		Routes:  []Route{{Destination: defaultRoute, Gateway: GatewayAddress}},
 	})
@@ -348,7 +354,7 @@ func (p Plane) missingNodeStep(st State, s site, snap Snapshot) (Step, bool, err
 	if snap.Status != SnapshotAvailable {
 		return Step{}, false, nil
 	}
-	for _, loc := range Locations {
+	for _, loc := range p.NodeLocations() {
 		if _, ok := st.NodeIn(loc); !ok {
 			return Step{"create the node in " + loc + " from the snapshot", func(ctx context.Context) error {
 				return p.createNode(ctx, s, snap, loc)

@@ -175,7 +175,7 @@ func (p Plane) recordReplacements(ctx context.Context, st State, _ Network, rec 
 		if !ok {
 			return refuse("node-replacement-unknown",
 				"the upgrade names the node in %q to replace, and the cluster runs no single node there, so nothing was changed; it runs one in each of %s",
-				loc, strings.Join(Locations, ", "))
+				loc, strings.Join(p.NodeLocations(), ", "))
 		}
 		if _, recorded := rec.labels[KeyNodeReplace+loc]; recorded {
 			continue

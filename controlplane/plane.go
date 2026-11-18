@@ -1,13 +1,12 @@
-// Package controlplane builds and deletes a Talos cluster's control plane on Hetzner Cloud: three nodes booted from
-// the cluster's own snapshot, a gateway in each location, two load balancers, a firewall and a network, all found by
-// their labels.
+// Package controlplane builds and deletes a Talos cluster's control plane on Hetzner Cloud: one or three nodes booted
+// from the cluster's own snapshot, a gateway in each node's location, two load balancers, a firewall and a network, all
+// found by their labels.
 package controlplane
 
 import (
 	"context"
 	"fmt"
 	"log"
-	"net/netip"
 	"time"
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
@@ -25,6 +24,8 @@ type Plane struct {
 	Block        string
 	Subscription string
 	AppName      string
+	// Size is how many control-plane nodes the plane runs, 1 or 3, the first Size of Locations; zero runs DefaultSize.
+	Size int
 	// ServerTypes are the control-plane nodes' and builders' types by preference, so one sold-out type does not stop
 	// a node: each server takes the first its location can order when it is created.
 	ServerTypes []string
@@ -142,7 +143,8 @@ const (
 // GatewayServerTypes are the gateway's types by preference, so one sold-out type does not stop a cluster.
 var GatewayServerTypes = []string{"cx23", "cpx22"}
 
-// Locations hold a node and a gateway each; the first also holds the builder and both load balancers.
+// Locations are where a plane's nodes run, a node and a gateway in each of the first Size; the first also holds the
+// builder and both load balancers.
 var Locations = []string{"fsn1", "nbg1", "hel1"}
 
 // GatewayLocation is where the first gateway, the builder and both load balancers run.
@@ -151,14 +153,6 @@ var GatewayLocation = Locations[0]
 // GatewayAddresses fix each location's gateway, since a replacement takes the address every node names, with the others
 // high in the subnet, above any address Hetzner gives a server joining with none.
 var GatewayAddresses = map[string]string{"fsn1": GatewayAddress, "nbg1": "10.0.0.248", "hel1": "10.0.0.249"}
-
-func gatewayAddrs() []netip.Addr {
-	out := make([]netip.Addr, 0, len(Locations))
-	for _, loc := range Locations {
-		out = append(out, netip.MustParseAddr(GatewayAddresses[loc]))
-	}
-	return out
-}
 
 func (p Plane) notify(ctx context.Context, format string, args ...any) {
 	if p.Notify != nil {

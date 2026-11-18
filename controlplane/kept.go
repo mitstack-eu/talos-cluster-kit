@@ -203,7 +203,7 @@ func (p Plane) rebuildWait(ctx context.Context, network Network, loc string) (ke
 // keptListStep refuses an upgrade's replacement of a gateway, before any gateway is deleted, while the newest node
 // report lists no image a replacement could keep.
 func (p Plane) keptListStep(ctx context.Context, st State, s site) (Step, bool, error) {
-	if st.lacksGateway() {
+	if st.lacksGateway(p.NodeLocations()) {
 		return Step{}, false, nil
 	}
 	r, err := p.replacement(st, s.network)
@@ -227,8 +227,8 @@ func (p Plane) keptImagesUnread(ctx context.Context) (string, error) {
 	return "each replacement keeps the images the cluster still runs and " + why, nil
 }
 
-func (st State) lacksGateway() bool {
-	for _, loc := range Locations {
+func (st State) lacksGateway(locations []string) bool {
+	for _, loc := range locations {
 		if _, ok := st.GatewayIn(loc); !ok {
 			return true
 		}

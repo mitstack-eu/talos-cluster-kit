@@ -727,9 +727,21 @@ pod that must not run there, meaning each of its required node affinity terms
 excludes the burst label. It leaves a pod that is already leaving or has
 finished. An eviction is the request a drain makes, so it honours the pod's
 disruption budget, the limit a workload sets on how many of its pods may be
-down at once. A budget that holds a pod is
-named in the run's output, the rest are evicted, and the run fails so that the
-next one tries again. A pod that has left before its eviction counts as moved.
+down at once. When a budget holds a pod, the labeller still evicts the rest,
+and the run fails so that the next one tries again. kubectl's refusal of the
+eviction names no budget, so the labeller asks the API again with a dry-run
+eviction, which changes nothing and whose answer names the budget. The run's
+last line names the first pod a budget held, its burst member and that answer,
+as in:
+
+```text
+label-nodes: pod argocd/argocd-server-0 stays on burst node fsn1-3 until a later run evicts it: The disruption budget argocd-server needs 1 healthy pods and has 1 currently
+```
+
+The node report keeps the last 256 bytes of a failed kit Job's log, and
+`report.Read.ScheduledFailure` reads that line back from the newest finished
+run of a CronJob. A run that succeeded after it clears it. A pod that has left
+before its eviction counts as moved.
 Any other refused eviction, or pods it cannot read, stops the run there, with
 every node already labelled.
 

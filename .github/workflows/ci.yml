@@ -6,7 +6,9 @@
 # a gateway's preparation copies its tools and served manifests.
 # Once all of them pass on a push to main, the release job releases the
 # version .github/version names, unless that tag exists already, tags the
-# operator module under operator/ at the same commit as operator/<version>,
+# operator module under operator/ at the same commit as operator/<version>
+# and the robot cluster module under operator/robotcluster/ as
+# operator/robotcluster/<version>,
 # and the record delivery job records the push's board keys on Plain. A block
 # takes a change only by requiring a newer tag in its go.mod.
 # A release pushes the tools image to the public package
@@ -64,6 +66,17 @@ jobs:
       - name: go test the operator module
         if: ${{ !cancelled() }}
         working-directory: operator
+        run: go test -race ./...
+
+      # The robot cluster module is nested in the operator module, whose ./... never reaches it either.
+      - name: go vet the robot cluster module
+        if: ${{ !cancelled() }}
+        working-directory: operator/robotcluster
+        run: go vet ./...
+
+      - name: go test the robot cluster module
+        if: ${{ !cancelled() }}
+        working-directory: operator/robotcluster
         run: go test -race ./...
 
       # It pulls trust-manager from quay.io into the gateway's registry image through Docker, so it runs here alone.
@@ -307,7 +320,8 @@ jobs:
             commit -q -m "$TAG: pin the tools image $REF" tools/tools.go
           git tag "$TAG"
           git tag "operator/$TAG"
-          git push --atomic origin "refs/tags/$TAG" "refs/tags/operator/$TAG"
+          git tag "operator/robotcluster/$TAG"
+          git push --atomic origin "refs/tags/$TAG" "refs/tags/operator/$TAG" "refs/tags/operator/robotcluster/$TAG"
           echo "released $TAG at $(git rev-parse HEAD), on top of $GITHUB_SHA"
 
   # A push that cuts no tag still delivers its keys, so this needs both jobs to succeed and reads no output of release.

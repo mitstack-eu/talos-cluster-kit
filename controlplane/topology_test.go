@@ -1,6 +1,6 @@
 package controlplane_test
 
-// Every Cloud node is labelled with the location it runs in, and a block's worker takes the same two labels. Each burst
+// Every Cloud node is labelled with the location it runs in, a block's worker takes the same two labels, and each burst
 // member of the Cloud pool is labelled a burst node.
 
 import (

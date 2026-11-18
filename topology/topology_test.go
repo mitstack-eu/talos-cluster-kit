@@ -132,6 +132,8 @@ func TestManifests_ARefusedEvictionFailsTheRun(t *testing.T) {
 		{"a pod its disruption budget holds is named with the budget's refusal, the rest are evicted and the run fails",
 			"Error from server (TooManyRequests): Cannot evict pod as it would violate the pod's disruption budget.", true},
 		{"any other refusal fails the run before the next eviction", "Error from server (Forbidden): pods is forbidden", false},
+		{"a NotFound that names no pod fails the run before the next eviction",
+			"Error from server (NotFound): the server could not find the requested resource", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -144,6 +146,27 @@ func TestManifests_ARefusedEvictionFailsTheRun(t *testing.T) {
 			assert.Equal(t, tc.rest, slices.Contains(tools.Calls(t), eviction("logs", "loki-0")), "whether the next pod is evicted")
 		})
 	}
+}
+
+func TestManifests_ARefusedEvictionLeavesNoLaterNodeUnlabelled(t *testing.T) {
+	burstFirst := withBurst
+	burstFirst.Nodes = []topology.Node{
+		{Name: "shop-sub-0123-node-fsn1", Zone: "fsn1", Burst: true}, {Name: "shop-sub-0123-node-nbg1", Zone: "nbg1"},
+	}
+
+	tools, out, err := runLabeller(t, burstFirst, "FAKE_JOINED=shop-sub-0123-node-fsn1 shop-sub-0123-node-nbg1",
+		"FAKE_PODS="+onBurst, "FAKE_REFUSED=argocd-server-0", "FAKE_EVICT_ERR=Error from server (Forbidden): pods is forbidden")
+
+	require.Error(t, err, out)
+	assert.Contains(t, tools.Calls(t), labelCall("shop-sub-0123-node-nbg1", "nbg1"))
+}
+
+func TestManifests_APodGoneBeforeItsEvictionCountsAsMoved(t *testing.T) {
+	tools, out, err := runLabeller(t, withBurst, "FAKE_JOINED=shop-sub-0123-node-nbg1", "FAKE_PODS="+onBurst,
+		"FAKE_REFUSED=argocd-server-0", `FAKE_EVICT_ERR=Error from server (NotFound): pods "argocd-server-0" not found`)
+
+	require.NoError(t, err, out)
+	assert.Contains(t, tools.Calls(t), eviction("logs", "loki-0"))
 }
 
 func TestManifests_FailsWhenTheBurstNodesPodsCannotBeRead(t *testing.T) {

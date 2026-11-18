@@ -29,8 +29,9 @@ func (p Plane) size() int {
 func (p Plane) NodeLocations() []string { return slices.Clone(nodeLocations[p.size()]) }
 
 func (p Plane) gatewayAddrs() []netip.Addr {
-	out := make([]netip.Addr, 0, len(p.NodeLocations()))
-	for _, loc := range p.NodeLocations() {
+	locations := p.NodeLocations()
+	out := make([]netip.Addr, 0, len(locations))
+	for _, loc := range locations {
 		out = append(out, netip.MustParseAddr(GatewayAddresses[loc]))
 	}
 	return out

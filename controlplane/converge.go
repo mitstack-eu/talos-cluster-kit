@@ -17,14 +17,18 @@ func (p Plane) Refusal(st State) error {
 		return err
 	}
 	if dups := st.Duplicates(); len(dups) > 0 {
-		return refuse("ambiguous-cluster",
-			"the cluster is ambiguous, so nothing was changed: %s; delete the extra ones from the Hetzner project and retry", strings.Join(dups, "; "))
+		return ambiguous(dups)
 	}
 	if _, ok := st.Network(); !ok && st.HasServers() {
 		return refuse("network-gone",
 			"servers carry this subscription's labels, but no network does, so nothing was changed; a new network would not hold their addresses, so unsubscribe and subscribe again to rebuild the cluster")
 	}
 	return nil
+}
+
+func ambiguous(dups []string) error {
+	return refuse("ambiguous-cluster",
+		"the cluster is ambiguous, so nothing was changed: %s; delete the extra ones from the Hetzner project and retry", strings.Join(dups, "; "))
 }
 
 // EnsureNetwork creates the network when none carries the labels, which needs no wait, so it comes before any step.

@@ -37,8 +37,7 @@ func (p Plane) gatewayAddrs() []netip.Addr {
 	return out
 }
 
-// SizeRefusal refuses a size the plane cannot build, one server for a hosting cluster with no passed OpenBao restore
-// drill, and a size other than its network recorded at subscribe, reading the state's networks and nothing else.
+// SizeRefusal judges a size from the state's networks alone, so a caller may pass a State holding nothing else.
 func (p Plane) SizeRefusal(st State) error {
 	size := p.size()
 	if _, ok := nodeLocations[size]; !ok {
@@ -47,6 +46,9 @@ func (p Plane) SizeRefusal(st State) error {
 	if size == 1 && p.Hosting != nil {
 		return refuse("restore-drill-missing",
 			"a cluster that hosts the platform runs OpenBao, whose data a single server holds alone; it runs on one server only once an ADR 0125 restore drill has passed for it, and none has, so nothing was changed")
+	}
+	if len(st.Networks) > 1 {
+		return ambiguous(st.Duplicates())
 	}
 	network, ok := st.Network()
 	if !ok {

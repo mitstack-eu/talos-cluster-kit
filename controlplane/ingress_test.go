@@ -4,6 +4,7 @@ package controlplane_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
 	"github.com/mitstack-eu/talos-cluster-kit/gateway"
 	"github.com/mitstack-eu/talos-cluster-kit/nodeconfig"
+	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 )
 
 const (
@@ -109,4 +111,29 @@ func TestPlane_AppsOnWorkersWithNoWorkerAddressIsAProblem(t *testing.T) {
 
 	assert.Contains(t, h.plane.Problems(context.Background(), h.read()),
 		"apps run on workers, but the plane names no worker address for the ingress load balancer to target")
+}
+
+// robotWorkerRecord is what a golden file holds of a plane whose apps run on a Robot worker: every step it took, both
+// load balancers it built, its problems and its detail.
+type robotWorkerRecord struct {
+	Steps    []string
+	API      controlplane.LoadBalancer
+	Ingress  controlplane.LoadBalancer
+	Problems []string
+	Detail   string
+}
+
+func TestPlane_APlaneWhoseAppsRunOnARobotWorkerBuildsAndReadsAsItsGoldenRecords(t *testing.T) {
+	h := newHarness(t, appsOnWorkers)
+
+	h.built()
+
+	_, detail := h.plane.Outputs(h.read())
+	record := robotWorkerRecord{
+		Steps: h.steps, API: h.loadBalancer(controlplane.RoleAPI), Ingress: h.loadBalancer(controlplane.RoleIngress),
+		Problems: h.plane.Problems(context.Background(), h.read()), Detail: detail,
+	}
+	got, err := json.MarshalIndent(record, "", "  ")
+	require.NoError(t, err)
+	testutil.Golden(t, "testdata/robot-worker-ingress.golden", append(got, '\n'))
 }

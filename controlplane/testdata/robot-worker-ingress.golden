@@ -1,0 +1,94 @@
+{
+  "Steps": [
+    "create the firewall",
+    "create the api load balancer in fsn1",
+    "attach the api load balancer in fsn1 to the network",
+    "disable the api load balancer in fsn1's public interface",
+    "add port 6443 to the api load balancer in fsn1",
+    "target the nodes from the api load balancer in fsn1",
+    "create the ingress load balancer in fsn1",
+    "attach the ingress load balancer in fsn1 to the network",
+    "add port 80 to the ingress load balancer in fsn1",
+    "add port 443 to the ingress load balancer in fsn1",
+    "create the gateway and the builders",
+    "target the worker at 10.0.1.2 from the ingress load balancer in fsn1",
+    "attach the gateway in fsn1 to the network at its fixed address before its first boot",
+    "attach the gateway in nbg1 to the network at its fixed address before its first boot",
+    "attach the gateway in hel1 to the network at its fixed address before its first boot",
+    "attach the builder to the network at its fixed address",
+    "power on the gateway",
+    "power on the gateway in nbg1",
+    "power on the gateway in hel1",
+    "power on the builder",
+    "attach the worker builder to the network at its fixed address",
+    "power on the worker builder",
+    "start the snapshot of the builder's disk",
+    "start the snapshot of the worker builder's disk",
+    "delete the builder, whose disk holds every key of the cluster, beside its snapshot",
+    "create the node in fsn1 from the snapshot",
+    "create the node in nbg1 from the snapshot",
+    "create the node in hel1 from the snapshot",
+    "delete the worker builder beside its snapshot"
+  ],
+  "API": {
+    "ID": 1003,
+    "Name": "shop-sub-0123-api-fsn1",
+    "Location": "fsn1",
+    "Labels": {
+      "mitstack.dev/block": "a-block",
+      "mitstack.dev/role": "api",
+      "mitstack.dev/subscription": "sub_0123456789ab"
+    },
+    "PublicInterface": false,
+    "PublicIPv4": "",
+    "AssignedPublicIPv4": "198.51.100.3",
+    "PrivateIPs": {
+      "1001": "10.0.0.3"
+    },
+    "Services": [
+      {
+        "ListenPort": 6443,
+        "DestinationPort": 6443,
+        "ProxyProtocol": false
+      }
+    ],
+    "TargetSelectors": [
+      "mitstack.dev/block=a-block,mitstack.dev/subscription=sub_0123456789ab,mitstack.dev/role=node"
+    ],
+    "TargetIPs": null
+  },
+  "Ingress": {
+    "ID": 1004,
+    "Name": "shop-sub-0123-ingress-fsn1",
+    "Location": "fsn1",
+    "Labels": {
+      "mitstack.dev/block": "a-block",
+      "mitstack.dev/role": "ingress",
+      "mitstack.dev/subscription": "sub_0123456789ab"
+    },
+    "PublicInterface": true,
+    "PublicIPv4": "198.51.100.4",
+    "AssignedPublicIPv4": "198.51.100.4",
+    "PrivateIPs": {
+      "1001": "10.0.0.4"
+    },
+    "Services": [
+      {
+        "ListenPort": 80,
+        "DestinationPort": 30080,
+        "ProxyProtocol": true
+      },
+      {
+        "ListenPort": 443,
+        "DestinationPort": 30081,
+        "ProxyProtocol": true
+      }
+    ],
+    "TargetSelectors": null,
+    "TargetIPs": [
+      "10.0.1.2"
+    ]
+  },
+  "Problems": null,
+  "Detail": "nodes 1012 in fsn1 at 10.0.0.5, 1013 in nbg1 at 10.0.0.6, 1014 in hel1 at 10.0.0.7 are on network 1001 behind gateways 1005 in fsn1, 1006 in nbg1, 1007 in hel1, its default route via 10.0.0.2, and an API load balancer in fsn1 reaches them, and its ingress load balancer the workers at 10.0.1.2"
+}

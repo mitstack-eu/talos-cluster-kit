@@ -69,8 +69,9 @@ type harness struct {
 	// hostingKeys holds the keys each call to a hosting plane's DeployKeys hook received, and deployKeysErr is what it answers.
 	hostingKeys   []controlplane.HostingKeys
 	deployKeysErr error
-	// waits holds how many Hetzner actions each call waited on.
+	// waits holds how many Hetzner actions each call waited on, and steps what each step taken was for.
 	waits      []int
+	steps      []string
 	sequential bool
 }
 
@@ -132,6 +133,7 @@ func (h *harness) ensure() error {
 	if err != nil || !ok {
 		return err
 	}
+	h.steps = append(h.steps, step.What)
 	return step.Take(ctx, testBlock, testSub)
 }
 

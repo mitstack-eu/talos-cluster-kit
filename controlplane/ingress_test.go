@@ -121,6 +121,21 @@ func appsOnCloudPool(h *harness) {
 // alsoOnCloudPool makes the ingress load balancer target the Cloud pool's workers beside any worker address.
 func alsoOnCloudPool(h *harness) { h.plane.IngressTargetsCloudPool = true }
 
+// builtOnCloudPool builds the plane and grows its Cloud pool to one worker once the worker image exists, as a block does.
+func (h *harness) builtOnCloudPool() {
+	h.t.Helper()
+	imageReady := func() bool {
+		images := h.workerImages()
+		return len(images) == 1 && images[0].Status == controlplane.SnapshotAvailable
+	}
+	require.NoError(h.t, h.settle(imageReady))
+	require.True(h.t, imageReady(), "the worker image never became available")
+	h.poolWorkers(1, "fsn1")
+	h.built()
+}
+
+const emptyPoolProblem = "the ingress load balancer targets the Cloud pool's workers, but the pool has no worker"
+
 func TestPlane_TheIngressTargetsTheCloudPoolsWorkersByLabelWhenThePlaneSaysSo(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
@@ -134,7 +149,7 @@ func TestPlane_TheIngressTargetsTheCloudPoolsWorkersByLabelWhenThePlaneSaysSo(t 
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t, tc.opts...)
 
-			h.built()
+			h.builtOnCloudPool()
 
 			ingress := h.loadBalancer(controlplane.RoleIngress)
 			assert.Equal(t, []string{h.plane.RoleSelector(controlplane.RoleCloudWorker)}, ingress.TargetSelectors,
@@ -150,6 +165,7 @@ func TestPlane_TheIngressTargetsTheCloudPoolsWorkersByLabelWhenThePlaneSaysSo(t 
 func TestPlane_AClusterBuiltWithItsIngressOnTheControlPlaneMovesItToTheCloudPoolsWorkers(t *testing.T) {
 	h := newHarness(t)
 	h.built()
+	h.poolWorkers(1, "fsn1")
 	ctx := context.Background()
 	appsOnCloudPool(h)
 	ingress := h.loadBalancer(controlplane.RoleIngress)
@@ -166,8 +182,39 @@ func TestPlane_AClusterBuiltWithItsIngressOnTheControlPlaneMovesItToTheCloudPool
 	assert.Empty(t, h.plane.Problems(ctx, h.read()), "the plane's problems once the ingress targets the Cloud pool's workers")
 }
 
-// robotWorkerRecord is what a golden file holds of a plane whose apps run on a Robot worker: every step it took, both
-// load balancers it built, its problems and its detail.
+func TestPlane_AnIngressMovedToAnEmptyCloudPoolKeepsItsControlPlaneTargetAndReadsAProblemUntilAWorkerJoins(t *testing.T) {
+	h := newHarness(t)
+	h.built()
+	ctx := context.Background()
+	appsOnCloudPool(h)
+	nodes, pool := h.plane.RoleSelector(controlplane.RoleNode), h.plane.RoleSelector(controlplane.RoleCloudWorker)
+
+	require.NoError(t, h.converge())
+
+	assert.ElementsMatch(t, []string{nodes, pool}, h.loadBalancer(controlplane.RoleIngress).TargetSelectors,
+		"the ingress load balancer's label targets while the Cloud pool has no worker")
+	assert.Contains(t, h.plane.Problems(ctx, h.read()), emptyPoolProblem, "the problems of an ingress on an empty Cloud pool")
+
+	h.poolWorkers(1, "fsn1")
+	require.NoError(t, h.converge())
+
+	assert.Equal(t, []string{pool}, h.loadBalancer(controlplane.RoleIngress).TargetSelectors,
+		"the ingress load balancer's label targets once a Cloud worker joined")
+	assert.Empty(t, h.plane.Problems(ctx, h.read()), "the plane's problems once a Cloud worker joined")
+}
+
+func TestPlane_AnIngressOnTheCloudPoolOfAPlaneWhoseAppsAlsoRunOnTheControlPlaneIsAProblem(t *testing.T) {
+	h := newHarness(t)
+	h.built()
+	h.poolWorkers(1, "fsn1")
+
+	h.plane.IngressTargetsCloudPool = true
+
+	assert.Contains(t, h.plane.Problems(context.Background(), h.read()),
+		"the ingress load balancer targets the Cloud pool's workers, but apps also run on the control-plane nodes")
+}
+
+// robotWorkerRecord is the golden file's record of a plane whose apps run on a Robot worker.
 type robotWorkerRecord struct {
 	Steps    []string
 	API      controlplane.LoadBalancer

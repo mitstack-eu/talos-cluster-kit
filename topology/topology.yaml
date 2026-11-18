@@ -88,6 +88,8 @@ spec:
                 - name: TOPOLOGY_BURST_NODES
                   value: {{ printf "%q" .BurstNodes }}
 {{- end }}
+                - name: SERVICE_ACCOUNT_DIR
+                  value: /var/run/secrets/kubernetes.io/serviceaccount
                 - name: HOME
                   value: /tmp
               securityContext:

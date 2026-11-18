@@ -2,10 +2,11 @@
 # Labels each joined node TOPOLOGY_NODES names with its zone and TOPOLOGY_REGION under the field manager
 # TOPOLOGY_FIELD_MANAGER, labels each of TOPOLOGY_BURST_NODES a burst node and takes the label off every other, and
 # leaves a node that has not joined to a later run. Once every node is labelled, it evicts from each burst node every
-# pod whose placement refuses a burst node. An eviction a disruption budget holds is named and retried by the next run,
-# which this one fails for; a pod already gone counts as moved; any other failure ends the run.
+# pod whose placement refuses a burst node. An eviction a disruption budget holds is retried by the next run, which
+# this one fails for on a last line naming the first such pod, its burst node and the budget; a pod already gone counts
+# as moved; any other failure ends the run.
 # Usage: TOPOLOGY_NODES="<node>=<zone> ..." TOPOLOGY_REGION=<region> TOPOLOGY_FIELD_MANAGER=<manager> \
-#   [TOPOLOGY_BURST_NODES="<node> ..."] label-nodes.sh
+#   SERVICE_ACCOUNT_DIR=<the pod's token> [TOPOLOGY_BURST_NODES="<node> ..."] label-nodes.sh
 # It exists because every Cloud node boots one shared Talos configuration, which cannot name each node's own zone or
 # whether the Cloud pool counts it among its minimum.
 set -euo pipefail
@@ -14,7 +15,7 @@ set -euo pipefail
   "${TOPOLOGY_FIELD_MANAGER:?names the field manager}"
 
 readonly burst_label=mitstack.dev/burst
-held=0
+held=""
 
 is_burst() {
   case " ${TOPOLOGY_BURST_NODES:-} " in *" $1 "*) return 0 ;; esac
@@ -31,8 +32,24 @@ refusing_pods() {
     | "\(.metadata.namespace) \(.metadata.name)"'
 }
 
+# budget_of <namespace> <pod> prints the cause the API gives for refusing a dry-run eviction of the pod, since kubectl's
+# refusal names no budget, nothing when it allows the eviction or the pod is gone, and fails on any other answer.
+budget_of() {
+  local answer verdict
+  answer=$(curl -sS --connect-timeout 5 --max-time 30 --cacert "$SERVICE_ACCOUNT_DIR/ca.crt" \
+    -H "Authorization: Bearer $(cat "$SERVICE_ACCOUNT_DIR/token")" -H 'Content-Type: application/json' -X POST \
+    --data "{\"apiVersion\":\"policy/v1\",\"kind\":\"Eviction\",\"metadata\":{\"name\":\"$2\",\"namespace\":\"$1\"}}" \
+    "https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT/api/v1/namespaces/$1/pods/$2/eviction?dryRun=All") ||
+    { echo "label-nodes: the dry-run eviction of pod $1/$2 got no answer" >&2; exit 1; }
+  verdict=$(jq -r --arg pod "$1/$2" 'if .code == 429 then [.details.causes[]? | select(.reason == "DisruptionBudget") | .message] | first // empty
+    elif .status == "Success" or .code == 404 then empty
+    else error("the dry-run eviction of pod \($pod) was answered \(.code // "with no code"): \(.message // "")") end' <<<"$answer" 2>&1) ||
+    { echo "label-nodes: ${verdict#jq: error (at <stdin>:*): }" >&2; exit 1; }
+  printf '%s\n' "$verdict"
+}
+
 evict() {
-  local node=$1 namespace=$2 name=$3 body err
+  local node=$1 namespace=$2 name=$3 body err cause
   body=$(jq -n --arg namespace "$namespace" --arg name "$name" \
     '{apiVersion: "policy/v1", kind: "Eviction", metadata: {name: $name, namespace: $namespace}}')
   if err=$(kubectl create --raw "/api/v1/namespaces/$namespace/pods/$name/eviction" -f - <<<"$body" 2>&1 >/dev/null); then
@@ -44,7 +61,8 @@ evict() {
       echo "label-nodes: $namespace/$name left burst node $node before its eviction" ;;
     *TooManyRequests*)
       echo "label-nodes: $namespace/$name stays on burst node $node until its disruption budget allows: $err" >&2
-      held=1 ;;
+      cause=$(budget_of "$namespace" "$name")
+      [ -n "$held" ] || held="pod $namespace/$name stays on burst node $node until a later run evicts it: ${cause:-$err}" ;;
     *)
       echo "label-nodes: cannot evict $namespace/$name from burst node $node: $err" >&2
       exit 1 ;;
@@ -88,7 +106,7 @@ for node in "${joined_burst[@]}"; do
   evict_refusing "$node"
 done
 
-if [ "$held" -ne 0 ]; then
-  echo "label-nodes: a disruption budget holds a pod on a burst node, so a later run evicts it" >&2
+if [ -n "$held" ]; then
+  echo "label-nodes: $held" >&2
   exit 1
 fi

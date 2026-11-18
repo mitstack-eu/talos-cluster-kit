@@ -48,7 +48,7 @@ the order a block uses them.
 | Package | What it does | Main entry points |
 |---|---|---|
 | `components` | Holds the pinned component set: Cilium, the custom resource definition (CRD) of Cilium's cluster-wide policy, Argo CD, the policy that keeps pods from Hetzner's metadata service at `169.254.169.254`, Istio's ambient mesh with its mesh-wide mutual TLS policy and the mesh probe's target, Kyverno with the admission policies [How a cluster isolates each app](#how-a-cluster-isolates-each-app) lists, the CloudNativePG operator with the database-slice policy, the local path provisioner behind the default StorageClass, and the node-local OpenTelemetry Collector. It also holds the boot set of a cluster that hosts the platform, and the telemetry Collector of a cluster that requires an OTLP backend, which [ships its events, metrics and app logs](#how-a-cluster-ships-its-events-metrics-and-app-logs). It renders the CoreDNS Deployment that [keeps a replica in each location](#how-coredns-keeps-a-replica-in-each-location) | `Default`, `Hosting`, `HostingServed`, `Set.PublishingIngress`, `Manifest` (whose `Name` is a component's name), `Set.Images`, `LogCollector`, `Set.TelemetryCollector`, `TelemetryExport`, `CoreDNS`, `ParseImage` |
-| `nodeconfig` | Renders a control-plane node's or a worker node's machine configuration with Talos's own `machinery` module and validates it against Talos's schema | `Render`, `RenderWorker`, `Cluster`, `Node`, `NewSecrets`, `ParseSecrets`, `Secrets.AdminTalosconfig` |
+| `nodeconfig` | Renders a control-plane node's or a worker node's machine configuration with Talos's own `machinery` module and validates it against Talos's schema | `Render`, `RenderWorker`, `Rerender`, `Cluster`, `Node`, `NewSecrets`, `ParseSecrets`, `Secrets.AdminTalosconfig` |
 | `image` | Runs imager, Sidero Labs' open-source image builder, with the `hcloud` or the `metal` profile, and discards its output | `Run`, `Build` |
 | `mirror` | Lists every image the nodes pull, each by digest | `List`, `Render` |
 | `gateway` | Renders the cloud-config of the gateway in each location, and mints the cluster's gateway CA and each gateway's certificate | `Render`, `Inputs`, `Deadline`, `NewCA`, `CA.Issue` |
@@ -129,6 +129,46 @@ documents that booted the node in the workspace note
 [Talos on a Hetzner Robot server behind a vSwitch gateway](https://github.com/mitstack-eu/mitstack-workspace/blob/main/product/knowledge/2026-10-28-talos-on-a-hetzner-robot-server-behind-a-vswitch-gateway.md).
 `vswitchDocuments` in `nodeconfig/documents.go` renders them, and a Metal
 node without `VSwitch` runs Talos's default DHCP on every link.
+
+### How a running node takes a release's configuration
+
+A node keeps the configuration it booted with until something applies another.
+`nodeconfig.Rerender` renders, from a running node's own configuration, the one
+this kit release gives that node. The node's configuration is the only place
+that still holds the cluster's keys and its install-time choices, so `Rerender`
+reads them back from it:
+
+| What it reads back | From the running document |
+|---|---|
+| The cluster's keys | Every key document, through Talos's `NewBundleFromConfig` |
+| The cluster's name and first API address | `KubeClusterConfig` |
+| The other API addresses | The machine's `certSANs` |
+| The subscription, the private network and the node's own labels | `KubeNodeConfig` |
+| Whether apps stay off the control plane | The control-plane taint in `KubeNodeConfig` |
+| The Kubernetes version | The kubelet image in `KubeletConfig` |
+| The issuer and the gateway CA | `KubeServiceAccountConfig` and the `mitstack-gateway` `TrustedRootsConfig` |
+| The gateways, the profile and the user volumes | The `RegistryTLSConfig` names, the `eth0` `LinkConfig` and each `UserVolumeConfig` |
+| A dedicated node's name and vSwitch | `HostnameConfig`, the `pub0` `LinkAliasConfig` and the `vsw0` `VLANConfig` |
+
+The node keeps its manifest documents and its Collector as they are, since Argo
+CD carries each later change of a component. Every rendered configuration of a
+release sets `Cluster.Release` as the node annotation `mitstack.dev/machine-config`
+(`nodeconfig.MachineConfigAnnotation`), so a node names the release its
+configuration came from.
+
+Talos applies a configuration without a reboot, yet a node takes some settings
+only when it boots. `Rerender` returns `nodeconfig.ErrRebootOnly`, naming the
+setting, when the release changes `machine.install`, `machine.kernel`,
+`cluster.etcd` beside its CA, or a `VolumeConfig` system volume. This example
+renders the configuration a node running `running` takes from the release
+whose tools image is `sha256:5f0c…`:
+
+```go
+next, err := nodeconfig.Rerender(running, "sha256:5f0c…")
+if errors.Is(err, nodeconfig.ErrRebootOnly) {
+	// The release cannot reach this node without a reboot.
+}
+```
 
 ## How a block drives the Cloud control plane
 
@@ -642,7 +682,7 @@ where the last row says.
 | Talos API from pods | Only pods in `mitstack-node` may hold a Talos identity, with `os:admin`, `os:etcd:backup` or `os:reader` | `talosAPIAccessDocument` |
 | Disk encryption | `STATE` and `EPHEMERAL` are LUKS2 volumes, each under a key Talos derives from the node's UUID and the volume's name. `EPHEMERAL`'s key also takes the random salt its node's `STATE` holds. Talos 1.14's disk image holds neither volume, so every node formats and encrypts both on its first boot, under its own UUID and its own salt. The keys protect a disk that leaves its server, and not against whoever holds the Hetzner project's token | `systemVolumeDocuments` |
 | User volumes | Each user volume the set names, `local-path-provisioner` on every cluster and OpenBao's in the hosting set, is a directory Talos mounts at `/var/mnt/<name>` | `userVolumeDocuments` |
-| Service-account issuer | Every service-account token names `Cluster.ServiceAccountIssuer` as its issuer, which Talos passes to the API server as `--service-account-issuer`. `Render` refuses a cluster with no issuer, or with one that is not https, has no host, or carries a query or fragment. [How AWS comes to trust a cluster's tokens](#how-aws-comes-to-trust-a-clusters-tokens) says why | `adapt` in `nodeconfig/documents.go`, `checkIssuer` in `nodeconfig/nodeconfig.go` |
+| Service-account issuer | Every service-account token names `Cluster.ServiceAccountIssuer` as its issuer, which Talos passes to the API server as `--service-account-issuer`. `Render` refuses a control-plane node's cluster with no issuer, or with one that is not https, has no host, or carries a query or fragment. [How AWS comes to trust a cluster's tokens](#how-aws-comes-to-trust-a-clusters-tokens) says why | `adapt` in `nodeconfig/documents.go`, `checkIssuer` in `nodeconfig/nodeconfig.go` |
 | Worker nodes | A worker joins through the first private API load balancer and carries no manifest and no Talos API access, since only a control-plane node applies either. Its secrets are the Talos and Kubernetes CA certificates, the trustd and bootstrap tokens and the discovery identity. It holds no CA key, so neither the etcd authority's key nor the service-account signing key | `RenderWorker`, `documents` |
 
 A control-plane node's configuration holds every key of the cluster, its

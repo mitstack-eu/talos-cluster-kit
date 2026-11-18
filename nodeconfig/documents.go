@@ -58,6 +58,9 @@ func (c Cluster) adapt(generated []config.Document, n Node) []config.Document {
 			maps.Copy(d.LabelsConfig, n.Labels)
 			d.LabelsConfig[SubscriptionLabel] = c.SubscriptionID
 			d.NodeIPConfig.NodeIPValidSubnets = []string{c.Network.String()}
+			if c.Release != "" {
+				d.AnnotationsConfig = map[string]string{MachineConfigAnnotation: c.Release}
+			}
 		case *k8s.KubeServiceAccountConfigV1Alpha1:
 			d.ServiceIssuer.IssuerURL = meta.URL{URL: c.ServiceAccountIssuer}
 		}
@@ -70,7 +73,7 @@ func (c Cluster) adaptV1Alpha1(d *v1alpha1.Config) {
 	if d.ClusterConfig.EtcdConfig != nil {
 		d.ClusterConfig.EtcdConfig.EtcdAdvertisedSubnets = []string{c.Network.String()}
 	}
-	if c.Logs.IsZero() {
+	if !c.collectsLogs() {
 		return
 	}
 	d.MachineConfig.MachineLogging = &v1alpha1.LoggingConfig{
@@ -94,7 +97,7 @@ func (c Cluster) documents(role machine.Type, n Node) ([]config.Document, error)
 	docs := []config.Document{resolverDocument(), timeSyncDocument(), hostnameDocument(n), c.trustedRootsDocument()}
 	docs = append(docs, c.routeDocuments()...)
 	docs = append(docs, vswitchDocuments(n)...)
-	if !c.Logs.IsZero() {
+	if c.collectsLogs() {
 		docs = append(docs, kernelLogDocument())
 	}
 	if role.IsControlPlane() {
@@ -254,6 +257,9 @@ func (c Cluster) mirrorDocuments() []config.Document {
 
 // manifestDocuments name each served manifest at the first gateway, and add the Collector when logs have a receiver.
 func (c Cluster) manifestDocuments() ([]config.Document, error) {
+	if c.running != nil {
+		return c.running.manifests, nil
+	}
 	inline := c.Components.Inline
 	if !c.Logs.IsZero() {
 		collector, err := components.LogCollector(c.Logs)

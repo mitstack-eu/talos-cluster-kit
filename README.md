@@ -517,6 +517,15 @@ of a private target. The plane adds the target only once the block has
 coupled that subnet, and removes any control-plane target the load balancer
 holds.
 
+`IngressTargetsCloudPool` points the ingress load balancer at the Cloud
+pool's workers by their label instead of at the control-plane nodes. Hetzner
+lets a load balancer reach a Cloud server by label over the private network,
+so these workers need no vSwitch subnet. A cluster with no worker outside
+Hetzner Cloud sets it beside `AppsOnWorkers` and names no `WorkerAddresses`,
+and the plane then reports no missing worker address. A cluster with both sets
+both, and its ingress reaches the pool's workers by label and the other
+workers by address.
+
 The load balancer forwards ports 80 and 443 to Traefik's NodePorts 30080 and
 30081, where Traefik's two entry points listen: `web` for HTTP and `websecure`
 for HTTPS. On both ports it sends a PROXY protocol header, which carries the

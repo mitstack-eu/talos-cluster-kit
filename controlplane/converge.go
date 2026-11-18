@@ -410,7 +410,8 @@ func (p Plane) apiLoadBalancer(networkID int64) LoadBalancerSpec {
 }
 
 // ingressLoadBalancer serves ports 80 and 443 on its public address to the edge NodePorts, with PROXY protocol, of
-// every node, or of every worker when apps run on workers, since the edge runs only where apps do.
+// every node, or of every worker when apps run on workers, since the edge runs only where apps do. It reaches the
+// Cloud pool's workers by label and every other worker by address.
 func (p Plane) ingressLoadBalancer(networkID int64) LoadBalancerSpec {
 	spec := LoadBalancerSpec{
 		Name:            p.LocatedName(RoleIngress, GatewayLocation),
@@ -427,6 +428,9 @@ func (p Plane) ingressLoadBalancer(networkID int64) LoadBalancerSpec {
 	}
 	if p.AppsOnWorkers {
 		spec.TargetSelector, spec.TargetIPs = "", slices.Clone(p.WorkerAddresses)
+	}
+	if p.IngressTargetsCloudPool {
+		spec.TargetSelector = p.RoleSelector(RoleCloudWorker)
 	}
 	return spec
 }

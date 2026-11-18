@@ -189,7 +189,7 @@ func (st State) nodeProblems(locations []string, network Network, firewall Firew
 
 func (p Plane) loadBalancerProblems(st State, network Network) []string {
 	var missing []string
-	if p.AppsOnWorkers && len(p.WorkerAddresses) == 0 {
+	if p.AppsOnWorkers && len(p.WorkerAddresses) == 0 && !p.IngressTargetsCloudPool {
 		missing = append(missing, "apps run on workers, but the plane names no worker address for the ingress load balancer to target")
 	}
 	for _, want := range []LoadBalancerSpec{p.apiLoadBalancer(network.ID), p.ingressLoadBalancer(network.ID)} {

@@ -60,6 +60,9 @@ type Plane struct {
 	// WorkerAddresses are the private addresses of the workers outside Hetzner Cloud, each inside a vSwitch subnet of
 	// the network.
 	WorkerAddresses []string
+	// IngressTargetsCloudPool makes the ingress load balancer target the Cloud pool's workers by label in place of the
+	// control-plane nodes, so a plane whose apps run on workers needs no worker outside Hetzner Cloud.
+	IngressTargetsCloudPool bool
 	// Hosting makes the cluster host the platform; nil builds one that hosts none.
 	Hosting *Hosting
 	// ReplaceNodes are the locations whose control-plane node a confirmed upgrade replaces, which the upgrade's own call

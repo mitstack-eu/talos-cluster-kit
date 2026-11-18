@@ -111,11 +111,14 @@ func TestCollector_TagsAMetricAndALogRecordAPodPushesWithItsOwnNamespacesAppWhat
 
 func TestCollector_DropsWhatAnAddressNoPodOnTheNodeHoldsPushesSoNoRecordLeavesWithoutAnApp(t *testing.T) {
 	rig := startPushRig(t, false)
+	marker := rand.Text()
 
 	push(t, rig.receiver+"/v1/logs", pushedLogRecord(rand.Text()))
 	push(t, rig.receiver+"/v1/metrics", pushedDataPoint())
-	rig.placeShopPod(t, rig.sender)
-	records, points := rig.receivedOnceTagged(t)
+	rig.pushFromTheNode(t, "/v1/logs", pushedLogRecord(marker))
+	rig.pushFromTheNode(t, "/v1/metrics", pushedDataPoint())
+	records := receivedUntil(t, rig.backend.records, rig.collector, func(got shipped) bool { return strings.Contains(got.body, marker) })
+	points := receivedUntil(t, rig.backend.points, rig.collector, func(got pushedPoint) bool { return got.resource["mitstack.app"] == "shop" })
 
 	for _, got := range records {
 		assert.Equal(t, "shop", got.attributes["mitstack.app"], "every log record the backend received, of %q", got.body)
@@ -127,18 +130,19 @@ func TestCollector_DropsWhatAnAddressNoPodOnTheNodeHoldsPushesSoNoRecordLeavesWi
 
 type pushRig struct {
 	server    *apiServer
-	sender    netip.Addr
 	backend   otlpBackend
 	collector *followedContainer
 	receiver  string
 }
 
-// startPushRig starts a node copy and its backend, with shop-web at this host's address only when matched.
-func startPushRig(t *testing.T, matched bool) pushRig {
+// startPushRig starts a node copy and its backend, with shop-web at this host's address when shopIsTheHost, and
+// otherwise at the node copy's own address, which only a push from inside its network comes from.
+func startPushRig(t *testing.T, shopIsTheHost bool) pushRig {
 	t.Helper()
 	server := startAPIServer(t)
-	rig := pushRig{server: server, sender: bridgeGateway(t, server.etcd)}
-	rig.backend = startOTLPBackend(t, rig.sender)
+	rig := pushRig{server: server}
+	host, node := bridgeGateway(t, server.etcd), containerAddress(t, server.etcd)
+	rig.backend = startOTLPBackend(t, host)
 	export := testutil.TelemetryExport()
 	export.MetricsEndpoint, export.LogsEndpoint = rig.backend.url+"/otlp/v1/metrics", rig.backend.url+"/otlp/v1/logs"
 	rendered := renderedCollector(t, components.Default(), export)
@@ -146,46 +150,44 @@ func startPushRig(t *testing.T, matched bool) pushRig {
 	server.admin(t, []byte(appShopNamespace+"\n---\n"+appOtherNamespace), "apply", "-f", "-")
 	server.admin(t, nil, "create", "serviceaccount", "default", "-n", "app-shop")
 	server.admin(t, []byte(shopPod), "apply", "-f", "-")
-	rig.placeShopPod(t, netip.MustParseAddr("192.0.2.10"))
-	if matched {
-		rig.placeShopPod(t, rig.sender)
+	shop := node
+	if shopIsTheHost {
+		shop = host
 	}
+	server.admin(t, nil, "patch", "pod", "shop-web", "-n", "app-shop", "--subresource=status", "--type=merge",
+		"-p", `{"status":{"phase":"Running","podIP":"`+shop.String()+`","podIPs":[{"ip":"`+shop.String()+`"}]}}`)
 	rig.collector = startCollector(t, server, testutil.Documents(t, rendered), "node", map[string]string{"pods": sharedDir(t)}, rig.backend.caDir, rand.Text())
 	rig.collector.await(t, time.Minute, "Everything is ready")
-	rig.receiver = "http://" + containerAddress(t, server.etcd).String() + ":4318"
+	rig.receiver = "http://" + node.String() + ":4318"
 	return rig
 }
 
-func (r pushRig) placeShopPod(t *testing.T, address netip.Addr) {
+// pushFromTheNode pushes message to the receiver from a container sharing the node copy's network, so from its address.
+func (r pushRig) pushFromTheNode(t *testing.T, path string, message proto.Message) {
 	t.Helper()
-	r.server.admin(t, nil, "patch", "pod", "shop-web", "-n", "app-shop", "--subresource=status", "--type=merge",
-		"-p", `{"status":{"phase":"Running","podIP":"`+address.String()+`","podIPs":[{"ip":"`+address.String()+`"}]}}`)
+	body, err := proto.Marshal(message)
+	require.NoError(t, err)
+	cmd := exec.Command("docker", "run", "-i", "--rm", "--network", "container:"+r.server.etcd, r.server.toolsImage,
+		"curl", "-fsS", "-H", "Content-Type: application/x-protobuf", "--data-binary", "@-", r.receiver+path)
+	cmd.Stdin = bytes.NewReader(body)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "the push to %s from the node copy's network: %s", path, out)
 }
 
-// receivedOnceTagged pushes from shop-web until the tagger knows its address, and returns all the backend received by
-// then, which includes any earlier push the Collector let through.
-func (r pushRig) receivedOnceTagged(t *testing.T) ([]shipped, []pushedPoint) {
+// receivedUntil returns what from delivers up to and including the first item last accepts.
+func receivedUntil[T any](t *testing.T, from <-chan T, collector *followedContainer, last func(T) bool) []T {
 	t.Helper()
-	var records []shipped
-	var points []pushedPoint
-	for deadline := time.Now().Add(time.Minute); len(records) == 0 || len(points) == 0; {
-		require.True(t, time.Now().Before(deadline), "the backend received no push from shop-web in a minute; the Collector printed:\n%s", r.collector.log())
-		push(t, r.receiver+"/v1/logs", pushedLogRecord(rand.Text()))
-		push(t, r.receiver+"/v1/metrics", pushedDataPoint())
-		time.Sleep(2 * time.Second)
-		records, points = append(records, waiting(r.backend.records)...), append(points, waiting(r.backend.points)...)
-	}
-	return records, points
-}
-
-func waiting[T any](from <-chan T) []T {
+	deadline := time.NewTimer(time.Minute)
+	defer deadline.Stop()
 	var got []T
 	for {
 		select {
 		case item := <-from:
-			got = append(got, item)
-		default:
-			return got
+			if got = append(got, item); last(item) {
+				return got
+			}
+		case <-deadline.C:
+			require.FailNow(t, "the backend received no push from shop-web in a minute", "it received %d before; the Collector printed:\n%s", len(got), collector.log())
 		}
 	}
 }

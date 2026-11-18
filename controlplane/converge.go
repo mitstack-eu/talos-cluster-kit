@@ -428,12 +428,16 @@ func (p Plane) ingressLoadBalancer(networkID int64) LoadBalancerSpec {
 	if p.AppsOnWorkers {
 		spec.TargetSelector, spec.TargetIPs = "", slices.Clone(p.WorkerAddresses)
 	}
+	if p.IngressTargetsCloudPool {
+		spec.TargetSelector = p.RoleSelector(RoleCloudWorker)
+	}
 	return spec
 }
 
 // loadBalancerStep is the next step the load balancer lacks. It is attached before its public interface is disabled or
 // its private target added, since Hetzner refuses either on a load balancer not yet attached to a network. A label
-// target it should not hold goes only once it holds every address target, so it is never left with none it had.
+// target it should not hold goes only once it holds every address target, and on the Cloud pool once the pool has a
+// worker, so it is never left with none it had.
 func (p Plane) loadBalancerStep(st State, network Network, want LoadBalancerSpec, address string) (Step, bool) {
 	what := want.Labels[KeyRole] + " load balancer in " + want.Location
 	lb, ok := st.LoadBalancerIn(Role(want.Labels[KeyRole]), want.Location)
@@ -471,7 +475,7 @@ func (p Plane) loadBalancerStep(st State, network Network, want LoadBalancerSpec
 			}}, true
 		}
 	}
-	if !targetsEvery(lb.TargetIPs, want.TargetIPs) {
+	if !targetsEvery(lb.TargetIPs, want.TargetIPs) || p.awaitsCloudPool(st, want) {
 		return Step{}, false
 	}
 	for _, sel := range lb.TargetSelectors {
@@ -482,6 +486,12 @@ func (p Plane) loadBalancerStep(st State, network Network, want LoadBalancerSpec
 		}
 	}
 	return Step{}, false
+}
+
+// awaitsCloudPool reports whether want targets the Cloud pool's workers while the pool has none.
+func (p Plane) awaitsCloudPool(st State, want LoadBalancerSpec) bool {
+	return p.IngressTargetsCloudPool && want.TargetSelector == p.RoleSelector(RoleCloudWorker) &&
+		len(st.Servers[RoleCloudWorker]) == 0
 }
 
 func targetsEvery(have, want []string) bool {

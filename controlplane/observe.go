@@ -189,8 +189,14 @@ func (st State) nodeProblems(locations []string, network Network, firewall Firew
 
 func (p Plane) loadBalancerProblems(st State, network Network) []string {
 	var missing []string
-	if p.AppsOnWorkers && len(p.WorkerAddresses) == 0 {
+	if p.AppsOnWorkers && len(p.WorkerAddresses) == 0 && !p.IngressTargetsCloudPool {
 		missing = append(missing, "apps run on workers, but the plane names no worker address for the ingress load balancer to target")
+	}
+	if p.IngressTargetsCloudPool && len(st.Servers[RoleCloudWorker]) == 0 {
+		missing = append(missing, "the ingress load balancer targets the Cloud pool's workers, but the pool has no worker")
+	}
+	if p.IngressTargetsCloudPool && !p.AppsOnWorkers {
+		missing = append(missing, "the ingress load balancer targets the Cloud pool's workers, but apps also run on the control-plane nodes")
 	}
 	for _, want := range []LoadBalancerSpec{p.apiLoadBalancer(network.ID), p.ingressLoadBalancer(network.ID)} {
 		role := want.Labels[KeyRole]
@@ -277,19 +283,29 @@ func (p Plane) Outputs(st State) (map[string]string, string) {
 	if !p.Telemetry.IsZero() {
 		outputs["otlpEndpoint"] = components.TelemetryOTLPEndpoint
 	}
-	reach := "an API and an ingress load balancer in " + GatewayLocation + " reach them"
-	if p.AppsOnWorkers {
-		reach = "an API load balancer in " + GatewayLocation + " reaches them, and its ingress load balancer the workers at " +
-			strings.Join(p.WorkerAddresses, ", ")
-	}
 	var gateways []string
 	for _, g := range st.Servers[RoleGateway] {
 		gateways = append(gateways, fmt.Sprintf("%d in %s", g.ID, g.Location))
 	}
 	route, _ := defaultRouteOf(network)
 	detail := fmt.Sprintf("nodes %s are on network %d behind gateways %s, its default route via %s, and %s",
-		strings.Join(nodes, ", "), network.ID, strings.Join(gateways, ", "), route.Gateway, reach)
+		strings.Join(nodes, ", "), network.ID, strings.Join(gateways, ", "), route.Gateway, p.ingressReach())
 	return outputs, detail
+}
+
+// ingressReach says which load balancer reaches the nodes and which servers the ingress load balancer targets.
+func (p Plane) ingressReach() string {
+	var targets []string
+	if p.IngressTargetsCloudPool {
+		targets = append(targets, "the Cloud pool's workers")
+	}
+	if p.AppsOnWorkers && (len(p.WorkerAddresses) > 0 || !p.IngressTargetsCloudPool) {
+		targets = append(targets, "the workers at "+strings.Join(p.WorkerAddresses, ", "))
+	}
+	if len(targets) == 0 {
+		return "an API and an ingress load balancer in " + GatewayLocation + " reach them"
+	}
+	return "an API load balancer in " + GatewayLocation + " reaches them, and its ingress load balancer " + strings.Join(targets, " and ")
 }
 
 // Delete deletes servers and load balancers before the firewall and network they use, and the snapshot that holds

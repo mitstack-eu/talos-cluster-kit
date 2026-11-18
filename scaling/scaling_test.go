@@ -1,7 +1,7 @@
 package scaling_test
 
-// A Cloud pool that scales grows by the pods no node can take, up to its maximum, and loses a member that ran no pod
-// but the cluster's own for its idle window, down to its minimum.
+// A Cloud pool that scales grows by the pods no node can take that a burst member would, up to its maximum, and loses a
+// burst member that ran no pod but the cluster's own for its idle window, down to its minimum.
 
 import (
 	"encoding/json"
@@ -29,6 +29,12 @@ func member(id int64, key string, created time.Time) controlplane.Server {
 		Labels: map[string]string{pools.KeyMember: key}}
 }
 
+func burst(id int64, key string, created time.Time) controlplane.Server {
+	m := member(id, key, created)
+	m.Labels[pools.KeyBurst] = "true"
+	return m
+}
+
 type pod struct {
 	Namespace     string  `json:"namespace"`
 	Name          string  `json:"name"`
@@ -36,12 +42,21 @@ type pod struct {
 	Phase         string  `json:"phase"`
 	OwnerKind     *string `json:"ownerKind"`
 	Unschedulable bool    `json:"unschedulable"`
+	Placement     any     `json:"placement,omitempty"`
 }
 
 func ptr(s string) *string { return &s }
 
 func waiting(name string) pod {
 	return pod{Namespace: "ci", Name: name, Phase: "Pending", OwnerKind: ptr("Job"), Unschedulable: true}
+}
+
+// component is a kit component waiting for room, whose placement refuses every burst member.
+func component(name string) pod {
+	p := pod{Namespace: "argocd", Name: name, Phase: "Pending", OwnerKind: ptr("ReplicaSet"), Unschedulable: true}
+	p.Placement = map[string]any{"nodeSelectorTerms": []any{map[string]any{"matchExpressions": []any{
+		map[string]any{"key": pools.KeyBurst, "operator": "DoesNotExist"}}}}}
+	return p
 }
 
 func job(name string, on controlplane.Server) pod {
@@ -93,7 +108,13 @@ func TestDecide_PodsThatWaitAddOneMemberForEachUpToTheMaximumAndNeverPastIt(t *t
 			scaling.Decision{Want: 2, Detail: "2 pods wait for a node, so the Cloud pool grows from 0 to 2 of at most 3"}},
 		{"an empty pool of at most 3 with five pods waiting grows to 3 and no more", scaled(0, 3), nil, []pod{waiting("a"), waiting("b"), waiting("c"), waiting("d"), waiting("e")},
 			scaling.Decision{Want: 3, Detail: "5 pods wait for a node, so the Cloud pool grows from 0 to 3 of at most 3"}},
-		{"a pool of one busy member with one pod waiting grows to 2", scaled(0, 3), []controlplane.Server{joined}, []pod{job("busy", joined), waiting("a")},
+		{"a builder's pod with no placement waiting adds a member for it", scaled(0, 3), []controlplane.Server{joined}, []pod{job("busy", joined), waiting("a")},
+			scaling.Decision{Want: 2, Detail: "1 pods wait for a node, so the Cloud pool grows from 1 to 2 of at most 3"}},
+		{"a kit component waiting while every steady member is full adds no member and names the pod its placement keeps off every burst member",
+			scaled(1, 3), []controlplane.Server{joined}, []pod{job("busy", joined), component("argocd-server-0")},
+			scaling.Decision{Want: 1, Detail: "1 pods wait for a node, and the placement of each refuses every burst member, so the Cloud pool holds 1: argocd/argocd-server-0"}},
+		{"a kit component and a builder's pod waiting add one member, for the builder's pod", scaled(0, 3), []controlplane.Server{joined},
+			[]pod{job("busy", joined), component("argocd-server-0"), waiting("a")},
 			scaling.Decision{Want: 2, Detail: "1 pods wait for a node, so the Cloud pool grows from 1 to 2 of at most 3"}},
 		{"a pool with no pod waiting keeps its size", scaled(0, 3), []controlplane.Server{joined}, []pod{job("busy", joined)}, scaling.Decision{Want: 1}},
 		{"one waiting pod grows a pool of at least 3 holding none to its minimum", scaled(3, 6), nil, []pod{waiting("a")},
@@ -118,7 +139,9 @@ func TestDecide_PodsThatWaitAddOneMemberForEachUpToTheMaximumAndNeverPastIt(t *t
 const unreadPods = `{"nodes": [], "pods": {"exitStatus": 1, "stderr": "the server was unable to return a response"}}`
 
 func TestDecide_HoldsThePoolWhenNoRuleChangesIt(t *testing.T) {
-	m, kept := member(1, "fsn1-1", start), member(1, "fsn1-1", start)
+	m, kept := burst(1, "fsn1-1", start), burst(1, "fsn1-1", start)
+	lost := []controlplane.Server{member(1, "fsn1-1", start), burst(2, "nbg1-1", start)}
+	steady := member(1, "fsn1-1", start)
 	kept.Labels[pools.KeyRemovalKept] = strconv.FormatInt(start.Add(20*time.Minute).Unix(), 10)
 	pair := []controlplane.Server{member(1, "fsn1-1", start), member(2, "nbg1-1", start)}
 	pair[0].Labels = controlplane.BeginRemoval(pair[0], start.Add(28*time.Minute), "cloud-pool")
@@ -143,8 +166,10 @@ func TestDecide_HoldsThePoolWhenNoRuleChangesIt(t *testing.T) {
 		{"a member idle for 25 minutes and kept from its removal 10 minutes ago", scaled(0, 3), []controlplane.Server{kept}, idle(kept), 1},
 		{"two idle members while the pool removes fsn1-1 for a lowered maximum", scaled(0, 3), pair, idle(pair...), 2},
 		{"a pool of at least 1 before any report", scaled(1, 3), nil, nil, 1},
-		{"a pool of at least 1 keeps its one idle member, never falling below its minimum", scaled(1, 3), []controlplane.Server{m}, idle(m), 1},
+		{"a pool of at least 1 keeps its one idle steady member, never falling below its minimum", scaled(1, 3), []controlplane.Server{steady}, idle(steady), 1},
 		{"a pool of at least 2 holding none grows to its minimum with no pod waiting", scaled(2, 3), nil, idle(), 2},
+		{"a pool of 2 to 5 that lost a steady member wants it back beside its busy burst member", scaled(2, 5), lost,
+			[]report.Read{read(t, start.Add(5*time.Minute), lost, job("a", lost[0]), job("b", lost[1]))}, 3},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -156,21 +181,22 @@ func TestDecide_HoldsThePoolWhenNoRuleChangesIt(t *testing.T) {
 	}
 }
 
-func TestDecide_AMemberIdlePastTheWindowIsRemovedDownToTheMinimum(t *testing.T) {
-	idle := member(1, "fsn1-1", start)
-	reads := every(t, start.Add(5*time.Minute), start.Add(25*time.Minute), []controlplane.Server{idle})
+func TestDecide_ABurstMemberWhoseLastRunnerPodEndedGoesOnceItsIdleWindowPassesAndThePoolReturnsToItsMinimum(t *testing.T) {
+	members := []controlplane.Server{member(1, "fsn1-1", start), member(2, "nbg1-1", start), burst(3, "fsn1-2", start)}
+	reads := append([]report.Read{read(t, start.Add(5*time.Minute), members, job("runner-1", members[2]))},
+		every(t, start.Add(10*time.Minute), start.Add(30*time.Minute), members)...)
 
-	got, err := scaling.Decide(scaled(0, 3), []controlplane.Server{idle}, reads)
+	got, err := scaling.Decide(scaled(2, 5), members, reads)
 
 	require.NoError(t, err)
 	require.NotNil(t, got.Remove, "the member the pool removes")
-	assert.Equal(t, idle.ID, got.Remove.ID, "the member the pool removes")
-	assert.Equal(t, 0, got.Want, "the members the pool wants")
-	assert.Equal(t, "Cloud worker fsn1-1 has run no pod but the cluster's own for 20m0s, past the pool's idle window of 15m0s, so the pool shrinks from 1 to 0", got.Detail)
+	assert.Equal(t, members[2].ID, got.Remove.ID, "the member the pool removes")
+	assert.Equal(t, 2, got.Want, "the members the pool wants")
+	assert.Equal(t, "Cloud worker fsn1-2 has run no pod but the cluster's own for 20m0s, past the pool's idle window of 15m0s, so the pool shrinks from 3 to 2", got.Detail)
 }
 
 func TestDecide_RemovesNoMemberWhilePodsWaitAndGrowsPastAnOlderReportThatCouldNotBeRead(t *testing.T) {
-	idle := member(1, "fsn1-1", start)
+	idle := burst(1, "fsn1-1", start)
 	reads := every(t, start.Add(5*time.Minute), start.Add(25*time.Minute), []controlplane.Server{idle})
 	reads[2].Body = []byte(unreadPods)
 	reads = append(reads, read(t, start.Add(30*time.Minute), []controlplane.Server{idle}, waiting("a")))
@@ -182,16 +208,17 @@ func TestDecide_RemovesNoMemberWhilePodsWaitAndGrowsPastAnOlderReportThatCouldNo
 	assert.Equal(t, 2, got.Want, "the members the pool wants")
 }
 
-func TestDecide_OfSeveralIdleMembersRemovesTheNewestOfTheLocationHoldingTheMost(t *testing.T) {
-	members := []controlplane.Server{member(1, "fsn1-1", start), member(2, "nbg1-1", start.Add(time.Minute)), member(3, "fsn1-2", start.Add(2*time.Minute))}
+func TestDecide_OfFourIdleMembersRemovesABurstOneAndKeepsBothSteadyOnesThoughOneIsTheNewestOfTheFullestLocation(t *testing.T) {
+	members := []controlplane.Server{burst(1, "fsn1-1", start), burst(2, "fsn1-2", start.Add(time.Minute)),
+		member(3, "nbg1-1", start.Add(2*time.Minute)), member(4, "fsn1-3", start.Add(3*time.Minute))}
 	reads := every(t, start.Add(5*time.Minute), start.Add(30*time.Minute), members)
 
-	got, err := scaling.Decide(scaled(0, 3), members, reads)
+	got, err := scaling.Decide(scaled(2, 5), members, reads)
 
 	require.NoError(t, err)
 	require.NotNil(t, got.Remove, "the member the pool removes")
-	assert.Equal(t, "fsn1-2", got.Remove.Labels[pools.KeyMember], "the newest member of fsn1, which holds two")
-	assert.Equal(t, 2, got.Want, "the members the pool wants")
+	assert.Equal(t, "fsn1-2", got.Remove.Labels[pools.KeyMember], "the newest burst member of fsn1, which holds three")
+	assert.Equal(t, 3, got.Want, "the members the pool wants")
 }
 
 func TestDecide_APoolOfASetSizeNeitherGrowsNorShrinksNorReadsHeld(t *testing.T) {

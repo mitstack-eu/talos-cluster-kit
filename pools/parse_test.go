@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
 	"github.com/mitstack-eu/talos-cluster-kit/pools"
 )
 
@@ -108,5 +109,37 @@ func TestParse_NamesEveryInvalidInputInOneRefusal(t *testing.T) {
 	require.Error(t, err)
 	for _, input := range []string{"cloudPoolLocations", "cloudPoolMin", "dedicatedPool entry 1"} {
 		assert.ErrorContains(t, err, input)
+	}
+}
+
+func TestCheckSteadyHome_RefusesAPoolThatScalesFromZeroWhenNoNodeOutsideItTakesTheKitsComponents(t *testing.T) {
+	fromZero := pools.CloudPool{ServerTypes: []string{"cpx32"}, Locations: []string{"fsn1"}, Min: 0, Max: 3, IdleWindow: 15 * time.Minute}
+	fromOne := fromZero
+	fromOne.Min = 1
+	cases := []struct {
+		name   string
+		plane  controlplane.Plane
+		pool   pools.CloudPool
+		refuse bool
+	}{
+		{"apps on workers with no worker outside the pool and a pool from 0", controlplane.Plane{AppsOnWorkers: true}, fromZero, true},
+		{"apps on workers with no worker outside the pool and a pool from 1", controlplane.Plane{AppsOnWorkers: true}, fromOne, false},
+		{"apps on workers with a Robot worker and a pool from 0", controlplane.Plane{AppsOnWorkers: true, WorkerAddresses: []string{"10.0.1.2"}}, fromZero, false},
+		{"apps on the control plane and a pool from 0", controlplane.Plane{}, fromZero, false},
+		{"apps on workers with no worker outside the pool and no pool", controlplane.Plane{AppsOnWorkers: true}, pools.CloudPool{}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := pools.CheckSteadyHome(tc.plane, tc.pool)
+
+			if !tc.refuse {
+				assert.NoError(t, err)
+				return
+			}
+			var refusal *controlplane.Refusal
+			require.ErrorAs(t, err, &refusal)
+			assert.Equal(t, "cloud-pool-no-steady-home", refusal.Class)
+			assert.Contains(t, refusal.Message, "the kit's components need a steady member or a node outside the pool")
+		})
 	}
 }

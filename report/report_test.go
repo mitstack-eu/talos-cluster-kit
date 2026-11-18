@@ -573,7 +573,7 @@ func TestReport_PostsEachMemberItReadsFromAHealthyCluster(t *testing.T) {
 		member, msg string
 		want        any
 	}{
-		"every pod with its namespace, node, phase, controller kind, whether no node can take it, and containers": {"pods", "", readJSON(t, "testdata", "golden", "pods.json")},
+		"every pod with its namespace, node, phase, controller kind, whether no node can take it, its placement when none can, and containers": {"pods", "", readJSON(t, "testdata", "golden", "pods.json")},
 		"each node's state and ephemeral volume with its encryption": {"systemVolumes", "",
 			readJSON(t, "testdata", "golden", "system-volumes.json")},
 		"the key set the API server signs service account tokens with, under jwks": {"jwks",

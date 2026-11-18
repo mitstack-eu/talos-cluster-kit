@@ -20,7 +20,9 @@
     {
       "metadata": {"name": "shared-2", "namespace": "app-pg",
         "ownerReferences": [{"apiVersion": "postgresql.cnpg.io/v1", "kind": "Cluster", "name": "shared", "controller": true}]},
-      "spec": {"containers": [{"name": "postgres", "image": "ghcr.io/cloudnative-pg/postgresql:16.15"}]},
+      "spec": {"nodeSelector": {"kubernetes.io/os": "linux"}, "affinity": {"nodeAffinity": {"requiredDuringSchedulingIgnoredDuringExecution": {
+          "nodeSelectorTerms": [{"matchExpressions": [{"key": "mitstack.dev/burst", "operator": "DoesNotExist"}]}]}}},
+        "containers": [{"name": "postgres", "image": "ghcr.io/cloudnative-pg/postgresql:16.15"}]},
       "status": {"phase": "Pending", "conditions": [{"type": "PodScheduled", "status": "False", "reason": "Unschedulable",
         "message": "0/4 nodes are available: 4 Insufficient memory. preemption: 0/4 nodes are available: 4 No preemption victims found for incoming pod."}]}
     },

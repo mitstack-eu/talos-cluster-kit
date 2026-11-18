@@ -39,7 +39,22 @@
     "phase": "Pending",
     "ownerKind": "Cluster",
     "unschedulable": true,
-    "containers": []
+    "containers": [],
+    "placement": {
+      "nodeSelector": {
+        "kubernetes.io/os": "linux"
+      },
+      "nodeSelectorTerms": [
+        {
+          "matchExpressions": [
+            {
+              "key": "mitstack.dev/burst",
+              "operator": "DoesNotExist"
+            }
+          ]
+        }
+      ]
+    }
   },
   {
     "namespace": "openbao",

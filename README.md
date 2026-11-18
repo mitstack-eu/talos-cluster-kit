@@ -2069,11 +2069,14 @@ password and e-mail address masked.
 
 ### How an app on the cluster pushes its own telemetry
 
-An app on the cluster can send its own metrics and logs to the bound backend
-without holding a push token. The node copy takes OTLP over HTTP on port 4318
-of its own pod's address. The Service `mitstack-telemetry-otlp` in
-`kube-system` sets `internalTrafficPolicy: Local`, so each push reaches the
-node copy on the sender's own node, which knows every pod there.
+An app on the cluster can send its own metrics and logs to the OTLP backend
+the cluster is bound to, such as Scaleway Cockpit, without holding a push
+token. The node copy, the Collector that runs on every node, takes OTLP over
+HTTP on port 4318 of its own pod's address. The Service
+`mitstack-telemetry-otlp` in `kube-system` sets
+`internalTrafficPolicy: Local`, which Kubernetes documents as sending a pod's
+traffic only to an endpoint on that pod's own node. Each node copy watches the
+pods of its own node.
 
 A plane that sets `Telemetry` outputs the receiver's base URL as
 `otlpEndpoint`:
@@ -2088,29 +2091,46 @@ with the base URL in `OTEL_EXPORTER_OTLP_ENDPOINT`. A plane that leaves
 receiver and no Service.
 
 The Collector decides which app a pushed record belongs to, whatever the
-sender wrote. Pushed records run through pipelines of their own, `logs/otlp`
-and `metrics/otlp`, in three steps:
+sender wrote. A pipeline is the chain of processing steps, called processors,
+that a record passes through between the receiver and the exporter. Pushed
+records run through pipelines of their own, `logs/otlp` and `metrics/otlp`, in
+four steps:
 
-1. `transform/sender` deletes every attribute whose name starts with `k8s.`,
-   `mitstack.`, `k8s_` or `mitstack_`, on the resource, on each log record and
-   on each data point. The tagger keeps any value it finds, so a claim left in
-   place would stand. A classic Prometheus label name cannot hold a dot, so a
-   backend may store `mitstack.app` as `mitstack_app`, and a claim under that
-   name would reach the same label.
+1. `transform/sender` deletes every attribute whose name is `k8s` or
+   `mitstack` followed by any character but a letter or a digit, such as
+   `mitstack.app`, `mitstack_app` or `mitstack-app`. It does so on the
+   resource, on each log record and on each data point. The tagger keeps any
+   value it finds, so a claim left in place would stand. A classic Prometheus
+   label name holds only letters, digits and underscores, so a backend may
+   turn each of those names into the label `mitstack_app`, and a claim under
+   any of them would reach the same label.
 2. `k8s_attributes/otlp` finds the sending pod by the address its connection
    comes from. It tags the record with that pod's name, its namespace and
    `mitstack.app`, before any batch forms, since a batch drops that address.
-3. The record then takes the same masking and subscription tag as every other
+3. `filter/unattributed` drops a record that carries no pod name after the
+   tagger. Only the tagger sets one, so such a record came from an address no
+   pod on the node holds, such as a process on the host network or a pod on
+   another node that pushes to the node copy's own address. Kept, it would
+   arrive with the subscription tag alone and pass for the cluster's own
+   telemetry.
+4. The record then takes the same masking and subscription tag as every other
    record.
 
-A push from an address that matches no pod on the node, such as a process on
-the host network, arrives with the subscription tag alone. `collector_test.go`
-proves the tagging on the pinned Collector. A fixture pod in `app-shop` pushes
-a metric and a log record that claim `mitstack.app=other` and the namespace
-`app-other`. Both arrive tagged `mitstack.app=shop` and `app-shop`, with the
-e-mail address in the log record masked.
+`collector_test.go` proves the tagging and the drop on the pinned Collector. A
+fixture pod in `app-shop` pushes a metric and a log record that claim
+`mitstack.app=other` and the namespace `app-other`. Both arrive tagged
+`mitstack.app=shop` and `app-shop`, with the e-mail address in the log record
+masked. A metric and a log record pushed while no pod holds the sender's
+address never arrive.
 
-The receiver speaks plain HTTP, since a push stays on the node it starts on.
+The test pushes to the node copy's own address, not through the Service. It
+does not show that a push through the Service, or from a pod in Istio ambient
+mode, still comes from the sender's own address. If either changed it, the
+tagger would find no pod and the push would be dropped rather than tagged
+wrongly.
+
+The receiver speaks plain HTTP, since a push through the Service is routed
+only to the node copy on the sender's own node.
 Kyverno's `mitstack-default-deny` blocks an app namespace's egress, so a
 sender there needs a policy of its own that admits `kube-system` on 4318.
 

@@ -173,16 +173,23 @@ subjects:
       # namespace a record names, so a pushed record loses its own claims first.
       transform/sender:
         log_statements:
-          - delete_matching_keys(resource.attributes, "^(k8s|mitstack)[._]")
-          - delete_matching_keys(log.attributes, "^(k8s|mitstack)[._]")
+          - delete_matching_keys(resource.attributes, "^(k8s|mitstack)[^A-Za-z0-9]")
+          - delete_matching_keys(log.attributes, "^(k8s|mitstack)[^A-Za-z0-9]")
         metric_statements:
-          - delete_matching_keys(resource.attributes, "^(k8s|mitstack)[._]")
-          - delete_matching_keys(datapoint.attributes, "^(k8s|mitstack)[._]")
+          - delete_matching_keys(resource.attributes, "^(k8s|mitstack)[^A-Za-z0-9]")
+          - delete_matching_keys(datapoint.attributes, "^(k8s|mitstack)[^A-Za-z0-9]")
       k8s_attributes/otlp:
 {{- template "nodeTagger" }}
         pod_association:
           - sources:
               - from: connection
+      # transform/sender leaves no pod name, so a record without one came from
+      # an address no pod on this node holds, and would pass for the cluster's own.
+      filter/unattributed:
+        log_conditions:
+          - resource.attributes["k8s.pod.name"] == nil
+        metric_conditions:
+          - resource.attributes["k8s.pod.name"] == nil
 {{- template "shared" . }}
     service:
       extensions: [bearertokenauth]
@@ -198,11 +205,11 @@ subjects:
         # The connection's address is gone once a batch forms, so the tagger runs before it.
         logs/otlp:
           receivers: [otlp]
-          processors: [memory_limiter, transform/sender, k8s_attributes/otlp, redaction, resource/subscription, batch]
+          processors: [memory_limiter, transform/sender, k8s_attributes/otlp, filter/unattributed, redaction, resource/subscription, batch]
           exporters: [otlp_http/logs]
         metrics/otlp:
           receivers: [otlp]
-          processors: [memory_limiter, transform/sender, k8s_attributes/otlp, redaction, resource/subscription, transform/datapoints, batch]
+          processors: [memory_limiter, transform/sender, k8s_attributes/otlp, filter/unattributed, redaction, resource/subscription, transform/datapoints, batch]
           exporters: [otlp_http/metrics]
 {{- end }}
 {{- define "nodeTagger" }}

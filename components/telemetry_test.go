@@ -283,3 +283,19 @@ func TestTelemetryCollector_TheNodeCopyReceivesOTLPOnItsPodsAddressBehindANodeLo
 	assert.Equal(t, url.URL{Scheme: "http", Host: "mitstack-telemetry-otlp.kube-system.svc.cluster.local:4318"}, *endpoint,
 		"the base URL the block outputs names the Service, to which a sender appends /v1/metrics and /v1/logs")
 }
+
+func TestTelemetryCollector_TheNodeCopyTagsAPushByItsConnectionInPipelinesOfItsOwnBeforeAnyBatch(t *testing.T) {
+	node := collectorConfig(t, telemetryDocs(t, testutil.TelemetryExport()), "node")
+
+	assert.Equal(t, []any{map[string]any{"sources": []any{map[string]any{"from": "connection"}}}},
+		testutil.Field(t, node, "processors", "k8s_attributes/otlp", "pod_association"), "the push's pod is the one its connection comes from")
+	assert.Equal(t, []any{map[string]any{"tag_name": "mitstack.app", "key": "mitstack.dev/app", "from": "namespace"}},
+		testutil.Field(t, node, "processors", "k8s_attributes/otlp", "extract", "labels"))
+	assert.Equal(t, map[string]any{"receivers": []any{"otlp"}, "exporters": []any{"otlp_http/logs"},
+		"processors": []any{"memory_limiter", "transform/sender", "k8s_attributes/otlp", "filter/unattributed", "redaction", "resource/subscription", "batch"}},
+		testutil.Field(t, node, "service", "pipelines", "logs/otlp"), "a pushed log record loses its claims, is tagged or dropped, then masked")
+	assert.Equal(t, map[string]any{"receivers": []any{"otlp"}, "exporters": []any{"otlp_http/metrics"},
+		"processors": []any{"memory_limiter", "transform/sender", "k8s_attributes/otlp", "filter/unattributed", "redaction", "resource/subscription",
+			"transform/datapoints", "batch"}},
+		testutil.Field(t, node, "service", "pipelines", "metrics/otlp"), "a pushed metric loses its claims, is tagged or dropped, then masked")
+}

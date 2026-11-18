@@ -436,8 +436,8 @@ func (p Plane) ingressLoadBalancer(networkID int64) LoadBalancerSpec {
 
 // loadBalancerStep is the next step the load balancer lacks. It is attached before its public interface is disabled or
 // its private target added, since Hetzner refuses either on a load balancer not yet attached to a network. A label
-// target it should not hold goes only once it holds every address target and its own label selects a server, so it
-// is never left with none it had.
+// target it should not hold goes only once it holds every address target, and on the Cloud pool once the pool has a
+// worker, so it is never left with none it had.
 func (p Plane) loadBalancerStep(st State, network Network, want LoadBalancerSpec, address string) (Step, bool) {
 	what := want.Labels[KeyRole] + " load balancer in " + want.Location
 	lb, ok := st.LoadBalancerIn(Role(want.Labels[KeyRole]), want.Location)
@@ -475,7 +475,7 @@ func (p Plane) loadBalancerStep(st State, network Network, want LoadBalancerSpec
 			}}, true
 		}
 	}
-	if !targetsEvery(lb.TargetIPs, want.TargetIPs) || (want.TargetSelector != "" && !p.selectsAServer(st, want.TargetSelector)) {
+	if !targetsEvery(lb.TargetIPs, want.TargetIPs) || p.awaitsCloudPool(st, want) {
 		return Step{}, false
 	}
 	for _, sel := range lb.TargetSelectors {
@@ -488,14 +488,10 @@ func (p Plane) loadBalancerStep(st State, network Network, want LoadBalancerSpec
 	return Step{}, false
 }
 
-// selectsAServer reports whether selector is some role's selector and the cluster holds a server of that role.
-func (p Plane) selectsAServer(st State, selector string) bool {
-	for role, servers := range st.Servers {
-		if len(servers) > 0 && p.RoleSelector(role) == selector {
-			return true
-		}
-	}
-	return false
+// awaitsCloudPool reports whether want targets the Cloud pool's workers while the pool has none.
+func (p Plane) awaitsCloudPool(st State, want LoadBalancerSpec) bool {
+	return p.IngressTargetsCloudPool && want.TargetSelector == p.RoleSelector(RoleCloudWorker) &&
+		len(st.Servers[RoleCloudWorker]) == 0
 }
 
 func targetsEvery(have, want []string) bool {

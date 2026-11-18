@@ -37,9 +37,9 @@ func (p Plane) gatewayAddrs() []netip.Addr {
 	return out
 }
 
-// sizeRefusal refuses a size the plane cannot build, one server for a cluster that hosts the platform until its OpenBao
-// has a passed restore drill, and a size other than the one the network recorded at subscribe.
-func (p Plane) sizeRefusal(st State) error {
+// SizeRefusal refuses a size the plane cannot build, one server for a hosting cluster with no passed OpenBao restore
+// drill, and a size other than its network recorded at subscribe, reading the state's networks and nothing else.
+func (p Plane) SizeRefusal(st State) error {
 	size := p.size()
 	if _, ok := nodeLocations[size]; !ok {
 		return refuse("invalid-param", "a control plane runs 1 or 3 servers, and %d were asked for, so nothing was changed", size)

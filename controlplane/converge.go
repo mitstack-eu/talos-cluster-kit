@@ -13,7 +13,7 @@ import (
 
 // Refusal refuses, before any change, a plane it cannot act on unambiguously.
 func (p Plane) Refusal(st State) error {
-	if err := p.sizeRefusal(st); err != nil {
+	if err := p.SizeRefusal(st); err != nil {
 		return err
 	}
 	if dups := st.Duplicates(); len(dups) > 0 {

@@ -1,0 +1,319 @@
+## steps to present
+create the firewall (took)
+create the api load balancer in fsn1 (took)
+attach the api load balancer in fsn1 to the network (took)
+disable the api load balancer in fsn1's public interface (took)
+add port 6443 to the api load balancer in fsn1 (took)
+target the nodes from the api load balancer in fsn1 (took)
+create the ingress load balancer in fsn1 (took)
+attach the ingress load balancer in fsn1 to the network (took)
+add port 80 to the ingress load balancer in fsn1 (took)
+add port 443 to the ingress load balancer in fsn1 (took)
+create the gateway and the builders (took)
+attach the gateway in fsn1 to the network at its fixed address before its first boot (took)
+target the worker at 10.0.1.2 from the ingress load balancer in fsn1 (took)
+attach the gateway in nbg1 to the network at its fixed address before its first boot (took)
+attach the gateway in hel1 to the network at its fixed address before its first boot (took)
+attach the builder to the network at its fixed address (took)
+power on the gateway (took)
+power on the gateway in nbg1 (took)
+power on the gateway in hel1 (took)
+power on the builder (took)
+attach the worker builder to the network at its fixed address (took)
+power on the worker builder (took)
+start the snapshot of the builder's disk (took)
+start the snapshot of the worker builder's disk (took)
+delete the builder, whose disk holds every key of the cluster, beside its snapshot (took)
+create the node in fsn1 from the snapshot (took)
+create the node in nbg1 from the snapshot (took)
+create the node in hel1 from the snapshot (took)
+delete the worker builder beside its snapshot (took)
+
+## created
+api-load-balancer-fsn1 hetzner.load-balancer loadBalancerId=1003
+dedicated-server hetzner.dedicated-server serverNumber=3041839
+gateway-fsn1 hetzner.server serverId=1005
+gateway-hel1 hetzner.server serverId=1007
+gateway-nbg1 hetzner.server serverId=1006
+github.gitops-commit github.gitops-commit repo=acme/shop-cluster
+github.repository github.gitops-repository repo=acme/shop-cluster
+hetzner.firewall hetzner.firewall firewallId=1002
+hetzner.kubernetes-cluster hetzner.kubernetes-cluster subscriptionId=sub_0466391a571e
+hetzner.network hetzner.network networkId=1001
+ingress-load-balancer-fsn1 hetzner.load-balancer loadBalancerId=1004
+node-fsn1 hetzner.server serverId=1013
+node-hel1 hetzner.server serverId=1015
+node-nbg1 hetzner.server serverId=1014
+robot-firewall hetzner.robot-firewall serverNumber=3041839
+vswitch hetzner.vswitch vswitchId=87417
+
+## observed
+present: nodes 1013 in fsn1 at 10.0.0.5, 1014 in nbg1 at 10.0.0.6, 1015 in hel1 at 10.0.0.7 are on network 1001 behind gateways 1005 in fsn1, 1006 in nbg1, 1007 in hel1, its default route via 10.0.0.2, and an API load balancer in fsn1 reaches them, and its ingress load balancer the workers at 10.0.1.2, the Robot worker is written, and the newest node report reads every node Ready, and Argo CD's component Applications hold each of the release's 321 objects
+
+## robot requests
+GET /server/3041839
+GET /server/3041839
+GET /vswitch
+GET /server/3041839
+GET /server/3041839
+GET /server/3041839
+GET /vswitch
+GET /server/3041839
+GET /server/3041839
+GET /server/3041839
+GET /vswitch
+GET /server/3041839
+GET /server/3041839
+GET /server/3041839
+GET /vswitch
+GET /server/3041839
+GET /server/3041839
+GET /server/3041839
+GET /vswitch
+GET /server/3041839
+GET /server/3041839
+GET /server/3041839
+GET /vswitch
+GET /server/3041839
+GET /server/3041839
+GET /server/3041839
+GET /vswitch
+GET /server/3041839
+GET /server/3041839
+GET /server/3041839
+GET /vswitch
+GET /server/3041839
+GET /server/3041839
+GET /server/3041839
+GET /vswitch
+GET /server/3041839
+GET /server/3041839
+GET /server/3041839
+GET /vswitch
+GET /server/3041839
+GET /server/3041839
+GET /server/3041839
+GET /vswitch
+GET /server/3041839
+GET /vswitch
+GET /server/3041839
+GET /firewall/3041839
+POST /server/3041839 server_name=mitstack-sub-0466391a571e
+GET /server/3041839
+GET /vswitch
+POST /vswitch name=mitstack-sub-0466391a571e&vlan=4000
+GET /vswitch/87417
+POST /vswitch/87417/server server%5B%5D=3041839
+GET /vswitch/87417
+GET /vswitch/87417
+GET /firewall/3041839
+POST /firewall/3041839 filter_ipv6=true&rules%5Binput%5D%5B0%5D%5Baction%5D=accept&rules%5Binput%5D%5B0%5D%5Bdst_port%5D=32768-65535&rules%5Binput%5D%5B0%5D%5Bip_version%5D=ipv4&rules%5Binput%5D%5B0%5D%5Bname%5D=tcp+replies+v4&rules%5Binput%5D%5B0%5D%5Bprotocol%5D=tcp&rules%5Binput%5D%5B0%5D%5Btcp_flags%5D=ack&rules%5Binput%5D%5B1%5D%5Baction%5D=accept&rules%5Binput%5D%5B1%5D%5Bdst_port%5D=32768-65535&rules%5Binput%5D%5B1%5D%5Bip_version%5D=ipv6&rules%5Binput%5D%5B1%5D%5Bname%5D=tcp+replies+v6&rules%5Binput%5D%5B1%5D%5Bprotocol%5D=tcp&rules%5Binput%5D%5B1%5D%5Btcp_flags%5D=ack&rules%5Binput%5D%5B2%5D%5Baction%5D=accept&rules%5Binput%5D%5B2%5D%5Bdst_port%5D=32768-65535&rules%5Binput%5D%5B2%5D%5Bip_version%5D=ipv4&rules%5Binput%5D%5B2%5D%5Bname%5D=dns+replies+v4&rules%5Binput%5D%5B2%5D%5Bprotocol%5D=udp&rules%5Binput%5D%5B2%5D%5Bsrc_port%5D=53&rules%5Binput%5D%5B3%5D%5Baction%5D=accept&rules%5Binput%5D%5B3%5D%5Bdst_port%5D=32768-65535&rules%5Binput%5D%5B3%5D%5Bip_version%5D=ipv4&rules%5Binput%5D%5B3%5D%5Bname%5D=ntp+replies+v4&rules%5Binput%5D%5B3%5D%5Bprotocol%5D=udp&rules%5Binput%5D%5B3%5D%5Bsrc_port%5D=123&rules%5Binput%5D%5B4%5D%5Baction%5D=accept&rules%5Binput%5D%5B4%5D%5Bip_version%5D=ipv4&rules%5Binput%5D%5B4%5D%5Bname%5D=icmp+from+network&rules%5Binput%5D%5B4%5D%5Bprotocol%5D=icmp&rules%5Binput%5D%5B4%5D%5Bsrc_ip%5D=10.0.0.0%2F16&rules%5Binput%5D%5B5%5D%5Baction%5D=accept&rules%5Binput%5D%5B5%5D%5Bip_version%5D=ipv4&rules%5Binput%5D%5B5%5D%5Bname%5D=cluster+network&rules%5Binput%5D%5B5%5D%5Bsrc_ip%5D=10.0.0.0%2F16&rules%5Boutput%5D%5B0%5D%5Baction%5D=accept&rules%5Boutput%5D%5B0%5D%5Bname%5D=Allow+all&status=active&whitelist_hos=true
+GET /firewall/3041839
+GET /firewall/3041839
+GET /vswitch
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+GET /server/3041839
+GET /vswitch
+GET /vswitch/87417
+GET /firewall/3041839
+
+## progress
+issued the certificate of the gateway in fsn1 at 10.0.0.2: serial <random>, valid from 2026-11-18T09:10:00Z until 2027-11-18T09:10:00Z, renewed by replacing the gateway from 2027-10-19T09:10:00Z
+issued the certificate of the gateway in nbg1 at 10.0.0.248: serial <random>, valid from 2026-11-18T09:10:00Z until 2027-11-18T09:10:00Z, renewed by replacing the gateway from 2027-10-19T09:10:00Z
+issued the certificate of the gateway in hel1 at 10.0.0.249: serial <random>, valid from 2026-11-18T09:10:00Z until 2027-11-18T09:10:00Z, renewed by replacing the gateway from 2027-10-19T09:10:00Z
+
+## worker installs
+1
+
+## robot requests to absent
+GET /vswitch
+GET /vswitch/87417
+DELETE /vswitch/87417/server server%5B%5D=3041839
+GET /vswitch/87417
+GET /vswitch/87417
+GET /vswitch/87417
+DELETE /vswitch/87417 cancellation_date=now
+GET /server/3041839
+DELETE /boot/3041839/rescue
+GET /key
+GET /firewall/3041839
+POST /firewall/3041839 filter_ipv6=false&rules%5Binput%5D%5B0%5D%5Baction%5D=accept&rules%5Binput%5D%5B0%5D%5Bname%5D=allow+all&rules%5Boutput%5D%5B0%5D%5Baction%5D=accept&rules%5Boutput%5D%5B0%5D%5Bname%5D=Allow+all&status=active&whitelist_hos=true
+GET /firewall/3041839
+GET /firewall/3041839
+POST /server/3041839 server_name=
+
+## progress to absent
+stopping the dedicated server's install, if one runs
+deleting the cluster's Hetzner Cloud resources
+releasing the dedicated server and cancelling its vSwitch
+deleting the cluster repository
+
+## cloud resources after delete
+0
+
+## observed after delete
+absent: no server, load balancer, firewall, network or snapshot carries this subscription's labels, and the cluster repository acme/shop-cluster does not exist
+

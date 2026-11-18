@@ -196,8 +196,9 @@ jobs:
         run: TOOLS_IMAGE=talos-tools:ci go test -tags apiserver,collector -count=1 -run '^TestCollector_' .
 
       # A gateway copies talosctl, kubectl and every manifest it serves out of this image, so one the Dockerfile left a
-      # file out of, or holding other bytes than the pins, fails here before a release publishes it.
-      - name: Copy the tools and the served manifests out of it as a gateway does
+      # file out of, or holding other bytes than the pins, fails here before a release publishes it. machine-config
+      # then renders a running node's configuration from stdin as it does in the cluster.
+      - name: Copy the tools and the served manifests out of it as a gateway does, and render a node's configuration
         if: ${{ !cancelled() }}
         run: TOOLS_IMAGE=talos-tools:ci go test -tags toolsimage -count=1 -run '^TestToolsImage_' .
 

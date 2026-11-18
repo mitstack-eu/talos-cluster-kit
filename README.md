@@ -4093,7 +4093,10 @@ cannot stop it.
 The same job tags that commit `operator/v` followed by the version, which is
 the operator module's release. A block requires it as
 `require github.com/mitstack-eu/talos-cluster-kit/operator v0.83.0`, beside
-its requirement of the kit itself.
+its requirement of the kit itself. It also tags the commit
+`operator/robotcluster/v` followed by the version, the robot cluster module's
+release, and pushes all three tags at once, so either all of them land or none
+does.
 
 ## How an operator shares its start-up and repository code
 
@@ -4142,7 +4145,9 @@ C4Component
 ```
 
 For example, an operator judges whether its cluster reports every node Ready
-since its last server was created:
+since its newest node server was created. Here `reports` holds the node reports
+mitstack returned for the subscription, and `lastCreated` is the time Hetzner
+created the newest of the cluster's node servers:
 
 ```go
 nodes, err := operator.NewestReportNodes(reports, lastCreated)
@@ -4178,6 +4183,97 @@ not reach a nested module:
 ```bash
 go -C operator vet ./...
 go -C operator test -race ./...
+```
+
+## The robot cluster module, for a cluster with a Robot worker
+
+hcloud-hrobot-talos-cluster builds a Talos cluster whose control plane runs on
+three Hetzner Cloud servers, and whose apps run on one Robot server, a
+dedicated machine rented from Hetzner, and on a pool of Cloud servers. The robot
+cluster module under `operator/robotcluster` holds everything that operator
+does to such a cluster. The operator keeps only its id, its manifest and the
+wiring that hands its clients to the module. This section is for an engineer
+who changes how such a cluster is built, read, upgraded or torn down.
+
+The module is a Go module of its own, nested in the operator module. It builds
+the cluster from the kit's packages, so it requires a release of the kit, and a
+kit release fixes the Talos components a cluster runs. The operator module
+requires no kit release, so hcloud-talos-cluster can take it without moving its
+components. A block that requires the robot cluster module takes the kit
+release named in `operator/robotcluster/go.mod`, unless it requires a newer
+one itself.
+
+An operator builds one `Cluster` with `robotcluster.New`, handing it a
+`Config`. `Config` names the block's id, which labels every Cloud resource,
+the boundary that separates the parts of a Cloud server's start-up data, and
+the function that writes the worker's disk image onto the Robot server. That
+function stays with the operator, since its scripts wait with shell `sleep`,
+which `checkpolls` refuses in a line a change adds. `checkpolls` is the CI step
+[the development page](docs/development.md#what-ci-runs) describes. Every other field is a
+client the cluster calls, such as the clock or the Hetzner Cloud API. A field
+left empty is the client a released operator uses, and a test fills it with a
+fake.
+
+| Part | What it does | Main entry points |
+|---|---|---|
+| Lifecycle | Answers each call mitstack makes to the operator. `Ensure` builds or upgrades the cluster one step per call. `EnsureOwning` does the same and also returns the block's own secrets the call minted, the values mitstack keeps for the block such as the gateway CA's key. `EnsureResourcesOwning` also lists the resources the call created. `Observe` reads the whole cluster, `Observers` and `TypeObservers` read one resource by its name or by its type, and `Delete` tears the cluster down | `New`, `Config`, `Cluster.Ensure`, `Cluster.EnsureOwning`, `Cluster.EnsureResourcesOwning`, `Cluster.Observe`, `Cluster.Observers`, `Cluster.TypeObservers`, `Cluster.Delete` |
+| Control plane and gateways | Builds the three Cloud nodes and the gateways in front of them through the kit's `controlplane` package, and reads each gateway's newest report. A gateway is the Cloud server in each location that the nodes route out through and pull their images from | `Cluster.NewPlane`, `Cluster.WithGateways`, `GatewayReports`, `NewGatewayReports`, `GuardRemoval` |
+| Robot worker | Refuses a Robot server that is missing, cancelled, outside the cluster's locations or named for another subscription, before anything is written. It then joins the server to the cluster's network over a vSwitch, Hetzner's private link between Robot and Cloud servers, sets its firewall, and runs the install `Config` names in the background | `RobotName`, `Worker`, `WorkerInstall`, `WorkerFirewall`, `WorkerFirewallFor`, `HoldsWorkerRules`, `WaitOutRobotLimit`, `Cluster.JobRunning`, `Cluster.StopJob` |
+| Cloud pool and node replace | Scales the pool of Cloud workers through the kit's `pools` package, and names the control-plane nodes and Cloud workers an upgrade's request asks to replace that the cluster runs | `MemberName`, `Located`, `Cluster.PlanReplacements` |
+| Rollout | Writes a release's components to the cluster repository and reads them back from the cluster's node report. It keeps the blob SHA of each file a release renders, the hash Git names a file's content by, so each release is rendered once. `Rendering.Blobs` gives those hashes | `ReleaseFor`, `Cluster.RenderingOf`, `Rendering.Blobs` |
+| Hosting | For the cluster that hosts mitstack itself, commits the keys that recover the cluster's OpenBao store and its sealed secrets to its repository. Each is encrypted with OpenPGP to the owner's public key, so only the owner's private key opens it. It also creates the two deploy keys that repository is read and written with | `HostsPlatform`, `EncryptTo`, `DeployKey` |
+
+The view below shows the module's parts and the kit packages and outside
+systems they call, in the form of a C4 Component view.
+
+```mermaid
+C4Component
+    title The robot cluster module and what it calls
+    Container(hrobot, "hcloud-hrobot-talos-cluster", "Go operator", "Its id, manifest, worker install and wiring")
+    Container_Boundary(module, "talos-cluster-kit/operator/robotcluster") {
+        Component(life, "Lifecycle", "Go", "Ensure, Observe and Delete for each subscription")
+        Component(plane, "Control plane and gateways", "Go", "Cloud nodes, gateways and their reports")
+        Component(worker, "Robot worker", "Go", "Admits, vSwitch, firewall and install job")
+        Component(pool, "Cloud pool and node replace", "Go", "Scales the pool and names what an upgrade replaces")
+        Component(roll, "Rollout", "Go", "Writes and reads back a release's components")
+        Component(host, "Hosting", "Go", "Recovery keys and deploy keys of the cluster that hosts mitstack")
+    }
+    Container(kit, "talos-cluster-kit", "Go module", "controlplane, pools, rollout and the operator module")
+    System_Ext(hetzner, "Hetzner", "Cloud API and Robot API")
+    System_Ext(platform, "mitstack", "Calls the operator and serves the node reports")
+    System_Ext(github, "GitHub", "Holds the cluster repository")
+    Rel(hrobot, life, "Hands its clients to and serves")
+    Rel(life, plane, "Builds and reads the control plane with")
+    Rel(life, worker, "Installs and reads the worker with")
+    Rel(life, pool, "Scales and replaces with")
+    Rel(life, roll, "Rolls a release out with")
+    Rel(plane, kit, "Calls controlplane in")
+    Rel(pool, kit, "Calls pools in")
+    Rel(plane, hetzner, "Creates Cloud servers through")
+    Rel(worker, hetzner, "Reads and changes the Robot server through")
+    Rel(roll, github, "Writes the release to")
+    Rel(life, host, "Seals and keys a hosting cluster with")
+    Rel(host, github, "Commits the sealed keys and adds deploy keys to")
+    Rel(life, platform, "Reads the node reports from")
+```
+
+For example, hcloud-hrobot-talos-cluster builds its cluster once, at start-up,
+and serves its calls from it:
+
+```go
+var cluster = robotcluster.New(robotcluster.Config{
+    Block:         "hcloud-hrobot-talos-cluster",
+    Boundary:      "mitstack-hcloud-hrobot-talos-cluster",
+    InstallWorker: installWorker, // the operator's own install of the worker image
+})
+```
+
+The module's tests run from its own directory, since the operator module's
+`./...` does not reach a module nested in it:
+
+```bash
+go -C operator/robotcluster vet ./...
+go -C operator/robotcluster test -race ./...
 ```
 
 ## How you change the module

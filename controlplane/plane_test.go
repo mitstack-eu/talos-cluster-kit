@@ -378,6 +378,21 @@ func TestPlane_SizeRefusalJudgesASizeFromAStateHoldingOnlyTheSubscriptionsNetwor
 	}
 }
 
+func TestPlane_SizeRefusalRefusesAStateHoldingTwoOfTheSubscriptionsNetworksNamingBoth(t *testing.T) {
+	h := newHarness(t)
+	h.built()
+	first := h.network()
+	second, err := h.cloud.CreateNetwork(context.Background(), controlplane.NetworkSpec{Name: first.Name, IPRange: first.IPRange, Labels: first.Labels})
+	require.NoError(t, err)
+
+	err = h.plane.SizeRefusal(controlplane.State{Networks: h.read().Networks})
+
+	assert.Equal(t, "ambiguous-cluster", refusalClass(t, err))
+	assert.ErrorContains(t, err, "2 networks carry this subscription's labels")
+	assert.ErrorContains(t, err, fmt.Sprint(first.ID))
+	assert.ErrorContains(t, err, fmt.Sprint(second.ID))
+}
+
 func TestPlane_AOneServerClusterWhoseNodeIsLostNamesTheLostNodeAndNoOtherLocation(t *testing.T) {
 	h := newHarness(t, func(h *harness) { h.plane.Size = 1 })
 	h.built()

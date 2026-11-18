@@ -1,6 +1,7 @@
 package nodeconfig_test
 
 import (
+	"bytes"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -755,4 +756,185 @@ func TestRender_RefusesNodeLabelsEveryCloudNodeWouldShareThatReplaceTheSubscript
 			assert.Contains(t, err.Error(), tc.want)
 		})
 	}
+}
+
+// release names the kit release a test renders, as its tools image's digest names it.
+const release = "sha256:5f0c1b2a3d4e5f60718293a4b5c6d7e8f90123456789abcdef0123456789abcd"
+
+func TestRender_AnnotatesTheNodeWithTheReleaseItsConfigurationWasRenderedFrom(t *testing.T) {
+	cluster := testutil.NewCluster(t)
+	cluster.Release = release
+
+	got, err := nodeconfig.RenderWorker(cluster, nodeconfig.Node{})
+
+	require.NoError(t, err)
+	nodeConfigs := testutil.Kind(testutil.Documents(t, got), "KubeNodeConfig")
+	require.Len(t, nodeConfigs, 1)
+	assert.Equal(t, map[string]any{nodeconfig.MachineConfigAnnotation: release}, testutil.Field(t, nodeConfigs[0], "annotations"))
+}
+
+// renderedNode is one kind of node, the cluster it belongs to and how a release renders its configuration.
+type renderedNode struct {
+	name    string
+	cluster func() nodeconfig.Cluster
+	render  func(nodeconfig.Cluster) ([]byte, error)
+}
+
+func renderedNodes(t *testing.T) []renderedNode {
+	t.Helper()
+	controlPlane := func(n nodeconfig.Node) func(nodeconfig.Cluster) ([]byte, error) {
+		return func(c nodeconfig.Cluster) ([]byte, error) { return nodeconfig.Render(c, n) }
+	}
+	worker := func(n nodeconfig.Node) func(nodeconfig.Cluster) ([]byte, error) {
+		return func(c nodeconfig.Cluster) ([]byte, error) { return nodeconfig.RenderWorker(c, n) }
+	}
+	dedicated := vswitchNode(t)
+	dedicated.Labels = map[string]string{"topology.kubernetes.io/zone": "hel1"}
+	cloud := func() nodeconfig.Cluster { return testutil.NewCluster(t) }
+	return []renderedNode{
+		{name: "a Cloud control-plane node of one location", cluster: cloud, render: controlPlane(nodeconfig.Node{})},
+		{name: "a Cloud control-plane node of three locations that keeps apps off it", render: controlPlane(nodeconfig.Node{}), cluster: func() nodeconfig.Cluster {
+			c := testutil.NewCluster(t, testutil.WithLocations(3))
+			c.AppsOnWorkers = true
+			return c
+		}},
+		{name: "a Cloud control-plane node with no log receiver", render: controlPlane(nodeconfig.Node{}), cluster: func() nodeconfig.Cluster {
+			c := testutil.NewCluster(t)
+			c.Logs = components.LogExport{}
+			return c
+		}},
+		{name: "a dedicated control-plane node", render: controlPlane(nodeconfig.Node{Hostname: "cp-fsn1"}), cluster: func() nodeconfig.Cluster {
+			return testutil.NewCluster(t, testutil.WithProfile(nodeconfig.Metal))
+		}},
+		{name: "a Cloud worker", cluster: cloud, render: worker(nodeconfig.Node{})},
+		{name: "a dedicated worker on a vSwitch with its own labels", render: worker(dedicated), cluster: func() nodeconfig.Cluster {
+			return testutil.NewCluster(t, testutil.WithProfile(nodeconfig.Metal), testutil.WithLocations(3))
+		}},
+	}
+}
+
+func TestRerender_GivesARunningNodeTheConfigurationThisReleaseRendersForItUnderItsOwnKeysAndSettings(t *testing.T) {
+	for _, tc := range renderedNodes(t) {
+		t.Run(tc.name, func(t *testing.T) {
+			cluster := tc.cluster()
+			running, err := tc.render(cluster)
+			require.NoError(t, err)
+			cluster.Release = release
+			want, err := tc.render(cluster)
+			require.NoError(t, err)
+
+			got, err := nodeconfig.Rerender(running, release)
+
+			require.NoError(t, err)
+			assert.Equal(t, testutil.Documents(t, want), testutil.Documents(t, got))
+		})
+	}
+}
+
+func TestRerender_GivesANodeAnEarlierReleaseConfiguredThisReleasesSettingsAndKeepsTheManifestsItApplied(t *testing.T) {
+	cluster := testutil.NewCluster(t)
+	current, err := nodeconfig.Render(cluster, nodeconfig.Node{})
+	require.NoError(t, err)
+	running := editDocuments(t, current, func(doc map[string]any) {
+		switch doc["kind"] {
+		case "TimeSyncConfig":
+			doc["ntp"] = map[string]any{"servers": []any{"time.cloudflare.com"}}
+		case "KubeInlineManifestConfig":
+			doc["manifest"] = "kind: ConfigMap\napiVersion: v1\nmetadata:\n  name: applied-at-install\n"
+		}
+	})
+	cluster.Release = release
+	want, err := nodeconfig.Render(cluster, nodeconfig.Node{})
+	require.NoError(t, err)
+
+	got, err := nodeconfig.Rerender(running, release)
+
+	require.NoError(t, err)
+	gotDocs := testutil.Documents(t, got)
+	assert.Equal(t, testutil.Kind(testutil.Documents(t, want), "TimeSyncConfig"), testutil.Kind(gotDocs, "TimeSyncConfig"))
+	assert.Equal(t, testutil.Kind(testutil.Documents(t, running), "KubeInlineManifestConfig"), testutil.Kind(gotDocs, "KubeInlineManifestConfig"),
+		"the components' manifests reach a running cluster through Argo CD, so the node keeps the ones it applied at install")
+}
+
+func TestRerender_RefusesARunningNodeWhoseSettingItTakesOnlyAtRebootTheReleaseChangesNamingTheSetting(t *testing.T) {
+	cases := []struct {
+		name string
+		edit func(map[string]any)
+		want string
+	}{
+		{"an etcd setting", func(doc map[string]any) {
+			if doc["version"] == "v1alpha1" {
+				etcd := doc["cluster"].(map[string]any)["etcd"].(map[string]any)
+				etcd["extraArgs"] = map[string]any{"election-timeout": "5000"}
+			}
+		}, "cluster.etcd"},
+		{"a kernel module", func(doc map[string]any) {
+			if doc["version"] == "v1alpha1" {
+				doc["machine"].(map[string]any)["kernel"] = map[string]any{"modules": []any{map[string]any{"name": "drbd"}}}
+			}
+		}, "machine.kernel"},
+		{"a system volume's encryption", func(doc map[string]any) {
+			if doc["kind"] == "VolumeConfig" && doc["name"] == "EPHEMERAL" {
+				delete(doc, "encryption")
+			}
+		}, "VolumeConfig EPHEMERAL"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			current, err := nodeconfig.Render(testutil.NewCluster(t), nodeconfig.Node{})
+			require.NoError(t, err)
+			running := editDocuments(t, current, tc.edit)
+
+			got, err := nodeconfig.Rerender(running, release)
+
+			require.ErrorIs(t, err, nodeconfig.ErrRebootOnly)
+			assert.Contains(t, err.Error(), tc.want)
+			assert.Nil(t, got)
+		})
+	}
+}
+
+func TestRerender_RefusesWhatIsNoRunningNodesConfigurationOrNamesNoRelease(t *testing.T) {
+	current, err := nodeconfig.Render(testutil.NewCluster(t), nodeconfig.Node{})
+	require.NoError(t, err)
+	withoutV1Alpha1 := editDocuments(t, current, func(doc map[string]any) {
+		if doc["version"] == "v1alpha1" {
+			clear(doc)
+		}
+	})
+	cases := []struct {
+		name     string
+		running  []byte
+		release  string
+		wantText string
+	}{
+		{"bytes that are no configuration", []byte("{not: yaml: at all"), release, "read the running configuration"},
+		{"a configuration without its v1alpha1 document", withoutV1Alpha1, release, "v1alpha1"},
+		{"no release", current, "", "release"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := nodeconfig.Rerender(tc.running, tc.release)
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantText)
+			assert.Nil(t, got)
+		})
+	}
+}
+
+// editDocuments applies edit to each document of a multi-document configuration, dropping one the edit leaves empty.
+func editDocuments(t *testing.T, config []byte, edit func(map[string]any)) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	encoder := yaml.NewEncoder(&out)
+	for _, doc := range testutil.Documents(t, config) {
+		edit(doc)
+		if len(doc) == 0 {
+			continue
+		}
+		require.NoError(t, encoder.Encode(doc))
+	}
+	require.NoError(t, encoder.Close())
+	return out.Bytes()
 }

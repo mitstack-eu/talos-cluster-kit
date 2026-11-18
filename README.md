@@ -219,10 +219,7 @@ install again.
 plane given none runs 3, as every cluster built before the size was a choice
 does. Three nodes keep etcd, Kubernetes' store, serving while one is down,
 since two of the three members still agree. One node holds one etcd member,
-so a lost node stops the cluster until a replacement comes back. The node
-replace in [How a control-plane node is replaced](#how-a-control-plane-node-is-replaced)
-refuses that replacement, since the redundancy guard finds no other member
-serving.
+so a lost node stops the cluster until a replacement comes back.
 
 `Plane.NodeLocations` gives the locations the plane builds in:
 
@@ -236,8 +233,9 @@ The network records the size at its creation under the label
 a choice reads as 3. `Plane.Refusal` refuses a size other than the recorded
 one with the class `control-plane-size-fixed`, naming the recorded size, so
 an upgrade never rebuilds a cluster in another shape. It refuses a size other
-than 1 or 3 with `invalid-param`, and one node for a plane that hosts the
-platform, since OpenBao there runs a member on each of three nodes.
+than 1 or 3 with `invalid-param`. It refuses one node for a plane that hosts
+the platform with `restore-drill-missing`, naming the ADR 0125 restore drill,
+since OpenBao's data would then sit on that one server alone.
 
 A block reads the size from its request with the operator module's
 `operator.ControlPlaneSize`, which the section on

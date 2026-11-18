@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"net/netip"
+	"slices"
 	"strconv"
 )
 
@@ -23,8 +24,9 @@ func (p Plane) size() int {
 	return p.Size
 }
 
-// NodeLocations are the locations holding one of the plane's nodes and a gateway each, empty for a size it cannot build.
-func (p Plane) NodeLocations() []string { return nodeLocations[p.size()] }
+// NodeLocations are the locations holding one of the plane's nodes and a gateway each, empty for a size it cannot build;
+// each call gives a copy, so a caller's change cannot reach Locations.
+func (p Plane) NodeLocations() []string { return slices.Clone(nodeLocations[p.size()]) }
 
 func (p Plane) gatewayAddrs() []netip.Addr {
 	out := make([]netip.Addr, 0, len(p.NodeLocations()))
@@ -34,16 +36,16 @@ func (p Plane) gatewayAddrs() []netip.Addr {
 	return out
 }
 
-// sizeRefusal refuses a size the plane cannot build, one server for a cluster that hosts the platform, whose OpenBao
-// runs a member on each of three nodes, and a size other than the one the network recorded at subscribe.
+// sizeRefusal refuses a size the plane cannot build, one server for a cluster that hosts the platform until its OpenBao
+// has a passed restore drill, and a size other than the one the network recorded at subscribe.
 func (p Plane) sizeRefusal(st State) error {
 	size := p.size()
 	if _, ok := nodeLocations[size]; !ok {
 		return refuse("invalid-param", "a control plane runs 1 or 3 servers, and %d were asked for, so nothing was changed", size)
 	}
 	if size == 1 && p.Hosting != nil {
-		return refuse("invalid-param",
-			"a cluster that hosts the platform runs OpenBao with a member on each of three control-plane nodes, so it cannot run on one, and nothing was changed")
+		return refuse("restore-drill-missing",
+			"a cluster that hosts the platform runs OpenBao, whose data a single server holds alone; it runs on one server only once an ADR 0125 restore drill has passed for it, and none has, so nothing was changed")
 	}
 	network, ok := st.Network()
 	if !ok {

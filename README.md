@@ -721,14 +721,15 @@ mechanism set it.
 
 The labeller also labels each burst member of a Cloud pool
 `mitstack.dev/burst=true`, and takes that label off every other node it names,
-as [Steady and burst members](#steady-and-burst-members) describes. After it
-labels a burst member, it reads the pods on that node and evicts each one
-whose every required node affinity term refuses the label, leaving a pod that
-is already leaving or has finished. An eviction is the request a drain makes,
-so it honours the pod's disruption budget. A budget that holds a pod is named
-in the run's output, the rest are evicted, and the run fails so that the next
-one tries again. Any other refused eviction, or pods it cannot read, stops the
-run there.
+as [Steady and burst members](#steady-and-burst-members) describes. Once it
+has labelled every node, it reads the pods on each burst member and evicts each
+one whose every required node affinity term refuses the label, leaving a pod
+that is already leaving or has finished. An eviction is the request a drain
+makes, so it honours the pod's disruption budget. A budget that holds a pod is
+named in the run's output, the rest are evicted, and the run fails so that the
+next one tries again. A pod that has left before its eviction counts as moved.
+Any other refused eviction, or pods it cannot read, stops the run there, with
+every node already labelled.
 
 The labeller names two sets of Cloud nodes, which `Plane.topologyManifests` in
 `controlplane/topology.go` lists. It names the three control-plane nodes from

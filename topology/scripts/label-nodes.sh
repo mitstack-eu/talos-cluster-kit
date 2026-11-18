@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Labels each joined node TOPOLOGY_NODES names with its zone and TOPOLOGY_REGION under the field manager
 # TOPOLOGY_FIELD_MANAGER, labels each of TOPOLOGY_BURST_NODES a burst node and takes the label off every other, and
-# leaves a node that has not joined to a later run. It then evicts from each burst node every pod whose placement
-# refuses a burst node. An eviction a disruption budget holds is named and retried by the next run, which this one
-# fails for; any other failure ends the run.
+# leaves a node that has not joined to a later run. Once every node is labelled, it evicts from each burst node every
+# pod whose placement refuses a burst node. An eviction a disruption budget holds is named and retried by the next run,
+# which this one fails for; a pod already gone counts as moved; any other failure ends the run.
 # Usage: TOPOLOGY_NODES="<node>=<zone> ..." TOPOLOGY_REGION=<region> TOPOLOGY_FIELD_MANAGER=<manager> \
 #   [TOPOLOGY_BURST_NODES="<node> ..."] label-nodes.sh
 # It exists because every Cloud node boots one shared Talos configuration, which cannot name each node's own zone or
@@ -40,6 +40,8 @@ evict() {
     return
   fi
   case $err in
+    *"(NotFound): pods \"$name\" not found"*)
+      echo "label-nodes: $namespace/$name left burst node $node before its eviction" ;;
     *TooManyRequests*)
       echo "label-nodes: $namespace/$name stays on burst node $node until its disruption budget allows: $err" >&2
       held=1 ;;
@@ -61,6 +63,7 @@ evict_refusing() {
   done <<<"$pods"
 }
 
+joined_burst=()
 for pair in $TOPOLOGY_NODES; do
   node=${pair%%=*}
   zone=${pair#*=}
@@ -77,8 +80,12 @@ for pair in $TOPOLOGY_NODES; do
   kubectl label node "$node" --overwrite --field-manager="$TOPOLOGY_FIELD_MANAGER" \
     "topology.kubernetes.io/zone=$zone" "topology.kubernetes.io/region=$TOPOLOGY_REGION" "$burst"
   if is_burst "$node"; then
-    evict_refusing "$node"
+    joined_burst+=("$node")
   fi
+done
+
+for node in "${joined_burst[@]}"; do
+  evict_refusing "$node"
 done
 
 if [ "$held" -ne 0 ]; then

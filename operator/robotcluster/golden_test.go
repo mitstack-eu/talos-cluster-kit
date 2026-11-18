@@ -27,8 +27,6 @@ func TestDedicatedServerCluster_TakesTheStepsAndRobotCallsItsGoldenRecords(t *te
 	assertDedicatedServerGolden(t)
 }
 
-// assertDedicatedServerGolden subscribes and unsubscribes production's request on a cluster with each option applied,
-// and holds what it took and read to the golden.
 func assertDedicatedServerGolden(t *testing.T, opts ...envOption) {
 	t.Helper()
 	steps := captureSteps(t)

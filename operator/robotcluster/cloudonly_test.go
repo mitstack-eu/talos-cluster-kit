@@ -1,8 +1,7 @@
 package robotcluster_test
 
-// An operator that makes its dedicated server optional runs a request naming none on Hetzner Cloud alone, with no
-// Robot call, as long as its Cloud pool keeps at least one worker; an operator that keeps the server required refuses
-// that request as before.
+// A request naming no dedicated server runs on Hetzner Cloud alone, with no Robot call, on an operator that makes the
+// server optional, and is refused on one that requires it.
 
 import (
 	"context"
@@ -20,8 +19,6 @@ import (
 
 const cloudOnlySub = "sub_0c10d0a1b2c3"
 
-// cloudOnly is a request naming no dedicated server, with a control plane of one and a Cloud pool of 1 to 4, to an
-// operator that makes the server optional.
 func cloudOnly(e *env) {
 	e.cfg.DedicatedServerOptional, e.cfg.DeclaredSize = true, 1
 	e.params["controlPlaneSize"] = "1"

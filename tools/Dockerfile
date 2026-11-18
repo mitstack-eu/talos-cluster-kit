@@ -13,7 +13,8 @@
 # machine-config renders a running node's configuration inside the cluster, since only the nodes hold the cluster's
 # keys. It builds from the kit's own source with the Go release go.mod names, which a test holds the stage to. The
 # build needs the components package's Go source and every manifest it embeds, so the build context lets the whole
-# components directory in, and the image carries every file of it but the Go source, the gateways serving a subset.
+# components directory in. The image takes that directory from this stage once its Go source is deleted, so it carries
+# every manifest of it, the gateways serving a subset.
 FROM docker.io/library/golang:1.26.10-alpine@sha256:87c65a688975c0b1d4585d204874c45ca78354670e3a5f11368c5a492303d696 AS machine-config
 
 WORKDIR /src
@@ -25,6 +26,7 @@ COPY internal/ internal/
 COPY nodeconfig/ nodeconfig/
 COPY openbaoinit/ openbaoinit/
 RUN CGO_ENABLED=0 GOTOOLCHAIN=local go build -trimpath -ldflags="-s -w" -o /machine-config ./cmd/machine-config
+RUN find components -name "*.go" -delete
 
 FROM docker.io/library/alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
 
@@ -61,7 +63,7 @@ RUN apk add --no-cache bash ca-certificates coreutils curl git gpg openssh-clien
 
 COPY report/scripts/report.sh report/scripts/mesh-probe.sh report/scripts/security-scan.sh topology/scripts/label-nodes.sh controlplane/scripts/cluster-tokens.sh rollout/scripts/handover.sh rollout/scripts/openbao-rollout.sh /usr/local/lib/mitstack/
 COPY tools/kube-bench-talos.yaml /usr/local/lib/mitstack/kube-bench/cfg/cis-1.10/config.yaml
-COPY --exclude=*.go components/ /usr/local/lib/mitstack/components/
+COPY --from=machine-config /src/components/ /usr/local/lib/mitstack/components/
 COPY --from=machine-config /machine-config /usr/local/bin/machine-config
 
 USER 65532:65532

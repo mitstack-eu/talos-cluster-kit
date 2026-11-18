@@ -1,0 +1,153 @@
+{
+  "items": [
+    {
+      "metadata": {
+        "namespace": "argocd",
+        "name": "argocd-server-0"
+      },
+      "spec": {
+        "affinity": {
+          "nodeAffinity": {
+            "requiredDuringSchedulingIgnoredDuringExecution": {
+              "nodeSelectorTerms": [
+                {
+                  "matchExpressions": [
+                    {
+                      "key": "mitstack.dev/burst",
+                      "operator": "DoesNotExist"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      },
+      "status": {
+        "phase": "Running"
+      }
+    },
+    {
+      "metadata": {
+        "namespace": "logs",
+        "name": "loki-0"
+      },
+      "spec": {
+        "affinity": {
+          "nodeAffinity": {
+            "requiredDuringSchedulingIgnoredDuringExecution": {
+              "nodeSelectorTerms": [
+                {
+                  "matchExpressions": [
+                    {
+                      "key": "mitstack.dev/burst",
+                      "operator": "DoesNotExist"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      },
+      "status": {
+        "phase": "Pending"
+      }
+    },
+    {
+      "metadata": {
+        "namespace": "argocd",
+        "name": "argocd-repo-1",
+        "deletionTimestamp": "2026-11-05T12:00:00Z"
+      },
+      "spec": {
+        "affinity": {
+          "nodeAffinity": {
+            "requiredDuringSchedulingIgnoredDuringExecution": {
+              "nodeSelectorTerms": [
+                {
+                  "matchExpressions": [
+                    {
+                      "key": "mitstack.dev/burst",
+                      "operator": "DoesNotExist"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      },
+      "status": {
+        "phase": "Running"
+      }
+    },
+    {
+      "metadata": {
+        "namespace": "openbao",
+        "name": "openbao-init-x"
+      },
+      "spec": {
+        "affinity": {
+          "nodeAffinity": {
+            "requiredDuringSchedulingIgnoredDuringExecution": {
+              "nodeSelectorTerms": [
+                {
+                  "matchExpressions": [
+                    {
+                      "key": "mitstack.dev/burst",
+                      "operator": "DoesNotExist"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      },
+      "status": {
+        "phase": "Succeeded"
+      }
+    },
+    {
+      "metadata": {
+        "namespace": "ci",
+        "name": "runner-1"
+      },
+      "spec": {},
+      "status": {
+        "phase": "Running"
+      }
+    },
+    {
+      "metadata": {
+        "namespace": "kube-system",
+        "name": "cilium-x"
+      },
+      "spec": {
+        "affinity": {
+          "nodeAffinity": {
+            "requiredDuringSchedulingIgnoredDuringExecution": {
+              "nodeSelectorTerms": [
+                {
+                  "matchFields": [
+                    {
+                      "key": "metadata.name",
+                      "operator": "In",
+                      "values": [
+                        "shop-sub-0123-node-nbg1"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      },
+      "status": {
+        "phase": "Running"
+      }
+    }
+  ]
+}

@@ -12,6 +12,13 @@ import (
 	"sync"
 )
 
+// BurstLabel is the node label each burst member of a Cloud pool carries, which every pod the set renders refuses but
+// a DaemonSet's, one on the control plane, and the local path provisioner's helper, which runs on its volume's node.
+const BurstLabel = "mitstack.dev/burst"
+
+// BurstValue is the value of BurstLabel on a burst member.
+const BurstValue = "true"
+
 type Versions struct {
 	Talos      string
 	Kubernetes string

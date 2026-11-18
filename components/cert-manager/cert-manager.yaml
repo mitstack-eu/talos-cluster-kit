@@ -13729,6 +13729,13 @@ spec:
         prometheus.io/scrape: 'true'
         prometheus.io/port: '9402'
     spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: mitstack.dev/burst
+                    operator: DoesNotExist
       serviceAccountName: cert-manager-cainjector
       enableServiceLinks: false
       securityContext:
@@ -13797,6 +13804,13 @@ spec:
         prometheus.io/scrape: 'true'
         prometheus.io/port: '9402'
     spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: mitstack.dev/burst
+                    operator: DoesNotExist
       serviceAccountName: cert-manager
       enableServiceLinks: false
       securityContext:
@@ -13884,6 +13898,13 @@ spec:
         prometheus.io/scrape: 'true'
         prometheus.io/port: '9402'
     spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: mitstack.dev/burst
+                    operator: DoesNotExist
       serviceAccountName: cert-manager-webhook
       enableServiceLinks: false
       securityContext:

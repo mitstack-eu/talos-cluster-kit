@@ -1,10 +1,12 @@
 package topology_test
 
-// The labeller labels each joined node with its zone and the region under one field manager, and may touch no other node.
+// The labeller labels each joined node with its zone, the region and whether it is a burst node, under one field manager,
+// and moves each pod whose placement refuses a burst node off it.
 
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -16,13 +18,19 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/topology"
 )
 
-// fakeKubectl finds the nodes FAKE_JOINED names, fails a read with FAKE_GET_EXIT and a label with FAKE_LABEL_EXIT.
+// fakeKubectl finds the nodes FAKE_JOINED names, fails a read with FAKE_GET_EXIT and a label with FAKE_LABEL_EXIT, lists the
+// pods in the file FAKE_PODS names, and refuses the eviction of FAKE_REFUSED with FAKE_EVICT_ERR once it checks the eviction names its pod.
 const fakeKubectl = `
 case "$1 $2" in
   "get node")
     [ "${FAKE_GET_EXIT:-0}" -eq 0 ] || exit "$FAKE_GET_EXIT"
     case " $FAKE_JOINED " in *" $3 "*) echo "node/$3" ;; esac ;;
   "label node") exit "${FAKE_LABEL_EXIT:-0}" ;;
+  "get pods") cat "${FAKE_PODS:?}" ;;
+  "create --raw")
+    jq -e --arg path "$3" '.apiVersion == "policy/v1" and .kind == "Eviction"
+      and "/api/v1/namespaces/\(.metadata.namespace)/pods/\(.metadata.name)/eviction" == $path' >/dev/null || exit 3
+    case "$3" in *"/pods/${FAKE_REFUSED:-}/eviction") echo "$FAKE_EVICT_ERR" >&2; exit 1 ;; esac ;;
   *) exit 1 ;;
 esac
 `
@@ -30,6 +38,16 @@ esac
 var shop = topology.Inputs{
 	Region:     "eu-central",
 	Nodes:      []topology.Node{{Name: "shop-sub-0123-node-fsn1", Zone: "fsn1"}, {Name: "shop-sub-0123-node-nbg1", Zone: "nbg1"}},
+	ToolsImage: testutil.ToolsImage,
+}
+
+// onBurst lists the pods on a burst node: two the kit keeps off burst nodes, one leaving, one finished, a runner's
+// and one pinned to the node by name.
+var onBurst = filepath.Join("testdata", "burst-node-pods.json")
+
+var withBurst = topology.Inputs{
+	Region:     "eu-central",
+	Nodes:      []topology.Node{{Name: "shop-sub-0123-node-fsn1", Zone: "fsn1"}, {Name: "shop-sub-0123-node-nbg1", Zone: "nbg1", Burst: true}},
 	ToolsImage: testutil.ToolsImage,
 }
 
@@ -55,6 +73,7 @@ func runLabeller(t *testing.T, in topology.Inputs, env ...string) (*testutil.Too
 	script, err := os.ReadFile(filepath.Join("scripts", "label-nodes.sh"))
 	require.NoError(t, err)
 	fakes := testutil.NewTools(t, map[string]string{"kubectl": fakeKubectl})
+	fakes.AddImageJq(t)
 	vars := []string{}
 	for name, value := range testutil.ContainerEnv(t, c) {
 		vars = append(vars, name+"="+value)
@@ -63,9 +82,18 @@ func runLabeller(t *testing.T, in topology.Inputs, env ...string) (*testutil.Too
 	return fakes, out, err
 }
 
-func labelCall(node, zone string) string {
+// labelCall labels a steady node, taking off the burst label it may carry.
+func labelCall(node, zone string) string { return labelling(node, zone, "mitstack.dev/burst-") }
+
+func burstCall(node, zone string) string { return labelling(node, zone, "mitstack.dev/burst=true") }
+
+func labelling(node, zone, burst string) string {
 	return "kubectl label node " + node + " --overwrite --field-manager=" + topology.FieldManager + " " +
-		topology.ZoneLabel + "=" + zone + " " + topology.RegionLabel + "=eu-central"
+		topology.ZoneLabel + "=" + zone + " " + topology.RegionLabel + "=eu-central " + burst
+}
+
+func eviction(namespace, name string) string {
+	return "kubectl create --raw /api/v1/namespaces/" + namespace + "/pods/" + name + "/eviction -f -"
 }
 
 func TestManifests_LabelsEachJoinedNodeWithItsZoneAndTheRegionUnderTheLabellersFieldManager(t *testing.T) {
@@ -79,6 +107,73 @@ func TestManifests_LabelsEachJoinedNodeWithItsZoneAndTheRegionUnderTheLabellersF
 		"kubectl get node shop-sub-0123-node-nbg1 --ignore-not-found -o name",
 		labelCall("shop-sub-0123-node-nbg1", "nbg1"),
 	}, tools.Calls(t))
+}
+
+func TestManifests_LabelsABurstNodeBurstThenEvictsEachPodOnItWhosePlacementRefusesABurstNode(t *testing.T) {
+	tools, out, err := runLabeller(t, withBurst, "FAKE_JOINED=shop-sub-0123-node-fsn1 shop-sub-0123-node-nbg1", "FAKE_PODS="+onBurst)
+
+	require.NoError(t, err, out)
+	assert.Equal(t, []string{
+		"kubectl get node shop-sub-0123-node-fsn1 --ignore-not-found -o name",
+		labelCall("shop-sub-0123-node-fsn1", "fsn1"),
+		"kubectl get node shop-sub-0123-node-nbg1 --ignore-not-found -o name",
+		burstCall("shop-sub-0123-node-nbg1", "nbg1"),
+		"kubectl get pods -A --field-selector spec.nodeName=shop-sub-0123-node-nbg1 -o json",
+		eviction("argocd", "argocd-server-0"),
+		eviction("logs", "loki-0"),
+	}, tools.Calls(t), "no pod already leaving, finished, or free to run on a burst node is evicted")
+}
+
+func TestManifests_ARefusedEvictionFailsTheRun(t *testing.T) {
+	cases := []struct {
+		name, refusal string
+		rest          bool
+	}{
+		{"a pod its disruption budget holds is named with the budget's refusal, the rest are evicted and the run fails",
+			"Error from server (TooManyRequests): Cannot evict pod as it would violate the pod's disruption budget.", true},
+		{"any other refusal fails the run before the next eviction", "Error from server (Forbidden): pods is forbidden", false},
+		{"a NotFound that names no pod fails the run before the next eviction",
+			"Error from server (NotFound): the server could not find the requested resource", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tools, out, err := runLabeller(t, withBurst, "FAKE_JOINED=shop-sub-0123-node-nbg1", "FAKE_PODS="+onBurst,
+				"FAKE_REFUSED=argocd-server-0", "FAKE_EVICT_ERR="+tc.refusal)
+
+			require.Error(t, err, out)
+			assert.Contains(t, out, "argocd/argocd-server-0")
+			assert.Contains(t, out, tc.refusal)
+			assert.Equal(t, tc.rest, slices.Contains(tools.Calls(t), eviction("logs", "loki-0")), "whether the next pod is evicted")
+		})
+	}
+}
+
+func TestManifests_ARefusedEvictionLeavesNoLaterNodeUnlabelled(t *testing.T) {
+	burstFirst := withBurst
+	burstFirst.Nodes = []topology.Node{
+		{Name: "shop-sub-0123-node-fsn1", Zone: "fsn1", Burst: true}, {Name: "shop-sub-0123-node-nbg1", Zone: "nbg1"},
+	}
+
+	tools, out, err := runLabeller(t, burstFirst, "FAKE_JOINED=shop-sub-0123-node-fsn1 shop-sub-0123-node-nbg1",
+		"FAKE_PODS="+onBurst, "FAKE_REFUSED=argocd-server-0", "FAKE_EVICT_ERR=Error from server (Forbidden): pods is forbidden")
+
+	require.Error(t, err, out)
+	assert.Contains(t, tools.Calls(t), labelCall("shop-sub-0123-node-nbg1", "nbg1"))
+}
+
+func TestManifests_APodGoneBeforeItsEvictionCountsAsMoved(t *testing.T) {
+	tools, out, err := runLabeller(t, withBurst, "FAKE_JOINED=shop-sub-0123-node-nbg1", "FAKE_PODS="+onBurst,
+		"FAKE_REFUSED=argocd-server-0", `FAKE_EVICT_ERR=Error from server (NotFound): pods "argocd-server-0" not found`)
+
+	require.NoError(t, err, out)
+	assert.Contains(t, tools.Calls(t), eviction("logs", "loki-0"))
+}
+
+func TestManifests_FailsWhenTheBurstNodesPodsCannotBeRead(t *testing.T) {
+	tools, out, err := runLabeller(t, withBurst, "FAKE_JOINED=shop-sub-0123-node-nbg1")
+
+	require.Error(t, err, out)
+	assert.NotContains(t, strings.Join(tools.Calls(t), "\n"), "create --raw")
 }
 
 func TestManifests_LeavesANodeThatHasNotJoinedToALaterRun(t *testing.T) {
@@ -103,7 +198,7 @@ func TestManifests_FailsWhenALabelIsRefused(t *testing.T) {
 	require.Error(t, err, out)
 }
 
-func TestManifests_MayReadAndPatchTheNodesItNamesAndNoOtherObject(t *testing.T) {
+func TestManifests_MayReadAndPatchTheNodesItNamesAndListAndEvictPodsAndNoOtherObject(t *testing.T) {
 	docs := render(t, shop)
 
 	roles, bindings := testutil.Kind(docs, "ClusterRole"), testutil.Kind(docs, "ClusterRoleBinding")
@@ -111,7 +206,9 @@ func TestManifests_MayReadAndPatchTheNodesItNamesAndNoOtherObject(t *testing.T) 
 	assert.Equal(t, []any{map[string]any{
 		"apiGroups": []any{""}, "resources": []any{"nodes"},
 		"resourceNames": []any{"shop-sub-0123-node-fsn1", "shop-sub-0123-node-nbg1"}, "verbs": []any{"get", "patch"},
-	}}, roles[0]["rules"], "no list, no status, no other node")
+	}, map[string]any{"apiGroups": []any{""}, "resources": []any{"pods"}, "verbs": []any{"list"}},
+		map[string]any{"apiGroups": []any{""}, "resources": []any{"pods/eviction"}, "verbs": []any{"create"}},
+	}, roles[0]["rules"], "no node list, no status, no other node, and no pod write but an eviction")
 	assert.Empty(t, testutil.Kind(docs, "Role"))
 	require.Len(t, bindings, 1)
 	assert.Equal(t, testutil.Field(t, roles[0], "metadata", "name"), testutil.Field(t, bindings[0], "roleRef", "name"))
@@ -141,7 +238,8 @@ func TestManifests_RunsTheToolsImageOnAControlPlaneNodeAsANonRootUserWithAReadOn
 		"TOPOLOGY_REGION":        "eu-central",
 		"TOPOLOGY_FIELD_MANAGER": topology.FieldManager,
 		"HOME":                   "/tmp",
-	}, testutil.ContainerEnv(t, c))
+	}, testutil.ContainerEnv(t, c), "no burst node to name")
+	assert.Equal(t, "shop-sub-0123-node-nbg1", testutil.ContainerEnv(t, container(t, render(t, withBurst)))["TOPOLOGY_BURST_NODES"])
 }
 
 func TestManifests_RefusesInputsItCannotLabelANodeWith(t *testing.T) {

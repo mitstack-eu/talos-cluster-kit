@@ -1,9 +1,11 @@
 package controlplane_test
 
-// Every Cloud node is labelled with the location it runs in, and a block's worker takes the same two labels.
+// Every Cloud node is labelled with the location it runs in, a block's worker takes the same two labels, and each burst
+// member of the Cloud pool is labelled a burst node.
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -28,7 +30,11 @@ var (
 // poolWorkers grows a Cloud pool through the plan a block's upgrade applies, so the state holds servers Hetzner named.
 func (h *harness) poolWorkers(size int, locations ...string) []controlplane.Server {
 	h.t.Helper()
-	pool := pools.CloudPool{ServerTypes: []string{controlplane.DefaultServerType}, Locations: locations, Min: size, Max: size}
+	return h.grow(pools.CloudPool{ServerTypes: []string{controlplane.DefaultServerType}, Locations: locations, Min: size, Max: size})
+}
+
+func (h *harness) grow(pool pools.CloudPool) []controlplane.Server {
+	h.t.Helper()
 	plan, err := pools.PlanCloud(context.Background(), h.plane, pool, func(controlplane.Server) bool { return false })
 	require.NoError(h.t, err)
 	require.NoError(h.t, plan.Apply(context.Background(), h.cloud))
@@ -143,6 +149,22 @@ func TestRelease_TheLabellerOfAClusterThatAlreadyRunsACloudWorkerNamesItWithItsZ
 	assert.Equal(t, append(h.controlPlaneNodes(), worker.Name+"=fsn1"), labelledNodes(t, cluster.Object(labellerJob)),
 		"the nodes the cluster's labeller names once Argo CD applied the release")
 	assert.Contains(t, mayPatch(t, cluster.Object(labellerRole)), worker.Name, "the nodes the cluster's labeller may read and patch")
+}
+
+func TestRelease_TheLabellerNamesEachBurstMemberOfTheCloudPoolAsABurstNode(t *testing.T) {
+	h := newHarness(t)
+	h.built()
+	plane, err := h.plane.WithGatewayCA()
+	require.NoError(t, err)
+	members := h.grow(pools.CloudPool{ServerTypes: []string{controlplane.DefaultServerType}, Locations: []string{"fsn1", "nbg1"}, Min: 1, Max: 2})
+	burst := slices.IndexFunc(members, pools.IsBurst)
+	require.GreaterOrEqual(t, burst, 0, "the member created past the minimum of 1")
+
+	cronJob := only(t, releasedLabeller(t, h.releaseOf(plane)), "CronJob")
+
+	env := testutil.ContainerEnv(t, testutil.Field(t, cronJob, "spec", "jobTemplate", "spec", "template", "spec", "containers", "0"))
+	assert.Equal(t, members[burst].Name, env["TOPOLOGY_BURST_NODES"], "the burst member, and not the steady one")
+	assert.Len(t, labelledNodes(t, cronJob), len(h.controlPlaneNodes())+2, "every node, steady and burst, with its zone")
 }
 
 func TestTopologyLabels_NameAWorkersLocationAsItsZoneAndTheNetworkZoneAsItsRegion(t *testing.T) {

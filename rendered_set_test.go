@@ -120,6 +120,97 @@ func TestDropEmptyMetadataMaps(t *testing.T) {
 	}
 }
 
+func TestKeepOffBurstNodes(t *testing.T) {
+	const placed = "affinity:\n  nodeAffinity:\n    requiredDuringSchedulingIgnoredDuringExecution:\n      nodeSelectorTerms:\n" +
+		"        - matchExpressions:\n            - key: mitstack.dev/burst\n              operator: DoesNotExist\n"
+	at := func(indent int) string {
+		pad := strings.Repeat(" ", indent)
+		return pad + strings.ReplaceAll(strings.TrimSuffix(placed, "\n"), "\n", "\n"+pad) + "\n"
+	}
+	for _, tc := range []struct{ name, in, want string }{
+		{"places the pod of a Deployment with no affinity",
+			"kind: Deployment\nspec:\n  template:\n    metadata:\n      labels:\n        app: a\n    spec:\n      containers:\n        - name: a\n",
+			"kind: Deployment\nspec:\n  template:\n    metadata:\n      labels:\n        app: a\n    spec:\n" + at(6) + "      containers:\n        - name: a\n"},
+		{"adds the node affinity beside a pod anti-affinity",
+			"kind: StatefulSet\nspec:\n  template:\n    spec:\n      affinity:\n        podAntiAffinity:\n          preferredDuringSchedulingIgnoredDuringExecution: []\n      containers: []\n" +
+				"  volumeClaimTemplates:\n    - metadata:\n        name: data\n      spec:\n        accessModes: [ReadWriteOnce]\n",
+			"kind: StatefulSet\nspec:\n  template:\n    spec:\n      affinity:\n" + strings.TrimPrefix(at(6), "      affinity:\n") +
+				"        podAntiAffinity:\n          preferredDuringSchedulingIgnoredDuringExecution: []\n      containers: []\n" +
+				"  volumeClaimTemplates:\n    - metadata:\n        name: data\n      spec:\n        accessModes: [ReadWriteOnce]\n"},
+		{"places the pod of a CronJob and of a Job in the next document",
+			"---\nkind: CronJob\nspec:\n  jobTemplate:\n    spec:\n      template:\n        spec:\n          containers: []\n---\nkind: Job\nspec:\n  template:\n    spec:\n      containers: []\n",
+			"---\nkind: CronJob\nspec:\n  jobTemplate:\n    spec:\n      template:\n        spec:\n" + at(10) + "          containers: []\n" +
+				"---\nkind: Job\nspec:\n  template:\n    spec:\n" + at(6) + "      containers: []\n"},
+		{"leaves a DaemonSet, which runs on every node, and a document holding no workload",
+			"kind: DaemonSet\nspec:\n  template:\n    spec:\n      containers: []\n---\nkind: ConfigMap\ndata:\n  pod: |\n    spec:\n      template:\n        spec: {}\n", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			file := filepath.Join(t.TempDir(), "rendered.yaml")
+			require.NoError(t, os.WriteFile(file, []byte(tc.in), 0o644))
+
+			got, err := testutil.RunBash(t, `. "$1" && keep_off_burst_nodes "$2" && cat "$2"`, os.Environ(), "scripts/lib/burst-placement.sh", file)
+
+			require.NoError(t, err, got)
+			if tc.want == "" {
+				tc.want = tc.in
+			}
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestKeepOffBurstNodes_FailsOnAPodWhoseNodeAffinityItWouldHaveToMerge(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "rendered.yaml")
+	require.NoError(t, os.WriteFile(file, []byte("kind: Deployment\nmetadata:\n  name: placed\nspec:\n  template:\n    spec:\n      affinity:\n"+
+		"        nodeAffinity:\n          preferredDuringSchedulingIgnoredDuringExecution: []\n      containers: []\n"), 0o644))
+
+	got, err := testutil.RunBash(t, `. "$1" && keep_off_burst_nodes "$2"`, os.Environ(), "scripts/lib/burst-placement.sh", file)
+
+	require.Error(t, err, got)
+	assert.Contains(t, got, "Deployment placed")
+}
+
+// boundToItsVolumesNode is whether pod is the local path provisioner's helper, which the provisioner binds by name to
+// the node holding the volume it makes or removes, a burst member's included.
+func boundToItsVolumesNode(pod renderedPod) bool {
+	return strings.HasSuffix(pod.source, "/local-path-provisioner") && pod.workload == pod.source+" helperPod.yaml"
+}
+
+// refusesBurstNodes is whether each required node selector term of spec holds a pod off a node with the burst label.
+func refusesBurstNodes(spec map[string]any) bool {
+	affinity, _ := spec["affinity"].(map[string]any)
+	node, _ := affinity["nodeAffinity"].(map[string]any)
+	required, _ := node["requiredDuringSchedulingIgnoredDuringExecution"].(map[string]any)
+	terms, _ := required["nodeSelectorTerms"].([]any)
+	for _, raw := range terms {
+		term, _ := raw.(map[string]any)
+		expressions, _ := term["matchExpressions"].([]any)
+		if !slices.ContainsFunc(expressions, func(e any) bool {
+			m, _ := e.(map[string]any)
+			return m["key"] == components.BurstLabel && m["operator"] == "DoesNotExist"
+		}) {
+			return false
+		}
+	}
+	return len(terms) > 0
+}
+
+func TestManifests_EveryPodButADaemonSetsStaysOffBurstMembersUnlessItRunsOnTheControlPlane(t *testing.T) {
+	var free []string
+
+	for _, pod := range renderedPods(t) {
+		selector, _ := pod.spec["nodeSelector"].(map[string]any)
+		_, onControlPlane := selector[controlPlaneRole]
+		if pod.kind != "DaemonSet" && !onControlPlane && !boundToItsVolumesNode(pod) && !refusesBurstNodes(pod.spec) {
+			free = append(free, pod.where)
+		}
+	}
+
+	slices.Sort(free)
+	assert.Equal(t, "mitstack.dev/burst", components.BurstLabel, "the label each burst member's node carries")
+	assert.Empty(t, free, "a pod free to run on a burst member holds that member out of its idle window, and moves when it goes")
+}
+
 func TestFetch(t *testing.T) {
 	const archive = "the chart archive's bytes"
 	sum := sha256.Sum256([]byte(archive))
@@ -158,6 +249,7 @@ var podRefusingPolicies = []string{"mitstack-disallow-host-path", "mitstack-requ
 type renderedPod struct {
 	where     string
 	source    string
+	kind      any
 	workload  string
 	namespace string
 	spec      map[string]any
@@ -174,7 +266,8 @@ func renderedPods(t *testing.T) []renderedPod {
 				continue
 			}
 			name := fmt.Sprint(testutil.Field(t, doc, "metadata", "name"))
-			pods = append(pods, renderedPod{where: fmt.Sprintf("%s: %v %s%s", source, doc["kind"], name, path), source: source, workload: name, namespace: namespace, spec: spec})
+			pods = append(pods, renderedPod{where: fmt.Sprintf("%s: %v %s%s", source, doc["kind"], name, path), source: source, kind: doc["kind"],
+				workload: name, namespace: namespace, spec: spec})
 		}
 	}
 	for _, d := range renderedDocs(t) {

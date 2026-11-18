@@ -4,10 +4,12 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"time"
 
+	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
 	"github.com/mitstack-eu/talos-cluster-kit/redundant"
 	"github.com/mitstack-eu/talos-cluster-kit/report"
@@ -18,7 +20,13 @@ const (
 	RoleCloudWorker = controlplane.RoleCloudWorker
 	// KeyMember labels a Cloud server with its member key, its location and a sequence number such as fsn1-1.
 	KeyMember = "mitstack.dev/member"
+	// KeyBurst labels each member above the pool's minimum, which idle removal may choose and the kit's components
+	// stay off. The members up to the minimum are steady and carry no such label.
+	KeyBurst = components.BurstLabel
 )
+
+// IsBurst reports whether srv is a burst member of the Cloud pool.
+func IsBurst(srv controlplane.Server) bool { return srv.Labels[KeyBurst] == components.BurstValue }
 
 // CloudPlan is what a Cloud pool lacks, where members leave one at a time through Mark, Drain until the node is gone
 // from the cluster, and Delete.
@@ -118,6 +126,7 @@ func PlanCloud(ctx context.Context, plane controlplane.Plane, pool CloudPool, dr
 		return CloudPlan{}, err
 	}
 	taken := memberKeys(members)
+	steady := len(slices.DeleteFunc(slices.Clone(keep), IsBurst))
 	for range room {
 		loc := fewest(keep, pool.Locations)
 		key := nextKey(loc, taken)
@@ -126,10 +135,52 @@ func PlanCloud(ctx context.Context, plane controlplane.Plane, pool CloudPool, dr
 		if err != nil {
 			return CloudPlan{}, err
 		}
+		if steady < pool.Min {
+			steady++
+		} else {
+			spec.Labels[KeyBurst] = components.BurstValue
+		}
 		plan.Create = append(plan.Create, spec)
 		keep = append(keep, controlplane.Server{Location: loc})
 	}
 	return plan, nil
+}
+
+// Reclassify returns each member whose burst label must change, with the labels it then carries, so the pool holds
+// Min steady members, or only steady ones at a set size, and a member whose removal is under way keeps its labels.
+func Reclassify(pool CloudPool, members []controlplane.Server) []controlplane.Server {
+	var steady, burst []controlplane.Server
+	for _, srv := range members {
+		switch {
+		case RemovalUnderWay(srv):
+		case IsBurst(srv):
+			burst = append(burst, srv)
+		default:
+			steady = append(steady, srv)
+		}
+	}
+	want := len(steady) + len(burst)
+	if pool.Scales() {
+		want = pool.Min
+	}
+	var changed []controlplane.Server
+	for len(steady) > want {
+		newest := NewestOfFullest(steady, steady, pool.Locations)
+		steady = slices.DeleteFunc(steady, func(srv controlplane.Server) bool { return srv.ID == newest.ID })
+		newest.Labels = maps.Clone(newest.Labels)
+		newest.Labels[KeyBurst] = components.BurstValue
+		changed = append(changed, newest)
+	}
+	slices.SortFunc(burst, func(a, b controlplane.Server) int {
+		return cmp.Or(a.Created.Compare(b.Created), cmp.Compare(a.ID, b.ID))
+	})
+	room := max(0, pool.Max-len(members))
+	for _, srv := range burst[:min(len(burst), max(0, want-len(steady)-room))] {
+		srv.Labels = maps.Clone(srv.Labels)
+		delete(srv.Labels, KeyBurst)
+		changed = append(changed, srv)
+	}
+	return changed
 }
 
 // splitMembers leaves out each member the pool no longer lists a type or location for, then the newest member of the

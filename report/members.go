@@ -77,6 +77,7 @@ type reportedPod struct {
 	Containers    []struct {
 		Message string `json:"message"`
 	} `json:"containers"`
+	Placement *placement `json:"placement"`
 }
 
 func (p reportedPod) qualifiedName() string { return p.Namespace + "/" + p.Name }
@@ -104,16 +105,16 @@ func (r Read) WorkloadPods() (map[string][]string, error) {
 	return out, nil
 }
 
-// Unschedulable names each pod, as namespace/name, that the scheduler found no node for.
-func (r Read) Unschedulable() ([]string, error) {
+// Unschedulable lists each pod the scheduler found no node for, with the placement it asks of a node.
+func (r Read) Unschedulable() ([]WaitingPod, error) {
 	m, err := r.members()
 	if err != nil {
 		return nil, err
 	}
-	var out []string
+	var out []WaitingPod
 	for _, p := range m.Pods {
 		if p.Unschedulable && !p.finished() {
-			out = append(out, p.qualifiedName())
+			out = append(out, WaitingPod{Name: p.qualifiedName(), placement: p.Placement})
 		}
 	}
 	return out, nil

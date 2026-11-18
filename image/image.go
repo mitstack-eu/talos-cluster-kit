@@ -17,8 +17,8 @@ import (
 // PinnedImager is the imager release that builds Talos v1.14.4, by digest.
 const PinnedImager = "ghcr.io/siderolabs/imager:v1.14.4@sha256:91d453a7cf57d499fe7fe7923e1e381b6e1535136367246d190e38486c11651d"
 
-// arch is the CPU architecture of every image the kit builds.
-const arch = "amd64"
+// Arch is the CPU architecture of every image the kit builds, so of every node it boots.
+const Arch = "amd64"
 
 // configName is the file name imager reads the embedded configuration from, inside its /in mount.
 const configName = "config.yaml"
@@ -96,7 +96,7 @@ func (b Build) args(in string) []string {
 		"-v", in + ":/in:ro",
 		"-v", b.OutDir + ":/out",
 		b.Imager, string(b.Profile),
-		"--arch", arch,
+		"--arch", Arch,
 		"--embedded-config-path", "/in/" + configName,
 	}
 }

@@ -451,12 +451,15 @@ body() {
     def newest_failed($jobs): [.items[] | select(.status.phase == "Failed")
       | {job: job_of, at: .metadata.creationTimestamp, name: .metadata.name, key: qualified_name} | select(.job != null and $jobs[.job])]
       | group_by(.job) | map(sort_by([.at, .name]) | last | {key, value: true}) | from_entries;
-    def pod($carried): $carried[qualified_name] as $carries | {
+    # placement is what a pod asks of a node, so the operator can tell whether a member it would add could take the pod.
+    def placement: {nodeSelector: (.spec.nodeSelector // null),
+      nodeSelectorTerms: (.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms // null)};
+    def pod($carried): $carried[qualified_name] as $carries | placement as $placement | {
       namespace: .metadata.namespace, name: .metadata.name, node: (.spec.nodeName // null), phase: (.status.phase // null),
       ownerKind: ([.metadata.ownerReferences[]? | select(.controller == true) | .kind] | .[0]),
       unschedulable: any(.status.conditions[]?; .type == "PodScheduled" and .status == "False" and .reason == "Unschedulable"),
       containers: [(.status.initContainerStatuses // []) + (.status.containerStatuses // []) | .[] | container + if $carries then failed_message else {} end]
-    };
+    } | if .unschedulable then . + {placement: $placement} else . end;
     def etcd_status_rows: [$etcd_status | split("\n") | .[1:][] | sub("\\s+$"; "") | select(test("\\S"))
       | [splits("\\s{2,}")] | {member: .[1], leader: .[4], errors: (.[11] // "")}];
     # etcd is each member with whether its node answered with no error, the leader the answers name, and the status

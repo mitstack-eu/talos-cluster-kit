@@ -788,6 +788,13 @@ spec:
         app.kubernetes.io/managed-by: Helm
         mitstack.dev/app: trust-manager
     spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: mitstack.dev/burst
+                    operator: DoesNotExist
       serviceAccountName: trust-manager
       automountServiceAccountToken: true
       containers:

@@ -90,3 +90,51 @@ func TestRead_OpenBaoMembersServeWhenInitializedAndUnsealedAndNameTheirNodes(t *
 		serving(t, read, []string{"openbao-0", "openbao-1", "openbao-2"}, members))
 	assert.Equal(t, map[string]string{"openbao-0": "poc-talos4-cp1"}, nodes, "the node each member's pod runs on")
 }
+
+// waitingRead is a read whose one pod waits with no node to take it, placed as placement holds.
+func waitingRead(t *testing.T, placement string) report.Read {
+	t.Helper()
+	body := `{"pods": [{"namespace": "ci", "name": "build", "node": null, "phase": "Pending", "ownerKind": "Job", "unschedulable": true,
+		"containers": [], "placement": ` + placement + `}]}`
+	return report.Read{Body: []byte(body), At: time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)}
+}
+
+func TestRead_AWaitingPodAdmitsANodeWhoseLabelsItsPlacementAccepts(t *testing.T) {
+	burst := map[string]string{"mitstack.dev/burst": "true", "kubernetes.io/os": "linux", "topology.kubernetes.io/zone": "fsn1"}
+	cases := []struct {
+		name      string
+		placement string
+		admits    bool
+	}{
+		{"a pod with no placement", `null`, true},
+		{"a pod with an empty placement", `{"nodeSelector": null, "nodeSelectorTerms": null}`, true},
+		{"a node selector every label of which the node carries", `{"nodeSelector": {"kubernetes.io/os": "linux"}}`, true},
+		{"a node selector naming a label the node lacks", `{"nodeSelector": {"node-role.kubernetes.io/control-plane": ""}}`, false},
+		{"a node selector naming another value", `{"nodeSelector": {"topology.kubernetes.io/zone": "nbg1"}}`, false},
+		{"a term keeping off every burst node", `{"nodeSelectorTerms": [{"matchExpressions": [{"key": "mitstack.dev/burst", "operator": "DoesNotExist"}]}]}`, false},
+		{"a term requiring a label the node carries", `{"nodeSelectorTerms": [{"matchExpressions": [{"key": "mitstack.dev/burst", "operator": "Exists"}]}]}`, true},
+		{"a term whose values hold the node's zone", `{"nodeSelectorTerms": [{"matchExpressions": [{"key": "topology.kubernetes.io/zone", "operator": "In", "values": ["nbg1", "fsn1"]}]}]}`, true},
+		{"a term whose values leave out the node's zone", `{"nodeSelectorTerms": [{"matchExpressions": [{"key": "topology.kubernetes.io/zone", "operator": "In", "values": ["nbg1"]}]}]}`, false},
+		{"a term refusing the node's zone", `{"nodeSelectorTerms": [{"matchExpressions": [{"key": "topology.kubernetes.io/zone", "operator": "NotIn", "values": ["fsn1"]}]}]}`, false},
+		{"a term refusing a label the node lacks", `{"nodeSelectorTerms": [{"matchExpressions": [{"key": "dedicated", "operator": "NotIn", "values": ["db"]}]}]}`, true},
+		{"a term requiring a numeric label the node lacks", `{"nodeSelectorTerms": [{"matchExpressions": [{"key": "cpus", "operator": "Gt", "values": ["4"]}]}]}`, false},
+		{"a term naming a node by its name", `{"nodeSelectorTerms": [{"matchFields": [{"key": "metadata.name", "operator": "In", "values": ["poc-talos4-cp1"]}]}]}`, false},
+		{"an empty term", `{"nodeSelectorTerms": [{}]}`, false},
+		{"one term refusing the node and one admitting it", `{"nodeSelectorTerms": [{"matchExpressions": [{"key": "mitstack.dev/burst", "operator": "DoesNotExist"}]},
+			{"matchExpressions": [{"key": "kubernetes.io/os", "operator": "In", "values": ["linux"]}]}]}`, true},
+		{"one term whose expressions admit the node and refuse it", `{"nodeSelectorTerms": [{"matchExpressions": [{"key": "kubernetes.io/os", "operator": "In", "values": ["linux"]},
+			{"key": "mitstack.dev/burst", "operator": "DoesNotExist"}]}]}`, false},
+		{"a node selector the node carries and a term refusing it", `{"nodeSelector": {"kubernetes.io/os": "linux"},
+			"nodeSelectorTerms": [{"matchExpressions": [{"key": "mitstack.dev/burst", "operator": "DoesNotExist"}]}]}`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			waiting, err := waitingRead(t, tc.placement).Unschedulable()
+
+			require.NoError(t, err)
+			require.Len(t, waiting, 1, "the pod that waits")
+			assert.Equal(t, "ci/build", waiting[0].Name)
+			assert.Equal(t, tc.admits, waiting[0].Admits(burst), "whether %s admits the burst node %v", tc.placement, burst)
+		})
+	}
+}

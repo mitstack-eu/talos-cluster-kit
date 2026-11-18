@@ -139,17 +139,17 @@ write_files:
       registry.k8s.io/pause:3.10.2@sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4
   - path: /etc/mitstack-gateway/manifests.txt
     content: |
-      00-cilium.yaml e163bf1be52ca349f6a2ad9f348beaa7b4a742626db61ada1b702cccdb42036e /usr/local/lib/mitstack/components/cilium/cilium.yaml
+      00-cilium.yaml 00d52bea337686a5f01a209727772f68588d800556de097d05551ce857d44e58 /usr/local/lib/mitstack/components/cilium/cilium.yaml
       01-cilium-policy-crd.yaml 582273fd2b7d7238563ad2976ba36905ba818834ed71c58cad6e51bb4762088b /usr/local/lib/mitstack/components/cilium/policy-crd.yaml
-      09-argocd.yaml aabd906439cb0d3191f8d69aede31b4c3205b4fe4db6bfba33c8487fe75a05f0 /usr/local/lib/mitstack/components/argocd/argocd.yaml
-      13-kyverno.yaml 8a091f0fb66ab28fe3464ee168969d8db575e07e4a26132616b53ca612928030 /usr/local/lib/mitstack/components/kyverno/kyverno.yaml
-      11-cloudnative-pg.yaml 8e60fb45bca3cf568e58402c93d77f662f8efb63e5ffe7dcd552568c98f3bc9e /usr/local/lib/mitstack/components/cloudnative-pg/cloudnative-pg.yaml
-      14-local-path-provisioner.yaml 1f15539874470b12f4cd835e6276cfcc2cbcaf42b6dcaa7d018775b93ef0e8f1 /usr/local/lib/mitstack/components/local-path-provisioner/local-path-provisioner.yaml
+      09-argocd.yaml f1ff0297bbc0268fc6480e7fee77ab3dbc6c619fb4f728f0f6c48230a6c45a1c /usr/local/lib/mitstack/components/argocd/argocd.yaml
+      13-kyverno.yaml ea8f3ca44fd9bec2f253b0727f9d08a3fb3aa7f7a06bbae6e65e2238b8f5fedb /usr/local/lib/mitstack/components/kyverno/kyverno.yaml
+      11-cloudnative-pg.yaml d63b3695aa3f71ceb92d1b9a1d9f6ff1414e9837c03d9ae2d7f44dd33f52ecfd /usr/local/lib/mitstack/components/cloudnative-pg/cloudnative-pg.yaml
+      14-local-path-provisioner.yaml d6fd12c9fe5b7363992d9a151504fdeeec64496685ec162d09f3538d3f2e997d /usr/local/lib/mitstack/components/local-path-provisioner/local-path-provisioner.yaml
       02-istio-base.yaml 76c03823c82d034f24c6ba614586cc83fc105bb5a685714c0e103c0a48ab5a11 /usr/local/lib/mitstack/components/istio/istio-base.yaml
-      03-istiod.yaml 8c9e515fa230d6e4e25c2cc62b0d94df7545b46d16901836dfc0ddc76f383c98 /usr/local/lib/mitstack/components/istio/istiod.yaml
+      03-istiod.yaml 5485076e6ecb885bf68478c11ac790ec591e5111d2e5c7ce5fe52902ae6696e1 /usr/local/lib/mitstack/components/istio/istiod.yaml
       04-istio-cni.yaml 4e468eb1ce1722df46f859dd8318c28507127a0a129e0cb51ab8cc8060372526 /usr/local/lib/mitstack/components/istio/istio-cni.yaml
       05-ztunnel.yaml 666fce1650fdae7947acd43cfac46aa42066f174e71e8193cd0508d04aa4ff4b /usr/local/lib/mitstack/components/istio/ztunnel.yaml
-      27-mitstack-mesh-probe.yaml 71cd5ea890bb802ee2d9c9160c3d47c6a09e37070654fc108ba966ffa5ba596d /usr/local/lib/mitstack/components/mesh/probe.yaml
+      27-mitstack-mesh-probe.yaml 9197acf654b2d7360ff143ad38a70a63e66dc7e298195d26a7465007c376c3d7 /usr/local/lib/mitstack/components/mesh/probe.yaml
   - path: /usr/local/bin/mitstack-gateway-prepare
     permissions: "0755"
     content: |

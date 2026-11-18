@@ -215,6 +215,13 @@ spec:
         app.kubernetes.io/managed-by: Helm
         mitstack.dev/app: local-path-provisioner
     spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: mitstack.dev/burst
+                    operator: DoesNotExist
       serviceAccountName: local-path-provisioner
       hostUsers: true
       securityContext:

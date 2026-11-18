@@ -459,3 +459,121 @@ func TestPlanCloud_PassesOnAListFailureWithoutPlanningFromAPartialRead(t *testin
 
 	assert.ErrorContains(t, err, "hetzner is down")
 }
+
+// scaling is a pool of lowest to highest over fsn1 and nbg1, sized to want as the pool step sizes it from a decision.
+func scaling(lowest, want int) pools.CloudPool {
+	return pools.CloudPool{ServerTypes: []string{"cx33", "cx43"}, Locations: []string{"fsn1", "nbg1"}, Min: lowest, Max: want, IdleWindow: 15 * time.Minute}
+}
+
+func bursts(servers []controlplane.Server) []string {
+	var out []string
+	for _, srv := range servers {
+		if pools.IsBurst(srv) {
+			out = append(out, srv.Labels[pools.KeyMember])
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+func burstSpecs(specs []controlplane.ServerSpec) []string {
+	var out []string
+	for _, spec := range specs {
+		if spec.Labels[pools.KeyBurst] == "true" {
+			out = append(out, spec.Labels[pools.KeyMember])
+		}
+	}
+	return out
+}
+
+func TestPlanCloud_AJustCreatedMemberAboveThePoolsMinimumCarriesTheBurstLabelBeforeItReadsReady(t *testing.T) {
+	s := newSite(t)
+
+	plan, err := s.plan(scaling(2, 3))
+
+	require.NoError(t, err)
+	require.Len(t, plan.Create, 3)
+	assert.Equal(t, []string{"fsn1-2"}, burstSpecs(plan.Create), "the member created past the minimum of 2")
+	assert.Equal(t, "mitstack.dev/burst", pools.KeyBurst, "the label each burst member and its node carry")
+}
+
+func TestPlanCloud_APoolOfASetSizeCreatesNoBurstMember(t *testing.T) {
+	s := newSite(t)
+
+	plan, err := s.plan(cloudPool(3, "fsn1", "nbg1"))
+
+	require.NoError(t, err)
+	require.Len(t, plan.Create, 3)
+	assert.Empty(t, burstSpecs(plan.Create), "the members of a pool of 3 to 3")
+}
+
+func TestPlanCloud_APoolThatLostASteadyMemberCreatesItsSuccessorSteadyAndTheBurstMemberKeepsItsLabel(t *testing.T) {
+	s := newSite(t)
+	s.reach(scaling(2, 3))
+	require.Equal(t, []string{"fsn1-2"}, bursts(s.members()), "the pool of two steady members and one burst member")
+	lost := slices.IndexFunc(s.members(), func(srv controlplane.Server) bool { return !pools.IsBurst(srv) })
+	require.NoError(t, s.cloud.DeleteServer(context.Background(), s.members()[lost].ID))
+
+	plan, err := s.plan(scaling(2, 3))
+
+	require.NoError(t, err)
+	require.Len(t, plan.Create, 1, "the lost member's successor")
+	assert.Empty(t, burstSpecs(plan.Create), "the successor is steady")
+	assert.Equal(t, []string{"fsn1-2"}, bursts(s.members()), "the burst member keeps its label")
+}
+
+func labelled(servers []controlplane.Server) map[string]bool {
+	out := map[string]bool{}
+	for _, srv := range servers {
+		out[srv.Labels[pools.KeyMember]] = pools.IsBurst(srv)
+	}
+	return out
+}
+
+func TestReclassify_LabelsTheMembersPastTheMinimumBurstOrSteadyAsThePoolsBoundsChange(t *testing.T) {
+	at := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	member := func(key string, minutes int, burst bool) controlplane.Server {
+		labels := map[string]string{pools.KeyMember: key}
+		if burst {
+			labels[pools.KeyBurst] = "true"
+		}
+		return controlplane.Server{ID: int64(minutes + 1), Name: "shop-cloud-worker-" + key, Location: key[:4], Created: at.Add(time.Duration(minutes) * time.Minute), Labels: labels}
+	}
+	setOfThree := []controlplane.Server{member("fsn1-1", 0, false), member("nbg1-1", 1, false), member("fsn1-2", 2, false)}
+	cases := []struct {
+		name    string
+		pool    pools.CloudPool
+		members []controlplane.Server
+		want    map[string]bool
+	}{
+		{"a set-size pool of 3 upgraded to a minimum of 1 and a maximum of 3 labels the two newest of the fullest locations burst",
+			scaling(1, 3), setOfThree, map[string]bool{"fsn1-2": true, "nbg1-1": true}},
+		{"a pool that scales upgraded back to a set size of 3 takes the label off every burst member",
+			cloudPool(3, "fsn1", "nbg1"), []controlplane.Server{member("fsn1-1", 0, false), member("nbg1-1", 1, true), member("fsn1-2", 2, true)},
+			map[string]bool{"nbg1-1": false, "fsn1-2": false}},
+		{"a pool that lost a steady member with room to create its successor relabels none",
+			scaling(2, 3), []controlplane.Server{member("fsn1-1", 0, false), member("nbg1-1", 1, true)}, map[string]bool{}},
+		{"a pool whose minimum is raised to its maximum's members with no room left takes the label off the oldest burst member",
+			scaling(2, 3), []controlplane.Server{member("fsn1-1", 0, false), member("nbg1-1", 1, true), member("fsn1-2", 2, true)},
+			map[string]bool{"nbg1-1": false}},
+		{"a pool at its minimum of steady members relabels none",
+			scaling(2, 5), []controlplane.Server{member("fsn1-1", 0, false), member("nbg1-1", 1, false), member("fsn1-2", 2, true)}, map[string]bool{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := pools.Reclassify(tc.pool, tc.members)
+
+			assert.Equal(t, tc.want, labelled(got), "each relabelled member, true when it becomes burst")
+		})
+	}
+}
+
+func TestReclassify_LeavesAMemberWhoseRemovalIsUnderWayAsItIs(t *testing.T) {
+	leaving := controlplane.Server{ID: 3, Name: "shop-cloud-worker-fsn1-2", Location: "fsn1", Labels: map[string]string{pools.KeyMember: "fsn1-2"}}
+	leaving.Labels = controlplane.BeginRemoval(leaving, time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC), "cloud-pool")
+	members := []controlplane.Server{{ID: 1, Location: "fsn1", Labels: map[string]string{pools.KeyMember: "fsn1-1"}}, leaving}
+
+	got := pools.Reclassify(scaling(1, 3), members)
+
+	assert.Empty(t, got, "the steady member at the minimum and the member leaving")
+}

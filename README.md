@@ -784,8 +784,11 @@ taint, mark the node unschedulable, and set its pod address ranges or provider
 ID while they are still empty. It can also add a finalizer, which would hold up
 a deletion of the node, such as the one `etcd/scripts/remove-member.sh` makes.
 Labels and taints steer where pods land, and the hosting flows admit calls from
-a node by its `node-role.kubernetes.io/control-plane` label. Every node the labeller names is a control-plane node already, so a
-patch can take that label away but cannot give it to a node that lacks it.
+a node by its `node-role.kubernetes.io/control-plane` label. The labeller names
+each Cloud control-plane node and each Cloud pool member. On a control-plane
+node, a patch can take that label away. On a pool member, a patch can add it,
+and the hosting flows would then admit that member's calls to the webhook ports
+10250 and 6443 they open to the control plane.
 
 The grant is acceptable because only a pod running as the labeller's service
 account holds it. Running such a pod takes the right to create pods in
@@ -4115,7 +4118,10 @@ platform keeps, in any order, and answers a `Decision`:
    wait, the pool holds, with a `Detail` such as "1 pods wait for a node, and
    the placement of each refuses every burst member, so the Cloud pool holds
    1: argocd/argocd-server-0", where "holds 1" means the pool stays at its
-   one member.
+   one member. The robot cluster module shows `robotcluster.CauseHeldForSteady`
+   in the cluster resource's health while the pool holds this way. The cause
+   names `cloudPoolMin`, since only a steady member takes such a pod, and it
+   starts no change.
 4. A pool that holds its maximum while pods wait answers `AtMaximum`, with a
    `Detail` such as "2 pods wait for a node, and the Cloud pool holds its
    maximum of 3: ci/d, ci/e", which names the first three pods. The block shows `CauseAtMaximum` in the cluster resource's
@@ -4422,7 +4428,7 @@ describes.
 | Lifecycle | Answers each call mitstack makes to the operator. `Ensure` builds or upgrades the cluster one step per call. `EnsureOwning` does the same and also returns the block's own secrets the call minted, the values mitstack keeps for the block such as the gateway CA's key. `EnsureResourcesOwning` also lists the resources the call created. `Observe` reads the whole cluster, `Observers` and `TypeObservers` read one resource by its name or by its type, and `Delete` tears the cluster down | `New`, `Config`, `Cluster.Ensure`, `Cluster.EnsureOwning`, `Cluster.EnsureResourcesOwning`, `Cluster.Observe`, `Cluster.Observers`, `Cluster.TypeObservers`, `Cluster.Delete` |
 | Control plane and gateways | Builds the one or three Cloud nodes the request's size names and the gateways in front of them through the kit's `controlplane` package, and reads each gateway's newest report. A gateway is the Cloud server in each node's location that the nodes route out through and pull their images from | `Cluster.NewPlane`, `Cluster.PlaneFor`, `Cluster.WithGateways`, `GatewayReports`, `NewGatewayReports`, `GuardRemoval` |
 | Robot worker | Refuses a Robot server that is missing, cancelled, outside the cluster's locations or named for another subscription, before anything is written. It then joins the server to the cluster's network over a vSwitch, Hetzner's private link between Robot and Cloud servers, sets its firewall, and runs the install `Config` names in the background | `RobotName`, `Worker`, `WorkerInstall`, `WorkerFirewall`, `WorkerFirewallFor`, `HoldsWorkerRules`, `WaitOutRobotLimit`, `Cluster.JobRunning`, `Cluster.StopJob` |
-| Cloud pool and node replace | Scales the pool of Cloud workers through the kit's `pools` package, and names the control-plane nodes and Cloud workers an upgrade's request asks to replace that the cluster runs | `MemberName`, `Located`, `Cluster.PlanReplacements` |
+| Cloud pool and node replace | Scales the pool of Cloud workers through the kit's `pools` package, and names the control-plane nodes and Cloud workers an upgrade's request asks to replace that the cluster runs. Before it scales, it relabels each member `pools.Reclassify` names, so the pool again holds its minimum of steady members, and the labeller carries the change to the nodes at the next release | `MemberName`, `Located`, `Cluster.PlanReplacements`, `CauseHeldForSteady` |
 | Rollout | Writes a release's components to the cluster repository and reads them back from the cluster's node report. It keeps the blob SHA of each file a release renders, the hash Git names a file's content by, so each release is rendered once. `Rendering.Blobs` gives those hashes | `ReleaseFor`, `Cluster.RenderingOf`, `Rendering.Blobs` |
 | Hosting | For the cluster that hosts mitstack itself, commits the keys that recover the cluster's OpenBao store and its sealed secrets to its repository. Each is encrypted with OpenPGP to the owner's public key, so only the owner's private key opens it. It also creates the two deploy keys that repository is read and written with | `HostsPlatform`, `EncryptTo`, `DeployKey` |
 

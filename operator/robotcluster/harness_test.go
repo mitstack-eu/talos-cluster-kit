@@ -65,7 +65,9 @@ type env struct {
 	// workerBuildHangs keeps the worker image's builder running, as a build that failed leaves it.
 	workerBuildHangs bool
 	reports          []observe.NodeReport
-	created          []contract.CreatedResource
+	// waitingPods is what each later node report says of the cluster's pods, as the report serves them.
+	waitingPods []map[string]any
+	created     []contract.CreatedResource
 
 	mu       sync.Mutex
 	queued   []func()
@@ -271,7 +273,11 @@ func (e *env) reportNodes() {
 		})
 		gateways = append(gateways, map[string]any{"address": addr, "passed": up, "reason": "no answer within 5s"})
 	}
-	body, err := json.Marshal(map[string]any{"subscriptionId": e.sub, "nodes": nodes, "gateways": gateways, "images": []any{}})
+	report := map[string]any{"subscriptionId": e.sub, "nodes": nodes, "gateways": gateways, "images": []any{}}
+	if e.waitingPods != nil {
+		report["pods"] = e.waitingPods
+	}
+	body, err := json.Marshal(report)
 	require.NoError(e.t, err)
 	e.reports = append(e.reports, observe.NodeReport{ReceivedAt: e.now, Body: body})
 }
@@ -507,4 +513,29 @@ func (gh *fakeGitHub) exists(repo string) bool {
 	defer gh.mu.Unlock()
 	_, ok := gh.repos[repo]
 	return ok
+}
+
+// labellerBurstNodes is the burst nodes the labeller in the cluster repository names.
+func (e *env) labellerBurstNodes() string {
+	for path, content := range e.github.repoFiles(e.repo()) {
+		if !strings.Contains(path, "/mitstack-node-topology/") {
+			continue
+		}
+		_, after, found := strings.Cut(content, "- name: TOPOLOGY_BURST_NODES\n")
+		if !found {
+			return ""
+		}
+		value, _, _ := strings.Cut(strings.TrimSpace(after), "\n")
+		return value
+	}
+	e.t.Fatalf("the cluster repository holds no labeller")
+	return ""
+}
+
+// ensureOrWait subscribes once and fails the test on any error but a wait for the cluster.
+func (e *env) ensureOrWait(call string) {
+	e.t.Helper()
+	if err := e.ensure(); err != nil {
+		require.True(e.t, waiting(err), "%s: %v", call, err)
+	}
 }

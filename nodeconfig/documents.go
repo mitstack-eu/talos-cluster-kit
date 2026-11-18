@@ -154,6 +154,8 @@ func resolverDocument() config.Document {
 // cloudLink is a Cloud node's one interface, on the cluster's private network, since the node has no public one.
 const cloudLink = "eth0"
 
+const gatewayRoots = "mitstack-gateway"
+
 // routeDocuments give a Cloud node the default route DHCP leaves out, through Hetzner's router to the gateway.
 func (c Cluster) routeDocuments() []config.Document {
 	if c.Profile != HCloud {
@@ -214,7 +216,7 @@ func hostnameDocument(n Node) config.Document {
 
 func (c Cluster) trustedRootsDocument() config.Document {
 	doc := security.NewTrustedRootsConfigV1Alpha1()
-	doc.MetaName = "mitstack-gateway"
+	doc.MetaName = gatewayRoots
 	doc.Certificates = string(c.GatewayCA)
 	return doc
 }

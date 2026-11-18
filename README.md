@@ -4143,8 +4143,8 @@ The decision cannot tell two things, so a builder plans for them:
 ### Steady and burst members
 
 A Cloud pool's members up to its minimum are steady, and each member above it
-is a burst member. The kit's components and the runner caches run on the
-steady members, so the removal of an idle burst member moves none of them.
+is a burst member. The kit's components run on the steady members, so the
+removal of an idle burst member moves none of them.
 
 1. `PlanCloud` labels each server it creates above the minimum
    `mitstack.dev/burst=true`, the label `pools.KeyBurst` names and

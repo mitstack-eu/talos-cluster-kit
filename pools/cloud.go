@@ -147,9 +147,7 @@ func PlanCloud(ctx context.Context, plane controlplane.Plane, pool CloudPool, dr
 }
 
 // Reclassify returns each member whose burst label must change, with the labels it then carries, so the pool holds
-// Min steady members, or only steady ones at a set size. It demotes the newest member of the location holding the most
-// steady ones first, and promotes the oldest burst member first, only as far as the pool has no room to create the
-// steady members it lacks. A member whose removal is under way keeps its labels.
+// Min steady members, or only steady ones at a set size, and a member whose removal is under way keeps its labels.
 func Reclassify(pool CloudPool, members []controlplane.Server) []controlplane.Server {
 	var steady, burst []controlplane.Server
 	for _, srv := range members {

@@ -12,8 +12,8 @@ import (
 	"sync"
 )
 
-// BurstLabel is the node label each burst member of a Cloud pool carries. Every pod the set renders but a DaemonSet's,
-// and one that runs on the control plane, refuses a node carrying it, so removing an idle burst member moves none.
+// BurstLabel is the node label each burst member of a Cloud pool carries, which every pod the set renders refuses but
+// a DaemonSet's, one on the control plane, and the local path provisioner's helper, which runs on its volume's node.
 const BurstLabel = "mitstack.dev/burst"
 
 // BurstValue is the value of BurstLabel on a burst member.

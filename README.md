@@ -4436,10 +4436,10 @@ Its apps run on the Cloud pool alone, so such a request must set
 refuses it too.
 
 A cluster built on a dedicated server keeps it. A later request that leaves
-`robotServerNumber` empty is refused with `dedicated-server-removed`, and
-removing the cluster then deletes its Cloud resources but leaves the server
-and its vSwitch in place, refusing with `robot-left-in-place`. Name the server
-again to release it.
+`robotServerNumber` empty is refused with `dedicated-server-removed`. If such
+a request removes the cluster, the module deletes its Cloud resources, keeps
+the server and its vSwitch, and then refuses with `robot-left-in-place`. A
+later removal that sets `robotServerNumber` again releases the server.
 
 ## How you change the module
 

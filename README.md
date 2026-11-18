@@ -136,7 +136,7 @@ A node keeps the configuration it booted with until something applies another
 one. Talos calls this the machine configuration: a YAML file of several
 documents, each of a kind such as `KubeletConfig`, that sets the node's disks,
 network, Kubernetes and keys. A release here is one published version of this
-kit, named by the digest of its tools image, the container image that carries
+kit, named by the digest, the content hash, of its tools image, the container image that carries
 talosctl and the kit's scripts (see the `tools` row above). `Cluster.Release`
 holds that digest.
 
@@ -145,28 +145,31 @@ bytes and returns the configuration this release gives that node. It applies
 nothing. Its caller reads the configuration from the node through the Talos
 API and applies the result, and this kit does not yet hold that caller.
 
-The block, the mitstack block that created the cluster through this kit,
-keeps no copy of the cluster's keys or of the choices it made at creation.
-Only the node still holds them, so `Rerender` reads them back from these
-documents, each named by its Talos kind:
+A block is the program mitstack runs to create and update one kind of cluster,
+such as hcloud-hrobot-talos-cluster, and it renders each node through this
+kit. It keeps no copy of the cluster's keys or of the choices it made at
+creation. Only the node still holds them, so `Rerender` reads them back from
+these documents, each named by its Talos kind:
 
 | What it reads back | From the running document |
 |---|---|
 | The cluster's keys | Every key document, through Talos's `NewBundleFromConfig` |
-| The cluster's name and first API address | `KubeClusterConfig`, the cluster section |
-| The other API addresses | The machine's `certSANs`, the names its API certificate holds |
-| The subscription, the private network and the node's own labels | `KubeNodeConfig`, the node's Kubernetes labels and taints |
+| The cluster's name and the API's first address, the private load balancer every node reaches Kubernetes through | `KubeClusterConfig`, the cluster section |
+| The API's other addresses, one load balancer in each further location | The machine's `certSANs`, the names its API certificate holds |
+| The subscription, the mitstack subscription the cluster was created for, the private network the nodes share, and the node's own labels | `KubeNodeConfig`: the subscription and the node's own labels from its Kubernetes labels, the network from the subnet its kubelet binds to |
 | Whether apps stay off the control plane | The control-plane taint in `KubeNodeConfig` |
 | The Kubernetes version | The kubelet image in `KubeletConfig` |
-| The issuer, the URL each service-account token names, and the gateway CA | `KubeServiceAccountConfig` and the `mitstack-gateway` `TrustedRootsConfig` |
-| The gateways and the profile | The `RegistryTLSConfig` names and the `eth0` `LinkConfig` |
-| The user volumes, the disk space Talos gives a component such as the local path provisioner | Each `UserVolumeConfig` |
-| A dedicated node's name and vSwitch | `HostnameConfig`, the `pub0` `LinkAliasConfig` and the `vsw0` `VLANConfig` |
+| The issuer, the URL each service-account token names so AWS can check it | `KubeServiceAccountConfig` |
+| The gateways, the Cloud servers that give the nodes their route out and serve their images, and the gateway CA, the certificate the nodes trust them by | The `RegistryTLSConfig` names and the `mitstack-gateway` `TrustedRootsConfig` |
+| The profile, `hcloud` for a Hetzner Cloud server or `metal` for a dedicated server | The `eth0` `LinkConfig`, which only a Cloud server carries |
+| The user volumes, the disk space Talos gives a component such as the local path provisioner, which backs the cluster's default storage | Each `UserVolumeConfig` |
+| A dedicated server's name and its vSwitch, Hetzner's private link to the Cloud network | `HostnameConfig`, the `pub0` `LinkAliasConfig` for its public link and the `vsw0` `VLANConfig` for the vSwitch |
 
 A control-plane node's configuration also holds the Kubernetes manifests it
-applied at install, and every node says whether it runs the node-local log
-Collector. `Rerender` keeps both as the node holds them, since Argo CD carries
-each later change of a component, as
+applied at install. Every node's configuration also says whether it sends its
+logs to the node-local Collector, the OpenTelemetry agent that ships them
+off the node. `Rerender` keeps the manifests and that log setting as the node holds them, since Argo CD
+carries each later change of a component, as
 [How a running cluster takes a release's components](#how-a-running-cluster-takes-a-releases-components)
 explains. The result sets the node annotation `mitstack.dev/machine-config`
 (`nodeconfig.MachineConfigAnnotation`) to `Cluster.Release`, so each node
@@ -178,14 +181,16 @@ settings only when it boots. `Rerender` refuses such a release with
 `nodeconfig.ErrRebootOnly`, naming the setting, and the caller applies nothing
 to that node. These settings are the install disk and image
 (`machine.install`), the kernel's arguments and modules (`machine.kernel`),
-every etcd setting except its CA key, which the node keeps (`cluster.etcd`),
-and a volume, either a system one such as `EPHEMERAL` (`VolumeConfig`) or a
-user one (`UserVolumeConfig`).
+every etcd setting (`cluster.etcd`), and a volume, either a system one such as
+`EPHEMERAL` (`VolumeConfig`) or a user one (`UserVolumeConfig`). The etcd CA
+key is left out of that comparison, since `Rerender` copies it from the node
+and so the result always holds the node's own key.
 
 `Rerender` also refuses a configuration it cannot read back whole, so nothing on
 a node changes without a reason it can name. It refuses one with no
 `KubeClusterConfig`, `KubeNodeConfig` or `mitstack-gateway`
-`TrustedRootsConfig`, or with an API endpoint that is a host name. It refuses
+`TrustedRootsConfig`, or with an API endpoint that is a host name, since the
+kit renders that endpoint as the load balancer's address. It refuses
 a taint other than the control plane's, and that taint on a worker. It refuses
 a kubelet image from another registry or pinned by digest, since the node
 keeps the Kubernetes version that image names. It refuses a worker that trusts
@@ -199,6 +204,7 @@ and renders what the node takes from the release whose tools image is
 `sha256:5f0c…`:
 
 ```go
+// running is the node's machine configuration, which the caller read through the Talos API.
 next, err := nodeconfig.Rerender(running, "sha256:5f0c…")
 if errors.Is(err, nodeconfig.ErrRebootOnly) {
 	return fmt.Errorf("leave this node as it runs: %w", err)

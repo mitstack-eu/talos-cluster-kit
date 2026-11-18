@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -75,6 +76,38 @@ func (r Read) JobFailure(namespace, job string) (string, error) {
 			if c.Message != "" {
 				return c.Message, nil
 			}
+		}
+	}
+	return "", nil
+}
+
+var scheduledRun = regexp.MustCompile(`^([0-9]+)-[a-z0-9]{5}$`)
+
+// ScheduledFailure is the message the pod of the CronJob's newest finished run left in the report when that run failed,
+// and empty when it succeeded or none has finished; a run's Job is named for the minute it was scheduled.
+func (r Read) ScheduledFailure(namespace, cronJob string) (string, error) {
+	m, err := r.members()
+	if err != nil {
+		return "", err
+	}
+	var newest *reportedPod
+	newestMinute := -1
+	for i, p := range m.Pods {
+		suffix, ok := strings.CutPrefix(p.Name, cronJob+"-")
+		run := scheduledRun.FindStringSubmatch(suffix)
+		if !ok || run == nil || p.Namespace != namespace || !p.finished() {
+			continue
+		}
+		if minute, err := strconv.Atoi(run[1]); err == nil && minute > newestMinute {
+			newest, newestMinute = &m.Pods[i], minute
+		}
+	}
+	if newest == nil || newest.Phase != "Failed" {
+		return "", nil
+	}
+	for _, c := range newest.Containers {
+		if c.Message != "" {
+			return c.Message, nil
 		}
 	}
 	return "", nil

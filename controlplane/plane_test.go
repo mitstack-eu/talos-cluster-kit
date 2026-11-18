@@ -7,7 +7,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
+	"net/netip"
 	"os"
 	"slices"
 	"strings"
@@ -228,6 +230,131 @@ func TestPlane_BuildsANodeInEachOfFsn1Nbg1AndHel1OnOneNetwork(t *testing.T) {
 	assert.Equal(t, controlplane.Locations, gatewayLocations, "the gateways' locations")
 	assert.Equal(t, "fsn1", h.cloud.SpecFor(t, controlplane.RoleBuilder).Location, "the builder's location")
 	assert.Empty(t, h.byRole(controlplane.RoleBuilder), "a builder outlived its snapshot")
+}
+
+func TestPlane_ASizeOfOneBuildsOneNodeBesideOneGatewayInFsn1AndJudgesNoOtherLocation(t *testing.T) {
+	h := newHarness(t, func(h *harness) { h.plane.Size = 1 })
+
+	h.built()
+
+	assert.Equal(t, []string{"fsn1"}, h.plane.NodeLocations(), "the plane's node locations")
+	assert.Equal(t, []string{"fsn1"}, locationsOf(h.byRole(controlplane.RoleNode)), "the nodes' locations, one etcd member each")
+	assert.Equal(t, []string{"fsn1"}, locationsOf(h.byRole(controlplane.RoleGateway)), "the gateways' locations")
+	require.Len(t, h.installed, 1, "installs")
+	assert.Equal(t, []netip.Addr{netip.MustParseAddr(controlplane.GatewayAddress)}, h.installed[0].Gateways, "the gateways every node pulls through")
+	assert.Equal(t, "1", h.network().Labels[controlplane.KeySize], "the size the network records")
+}
+
+func TestPlane_NodeLocationsGivesACopyAChangeToWhichReachesNeitherLocationsNorTheNextCall(t *testing.T) {
+	for _, size := range []int{1, 3} {
+		plane := controlplane.Plane{Size: size}
+		given := plane.NodeLocations()
+
+		given[0] = "changed"
+
+		assert.Equal(t, []string{"fsn1", "nbg1", "hel1"}, controlplane.Locations, "Locations after a change to a size-%d plane's node locations", size)
+		assert.Equal(t, "fsn1", plane.NodeLocations()[0], "a size-%d plane's next node locations", size)
+	}
+}
+
+func TestPlane_ASizeOfThreeBuildsThePlaneAPlaneGivenNoSizeBuilds(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		size int
+	}{
+		{name: "a plane given a size of three", size: 3},
+		{name: "a plane given no size, as every cluster built before the size was an input", size: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, func(h *harness) { h.plane.Size = tc.size })
+
+			h.built()
+
+			assert.Equal(t, controlplane.Locations, h.plane.NodeLocations(), "the plane's node locations")
+			assert.ElementsMatch(t, controlplane.Locations, locationsOf(h.byRole(controlplane.RoleNode)), "the nodes' locations")
+			assert.Equal(t, controlplane.Locations, locationsOf(h.byRole(controlplane.RoleGateway)), "the gateways' locations")
+			assert.Equal(t, controlplane.GatewayAddrs(), h.installed[0].Gateways, "the gateways every node pulls through")
+			assert.Equal(t, "3", h.network().Labels[controlplane.KeySize], "the size the network records")
+		})
+	}
+}
+
+func TestPlane_RefusesASizeOtherThanOneOrThreeBeforeAnyChange(t *testing.T) {
+	for _, size := range []int{2, 4, 5, -1} {
+		t.Run(fmt.Sprintf("a plane of %d servers", size), func(t *testing.T) {
+			h := newHarness(t, func(h *harness) { h.plane.Size = size })
+
+			err := h.ensure()
+
+			assert.Equal(t, "invalid-param", refusalClass(t, err))
+			assert.ErrorContains(t, err, fmt.Sprintf("1 or 3 servers, and %d were asked for", size))
+			assert.Zero(t, h.cloud.Writes(), "changes after the refusal")
+		})
+	}
+}
+
+func TestPlane_RefusesASizeOtherThanTheOneTheClusterWasSubscribedWithNamingThatSize(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		built, asked     int
+		dropRecordedSize bool
+		wantSubscribed   string
+	}{
+		{name: "a one-server cluster asked for three", built: 1, asked: 3, wantSubscribed: "1"},
+		{name: "a three-server cluster asked for one", built: 3, asked: 1, wantSubscribed: "3"},
+		{name: "a cluster built before the size was an input, asked for one", built: 3, asked: 1, dropRecordedSize: true, wantSubscribed: "3"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, func(h *harness) { h.plane.Size = tc.built })
+			h.built()
+			if tc.dropRecordedSize {
+				network := h.network()
+				labels := maps.Clone(network.Labels)
+				delete(labels, controlplane.KeySize)
+				require.NoError(t, h.cloud.SetNetworkLabels(context.Background(), network.ID, labels))
+			}
+			h.plane.Size = tc.asked
+			before := h.cloud.Writes()
+
+			err := h.ensure()
+
+			assert.Equal(t, "control-plane-size-fixed", refusalClass(t, err))
+			assert.ErrorContains(t, err, "subscribed with controlPlaneSize "+tc.wantSubscribed)
+			assert.ErrorContains(t, err, "leave controlPlaneSize at "+tc.wantSubscribed)
+			assert.Equal(t, before, h.cloud.Writes(), "changes after the refusal")
+		})
+	}
+}
+
+func TestPlane_RefusesOneServerForAClusterThatHostsThePlatformNamingTheRestoreDrillBeforeAnyChange(t *testing.T) {
+	h := newHarness(t, hosting, func(h *harness) { h.plane.Size = 1 })
+
+	err := h.ensure()
+
+	assert.Equal(t, "restore-drill-missing", refusalClass(t, err))
+	assert.ErrorContains(t, err, "OpenBao")
+	assert.ErrorContains(t, err, "ADR 0125 restore drill")
+	assert.Zero(t, h.cloud.Writes(), "changes after the refusal")
+}
+
+func TestPlane_AOneServerClusterWhoseNodeIsLostNamesTheLostNodeAndNoOtherLocation(t *testing.T) {
+	h := newHarness(t, func(h *harness) { h.plane.Size = 1 })
+	h.built()
+	lost, ok := h.read().NodeIn("fsn1")
+	require.True(t, ok, "the cluster has no node in fsn1")
+	require.NoError(t, h.cloud.DeleteServer(context.Background(), lost.ID))
+
+	problems := h.plane.Problems(context.Background(), h.read())
+
+	assert.Equal(t, []string{"no node in fsn1 carries this subscription's labels"}, problems, "the problems of a one-server cluster that lost its node")
+}
+
+func locationsOf(servers []controlplane.Server) []string {
+	out := make([]string, 0, len(servers))
+	for _, s := range servers {
+		out = append(out, s.Location)
+	}
+	return out
 }
 
 func TestPlane_BuildsTheBuilderAndEveryNodeOnTheServerTypeItIsGiven(t *testing.T) {

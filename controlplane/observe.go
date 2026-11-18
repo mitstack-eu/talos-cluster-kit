@@ -52,7 +52,7 @@ func (p Plane) Problems(ctx context.Context, st State) []string {
 		return append(missing, "the gateways cannot be judged: "+err.Error())
 	}
 	missing = append(missing, gateways...)
-	missing = append(missing, st.nodeProblems(network, firewall)...)
+	missing = append(missing, st.nodeProblems(p.NodeLocations(), network, firewall)...)
 	missing = append(missing, p.nodeReplacementProblems(ctx, st, network)...)
 	missing = append(missing, p.loadBalancerProblems(st, network)...)
 	return missing
@@ -75,7 +75,7 @@ func (p Plane) buildDetail(ctx context.Context, b Server, img imageBuild) string
 // serves, and an upgrade's replacement still to run or waiting on a gateway. A gateway down after its power-back is no
 // problem here, since the cluster serves through the others while it is replaced or left, and Unhealthy names it.
 func (p Plane) gatewayProblems(ctx context.Context, st State, network Network, firewall Firewall) ([]string, error) {
-	locations := Locations
+	locations := p.NodeLocations()
 	if st.SingleGateway() {
 		locations = []string{GatewayLocation}
 	}
@@ -164,9 +164,9 @@ func (p Plane) replacementProblem(ctx context.Context, st State, network Network
 	return fmt.Sprintf("every gateway serves from this release's list, and network %d still carries the upgrade's mark", network.ID), nil
 }
 
-func (st State) nodeProblems(network Network, firewall Firewall) []string {
+func (st State) nodeProblems(locations []string, network Network, firewall Firewall) []string {
 	var missing []string
-	for _, loc := range Locations {
+	for _, loc := range locations {
 		node, ok := st.NodeIn(loc)
 		if !ok {
 			missing = append(missing, "no node in "+loc+" carries this subscription's labels")
@@ -259,7 +259,7 @@ func (p Plane) Outputs(st State) (map[string]string, string) {
 	gw, _ := st.SharedGateway()
 	endpoint, _ := st.LoadBalancerIn(RoleAPI, GatewayLocation)
 	var nodes []string
-	for _, loc := range Locations {
+	for _, loc := range p.NodeLocations() {
 		node, _ := st.NodeIn(loc)
 		nodes = append(nodes, fmt.Sprintf("%d in %s at %s", node.ID, loc, node.PrivateIPs[network.ID]))
 	}

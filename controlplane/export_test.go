@@ -4,6 +4,7 @@ package controlplane
 
 import (
 	"context"
+	"net/netip"
 	"sync"
 	"testing"
 	"time"
@@ -27,9 +28,11 @@ var (
 	BuildImageScript         = buildImageScript
 	BootstrapFirstNodeScript = bootstrapFirstNodeScript
 	ServingFile              = servingFile
-	GatewayAddrs             = gatewayAddrs
 	WithoutCommentLines      = withoutCommentLines
 )
+
+// GatewayAddrs are the gateway addresses of a plane given no size, one in each of Locations.
+func GatewayAddrs() []netip.Addr { return Plane{}.gatewayAddrs() }
 
 func SwapToolsImage(t testing.TB, image string) {
 	t.Helper()
@@ -44,7 +47,7 @@ func BuilderUserData(machineConfig []byte) (string, error) {
 
 // WithGatewayCA is p holding a newly minted gateway CA, which a plane that installed nothing holds none of.
 func (p Plane) WithGatewayCA() (Plane, error) {
-	ca, err := gateway.NewCA(time.Now(), gatewayCAValidity, gatewayAddrs())
+	ca, err := gateway.NewCA(time.Now(), gatewayCAValidity, p.gatewayAddrs())
 	if err != nil {
 		return Plane{}, err
 	}

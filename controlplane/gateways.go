@@ -106,7 +106,7 @@ func (p Plane) zoneStep(ctx context.Context, st State, s site) (Step, bool, erro
 		return Step{}, false, nil
 	}
 	sibling, _ := st.SharedGateway()
-	for _, loc := range Locations {
+	for _, loc := range p.NodeLocations() {
 		if _, ok := st.GatewayIn(loc); !ok {
 			if p.GatewayCA == nil {
 				return Step{}, false, refuse("gateway-ca-unknown",
@@ -120,7 +120,7 @@ func (p Plane) zoneStep(ctx context.Context, st State, s site) (Step, bool, erro
 			}}, true, nil
 		}
 	}
-	for _, loc := range Locations {
+	for _, loc := range p.NodeLocations() {
 		gw, _ := st.GatewayIn(loc)
 		if gw.PrivateIPs[s.network.ID] == "" {
 			return Step{"attach the gateway in " + loc + " to the network at its fixed address before its first boot", func(ctx context.Context) error {
@@ -128,7 +128,7 @@ func (p Plane) zoneStep(ctx context.Context, st State, s site) (Step, bool, erro
 			}}, true, nil
 		}
 	}
-	for _, loc := range Locations {
+	for _, loc := range p.NodeLocations() {
 		if _, recorded := gatewayGoneAt(s.network, loc); recorded {
 			return p.setGatewayGone(s.network, loc, nil), true, nil
 		}
@@ -138,7 +138,7 @@ func (p Plane) zoneStep(ctx context.Context, st State, s site) (Step, bool, erro
 
 // neverStartedStep powers on the first gateway Hetzner has never started.
 func (p Plane) neverStartedStep(ctx context.Context, st State) (Step, bool, error) {
-	for _, loc := range Locations {
+	for _, loc := range p.NodeLocations() {
 		gw, ok := st.GatewayIn(loc)
 		if !ok || gw.Status != ServerOff {
 			continue
@@ -169,8 +169,8 @@ func (p Plane) builtGatewayStep(ctx context.Context, st State, s site) (Step, bo
 		p.routeStep,
 		p.powerBackStep,
 		p.failedStep,
-		onceEveryLocationHasItsGateway(p.replaceStep),
-		onceEveryLocationHasItsGateway(p.renewStep),
+		p.onceEveryLocationHasItsGateway(p.replaceStep),
+		p.onceEveryLocationHasItsGateway(p.renewStep),
 	} {
 		if step, ok, err := next(ctx, st, s); err != nil || ok {
 			return step, ok, err
@@ -183,9 +183,9 @@ func (p Plane) builtGatewayStep(ctx context.Context, st State, s site) (Step, bo
 type gatewayStep func(ctx context.Context, st State, s site) (Step, bool, error)
 
 // onceEveryLocationHasItsGateway holds a step that takes a location's gateway away while any location lacks one.
-func onceEveryLocationHasItsGateway(next gatewayStep) gatewayStep {
+func (p Plane) onceEveryLocationHasItsGateway(next gatewayStep) gatewayStep {
 	return func(ctx context.Context, st State, s site) (Step, bool, error) {
-		if st.lacksGateway() {
+		if st.lacksGateway(p.NodeLocations()) {
 			return Step{}, false, nil
 		}
 		return next(ctx, st, s)
@@ -236,7 +236,7 @@ func (st State) gatewayAt(address string) (Server, bool) {
 
 // routeTarget is the first gateway, in location order and other than skip, that serves.
 func (p Plane) routeTarget(ctx context.Context, st State, network Network, skip string) (Server, bool, error) {
-	for _, loc := range Locations {
+	for _, loc := range p.NodeLocations() {
 		gw, ok := st.GatewayIn(loc)
 		if !ok || GatewayAddresses[loc] == skip {
 			continue
@@ -320,7 +320,7 @@ func (p Plane) downAfterPowerOn(ctx context.Context, gw Server) (bool, GatewayRe
 // powerBackStep powers on a gateway that ran and is off, once an outage: a gateway already powered back on is powered
 // on again only when a report read it serving after that.
 func (p Plane) powerBackStep(ctx context.Context, st State, _ site) (Step, bool, error) {
-	for _, loc := range Locations {
+	for _, loc := range p.NodeLocations() {
 		gw, ok := st.GatewayIn(loc)
 		if !ok || gw.Status != ServerOff {
 			continue
@@ -389,14 +389,14 @@ func (p Plane) failure(ctx context.Context, gw Server, network Network) (gateway
 // failedStep replaces the first gateway of this release's list that failed, from the same list at its address, unless
 // it replaced one that failed, and ends the replacement of one a report reads serving again.
 func (p Plane) failedStep(ctx context.Context, st State, s site) (Step, bool, error) {
-	if st.lacksGateway() {
+	if st.lacksGateway(p.NodeLocations()) {
 		return Step{}, false, nil
 	}
 	list, err := p.gatewayList()
 	if err != nil {
 		return Step{}, false, err
 	}
-	for _, loc := range Locations {
+	for _, loc := range p.NodeLocations() {
 		gw, _ := st.GatewayIn(loc)
 		if gw.Labels[KeyGatewayList] != list.Digest() {
 			continue
@@ -465,7 +465,7 @@ func (p Plane) replacement(st State, network Network) (replacement, error) {
 	}
 	digest := list.Digest()
 	r := replacement{digest: digest}
-	for _, loc := range Locations {
+	for _, loc := range p.NodeLocations() {
 		if gw, ok := st.GatewayIn(loc); ok && gw.Labels[KeyGatewayList] == digest {
 			r.current = append(r.current, gw)
 		} else if ok {
@@ -522,7 +522,7 @@ func (p Plane) GatewaysAwaitRelease(st State) (bool, error) {
 // cluster.
 func (p Plane) GatewaysServeRelease(ctx context.Context, st State) (bool, error) {
 	r, network, sorted, err := p.gatewaysByList(st)
-	if err != nil || !sorted || len(r.stale) > 0 || len(r.current) != len(Locations) {
+	if err != nil || !sorted || len(r.stale) > 0 || len(r.current) != len(p.NodeLocations()) {
 		return false, err
 	}
 	_, _, waiting, err := p.waitingOn(ctx, r, network)
@@ -682,7 +682,7 @@ func gatewayName(gw Server) string { return fmt.Sprintf("gateway %d in %s", gw.I
 // report since began reads its mirror, with each reading's detail naming that report.
 func (p Plane) gatewaySet(ctx context.Context, st State, network Network, began time.Time) (redundant.Set, map[string]string, error) {
 	set, details := redundant.Set{Name: "gateways", Minimum: redundant.AllButOne}, map[string]string{}
-	for _, loc := range Locations {
+	for _, loc := range p.NodeLocations() {
 		gw, ok := st.GatewayIn(loc)
 		if !ok {
 			continue
@@ -805,7 +805,7 @@ func (p Plane) Unhealthy(ctx context.Context, st State) (cause, detail string, e
 		return "", "", err
 	}
 	network, _ := st.Network()
-	for _, loc := range Locations {
+	for _, loc := range p.NodeLocations() {
 		gw, ok := st.GatewayIn(loc)
 		if !ok {
 			continue

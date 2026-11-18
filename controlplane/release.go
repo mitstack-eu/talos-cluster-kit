@@ -19,7 +19,7 @@ var ErrNoIngressAddress = errors.New("the release's Traefik has no ingress addre
 // Application, through which the carriage runs, with the credentials rendered without the enrolment token, Traefik
 // publishing the address st holds for the ingress load balancer and the labeller naming each Cloud pool worker st
 // holds, plus two the build cannot apply: the telemetry Collector of a plane that names a backend, and Talos's CoreDNS
-// spread over Locations.
+// spread over the plane's node locations.
 func (p Plane) Release(st State) (rollout.Release, error) {
 	if p.Hosting == nil && p.RepoURL == "" || p.Hosting != nil && p.Hosting.Repository == "" {
 		return rollout.Release{}, errors.New("the cluster's credentials name the cluster repository, and the plane names none")
@@ -43,7 +43,7 @@ func (p Plane) Release(st State) (rollout.Release, error) {
 	if err != nil {
 		return rollout.Release{}, err
 	}
-	coreDNS, err := components.CoreDNS(Locations)
+	coreDNS, err := components.CoreDNS(p.NodeLocations())
 	if err != nil {
 		return rollout.Release{}, err
 	}

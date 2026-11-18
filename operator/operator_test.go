@@ -113,3 +113,56 @@ func TestRequestSecrets_ListsEverySecretTheRequestCarriesSoALogLineCanMaskThem(t
 	assert.ElementsMatch(t, []string{"hc-token", "gh-token", "input-secret", "own-secret"}, secrets)
 	assert.Empty(t, operator.RequestSecrets(contract.Desired{}), "a request that carries no secret")
 }
+
+func sizeRequest(params map[string]string) contract.Desired { return contract.Desired{Params: params} }
+
+func TestControlPlaneSize_ReadsOneOrThreeAndThreeForARequestThatNamesNone(t *testing.T) {
+	for _, tc := range []struct {
+		name, given string
+		want        int
+	}{
+		{name: "a request naming one runs one server", given: "1", want: 1},
+		{name: "a request naming three runs three servers", given: "3", want: 3},
+		{name: "a request naming no size, as every cluster built before the input, runs three servers", given: "", want: 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			size, err := operator.ControlPlaneSize(sizeRequest(map[string]string{"controlPlaneSize": tc.given}))
+
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, size, "ControlPlaneSize(%q)", tc.given)
+		})
+	}
+}
+
+func TestControlPlaneSize_RefusesAnyOtherSizeNamingOneAndThree(t *testing.T) {
+	for _, given := range []string{"2", "0", "4", "-1", "three", " 3", "3.0"} {
+		t.Run("a request naming "+given, func(t *testing.T) {
+			_, err := operator.ControlPlaneSize(sizeRequest(map[string]string{"controlPlaneSize": given}))
+
+			assert.Equal(t, "invalid-param", refusalClass(t, err))
+			assert.ErrorContains(t, err, fmt.Sprintf(`params["controlPlaneSize"] is %q, and a control plane runs 1 or 3 servers`, given))
+		})
+	}
+}
+
+func TestControlPlaneSize_RefusesOneServerForAClusterRunningOpenBaoNamingTheRestoreDrill(t *testing.T) {
+	_, refused := operator.ControlPlaneSize(sizeRequest(map[string]string{"controlPlaneSize": "1", "hostsPlatform": "true"}))
+	three, err := operator.ControlPlaneSize(sizeRequest(map[string]string{"controlPlaneSize": "3", "hostsPlatform": "true"}))
+	require.NoError(t, err, "three servers for a cluster running OpenBao")
+
+	assert.Equal(t, "restore-drill-missing", refusalClass(t, refused))
+	assert.ErrorContains(t, refused, "ADR 0125 restore drill")
+	assert.ErrorContains(t, refused, "OpenBao")
+	assert.Equal(t, 3, three, "the size of a three-server cluster running OpenBao")
+}
+
+func TestRefuseUndeclaredSize_RefusesASizeTheBlocksManifestDeclaresNoNodesForNamingTheDeclaredSize(t *testing.T) {
+	declared := operator.RefuseUndeclaredSize(3, 3)
+	undeclared := operator.RefuseUndeclaredSize(1, 3)
+
+	assert.NoError(t, declared, "the one size the manifest declares")
+	assert.Equal(t, "control-plane-size-undeclared", refusalClass(t, undeclared))
+	assert.ErrorContains(t, undeclared, "this block lists a control-plane server in each of 3 locations, and mitstack waits for each one")
+	assert.ErrorContains(t, undeclared, "keeps 3 servers after subscribe")
+	assert.ErrorContains(t, undeclared, "leave controlPlaneSize at 3")
+}

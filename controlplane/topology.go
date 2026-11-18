@@ -16,8 +16,9 @@ func TopologyLabels(loc string) map[string]string {
 // server exists, then each of poolWorkers by the name and location Hetzner records, in name order, so the labeller
 // renders the same bytes however Hetzner lists them.
 func (p Plane) topologyManifests(poolWorkers []Server) ([]byte, error) {
-	nodes := make([]topology.Node, 0, len(Locations)+len(poolWorkers))
-	for _, loc := range Locations {
+	locations := p.NodeLocations()
+	nodes := make([]topology.Node, 0, len(locations)+len(poolWorkers))
+	for _, loc := range locations {
 		nodes = append(nodes, topology.Node{Name: p.LocatedName(RoleNode, loc), Zone: loc})
 	}
 	byName := slices.SortedFunc(slices.Values(poolWorkers), func(a, b Server) int { return strings.Compare(a.Name, b.Name) })

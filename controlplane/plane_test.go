@@ -314,13 +314,14 @@ func TestPlane_RefusesASizeOtherThanTheOneTheClusterWasSubscribedWithNamingThatS
 	}
 }
 
-func TestPlane_RefusesOneServerForAClusterThatHostsThePlatformBeforeAnyChange(t *testing.T) {
+func TestPlane_RefusesOneServerForAClusterThatHostsThePlatformNamingTheRestoreDrillBeforeAnyChange(t *testing.T) {
 	h := newHarness(t, hosting, func(h *harness) { h.plane.Size = 1 })
 
 	err := h.ensure()
 
-	assert.Equal(t, "invalid-param", refusalClass(t, err))
+	assert.Equal(t, "restore-drill-missing", refusalClass(t, err))
 	assert.ErrorContains(t, err, "OpenBao")
+	assert.ErrorContains(t, err, "ADR 0125 restore drill")
 	assert.Zero(t, h.cloud.Writes(), "changes after the refusal")
 }
 

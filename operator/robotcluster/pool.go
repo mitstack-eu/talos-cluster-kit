@@ -68,7 +68,7 @@ func workerImageOf(st controlplane.State) workerImageState {
 // clusterBuilt is whether the install has finished: every location has its node and the Robot worker is written.
 func (c convergence) clusterBuilt() bool {
 	network, hasNetwork := c.state.Network()
-	return hasNetwork && workerProgress(network) == WorkerWritten && len(c.state.Servers[controlplane.RoleNode]) == len(controlplane.Locations)
+	return hasNetwork && workerProgress(network) == WorkerWritten && len(c.state.Servers[controlplane.RoleNode]) == len(c.plane.NodeLocations())
 }
 
 // poolRefusal refuses, before any change, a pool that would remove a worker or that grows with no worker image.

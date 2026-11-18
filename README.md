@@ -4244,10 +4244,20 @@ client the cluster calls, such as the clock or the Hetzner Cloud API. A field
 left empty is the client a released operator uses, and a test fills it with a
 fake.
 
+`Config.DeclaredSize` is the one control-plane size the block's manifest lists
+servers for. The platform keeps a subscribe pending until every server the
+manifest lists reads present, so the module refuses any other size before it
+changes anything, through `operator.RefuseUndeclaredSize`. hcloud-hrobot-talos-cluster
+sets 3, since its manifest lists a gateway and a node in each of three
+locations. Zero takes 1 or 3, for a block whose manifest leaves the size to the
+request. The request's own size, `params.controlPlaneSize`, sets the plane's
+`Size`, as [How many control-plane nodes a plane runs](#how-many-control-plane-nodes-a-plane-runs)
+describes.
+
 | Part | What it does | Main entry points |
 |---|---|---|
 | Lifecycle | Answers each call mitstack makes to the operator. `Ensure` builds or upgrades the cluster one step per call. `EnsureOwning` does the same and also returns the block's own secrets the call minted, the values mitstack keeps for the block such as the gateway CA's key. `EnsureResourcesOwning` also lists the resources the call created. `Observe` reads the whole cluster, `Observers` and `TypeObservers` read one resource by its name or by its type, and `Delete` tears the cluster down | `New`, `Config`, `Cluster.Ensure`, `Cluster.EnsureOwning`, `Cluster.EnsureResourcesOwning`, `Cluster.Observe`, `Cluster.Observers`, `Cluster.TypeObservers`, `Cluster.Delete` |
-| Control plane and gateways | Builds the three Cloud nodes and the gateways in front of them through the kit's `controlplane` package, and reads each gateway's newest report. A gateway is the Cloud server in each location that the nodes route out through and pull their images from | `Cluster.NewPlane`, `Cluster.WithGateways`, `GatewayReports`, `NewGatewayReports`, `GuardRemoval` |
+| Control plane and gateways | Builds the one or three Cloud nodes the request's size names and the gateways in front of them through the kit's `controlplane` package, and reads each gateway's newest report. A gateway is the Cloud server in each node's location that the nodes route out through and pull their images from | `Cluster.NewPlane`, `Cluster.PlaneFor`, `Cluster.WithGateways`, `GatewayReports`, `NewGatewayReports`, `GuardRemoval` |
 | Robot worker | Refuses a Robot server that is missing, cancelled, outside the cluster's locations or named for another subscription, before anything is written. It then joins the server to the cluster's network over a vSwitch, Hetzner's private link between Robot and Cloud servers, sets its firewall, and runs the install `Config` names in the background | `RobotName`, `Worker`, `WorkerInstall`, `WorkerFirewall`, `WorkerFirewallFor`, `HoldsWorkerRules`, `WaitOutRobotLimit`, `Cluster.JobRunning`, `Cluster.StopJob` |
 | Cloud pool and node replace | Scales the pool of Cloud workers through the kit's `pools` package, and names the control-plane nodes and Cloud workers an upgrade's request asks to replace that the cluster runs | `MemberName`, `Located`, `Cluster.PlanReplacements` |
 | Rollout | Writes a release's components to the cluster repository and reads them back from the cluster's node report. It keeps the blob SHA of each file a release renders, the hash Git names a file's content by, so each release is rendered once. `Rendering.Blobs` gives those hashes | `ReleaseFor`, `Cluster.RenderingOf`, `Rendering.Blobs` |
@@ -4295,6 +4305,7 @@ var cluster = robotcluster.New(robotcluster.Config{
     Block:         "hcloud-hrobot-talos-cluster",
     Boundary:      "mitstack-hcloud-hrobot-talos-cluster",
     InstallWorker: installWorker, // the operator's own install of the worker image
+    DeclaredSize:  3,             // the manifest lists a node and a gateway in each of three locations
 })
 ```
 

@@ -28,7 +28,7 @@ func (k *Cluster) EnsureResourcesOwning(ctx context.Context, d contract.Desired)
 }
 
 func (k *Cluster) readCreated(ctx context.Context, d contract.Desired) ([]contract.CreatedResource, error) {
-	p := k.NewPlane(k.cfg.CloudAPI(d.Secrets["hetzner"]["api_token"]), d.SubscriptionID, d.Params["appName"])
+	p := k.PlaneFor(k.cfg.CloudAPI(d.Secrets["hetzner"]["api_token"]), d)
 	st, err := p.Read(ctx)
 	if err != nil {
 		return nil, err

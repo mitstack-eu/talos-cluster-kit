@@ -959,6 +959,21 @@ func TestRerender_RefusesARunningConfigurationItCannotReadBackWholeNamingWhatItC
 			doc["image"] = "registry.example/kubelet:v1.37.1"
 		}), "registry.example/kubelet:v1.37.1"},
 		{"a worker that trusts no API server CA", edit(worker, "KubeAPIServerCAConfig", drop), "API server"},
+		{"a worker that trusts a second API server CA", edit(worker, "KubeAPIServerCAConfig", func(doc map[string]any) {
+			doc["acceptedCAs"] = append(doc["acceptedCAs"].([]any), string(testutil.ReadTestdata(t, "logs-ca.pem")))
+		}), "2 API server CAs"},
+		{"a kubelet image pinned by its digest", edit(controlPlane, "KubeletConfig", func(doc map[string]any) {
+			doc["image"] = "ghcr.io/siderolabs/kubelet:v1.37.1@sha256:" + strings.Repeat("0", 64)
+		}), "@sha256"},
+		{"a taint beside the control plane's", edit(controlPlane, "KubeNodeConfig", func(doc map[string]any) {
+			doc["taints"] = map[string]any{"example.com/dedicated": "apps:NoSchedule"}
+		}), "example.com/dedicated"},
+		{"a registry the node trusts beside its gateways", withDocument(t, controlPlane, map[string]any{
+			"apiVersion": "v1alpha1", "kind": "RegistryTLSConfig", "name": "10.0.5.5", "ca": string(testutil.ReadTestdata(t, "logs-ca.pem")),
+		}), "10.0.5.5"},
+		{"a second set of trusted roots beside the gateways'", withDocument(t, controlPlane, map[string]any{
+			"apiVersion": "v1alpha1", "kind": "TrustedRootsConfig", "name": "corp-proxy", "certificates": string(testutil.ReadTestdata(t, "logs-ca.pem")),
+		}), "corp-proxy"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -969,6 +984,14 @@ func TestRerender_RefusesARunningConfigurationItCannotReadBackWholeNamingWhatItC
 			assert.Nil(t, got)
 		})
 	}
+}
+
+// withDocument adds doc to a multi-document configuration.
+func withDocument(t *testing.T, config []byte, doc map[string]any) []byte {
+	t.Helper()
+	added, err := yaml.Marshal(doc)
+	require.NoError(t, err)
+	return slices.Concat(config, []byte("---\n"), added)
 }
 
 // editDocuments applies edit to each document of a multi-document configuration, dropping one the edit leaves empty.

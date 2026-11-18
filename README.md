@@ -2091,9 +2091,12 @@ The Collector decides which app a pushed record belongs to, whatever the
 sender wrote. Pushed records run through pipelines of their own, `logs/otlp`
 and `metrics/otlp`, in three steps:
 
-1. `transform/sender` deletes every attribute whose name starts with `k8s.` or
-   `mitstack.`, on the resource, on each log record and on each data point.
-   The tagger keeps any value it finds, so a claim left in place would stand.
+1. `transform/sender` deletes every attribute whose name starts with `k8s.`,
+   `mitstack.`, `k8s_` or `mitstack_`, on the resource, on each log record and
+   on each data point. The tagger keeps any value it finds, so a claim left in
+   place would stand. A classic Prometheus label name cannot hold a dot, so a
+   backend may store `mitstack.app` as `mitstack_app`, and a claim under that
+   name would reach the same label.
 2. `k8s_attributes/otlp` finds the sending pod by the address its connection
    comes from. It tags the record with that pod's name, its namespace and
    `mitstack.app`, before any batch forms, since a batch drops that address.

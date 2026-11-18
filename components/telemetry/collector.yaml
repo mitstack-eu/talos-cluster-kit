@@ -173,11 +173,11 @@ subjects:
       # namespace a record names, so a pushed record loses its own claims first.
       transform/sender:
         log_statements:
-          - delete_matching_keys(resource.attributes, "^(k8s|mitstack)[.]")
-          - delete_matching_keys(log.attributes, "^(k8s|mitstack)[.]")
+          - delete_matching_keys(resource.attributes, "^(k8s|mitstack)[._]")
+          - delete_matching_keys(log.attributes, "^(k8s|mitstack)[._]")
         metric_statements:
-          - delete_matching_keys(resource.attributes, "^(k8s|mitstack)[.]")
-          - delete_matching_keys(datapoint.attributes, "^(k8s|mitstack)[.]")
+          - delete_matching_keys(resource.attributes, "^(k8s|mitstack)[._]")
+          - delete_matching_keys(datapoint.attributes, "^(k8s|mitstack)[._]")
       k8s_attributes/otlp:
 {{- template "nodeTagger" }}
         pod_association:

@@ -61,7 +61,7 @@ var telemetryTemplate string
 
 var telemetryCollector = tmpl.Must("the telemetry Collector", telemetryTemplate)
 
-// TelemetryCollector renders the Collector that pushes the cluster's events, metrics and app logs, and what its pods
+// TelemetryCollector renders the Collector that pushes the cluster's events, metrics and pod logs, and what its pods
 // push to it, to e, tagged with subscription, and scrapes Argo CD's application controller and each OpenBao member the
 // set runs.
 func (s Set) TelemetryCollector(e TelemetryExport, subscription string) ([]Manifest, error) {

@@ -187,6 +187,17 @@ func size(input, what, value string) (int, error) {
 	return n, nil
 }
 
+// CheckSteadyHome refuses a pool that scales from no member on a plane whose apps run on workers and that has no worker
+// outside the pool, since every node such a cluster runs its own components on would then be a burst member.
+func CheckSteadyHome(plane controlplane.Plane, pool CloudPool) error {
+	if !pool.Scales() || pool.Min > 0 || !plane.AppsOnWorkers || len(plane.WorkerAddresses) > 0 {
+		return nil
+	}
+	return &controlplane.Refusal{Class: "cloud-pool-no-steady-home", Message: fmt.Sprintf(
+		"%s is 0 and the cluster has no worker outside the Cloud pool, but the kit's components need a steady member or a node outside the pool to run on",
+		inputMin)}
+}
+
 func checkBounds(pool CloudPool) error {
 	if pool.Max < pool.Min {
 		return fmt.Errorf("%s %d is below %s %d", inputMax, pool.Max, inputMin, pool.Min)

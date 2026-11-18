@@ -1,6 +1,7 @@
 # Copied from mitstack-eu/cluster-bases v0.4.0, its cloudnative-pg 0.29.1 chart render, with
-# POSTGRES_IMAGE_NAME set to the Postgres 16.15 image postgres-db-kube pins, and with the line
-# scripts/render-components.sh ends a document with when its last value is a block scalar.
+# POSTGRES_IMAGE_NAME set to the Postgres 16.15 image postgres-db-kube pins, with the line
+# scripts/render-components.sh ends a document with when its last value is a block scalar, and
+# with the node affinity it gives a workload's pods to keep them off a Cloud pool's burst members.
 ---
 # Source: cloudnative-pg/templates/rbac.yaml
 apiVersion: v1
@@ -21030,6 +21031,13 @@ spec:
         app.kubernetes.io/instance: cloudnative-pg
         mitstack.dev/app: cloudnative-pg
     spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: mitstack.dev/burst
+                    operator: DoesNotExist
       containers:
       - args:
         - controller

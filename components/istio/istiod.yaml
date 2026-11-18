@@ -797,6 +797,13 @@ spec:
         prometheus.io/scrape: "true"
         sidecar.istio.io/inject: "false"
     spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: mitstack.dev/burst
+                    operator: DoesNotExist
       tolerations:
         - key: cni.istio.io/not-ready
           operator: "Exists"

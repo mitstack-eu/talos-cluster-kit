@@ -1,4 +1,5 @@
-// Package topology renders the labeller that labels each Cloud node with the zone and the region it runs in.
+// Package topology renders the labeller that labels each Cloud node with the zone and the region it runs in, and each
+// burst member of the Cloud pool a burst node.
 package topology
 
 import (
@@ -29,6 +30,8 @@ const (
 type Node struct {
 	Name string
 	Zone string
+	// Burst is whether the node is a burst member of the Cloud pool, which the kit's components stay off.
+	Burst bool
 }
 
 // Inputs are what one cluster's labeller needs.
@@ -44,17 +47,21 @@ func Labels(zone, region string) map[string]string {
 	return map[string]string{ZoneLabel: zone, RegionLabel: region}
 }
 
-// Manifests renders the labeller's identity, its right to get and patch the nodes it names, and its CronJob, in the
-// namespace the node report creates.
+// Manifests renders the labeller's identity, its right to get and patch the nodes it names and to list and evict pods,
+// and its CronJob, in the namespace the node report creates.
 func Manifests(in Inputs) ([]byte, error) {
 	if err := in.validate(); err != nil {
 		return nil, err
 	}
 	names := make([]string, 0, len(in.Nodes))
 	pairs := make([]string, 0, len(in.Nodes))
+	var burst []string
 	for _, n := range in.Nodes {
 		names = append(names, n.Name)
 		pairs = append(pairs, n.Name+"="+n.Zone)
+		if n.Burst {
+			burst = append(burst, n.Name)
+		}
 	}
 	return tmpl.Execute(labeller, map[string]any{
 		"Name":         FieldManager,
@@ -62,6 +69,7 @@ func Manifests(in Inputs) ([]byte, error) {
 		"Image":        in.ToolsImage,
 		"NodeNames":    names,
 		"Nodes":        strings.Join(pairs, " "),
+		"BurstNodes":   strings.Join(burst, " "),
 		"Region":       in.Region,
 		"FieldManager": FieldManager,
 		"Script":       tools.ScriptDir + "/label-nodes.sh",

@@ -9,7 +9,9 @@
 # It ends each document whose last value is a block scalar with a comment line,
 # since Talos trims every document before it decodes it and would otherwise cut
 # that value's final line break. It drops an empty labels or annotations map
-# from each document's metadata, since the API server stores none.
+# from each document's metadata, since the API server stores none. It gives
+# each workload's pods but a DaemonSet's a required node affinity refusing a
+# burst member of the Cloud pool, so removing an idle burst member moves none.
 # With --check it fails when a committed file differs from a fresh render or
 # names an image by anything but a digest.
 # Usage: scripts/render-components.sh [--check]
@@ -68,6 +70,8 @@ readonly root
 . "$root/tools/tools.env"
 # The kube version the charts' capability checks see, the release tools.env pins.
 readonly kube_version=${KUBERNETES_VERSION#v}
+# shellcheck source=scripts/lib/burst-placement.sh
+. "$root/scripts/lib/burst-placement.sh"
 # shellcheck source=scripts/lib/digests.sh
 . "$root/scripts/lib/digests.sh"
 # shellcheck source=scripts/lib/empty-maps.sh
@@ -257,6 +261,7 @@ main() {
   for pair in "${pairs[@]}"; do
     drop_empty_metadata_maps "$work/${pair%%:*}"
     end_block_scalars "$work/${pair%%:*}"
+    keep_off_burst_nodes "$work/${pair%%:*}"
     if $check; then
       compare "$work/${pair%%:*}" "$root/${pair#*:}" || failed=1
     else

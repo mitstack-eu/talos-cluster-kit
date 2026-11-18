@@ -32512,6 +32512,12 @@ spec:
             - mountPath: /tmp
               name: tmp
       affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: mitstack.dev/burst
+                    operator: DoesNotExist
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
           - weight: 100
@@ -32665,6 +32671,12 @@ spec:
             - name: argocd-repo-server-tls
               mountPath: /app/config/reposerver/tls
       affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: mitstack.dev/burst
+                    operator: DoesNotExist
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
           - weight: 100
@@ -33083,6 +33095,12 @@ spec:
         - mountPath: /var/run/argocd
           name: var-files
       affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: mitstack.dev/burst
+                    operator: DoesNotExist
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
           - weight: 100
@@ -33542,6 +33560,12 @@ spec:
           seccompProfile:
             type: RuntimeDefault
       affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: mitstack.dev/burst
+                    operator: DoesNotExist
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
           - weight: 100
@@ -33670,6 +33694,12 @@ spec:
       nodeSelector:
         kubernetes.io/os: linux
       affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: mitstack.dev/burst
+                    operator: DoesNotExist
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
           - weight: 100
@@ -34055,6 +34085,12 @@ spec:
         - name: argocd-application-controller-tmp
           mountPath: /tmp
       affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: mitstack.dev/burst
+                    operator: DoesNotExist
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
           - weight: 100
@@ -34219,6 +34255,12 @@ spec:
             type: RuntimeDefault
       restartPolicy: OnFailure
       affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: mitstack.dev/burst
+                    operator: DoesNotExist
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
           - weight: 100

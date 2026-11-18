@@ -54,7 +54,7 @@ the order a block uses them.
 | `gateway` | Renders the cloud-config of the gateway in each location, and mints the cluster's gateway CA and each gateway's certificate | `Render`, `Inputs`, `Deadline`, `NewCA`, `CA.Issue` |
 | `etcd` | Renders the Job that removes a lost node's etcd member and then its Node object, and holds the gateway's script that bootstraps etcd empty or from a snapshot | `RemoveMemberJob`, `BootstrapScript`, `Bootstrap.Args` |
 | `report` | Renders the node report, a CronJob that reads the cluster and posts what it read to the platform, signed for its exact body. [What the node report carries](#what-the-node-report-carries) lists its members, the nine checks it names and what happens when a read fails. It also renders the outside probe, a CronJob in `kube-system` that calls the mesh probe's target with no workload identity and reads each gateway's mirror from outside the mesh, the admission probe namespace and the daily security scan. The report holds no right on Secrets | `Manifests`, `Interval` |
-| `topology` | Renders the topology labeller, a CronJob that labels each Cloud node with its zone and region, and holds the two label names | `Manifests`, `Labels`, `ZoneLabel`, `RegionLabel`, `FieldManager` |
+| `topology` | Renders the topology labeller, a CronJob that labels each Cloud node with its zone and region and each burst member of a Cloud pool a burst node, and holds the two label names | `Manifests`, `Labels`, `ZoneLabel`, `RegionLabel`, `FieldManager` |
 | `openbaoinit` | Renders OpenBao's init Job, which the hosting set carries. On a hosting cluster, a cluster that runs mitstack's own control plane, it initialises OpenBao once, commits the root token and recovery key to the cluster repository as PGP messages, then writes the policy that External Secrets reads with in each slice, the namespace a block gives one app | `Manifests`, `Inputs`, `InitFile` |
 | `rollout` | Gives a running cluster a release's component set, the manifests one kit release carries; [How a running cluster takes a release's components](#how-a-running-cluster-takes-a-releases-components) defines each term. A block commits the set's files to the cluster repository, where Argo CD applies each component through an Application of its own, which is Argo CD's record of one repository directory it keeps applied to the cluster. Files that an earlier release committed and this release no longer states are retired, which means deleted. Each component's sync runs a handover Job, which has Talos give up the fields it set when it created the component's objects, so they hold only what the release states. After OpenBao's sync, OpenBao's rollout Job moves each member onto the StatefulSet's new revision, as [How OpenBao's members take a new revision](#how-openbaos-members-take-a-new-revision) explains, which also says what a member, a StatefulSet and a revision are. The read-back then checks from the node report that the cluster runs each component as the release states it | `Release.Files`, `Release.Retired`, `Release.ReadBack`, `Release.ToolsImage`, `LegacyFiles` |
 | `controlplane` | Builds and deletes a Talos control plane on Hetzner Cloud: a network, a firewall, a builder that makes the cluster's own snapshot, one or three nodes with a gateway beside each, and an API and an ingress load balancer. Three nodes run in `fsn1`, `nbg1` and `hel1`, and one node runs in `fsn1`. Each call reads the resources by their labels and takes the one change still missing. A refusal is a `*Refusal` with a `Class` and a `Message`, which the block answers as its own framework's refusal | `Plane`, `Plane.NodeLocations`, `DefaultSize`, `KeySize`, `Plane.Read`, `Plane.EnsureNetwork`, `Plane.NextStep`, `Plane.Problems`, `Plane.Unhealthy`, `Plane.Outputs`, `State.IngressAddresses`, `Plane.Release`, `ErrNoIngressAddress`, `Plane.GatewaysAwaitRelease`, `Plane.GatewaysServeRelease`, `Plane.Delete`, `NewAPI`, `Refusal`, `TopologyLabels`, `GatewayUpgradeBound`, `GatewayCertRenewBefore`, `KeyGatewayCertExpires` |
@@ -719,6 +719,17 @@ there instead, until the next run takes it over. The node report carries each
 zone label's managers as `zoneLabelManagers`, so the platform can tell which
 mechanism set it.
 
+The labeller also labels each burst member of a Cloud pool
+`mitstack.dev/burst=true`, and takes that label off every other node it names,
+as [Steady and burst members](#steady-and-burst-members) describes. After it
+labels a burst member, it reads the pods on that node and evicts each one
+whose every required node affinity term refuses the label, leaving a pod that
+is already leaving or has finished. An eviction is the request a drain makes,
+so it honours the pod's disruption budget. A budget that holds a pod is named
+in the run's output, the rest are evicted, and the run fails so that the next
+one tries again. Any other refused eviction, or pods it cannot read, stops the
+run there.
+
 The labeller names two sets of Cloud nodes, which `Plane.topologyManifests` in
 `controlplane/topology.go` lists. It names the three control-plane nodes from
 the plane's own names, one for each location, so the labeller a cluster is
@@ -761,7 +772,8 @@ with its labels. Argo CD deletes an object it applied once a release stops
 stating it, so it would delete the Node object of a running node.
 
 The labeller's ClusterRole grants `get` and `patch` on the Cloud nodes it
-names, and nothing on any other object. It cannot list nodes, and it cannot
+names, `list` on pods and `create` on their evictions, and nothing else. It
+cannot change a pod but by evicting it, it cannot list nodes, and it cannot
 touch a node's status, which the API server serves apart from the rest of a
 Node. A `patch` on one of those nodes still reaches more than the two labels.
 It can change the node's other labels and its annotations, add or remove a
@@ -1572,7 +1584,7 @@ change `report/scripts/report.sh`.
 | `systemVolumes` | How each node's `STATE` and `EPHEMERAL` volumes are encrypted | `talosctl get volumestatus` |
 | `argocd` | Each Application's health, sync, `revision`, the `operation` of its last sync and its applied objects, each object with Argo CD's health of it, as [the section on the revision](#how-the-report-names-the-revision-each-application-was-compared-against) and [the section on object health](#how-the-report-shows-each-objects-health-and-each-containers-state) describe, under `routes` the answer each of 17 routes gives a caller with no session, and the `argocd` namespace's Services and Ingresses. The settings route's entry also says [whether any account can sign in with a password](#how-the-report-shows-whether-a-password-signs-in-to-argo-cd) | The Applications, `ARGOCD_URL` and the Ingress read |
 | `kubernetes.argocdPods` | Each pod in `argocd` with its containers' images | The pod read |
-| `pods` | Every pod's namespace, name, node or `null`, phase, `ownerKind`, the kind of its controller or `null`, `unschedulable`, whether the scheduler found no node to take it, and `containers`, each init and app container with its state and reason. The newest failed pod of each Job the kit renders also gives each container that exited non-zero its `message`, as [the section on a failed kit Job](#how-the-report-carries-the-reason-a-kit-job-failed) describes | `kubectl get pods -A`, and the Jobs of the workload read |
+| `pods` | Every pod's namespace, name, node or `null`, phase, `ownerKind`, the kind of its controller or `null`, `unschedulable`, whether the scheduler found no node to take it, and `containers`, each init and app container with its state and reason. An unschedulable pod also gives its `placement`: its `nodeSelector` and the `nodeSelectorTerms` of its required node affinity, each `null` when it sets none. The newest failed pod of each Job the kit renders also gives each container that exited non-zero its `message`, as [the section on a failed kit Job](#how-the-report-carries-the-reason-a-kit-job-failed) describes | `kubectl get pods -A`, and the Jobs of the workload read |
 | `images` | Each image reference a pod or the pod template of a Deployment, StatefulSet, DaemonSet, Job or CronJob names, once, as `image` with the `digest` it names or that a pod's status reports it runs by, and otherwise `null`. A failed read leaves `{exitStatus, stderr}` with `read` naming `pods` or `workloads`, in place of a partial list | The pod read and `kubectl get deployments,statefulsets,daemonsets,jobs,cronjobs -A` |
 | `cloudNativePG` | Each Cluster with its phase, instance counts and `currentPrimary`, and each Database and DatabaseRole with whether it applied. A Cluster also carries `continuousArchiving` and `lastBackup`, its conditions `ContinuousArchiving` and `LastBackupSucceeded`, each as `{status, reason, message}` with the message cut to 256 characters, or `null` while the Cluster holds no such condition. The report cuts no entry from this list: it holds every object the read returned, or the read's failure in the list's place | CloudNativePG's objects |
 | `cloudNativePGPlugins` | The name of each plugin CloudNativePG can find, sorted: the `cnpg.io/pluginName` label of each Service in `cnpg-system`. A cluster with no plugin carries an empty list | The read of claims, StorageClasses and Services |
@@ -3847,7 +3859,8 @@ lists with the subscription's labels and the role `cloud-worker`, and answers a
   keeps, with no user data, on the cluster's network and firewall, each of the
   first listed server type its location offers. A server is created only while
   the pool, a member that is leaving included, holds fewer than its size, and
-  in the listed location holding the fewest members.
+  in the listed location holding the fewest members. A server created while
+  the pool holds its minimum of steady members carries the burst label.
 - `Mark` lists the member whose removal begins, labelled with the time it
   began, and each member the pool keeps again with those labels taken off, so
   a later removal judges only readings from after it began. A member leaves when the pool shrinks, which takes the newest member
@@ -4058,8 +4071,8 @@ above name.
 ## How a Cloud pool scales with the load
 
 A Cloud pool whose minimum is below its maximum adds Cloud workers while pods
-wait for room and hands back a worker that has stood idle, so the org pays for
-burst servers only while they work. This section is for the author of a block
+wait for room and hands back a burst worker that has stood idle, so the org
+pays for burst servers only while they work. This section is for the author of a block
 on the node pools, and for whoever reads the events a scaling step records.
 
 The decision reads only the node reports, because the Hetzner token that
@@ -4086,17 +4099,25 @@ platform keeps, in any order, and answers a `Decision`:
    the first joins. It also holds while `PlanCloud` removes a member for a
    lowered maximum or a dropped type or location, which
    `pools.RemovalUnderWay` reads.
-3. Each pod the newest report reads `unschedulable` adds one member to the
-   members the pool has, up to the maximum, and a pool below its minimum grows
-   to its minimum at least. For example, five waiting pods grow a pool of no
+3. Each pod the newest report reads `unschedulable`, and whose placement a
+   burst member meets, adds one burst member to the members the pool has, up
+   to the maximum. A pool with fewer steady members than its minimum grows to
+   hold them at least. For example, five waiting pods grow a pool of no
    members and a maximum of three to three.
+   A burst member meets a placement when the labels its node carries once it
+   joins match it: the zone and region of one of the pool's locations, the
+   burst label, and Linux on amd64. While only pods that no burst member meets
+   wait, the pool holds, with a `Detail` such as "1 pods wait for a node, and
+   the placement of each refuses every burst member, so the Cloud pool holds
+   1: argocd/argocd-server-0".
 4. A pool that holds its maximum while pods wait answers `AtMaximum`, with a
    `Detail` such as "2 pods wait for a node, and the Cloud pool holds its
    maximum of 3: ci/d, ci/e", which names the first three pods. The block shows `CauseAtMaximum` in the cluster resource's
    health, and that cause starts no change.
-5. With no pod waiting, a member goes when every report from the newest back
-   over the idle window reads it running none but the cluster's own pods.
-   One member goes at a time, down to the minimum. Of several idle members,
+5. With no pod waiting, a burst member goes when every report from the
+   newest back over the idle window reads it running none but the cluster's
+   own pods. One member goes at a time, and a steady member never goes this
+   way. Of several idle burst members,
    `pools.NewestOfFullest` picks the newest of the location holding the most,
    the rule `PlanCloud` uses for a lowered maximum.
 6. An older report whose nodes or pods could not be read counts as no idle
@@ -4105,17 +4126,54 @@ platform keeps, in any order, and answers a `Decision`:
 
 The decision cannot tell two things, so a builder plans for them:
 
-- A pod that no Cloud worker could take still counts as waiting, such as one
-  whose node selector names the dedicated worker. One such pod grows the pool
-  by one worker each decision up to its maximum and keeps it there, since no
-  worker it adds ever takes the pod. The held `Detail` then names the pod, and
-  the cause's advice to raise the maximum does not apply to it: the pod's own
-  node selector or affinity is what to change.
+- The decision reads a pod's node selector and required node affinity, and
+  nothing else that keeps a pod off a node. A pod that a burst member meets
+  but cannot take, such as one asking more memory than any listed server type
+  holds, still counts as waiting. One such pod grows the pool by one worker
+  each decision up to its maximum and keeps it there. The held `Detail` then
+  names the pod, and the cause's advice to raise the maximum does not apply to
+  it: the pod's own request is what to change.
 - A pod outside kube-system that a Deployment or a StatefulSet controls is a
-  workload, even a component the kit renders, such as Argo CD, cert-manager or
-  OpenBao. A Cloud worker that runs one stays until the pod moves. CoreDNS and
+  workload. A Cloud worker that runs one stays until the pod moves. The kit's
+  own components stay off burst members, so such a pod on a burst member is an
+  app's own, or a component the labeller has not evicted yet. CoreDNS and
   every other pod in kube-system count as the cluster's own, and the drain
   moves them under their disruption budgets.
+
+### Steady and burst members
+
+A Cloud pool's members up to its minimum are steady, and each member above it
+is a burst member. The kit's components and the runner caches run on the
+steady members, so the removal of an idle burst member moves none of them.
+
+1. `PlanCloud` labels each server it creates above the minimum
+   `mitstack.dev/burst=true`, the label `pools.KeyBurst` names and
+   `pools.IsBurst` reads. A steady member carries no such label.
+2. The topology labeller sets the label on the burst member's node, and takes
+   it off every other Cloud node it names.
+3. Every pod the kit renders carries a required node affinity refusing a node
+   with that label, unless a DaemonSet runs it, it runs on the control plane,
+   or it is the local path provisioner's helper, which the provisioner binds to
+   the node holding its volume. `scripts/render-components.sh` adds the
+   affinity to each chart's workloads through `keep_off_burst_nodes` in
+   `scripts/lib/burst-placement.sh`.
+4. A burst member can take such a pod in the minutes between joining and the
+   labeller's next run. That run evicts the pod, and it lands again on a
+   steady member.
+5. `pools.Reclassify` answers each member whose label must change so the pool
+   holds its minimum of steady members again, after the minimum moves or a
+   steady member is lost. It promotes the oldest burst member only when the
+   pool has no room to create a steady one.
+
+For example, a pool over `fsn1` and `nbg1` with a minimum of 2 that grows to
+4 holds `fsn1-1` and `nbg1-1` steady, and `fsn1-2` and `nbg1-2` carry the
+burst label.
+
+A minimum of 0 leaves no steady member, so the kit's components need a node
+outside the pool. `pools.CheckSteadyHome` refuses such a pool with class
+`cloud-pool-no-steady-home` on a cluster whose apps run on workers and which
+has no dedicated worker. A cluster whose apps run on the control plane, or
+that has a dedicated worker, runs the components there.
 
 `Want` is the number of members the pool should hold. When `Want` is one
 fewer than the pool has, `Remove` names the member to take out, and otherwise

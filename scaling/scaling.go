@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
+	"github.com/mitstack-eu/talos-cluster-kit/image"
 	"github.com/mitstack-eu/talos-cluster-kit/pools"
 	"github.com/mitstack-eu/talos-cluster-kit/report"
 )
@@ -30,13 +31,15 @@ type Decision struct {
 	Detail string
 }
 
-// Decide judges pool against its members and the node reports reads holds, in any order. Pods no node can take add a
-// member each, from at least the minimum up to the maximum, once every member has been read Ready since its creation.
-// With no pod waiting and every member Ready, one member that ran no pod but the cluster's own for the pool's idle
-// window goes, down to the minimum. The pool holds while its own removal of a member is under way, and a pool of a set
-// size neither grows nor shrinks here.
+// Decide judges pool against its members and the node reports reads holds, in any order. The pool holds its burst
+// members and at least its minimum of steady ones. Pods no node can take add a burst member each, up to the maximum,
+// once every member has been read Ready since its creation, counting only the pods whose placement a burst member
+// meets. With no pod waiting and every member Ready, one burst member that ran no pod but the cluster's own for the
+// pool's idle window goes. The pool holds while its own removal of a member is under way, and a pool of a set size
+// neither grows nor shrinks here.
 func Decide(pool pools.CloudPool, members []controlplane.Server, reads []report.Read) (Decision, error) {
-	held := Decision{Want: min(max(len(members), pool.Min), pool.Max)}
+	burst := len(slices.DeleteFunc(slices.Clone(members), func(m controlplane.Server) bool { return !pools.IsBurst(m) }))
+	held := Decision{Want: min(burst+max(len(members)-burst, pool.Min), pool.Max)}
 	if !pool.Scales() {
 		return Decision{Want: pool.Max}, nil
 	}
@@ -53,37 +56,64 @@ func Decide(pool pools.CloudPool, members []controlplane.Server, reads []report.
 		return held, nil
 	}
 	if len(waiting) > 0 {
-		return grow(pool, len(members), waiting), nil
+		return grow(pool, len(members), waiting, held), nil
 	}
 	return shrink(pool, members, looks, held), nil
 }
 
-func grow(pool pools.CloudPool, members int, waiting []string) Decision {
-	if members >= pool.Max {
+func grow(pool pools.CloudPool, members int, waiting []report.WaitingPod, held Decision) Decision {
+	fits := slices.DeleteFunc(slices.Clone(waiting), func(w report.WaitingPod) bool { return !fitsABurstMember(pool, w) })
+	switch {
+	case len(fits) == 0:
+		held.Detail = fmt.Sprintf("%d pods wait for a node, and the placement of each refuses every burst member, so the Cloud pool holds %d: %s",
+			len(waiting), held.Want, named(waiting))
+		return held
+	case members >= pool.Max:
 		return Decision{Want: pool.Max, AtMaximum: true, Detail: fmt.Sprintf("%d pods wait for a node, and the Cloud pool holds its maximum of %d: %s",
-			len(waiting), pool.Max, named(waiting))}
+			len(fits), pool.Max, named(fits))}
 	}
-	want := min(max(members+len(waiting), pool.Min), pool.Max)
-	return Decision{Want: want, Detail: fmt.Sprintf("%d pods wait for a node, so the Cloud pool grows from %d to %d of at most %d", len(waiting), members, want, pool.Max)}
+	want := min(max(members+len(fits), held.Want), pool.Max)
+	return Decision{Want: want, Detail: fmt.Sprintf("%d pods wait for a node, so the Cloud pool grows from %d to %d of at most %d", len(fits), members, want, pool.Max)}
 }
 
-// named lists the first three waiting pods, so a pool held at its maximum shows which pods no node takes.
-func named(pods []string) string {
+// fitsABurstMember is whether a burst member created in any of the pool's locations could take w, by the labels its
+// node carries once it joins.
+func fitsABurstMember(pool pools.CloudPool, w report.WaitingPod) bool {
+	return slices.ContainsFunc(pool.Locations, func(loc string) bool { return w.Admits(burstNodeLabels(loc)) })
+}
+
+func burstNodeLabels(loc string) map[string]string {
+	labels := controlplane.TopologyLabels(loc)
+	labels[pools.KeyBurst] = "true"
+	for _, prefix := range []string{"kubernetes.io/", "beta.kubernetes.io/"} {
+		labels[prefix+"os"], labels[prefix+"arch"] = "linux", image.Arch
+	}
+	return labels
+}
+
+// named lists the first three waiting pods, so a pool that holds while pods wait shows which pods no node takes.
+func named(waiting []report.WaitingPod) string {
+	pods := make([]string, 0, len(waiting))
+	for _, w := range waiting {
+		pods = append(pods, w.Name)
+	}
 	if len(pods) <= 3 {
 		return strings.Join(pods, ", ")
 	}
 	return fmt.Sprintf("%s and %d more", strings.Join(pods[:3], ", "), len(pods)-3)
 }
 
-// shrink chooses, of the members idle for the window, the newest of the location holding the most members.
+// shrink chooses, of the burst members idle for the window, the newest of the location holding the most members. A
+// steady member never goes here, so the pool keeps the members that hold the kit's components, and no member goes
+// while the pool lacks a steady one it then creates.
 func shrink(pool pools.CloudPool, members []controlplane.Server, looks []look, held Decision) Decision {
-	if len(members) <= pool.Min {
+	if held.Want > len(members) {
 		return held
 	}
 	var idle []controlplane.Server
 	spans := map[int64]time.Duration{}
 	for _, m := range members {
-		if span := idleSpan(m, looks); span >= pool.IdleWindow {
+		if span := idleSpan(m, looks); pools.IsBurst(m) && span >= pool.IdleWindow {
 			idle, spans[m.ID] = append(idle, m), span
 		}
 	}
@@ -91,9 +121,9 @@ func shrink(pool pools.CloudPool, members []controlplane.Server, looks []look, h
 		return held
 	}
 	leaving := pools.NewestOfFullest(members, idle, pool.Locations)
-	return Decision{Want: len(members) - 1, Remove: &leaving, Detail: fmt.Sprintf(
+	return Decision{Want: held.Want - 1, Remove: &leaving, Detail: fmt.Sprintf(
 		"Cloud worker %s has run no pod but the cluster's own for %s, past the pool's idle window of %s, so the pool shrinks from %d to %d",
-		leaving.Labels[pools.KeyMember], spans[leaving.ID], pool.IdleWindow, len(members), len(members)-1)}
+		leaving.Labels[pools.KeyMember], spans[leaving.ID], pool.IdleWindow, held.Want, held.Want-1)}
 }
 
 // look is what one node report read of the members. A report whose nodes or pods could not be read is unread, and

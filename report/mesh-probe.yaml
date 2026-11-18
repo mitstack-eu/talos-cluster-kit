@@ -121,6 +121,13 @@ spec:
           labels:
             app.kubernetes.io/name: mitstack-mesh-probe
         spec:
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: mitstack.dev/burst
+                        operator: DoesNotExist
           serviceAccountName: mitstack-mesh-probe
           restartPolicy: Never
           securityContext:

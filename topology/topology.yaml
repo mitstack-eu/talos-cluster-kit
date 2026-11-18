@@ -1,6 +1,7 @@
-# The topology labeller: a CronJob that labels each node it names with its zone
-# and the region under its own field manager. Its identity may get and patch
-# those nodes and no other object, and holds no Talos role.
+# The topology labeller: a CronJob that labels each node it names with its zone,
+# the region and whether it is a burst node, under its own field manager, and
+# evicts from each burst node the pods that refuse one. Its identity may get
+# and patch those nodes, list pods and evict them, and holds no Talos role.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -19,6 +20,12 @@ rules:
       - {{ printf "%q" . }}
 {{- end }}
     verbs: [get, patch]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [list]
+  - apiGroups: [""]
+    resources: [pods/eviction]
+    verbs: [create]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -77,6 +84,10 @@ spec:
                   value: {{ printf "%q" .Region }}
                 - name: TOPOLOGY_FIELD_MANAGER
                   value: {{ printf "%q" .FieldManager }}
+{{- if .BurstNodes }}
+                - name: TOPOLOGY_BURST_NODES
+                  value: {{ printf "%q" .BurstNodes }}
+{{- end }}
                 - name: HOME
                   value: /tmp
               securityContext:

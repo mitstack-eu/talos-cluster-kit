@@ -113,3 +113,31 @@ func TestPool_HoldsWhilePodsWaitWhosePlacementRefusesEveryBurstMemberAndReadsUnh
 	assert.Contains(t, obs.Unhealthy.Detail, "argocd/argocd-repo-server-7d9f", "the detail names the waiting pod")
 	assert.Contains(t, obs.Unhealthy.Detail, "refuses every burst member", "the detail says why the pool holds")
 }
+
+// labellerRun is the pod of the node labeller's run scheduled at minute, as the node report carries a finished one.
+func labellerRun(minute, phase, message string) map[string]any {
+	return map[string]any{"namespace": "mitstack-node", "name": "mitstack-node-topology-" + minute + "-x7k2q", "phase": phase,
+		"containers": []any{map[string]any{"name": "label", "message": message}}}
+}
+
+func TestPool_ReadsUnhealthyNamingTheBudgetAndThePodWhileTheLabellersNewestRunFailedOnABudgetHold(t *testing.T) {
+	e := newEnv(t, cloudOnlySub, cloudOnly)
+	e.settleWith("1", "4")
+	held := "label-nodes: pod argocd/argocd-server-0 stays on burst node fsn1-3 until a later run evicts it: " +
+		"The disruption budget argocd-server needs 1 healthy pods and has 1 currently"
+
+	e.waitingPods = []map[string]any{labellerRun("29400000", "Succeeded", ""),
+		labellerRun("29400005", "Failed", "til its disruption budget allows: Cannot evict pod\n"+held+"\n")}
+	e.now = e.now.Add(time.Minute)
+	e.progress()
+	obs := e.observe()
+
+	require.NotNil(t, obs.Unhealthy, "the cluster names the labeller's failed run: %s", obs.StatusDetail)
+	assert.Contains(t, obs.Unhealthy.Cause, "node labeller")
+	assert.Equal(t, held, obs.Unhealthy.Detail, "the detail is the run's last line, naming the pod, its burst member and the budget")
+
+	e.waitingPods = append(e.waitingPods, labellerRun("29400010", "Succeeded", ""))
+	e.now = e.now.Add(time.Minute)
+	e.progress()
+	assert.Nil(t, e.observe().Unhealthy, "a later run that succeeded clears it")
+}

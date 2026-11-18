@@ -1,11 +1,13 @@
 //go:build apiserver && collector
 
 // The pinned Collector, run on its rendered configuration against a real API server, masks and tags a container's log
-// line, sends it under the push token and reports each target it cannot scrape, and an OpenBao member answers its scrape.
+// line and what a pod pushes, sends it under the push token and reports each target it cannot scrape, and an OpenBao
+// member answers its scrape.
 package talosclusterkit
 
 import (
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"crypto/rand"
 	"crypto/tls"
@@ -32,6 +34,10 @@ import (
 	"github.com/stretchr/testify/require"
 	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
+	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
+	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
@@ -44,6 +50,12 @@ const (
 	shopPodLogs           = "app-shop_shop-web-7d9f4b6c8-x2kqp_8f2b1c4e-0d6a-4f7e-9b3c-2a1d5e6f7a8b/web"
 	backendCADir          = "/etc/mitstack-collector-check"
 	appShopNamespace      = "{apiVersion: v1, kind: Namespace, metadata: {name: app-shop, labels: {mitstack.dev/app: shop}}}"
+	appOtherNamespace     = "{apiVersion: v1, kind: Namespace, metadata: {name: app-other, labels: {mitstack.dev/app: other}}}"
+	// shopPod is bound to the node the node copy serves, where no kubelet runs, so the check patches its address in.
+	shopPod = `{apiVersion: v1, kind: Pod, metadata: {name: shop-web, namespace: app-shop}, spec: {nodeName: shop-node-fsn1,
+  automountServiceAccountToken: false, containers: [{name: web, image: registry.example/shop:1}]}}`
+	pushedMetric = "shop.orders.paid"
+	pushedEmail  = "jane.doe@example.com"
 )
 
 // scraped is one sample of a scrape's up series the backend received, with its job and data point attributes.
@@ -54,10 +66,219 @@ type scraped struct {
 }
 
 type shipped struct {
-	body       string
-	attributes map[string]string
-	header     http.Header
-	pushToken  string
+	body             string
+	attributes       map[string]string
+	recordAttributes map[string]string
+	header           http.Header
+	pushToken        string
+}
+
+// pushedPoint is one data point of pushedMetric the backend received, with its resource and its own attributes.
+type pushedPoint struct {
+	resource, attributes map[string]string
+}
+
+// otherApp is what a sender writes to pass its records off as another app's, on the resource and on each record.
+var otherApp = map[string]string{"mitstack.app": "other", "mitstack_app": "other", "mitstack-app": "other", "k8s.namespace.name": "app-other",
+	"k8s.pod.name": "other-web"}
+
+func TestCollector_TagsAMetricAndALogRecordAPodPushesWithItsOwnNamespacesAppWhateverAppTheyClaimAndMasksThem(t *testing.T) {
+	rig := startPushRig(t, true)
+	marker := rand.Text()
+
+	push(t, rig.receiver+"/v1/logs", pushedLogRecord(marker))
+	push(t, rig.receiver+"/v1/metrics", pushedDataPoint())
+	record, point := awaitRecord(t, rig.backend, rig.collector, marker), awaitPoint(t, rig.backend, rig.collector)
+
+	for _, got := range []map[string]string{record.attributes, point.resource} {
+		assert.Equal(t, "shop", got["mitstack.app"], "the app of the namespace the pushing pod runs in")
+		assert.Equal(t, "app-shop", got["k8s.namespace.name"])
+		assert.Equal(t, "shop-web", got["k8s.pod.name"])
+		assert.Equal(t, collectorSubscription, got["mitstack.subscription.id"])
+	}
+	for _, got := range []map[string]string{record.attributes, record.recordAttributes, point.resource, point.attributes} {
+		for _, claimed := range []string{"mitstack_app", "mitstack-app"} {
+			assert.NotContains(t, got, claimed, "an app claimed under a name a backend stores as the label mitstack.app becomes")
+		}
+	}
+	assert.NotContains(t, record.recordAttributes, "mitstack.app", "the log record keeps no app it claimed")
+	assert.NotContains(t, record.recordAttributes, "k8s.namespace.name")
+	assert.NotContains(t, record.body, pushedEmail, "a pushed record is masked like a container's log line")
+	assert.Equal(t, "shop", point.attributes["mitstack.app"], "the data point carries the app its resource was tagged with")
+	assert.Equal(t, "app-shop", point.attributes["k8s.namespace.name"])
+	assert.Equal(t, "paid", point.attributes["outcome"], "an attribute the sender owns")
+}
+
+func TestCollector_DropsWhatAnAddressNoPodOnTheNodeHoldsPushesSoNoRecordLeavesWithoutAnApp(t *testing.T) {
+	rig := startPushRig(t, false)
+	marker := rand.Text()
+
+	push(t, rig.receiver+"/v1/logs", pushedLogRecord(rand.Text()))
+	push(t, rig.receiver+"/v1/metrics", pushedDataPoint())
+	rig.pushFromTheNode(t, "/v1/logs", pushedLogRecord(marker))
+	rig.pushFromTheNode(t, "/v1/metrics", pushedDataPoint())
+	records := receivedUntil(t, rig.backend.records, rig.collector, func(got shipped) bool { return strings.Contains(got.body, marker) })
+	points := receivedUntil(t, rig.backend.points, rig.collector, func(got pushedPoint) bool { return got.resource["mitstack.app"] == "shop" })
+
+	for _, got := range records {
+		assert.Equal(t, "shop", got.attributes["mitstack.app"], "every log record the backend received, of %q", got.body)
+	}
+	for _, got := range points {
+		assert.Equal(t, "shop", got.resource["mitstack.app"], "every point the backend received")
+	}
+}
+
+type pushRig struct {
+	server    *apiServer
+	backend   otlpBackend
+	collector *followedContainer
+	receiver  string
+}
+
+// startPushRig starts a node copy and its backend, with shop-web at this host's address when shopIsTheHost, and
+// otherwise at the node copy's own address, which only a push from inside its network comes from.
+func startPushRig(t *testing.T, shopIsTheHost bool) pushRig {
+	t.Helper()
+	server := startAPIServer(t)
+	rig := pushRig{server: server}
+	host, node := bridgeGateway(t, server.etcd), containerAddress(t, server.etcd)
+	rig.backend = startOTLPBackend(t, host)
+	export := testutil.TelemetryExport()
+	export.MetricsEndpoint, export.LogsEndpoint = rig.backend.url+"/otlp/v1/metrics", rig.backend.url+"/otlp/v1/logs"
+	rendered := renderedCollector(t, components.Default(), export)
+	server.admin(t, builtInObjects(t, rendered), "apply", "-f", "-")
+	server.admin(t, []byte(appShopNamespace+"\n---\n"+appOtherNamespace), "apply", "-f", "-")
+	server.admin(t, nil, "create", "serviceaccount", "default", "-n", "app-shop")
+	server.admin(t, []byte(shopPod), "apply", "-f", "-")
+	shop := node
+	if shopIsTheHost {
+		shop = host
+	}
+	server.admin(t, nil, "patch", "pod", "shop-web", "-n", "app-shop", "--subresource=status", "--type=merge",
+		"-p", `{"status":{"phase":"Running","podIP":"`+shop.String()+`","podIPs":[{"ip":"`+shop.String()+`"}]}}`)
+	rig.collector = startCollector(t, server, testutil.Documents(t, rendered), "node", map[string]string{"pods": sharedDir(t)}, rig.backend.caDir, rand.Text())
+	rig.collector.await(t, time.Minute, "Everything is ready")
+	rig.receiver = "http://" + node.String() + ":4318"
+	return rig
+}
+
+// pushFromTheNode pushes message to the receiver from a container sharing the node copy's network, so from its address.
+func (r pushRig) pushFromTheNode(t *testing.T, path string, message proto.Message) {
+	t.Helper()
+	body, err := proto.Marshal(message)
+	require.NoError(t, err)
+	cmd := exec.Command("docker", "run", "-i", "--rm", "--network", "container:"+r.server.etcd, r.server.toolsImage,
+		"curl", "-fsS", "-H", "Content-Type: application/x-protobuf", "--data-binary", "@-", r.receiver+path)
+	cmd.Stdin = bytes.NewReader(body)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "the push to %s from the node copy's network: %s", path, out)
+}
+
+// receivedUntil returns what from delivers up to and including the first item last accepts.
+func receivedUntil[T any](t *testing.T, from <-chan T, collector *followedContainer, last func(T) bool) []T {
+	t.Helper()
+	deadline := time.NewTimer(time.Minute)
+	defer deadline.Stop()
+	var got []T
+	for {
+		select {
+		case item := <-from:
+			if got = append(got, item); last(item) {
+				return got
+			}
+		case <-deadline.C:
+			require.FailNow(t, "the backend received no push from shop-web in a minute", "it received %d before; the Collector printed:\n%s", len(got), collector.log())
+		}
+	}
+}
+
+// containerAddress is container's own address on its network, which a pod sharing its network listens on.
+func containerAddress(t *testing.T, container string) netip.Addr {
+	t.Helper()
+	out, err := exec.Command("docker", "inspect", "--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", container).CombinedOutput()
+	require.NoError(t, err, "%s", out)
+	address, err := netip.ParseAddr(strings.TrimSpace(string(out)))
+	require.NoError(t, err, "the address of %s", container)
+	return address
+}
+
+func claims(extra map[string]string) []*commonpb.KeyValue {
+	var attributes []*commonpb.KeyValue
+	for _, key := range slices.Sorted(maps.Keys(otherApp)) {
+		attributes = append(attributes, stringAttribute(key, otherApp[key]))
+	}
+	for _, key := range slices.Sorted(maps.Keys(extra)) {
+		attributes = append(attributes, stringAttribute(key, extra[key]))
+	}
+	return attributes
+}
+
+func stringAttribute(key, value string) *commonpb.KeyValue {
+	return &commonpb.KeyValue{Key: key, Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: value}}}
+}
+
+func pushedLogRecord(marker string) proto.Message {
+	return &collogspb.ExportLogsServiceRequest{ResourceLogs: []*logspb.ResourceLogs{{
+		Resource: &resourcepb.Resource{Attributes: claims(map[string]string{"service.name": "shop-web"})},
+		ScopeLogs: []*logspb.ScopeLogs{{LogRecords: []*logspb.LogRecord{{
+			TimeUnixNano: uint64(time.Now().UnixNano()),
+			Body:         &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "order paid by " + pushedEmail + " line=" + marker}},
+			Attributes:   claims(nil),
+		}}}},
+	}}}
+}
+
+func pushedDataPoint() proto.Message {
+	return &colmetricspb.ExportMetricsServiceRequest{ResourceMetrics: []*metricspb.ResourceMetrics{{
+		Resource: &resourcepb.Resource{Attributes: claims(map[string]string{"service.name": "shop-web"})},
+		ScopeMetrics: []*metricspb.ScopeMetrics{{Metrics: []*metricspb.Metric{{
+			Name: pushedMetric,
+			Data: &metricspb.Metric_Gauge{Gauge: &metricspb.Gauge{DataPoints: []*metricspb.NumberDataPoint{{
+				TimeUnixNano: uint64(time.Now().UnixNano()),
+				Value:        &metricspb.NumberDataPoint_AsInt{AsInt: 1},
+				Attributes:   claims(map[string]string{"outcome": "paid"}),
+			}}}},
+		}}}},
+	}}}
+}
+
+func push(t *testing.T, address string, message proto.Message) {
+	t.Helper()
+	body, err := proto.Marshal(message)
+	require.NoError(t, err)
+	response, err := http.Post(address, "application/x-protobuf", bytes.NewReader(body))
+	require.NoError(t, err, "the push to %s", address)
+	defer response.Body.Close()
+	answer, err := io.ReadAll(response.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode, "the push to %s answered %s", address, answer)
+}
+
+func awaitRecord(t *testing.T, backend otlpBackend, collector *followedContainer, marker string) shipped {
+	t.Helper()
+	deadline := time.NewTimer(time.Minute)
+	defer deadline.Stop()
+	for {
+		select {
+		case got := <-backend.records:
+			if strings.Contains(got.body, marker) {
+				return got
+			}
+		case <-deadline.C:
+			require.FailNow(t, "the backend received no record of the pushed line in a minute", "the Collector printed:\n%s", collector.log())
+		}
+	}
+}
+
+func awaitPoint(t *testing.T, backend otlpBackend, collector *followedContainer) pushedPoint {
+	t.Helper()
+	select {
+	case got := <-backend.points:
+		return got
+	case <-time.After(time.Minute):
+		require.FailNow(t, "the backend received no point of the pushed metric in a minute", "the Collector printed:\n%s", collector.log())
+		return pushedPoint{}
+	}
 }
 
 func TestCollector_MasksAFixtureTokenInAContainerLogLineBeforeTheExporterSendsIt(t *testing.T) {
@@ -95,7 +316,7 @@ func TestCollector_ThePinnedCollectorAcceptsEachCopysRenderedConfiguration(t *te
 				dir := sharedDir(t)
 				writeFiles(t, dir, map[string][]byte{"config.yaml": []byte(collectorConfig(t, docs, which))})
 
-				out, err := exec.Command("docker", "run", "--rm", "-e", "K8S_NODE_IP=10.0.0.4", "-e", "K8S_NODE_NAME=shop-node-fsn1",
+				out, err := exec.Command("docker", "run", "--rm", "-e", "K8S_NODE_IP=10.0.0.4", "-e", "K8S_NODE_NAME=shop-node-fsn1", "-e", "K8S_POD_IP=10.244.0.7",
 					"-v", account+":"+serviceAccountDir+":ro", "-v", dir+":/conf:ro", image, "validate", "--config=/conf/config.yaml").CombinedOutput()
 
 				require.NoError(t, err, "the %s set's %s copy's configuration:\n%s", name, which, out)
@@ -308,9 +529,11 @@ type otlpBackend struct {
 	url, caDir string
 	records    <-chan shipped
 	ups        <-chan scraped
+	points     <-chan pushedPoint
 }
 
-// startOTLPBackend serves OTLP over HTTPS at address and hands on each log record and each sample of up it gets.
+// startOTLPBackend serves OTLP over HTTPS at address and hands on each log record, each sample of up and each point
+// of pushedMetric it gets.
 func startOTLPBackend(t *testing.T, address netip.Addr) otlpBackend {
 	t.Helper()
 	ca, err := gateway.NewCA(time.Now(), time.Hour, []netip.Addr{address})
@@ -321,13 +544,13 @@ func startOTLPBackend(t *testing.T, address netip.Addr) otlpBackend {
 	require.NoError(t, err)
 	listener, err := net.Listen("tcp", netip.AddrPortFrom(address, 0).String())
 	require.NoError(t, err)
-	received, ups := make(chan shipped, 256), make(chan scraped, 256)
+	received, ups, points := make(chan shipped, 256), make(chan scraped, 256), make(chan pushedPoint, 256)
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/otlp/v1/logs":
 			sendRecords(t, r, received)
 		case "/otlp/v1/metrics":
-			sendUps(t, r, ups)
+			sendMetrics(t, r, ups, points)
 		}
 		w.Header().Set("Content-Type", "application/x-protobuf")
 		w.WriteHeader(http.StatusOK)
@@ -338,7 +561,7 @@ func startOTLPBackend(t *testing.T, address netip.Addr) otlpBackend {
 	t.Cleanup(srv.Close)
 	caDir := sharedDir(t)
 	writeFiles(t, caDir, map[string][]byte{"ca.crt": ca.Cert})
-	return otlpBackend{url: srv.URL, caDir: caDir, records: received, ups: ups}
+	return otlpBackend{url: srv.URL, caDir: caDir, records: received, ups: ups, points: points}
 }
 
 // decode reads the OTLP request r carries into message, and reports whether it could.
@@ -355,31 +578,35 @@ func decode(t *testing.T, r *http.Request, message proto.Message) bool {
 	return assert.NoError(t, err) && assert.NoError(t, proto.Unmarshal(data, message))
 }
 
-func sendUps(t *testing.T, r *http.Request, ups chan<- scraped) {
+func attributesOf(kvs []*commonpb.KeyValue) map[string]string {
+	attributes := map[string]string{}
+	for _, kv := range kvs {
+		attributes[kv.GetKey()] = kv.GetValue().GetStringValue()
+	}
+	return attributes
+}
+
+func sendMetrics(t *testing.T, r *http.Request, ups chan<- scraped, points chan<- pushedPoint) {
 	var request colmetricspb.ExportMetricsServiceRequest
 	if !decode(t, r, &request) {
 		return
 	}
 	for _, resourceMetrics := range request.GetResourceMetrics() {
-		job := ""
-		for _, kv := range resourceMetrics.GetResource().GetAttributes() {
-			if kv.GetKey() == "service.name" {
-				job = kv.GetValue().GetStringValue()
-			}
-		}
+		resource := attributesOf(resourceMetrics.GetResource().GetAttributes())
 		for _, scopeMetrics := range resourceMetrics.GetScopeMetrics() {
 			for _, metric := range scopeMetrics.GetMetrics() {
-				if metric.GetName() != "up" {
-					continue
-				}
 				for _, point := range metric.GetGauge().GetDataPoints() {
-					attributes := map[string]string{}
-					for _, kv := range point.GetAttributes() {
-						attributes[kv.GetKey()] = kv.GetValue().GetStringValue()
-					}
-					select {
-					case ups <- scraped{job: job, attributes: attributes, value: point.GetAsDouble()}:
-					default:
+					switch metric.GetName() {
+					case "up":
+						select {
+						case ups <- scraped{job: resource["service.name"], attributes: attributesOf(point.GetAttributes()), value: point.GetAsDouble()}:
+						default:
+						}
+					case pushedMetric:
+						select {
+						case points <- pushedPoint{resource: resource, attributes: attributesOf(point.GetAttributes())}:
+						default:
+						}
 					}
 				}
 			}
@@ -393,14 +620,12 @@ func sendRecords(t *testing.T, r *http.Request, received chan<- shipped) {
 		return
 	}
 	for _, resourceLogs := range request.GetResourceLogs() {
-		attributes := map[string]string{}
-		for _, kv := range resourceLogs.GetResource().GetAttributes() {
-			attributes[kv.GetKey()] = kv.GetValue().GetStringValue()
-		}
+		attributes := attributesOf(resourceLogs.GetResource().GetAttributes())
 		for _, scopeLogs := range resourceLogs.GetScopeLogs() {
 			for _, record := range scopeLogs.GetLogRecords() {
 				select {
-				case received <- shipped{body: record.GetBody().GetStringValue(), attributes: attributes, header: r.Header.Clone()}:
+				case received <- shipped{body: record.GetBody().GetStringValue(), attributes: attributes,
+					recordAttributes: attributesOf(record.GetAttributes()), header: r.Header.Clone()}:
 				default:
 				}
 			}
@@ -432,7 +657,7 @@ func startCollector(t *testing.T, server *apiServer, docs []map[string]any, whic
 		"-v", server.serviceAccount(t, "kube-system", testutil.Field(t, pod, "serviceAccountName").(string)) + ":" + serviceAccountDir + ":ro",
 		"-v", caDir + ":" + backendCADir + ":ro", "-e", "SSL_CERT_FILE=" + backendCADir + "/ca.crt",
 		"-e", "KUBERNETES_SERVICE_HOST=127.0.0.1", "-e", "KUBERNETES_SERVICE_PORT=" + apiServerPort,
-		"-e", "K8S_NODE_NAME=shop-node-fsn1", "-e", "K8S_NODE_IP=127.0.0.1"}
+		"-e", "K8S_NODE_NAME=shop-node-fsn1", "-e", "K8S_NODE_IP=127.0.0.1", "-e", "K8S_POD_IP=" + containerAddress(t, server.etcd).String()}
 	for _, mount := range testutil.Field(t, container, "volumeMounts").([]any) {
 		volume := testutil.Field(t, mount, "name").(string)
 		source, ok := sources[volume]

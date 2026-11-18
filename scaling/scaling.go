@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
 	"github.com/mitstack-eu/talos-cluster-kit/image"
 	"github.com/mitstack-eu/talos-cluster-kit/pools"
@@ -84,7 +85,7 @@ func fitsABurstMember(pool pools.CloudPool, w report.WaitingPod) bool {
 
 func burstNodeLabels(loc string) map[string]string {
 	labels := controlplane.TopologyLabels(loc)
-	labels[pools.KeyBurst] = "true"
+	labels[pools.KeyBurst] = components.BurstValue
 	for _, prefix := range []string{"kubernetes.io/", "beta.kubernetes.io/"} {
 		labels[prefix+"os"], labels[prefix+"arch"] = "linux", image.Arch
 	}

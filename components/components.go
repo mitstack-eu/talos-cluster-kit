@@ -16,6 +16,9 @@ import (
 // and one that runs on the control plane, refuses a node carrying it, so removing an idle burst member moves none.
 const BurstLabel = "mitstack.dev/burst"
 
+// BurstValue is the value of BurstLabel on a burst member.
+const BurstValue = "true"
+
 type Versions struct {
 	Talos      string
 	Kubernetes string

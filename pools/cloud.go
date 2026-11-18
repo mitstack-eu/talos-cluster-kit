@@ -22,12 +22,11 @@ const (
 	KeyMember = "mitstack.dev/member"
 	// KeyBurst labels each member above the pool's minimum, which idle removal may choose and the kit's components
 	// stay off. The members up to the minimum are steady and carry no such label.
-	KeyBurst   = components.BurstLabel
-	burstValue = "true"
+	KeyBurst = components.BurstLabel
 )
 
 // IsBurst reports whether srv is a burst member of the Cloud pool.
-func IsBurst(srv controlplane.Server) bool { return srv.Labels[KeyBurst] == burstValue }
+func IsBurst(srv controlplane.Server) bool { return srv.Labels[KeyBurst] == components.BurstValue }
 
 // CloudPlan is what a Cloud pool lacks, where members leave one at a time through Mark, Drain until the node is gone
 // from the cluster, and Delete.
@@ -139,7 +138,7 @@ func PlanCloud(ctx context.Context, plane controlplane.Plane, pool CloudPool, dr
 		if steady < pool.Min {
 			steady++
 		} else {
-			spec.Labels[KeyBurst] = burstValue
+			spec.Labels[KeyBurst] = components.BurstValue
 		}
 		plan.Create = append(plan.Create, spec)
 		keep = append(keep, controlplane.Server{Location: loc})
@@ -171,7 +170,7 @@ func Reclassify(pool CloudPool, members []controlplane.Server) []controlplane.Se
 		newest := NewestOfFullest(steady, steady, pool.Locations)
 		steady = slices.DeleteFunc(steady, func(srv controlplane.Server) bool { return srv.ID == newest.ID })
 		newest.Labels = maps.Clone(newest.Labels)
-		newest.Labels[KeyBurst] = burstValue
+		newest.Labels[KeyBurst] = components.BurstValue
 		changed = append(changed, newest)
 	}
 	slices.SortFunc(burst, func(a, b controlplane.Server) int {

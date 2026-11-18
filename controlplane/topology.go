@@ -24,7 +24,7 @@ func (p Plane) topologyManifests(poolWorkers []Server) ([]byte, error) {
 	}
 	byName := slices.SortedFunc(slices.Values(poolWorkers), func(a, b Server) int { return strings.Compare(a.Name, b.Name) })
 	for _, worker := range byName {
-		nodes = append(nodes, topology.Node{Name: worker.Name, Zone: worker.Location, Burst: worker.Labels[components.BurstLabel] == "true"})
+		nodes = append(nodes, topology.Node{Name: worker.Name, Zone: worker.Location, Burst: worker.Labels[components.BurstLabel] == components.BurstValue})
 	}
 	return topology.Manifests(topology.Inputs{Region: NetworkZone, Nodes: nodes, ToolsImage: toolsImage()})
 }

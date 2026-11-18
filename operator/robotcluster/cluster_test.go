@@ -1,10 +1,12 @@
 package robotcluster_test
 
 // A cluster needs its operator's id, boundary and worker install, names to replace only the nodes and Cloud workers a
-// request names that the cluster runs, and refuses a control-plane size its block declares no servers for.
+// request names that the cluster runs, and refuses a control-plane size its block declares no servers for or the
+// running cluster was not subscribed with.
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -139,6 +141,51 @@ func TestPlanReplacements_TakesOneOrThreeServersForABlockThatDeclaresNoSize(t *t
 		_, err := k.PlanReplacements(context.Background(), sizeRequest(map[string]string{"controlPlaneSize": size}))
 		assert.NoError(t, err, "an upgrade asking for controlPlaneSize %q", size)
 	}
+}
+
+func TestPlanReplacements_RefusesAControlPlaneSizeOtherThanTheOneTheRunningClusterWasSubscribedWith(t *testing.T) {
+	ctx := context.Background()
+	cloud := cloudtest.New(time.Now)
+	k := robotcluster.New(robotcluster.Config{
+		Block: testBlock, Boundary: "test-boundary", InstallWorker: installNothing,
+		CloudAPI: func(string) controlplane.API { return cloud },
+	})
+	labels := k.PlaneFor(cloud, sizeRequest(map[string]string{})).Labels("network")
+	labels[controlplane.KeySize] = "3"
+	_, err := cloud.CreateNetwork(ctx, controlplane.NetworkSpec{Name: "subscribed", IPRange: controlplane.NetworkIPRange, Labels: labels})
+	require.NoError(t, err)
+	writes := cloud.Writes()
+
+	_, err = k.PlanReplacements(ctx, sizeRequest(map[string]string{"controlPlaneSize": "1"}))
+
+	var refused *handler.Refused
+	require.ErrorAs(t, err, &refused, "an upgrade of a three-server cluster asking for one server")
+	assert.Equal(t, "control-plane-size-fixed", refused.Class)
+	assert.ErrorContains(t, err, "subscribed with controlPlaneSize 3, and a control plane keeps its size after subscribe")
+	_, err = k.PlanReplacements(ctx, sizeRequest(map[string]string{"controlPlaneSize": "3"}))
+	assert.NoError(t, err, "an upgrade asking for the size the cluster was subscribed with")
+	assert.Equal(t, writes, cloud.Writes(), "Hetzner Cloud writes the dry runs made")
+}
+
+type networksFail struct {
+	*cloudtest.Fake
+	err error
+}
+
+func (n networksFail) ListNetworks(context.Context, string) ([]controlplane.Network, error) {
+	return nil, n.err
+}
+
+func TestPlanReplacements_ReturnsAFailedNetworkReadRatherThanPassingTheSize(t *testing.T) {
+	failed := errors.New("hetzner answered 503")
+	k := robotcluster.New(robotcluster.Config{
+		Block: testBlock, Boundary: "test-boundary", InstallWorker: installNothing,
+		CloudAPI: func(string) controlplane.API { return networksFail{cloudtest.New(time.Now), failed} },
+	})
+
+	_, err := k.PlanReplacements(context.Background(), sizeRequest(map[string]string{"controlPlaneSize": "1"}))
+
+	assert.ErrorIs(t, err, failed, "an upgrade whose network read fails")
 }
 
 func TestPlaneFor_RunsTheSizeTheRequestNamesAndThreeForARequestThatNamesNone(t *testing.T) {

@@ -134,15 +134,21 @@ node without `VSwitch` runs Talos's default DHCP on every link.
 
 A node keeps the configuration it booted with until something applies another
 one. Talos calls this the machine configuration: a YAML file of several
-documents that sets the node's disks, network, Kubernetes and keys. A release
-here is one published version of this kit, named by the digest of its tools
-image, the container image that carries talosctl and the kit's scripts (see
-the `tools` row above).
+documents, each of a kind such as `KubeletConfig`, that sets the node's disks,
+network, Kubernetes and keys. A release here is one published version of this
+kit, named by the digest of its tools image, the container image that carries
+talosctl and the kit's scripts (see the `tools` row above). `Cluster.Release`
+holds that digest.
 
 `nodeconfig.Rerender` takes a node's current machine configuration as YAML
-bytes and returns the configuration this release gives that node. Only the node still holds the cluster's keys and the
-choices the block made when it created the cluster, so `Rerender` reads them
-back from these documents of the node's configuration:
+bytes and returns the configuration this release gives that node. It applies
+nothing. Its caller reads the configuration from the node through the Talos
+API and applies the result, and this kit does not yet hold that caller.
+
+The block, the mitstack block that created the cluster through this kit,
+keeps no copy of the cluster's keys or of the choices it made at creation.
+Only the node still holds them, so `Rerender` reads them back from these
+documents, each named by its Talos kind:
 
 | What it reads back | From the running document |
 |---|---|
@@ -152,38 +158,44 @@ back from these documents of the node's configuration:
 | The subscription, the private network and the node's own labels | `KubeNodeConfig`, the node's Kubernetes labels and taints |
 | Whether apps stay off the control plane | The control-plane taint in `KubeNodeConfig` |
 | The Kubernetes version | The kubelet image in `KubeletConfig` |
-| The issuer and the gateway CA | `KubeServiceAccountConfig` and the `mitstack-gateway` `TrustedRootsConfig` |
-| The gateways, the profile and the user volumes | The `RegistryTLSConfig` names, the `eth0` `LinkConfig` and each `UserVolumeConfig` |
+| The issuer, the URL each service-account token names, and the gateway CA | `KubeServiceAccountConfig` and the `mitstack-gateway` `TrustedRootsConfig` |
+| The gateways and the profile | The `RegistryTLSConfig` names and the `eth0` `LinkConfig` |
+| The user volumes, the disk space Talos gives a component such as the local path provisioner | Each `UserVolumeConfig` |
 | A dedicated node's name and vSwitch | `HostnameConfig`, the `pub0` `LinkAliasConfig` and the `vsw0` `VLANConfig` |
 
 A control-plane node's configuration also holds the Kubernetes manifests it
 applied at install, and every node says whether it runs the node-local log
 Collector. `Rerender` keeps both as the node holds them, since Argo CD carries
-each later change of a component. The result sets the node annotation
-`mitstack.dev/machine-config` (`nodeconfig.MachineConfigAnnotation`) to the
-release, from `Cluster.Release`, so each node names the release its
-configuration came from. `Render` and `RenderWorker` set the same annotation
-when `Cluster.Release` is set.
+each later change of a component, as
+[How a running cluster takes a release's components](#how-a-running-cluster-takes-a-releases-components)
+explains. The result sets the node annotation `mitstack.dev/machine-config`
+(`nodeconfig.MachineConfigAnnotation`) to `Cluster.Release`, so each node
+names the release its configuration came from. `Render` and `RenderWorker`
+set the same annotation when `Cluster.Release` is set.
 
 Talos applies a new configuration without a reboot, yet a node takes some
 settings only when it boots. `Rerender` refuses such a release with
-`nodeconfig.ErrRebootOnly`, naming the setting. These are the install disk and
-image (`machine.install`), the kernel's arguments and modules
-(`machine.kernel`), every etcd setting except its CA key, which the node keeps
-(`cluster.etcd`), and a volume, either a system one such as `EPHEMERAL`
-(`VolumeConfig`) or a user one (`UserVolumeConfig`). Its caller then leaves the
-node as it runs.
+`nodeconfig.ErrRebootOnly`, naming the setting, and the caller applies nothing
+to that node. These settings are the install disk and image
+(`machine.install`), the kernel's arguments and modules (`machine.kernel`),
+every etcd setting except its CA key, which the node keeps (`cluster.etcd`),
+and a volume, either a system one such as `EPHEMERAL` (`VolumeConfig`) or a
+user one (`UserVolumeConfig`).
 
 `Rerender` also refuses a configuration it cannot read back whole, so nothing on
 a node changes without a reason it can name. It refuses one with no
-`KubeClusterConfig` or `KubeNodeConfig`, an API endpoint that is a host name, or
-a taint other than the control plane's. It refuses a kubelet image from another
-registry or pinned by digest, since the node keeps the Kubernetes version that
-image names. It refuses a worker that trusts no API server CA, or more than one.
-It also refuses a node running a document this release does not render, naming
-that document, such as one a person added to the node by hand. A registry that
-trusts another CA than the gateways' is such a document. This example
-renders the configuration a node takes from the release whose tools image is
+`KubeClusterConfig`, `KubeNodeConfig` or `mitstack-gateway`
+`TrustedRootsConfig`, or with an API endpoint that is a host name. It refuses
+a taint other than the control plane's, and that taint on a worker. It refuses
+a kubelet image from another registry or pinned by digest, since the node
+keeps the Kubernetes version that image names. It refuses a worker that trusts
+no API server CA, or more than one. It also refuses a node running a document
+this release does not render, naming that document, such as one a person added
+to the node by hand. A registry that trusts another CA than the gateways' is
+such a document.
+
+This example takes `running`, the configuration the caller read from the node,
+and renders what the node takes from the release whose tools image is
 `sha256:5f0c…`:
 
 ```go
@@ -191,6 +203,10 @@ next, err := nodeconfig.Rerender(running, "sha256:5f0c…")
 if errors.Is(err, nodeconfig.ErrRebootOnly) {
 	return fmt.Errorf("leave this node as it runs: %w", err)
 }
+if err != nil {
+	return err
+}
+// next is the configuration the caller applies to the node.
 ```
 
 ## How a block drives the Cloud control plane

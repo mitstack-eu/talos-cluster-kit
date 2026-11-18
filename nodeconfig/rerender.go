@@ -77,7 +77,7 @@ func readRunning(cfg machineryconfig.Provider) (Cluster, Node, machine.Type, err
 	if err := acceptAPIServerCA(bundle, cfg); err != nil {
 		return Cluster{}, Node{}, 0, err
 	}
-	r := reader{Cluster: Cluster{Profile: Metal, Secrets: &Secrets{bundle: bundle}, running: &runningDocuments{}}}
+	r := reader{Cluster: Cluster{Profile: Metal, Secrets: &Secrets{bundle: bundle}, running: &runningDocuments{}}, role: role}
 	for _, doc := range cfg.Documents() {
 		if err := r.read(doc); err != nil {
 			return Cluster{}, Node{}, 0, fmt.Errorf("read the running configuration: %w", err)
@@ -116,6 +116,7 @@ func acceptAPIServerCA(bundle *secrets.Bundle, cfg machineryconfig.Provider) err
 type reader struct {
 	Cluster
 	node        Node
+	role        machine.Type
 	labels      map[string]string
 	registries  []registryTLS
 	clusterSeen bool
@@ -147,6 +148,9 @@ func (r *reader) read(doc config.Document) error {
 		for taint := range d.TaintsConfig {
 			if taint != constants.LabelNodeRoleControlPlane {
 				return fmt.Errorf("the node runs the taint %s, which the kit renders on no node", taint)
+			}
+			if r.role == machine.TypeWorker {
+				return fmt.Errorf("the worker runs the taint %s, which the kit renders on no worker", taint)
 			}
 			c.AppsOnWorkers = true
 		}
@@ -192,14 +196,16 @@ func (r *reader) read(doc config.Document) error {
 	return nil
 }
 
-// complete refuses a configuration missing a document that names the cluster or the node, and takes as gateways the
-// registries that trust the gateways' CA, leaving any other for keepsEveryDocument to name.
+// complete refuses a configuration missing a document that names the cluster, the node or the gateways' CA, and takes
+// as gateways the registries that trust that CA, leaving any other for keepsEveryDocument to name.
 func (r *reader) complete() error {
 	switch {
 	case !r.clusterSeen:
 		return errors.New("it holds no KubeClusterConfig document naming the cluster")
 	case !r.nodeSeen:
 		return errors.New("it holds no KubeNodeConfig document naming the node's subscription")
+	case len(r.GatewayCA) == 0:
+		return fmt.Errorf("it holds no %s TrustedRootsConfig document naming the gateways' CA", gatewayRoots)
 	}
 	for _, registry := range r.registries {
 		if registry.ca == string(r.GatewayCA) {

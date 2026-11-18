@@ -4185,7 +4185,7 @@ go -C operator vet ./...
 go -C operator test -race ./...
 ```
 
-## How a cluster with a Robot worker is built
+## The robot cluster module, for a cluster with a Robot worker
 
 hcloud-hrobot-talos-cluster builds a Talos cluster whose control plane runs on
 three Hetzner Cloud servers, and whose apps run on one Robot server, a
@@ -4200,27 +4200,28 @@ the cluster from the kit's packages, so it requires a release of the kit, and a
 kit release fixes the Talos components a cluster runs. The operator module
 requires no kit release, so hcloud-talos-cluster can take it without moving its
 components. A block that requires the robot cluster module takes the kit
-release that module requires, v0.83.0 today, unless it requires a newer one
-itself.
+release named in `operator/robotcluster/go.mod`, unless it requires a newer
+one itself.
 
 An operator builds one `Cluster` with `robotcluster.New`, handing it a
 `Config`. `Config` names the block's id, which labels every Cloud resource,
 the boundary that separates the parts of a Cloud server's start-up data, and
 the function that writes the worker's disk image onto the Robot server. That
 function stays with the operator, since its scripts wait with shell `sleep`,
-which the kit's CI refuses in a line a change adds. Every other field is a
+which `checkpolls` refuses in a line a change adds. `checkpolls` is the CI step
+[the development page](docs/development.md#what-ci-runs) describes. Every other field is a
 client the cluster calls, such as the clock or the Hetzner Cloud API. A field
 left empty is the client a released operator uses, and a test fills it with a
 fake.
 
 | Part | What it does | Main entry points |
 |---|---|---|
-| Lifecycle | Answers each call mitstack makes to the operator: it builds or upgrades the cluster one step per call, reads it, and tears it down | `New`, `Config`, `Cluster.Ensure`, `Cluster.EnsureOwning`, `Cluster.EnsureResourcesOwning`, `Cluster.Observe`, `Cluster.Observers`, `Cluster.TypeObservers`, `Cluster.Delete` |
+| Lifecycle | Answers each call mitstack makes to the operator. `Ensure` builds or upgrades the cluster one step per call. `EnsureOwning` does the same and also returns the block's own secrets the call minted, the values mitstack keeps for the block such as the gateway CA's key. `EnsureResourcesOwning` also lists the resources the call created. `Observe` reads the whole cluster, `Observers` and `TypeObservers` read one resource by its name or by its type, and `Delete` tears the cluster down | `New`, `Config`, `Cluster.Ensure`, `Cluster.EnsureOwning`, `Cluster.EnsureResourcesOwning`, `Cluster.Observe`, `Cluster.Observers`, `Cluster.TypeObservers`, `Cluster.Delete` |
 | Control plane and gateways | Builds the three Cloud nodes and the gateways in front of them through the kit's `controlplane` package, and reads each gateway's newest report. A gateway is the Cloud server in each location that the nodes route out through and pull their images from | `Cluster.NewPlane`, `Cluster.WithGateways`, `GatewayReports`, `NewGatewayReports`, `GuardRemoval` |
 | Robot worker | Refuses a Robot server that is missing, cancelled, outside the cluster's locations or named for another subscription, before anything is written. It then joins the server to the cluster's network over a vSwitch, Hetzner's private link between Robot and Cloud servers, sets its firewall, and runs the install `Config` names in the background | `RobotName`, `Worker`, `WorkerInstall`, `WorkerFirewall`, `WorkerFirewallFor`, `HoldsWorkerRules`, `WaitOutRobotLimit`, `Cluster.JobRunning`, `Cluster.StopJob` |
 | Cloud pool and node replace | Scales the pool of Cloud workers through the kit's `pools` package, and names the control-plane nodes and Cloud workers an upgrade's request asks to replace that the cluster runs | `MemberName`, `Located`, `Cluster.PlanReplacements` |
-| Rollout | Writes a release's components to the cluster repository and reads them back from the cluster's node report. It keeps the hashes of a release's rendered files, so each release is rendered once | `ReleaseFor`, `Cluster.RenderingOf`, `Rendering.Blobs` |
-| Hosting | For the cluster that hosts mitstack itself, commits the cluster's recovery keys to its repository only as PGP messages to the owner's public key, and creates the two deploy keys that repository is read and written with | `HostsPlatform`, `EncryptTo`, `DeployKey` |
+| Rollout | Writes a release's components to the cluster repository and reads them back from the cluster's node report. It keeps the blob SHA of each file a release renders, the hash Git names a file's content by, so each release is rendered once. `Rendering.Blobs` gives those hashes | `ReleaseFor`, `Cluster.RenderingOf`, `Rendering.Blobs` |
+| Hosting | For the cluster that hosts mitstack itself, commits the keys that recover the cluster's OpenBao store and its sealed secrets to its repository. Each is encrypted with OpenPGP to the owner's public key, so only the owner's private key opens it. It also creates the two deploy keys that repository is read and written with | `HostsPlatform`, `EncryptTo`, `DeployKey` |
 
 The view below shows the module's parts and the kit packages and outside
 systems they call, in the form of a C4 Component view.
@@ -4234,7 +4235,8 @@ C4Component
         Component(plane, "Control plane and gateways", "Go", "Cloud nodes, gateways and their reports")
         Component(worker, "Robot worker", "Go", "Admits, vSwitch, firewall and install job")
         Component(pool, "Cloud pool and node replace", "Go", "Scales the pool and names what an upgrade replaces")
-        Component(roll, "Rollout and hosting", "Go", "Writes and reads back a release's components")
+        Component(roll, "Rollout", "Go", "Writes and reads back a release's components")
+        Component(host, "Hosting", "Go", "Recovery keys and deploy keys of the cluster that hosts mitstack")
     }
     Container(kit, "talos-cluster-kit", "Go module", "controlplane, pools, rollout and the operator module")
     System_Ext(hetzner, "Hetzner", "Cloud API and Robot API")
@@ -4250,6 +4252,8 @@ C4Component
     Rel(plane, hetzner, "Creates Cloud servers through")
     Rel(worker, hetzner, "Reads and changes the Robot server through")
     Rel(roll, github, "Writes the release to")
+    Rel(life, host, "Seals and keys a hosting cluster with")
+    Rel(host, github, "Commits the sealed keys and adds deploy keys to")
     Rel(life, platform, "Reads the node reports from")
 ```
 

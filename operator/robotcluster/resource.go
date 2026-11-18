@@ -319,7 +319,8 @@ func (c convergence) refusal(ctx context.Context) error {
 }
 
 // nextStep is the control plane's next step, and once the worker is written or the cluster has none, the step that puts
-// back a lost Robot resource, then a Cloud worker's next replacement stage, then the one that creates the Cloud pool's missing workers.
+// back a lost Robot resource on a cluster with a dedicated server, then a Cloud worker's next replacement stage, then the
+// one that creates the Cloud pool's missing workers.
 func (c convergence) nextStep(ctx context.Context, network controlplane.Network) (controlplane.Step, bool, error) {
 	s, ok, err := c.plane.NextStep(ctx, c.state, network)
 	if err != nil || ok || !c.workerDone(network) {

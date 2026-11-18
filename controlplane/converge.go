@@ -475,7 +475,7 @@ func (p Plane) loadBalancerStep(st State, network Network, want LoadBalancerSpec
 			}}, true
 		}
 	}
-	if !targetsEvery(lb.TargetIPs, want.TargetIPs) || want.TargetSelector != "" && !p.selectsAServer(st, want.TargetSelector) {
+	if !targetsEvery(lb.TargetIPs, want.TargetIPs) || (want.TargetSelector != "" && !p.selectsAServer(st, want.TargetSelector)) {
 		return Step{}, false
 	}
 	for _, sel := range lb.TargetSelectors {
@@ -488,7 +488,7 @@ func (p Plane) loadBalancerStep(st State, network Network, want LoadBalancerSpec
 	return Step{}, false
 }
 
-// selectsAServer reports whether selector is the selector of a role some server of the cluster holds.
+// selectsAServer reports whether selector is some role's selector and the cluster holds a server of that role.
 func (p Plane) selectsAServer(st State, selector string) bool {
 	for role, servers := range st.Servers {
 		if len(servers) > 0 && p.RoleSelector(role) == selector {

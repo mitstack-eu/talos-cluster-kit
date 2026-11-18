@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mitstack-eu/talos-cluster-kit/components"
 )
 
 // Problems names every way the plane falls short of what it builds, judged from what Hetzner holds.
@@ -271,6 +273,9 @@ func (p Plane) Outputs(st State) (map[string]string, string) {
 		"subscriptionId":       p.Subscription,
 		"issuerBucket":         gw.Labels[KeyIssuerBucket],
 		"issuerUrl":            issuerURL(gw.Labels[KeyIssuerBucket], p.Subscription).String(),
+	}
+	if !p.Telemetry.IsZero() {
+		outputs["otlpEndpoint"] = components.TelemetryOTLPEndpoint
 	}
 	reach := "an API and an ingress load balancer in " + GatewayLocation + " reach them"
 	if p.AppsOnWorkers {

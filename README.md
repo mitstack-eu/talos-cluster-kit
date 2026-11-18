@@ -1952,8 +1952,8 @@ This section is for a block author whose cluster requires an OTLP backend, such
 as Scaleway Cockpit, and for an engineer who changes the telemetry Collector.
 OTLP is OpenTelemetry's protocol for sending logs and metrics. The section says
 what the Collector reads, including the Argo CD and OpenBao metrics it
-scrapes, how it tags and masks each record, and how its push token stays
-fresh.
+scrapes and what the apps on the cluster push to it, how it tags and masks
+each record, and how its push token stays fresh.
 
 ### What the block hands the kit
 
@@ -1985,7 +1985,7 @@ node-local Collector, in two copies:
 
 | Copy | How it runs | What it reads |
 |---|---|---|
-| `mitstack-telemetry-node` | A DaemonSet on every node, the control plane included | Each container's log under `/var/log/pods`, except its own, and the node, pod, container and volume metrics of its node's kubelet |
+| `mitstack-telemetry-node` | A DaemonSet on every node, the control plane included | Each container's log under `/var/log/pods`, except its own, the node, pod, container and volume metrics of its node's kubelet, and what [the pods on its node push](#how-an-app-on-the-cluster-pushes-its-own-telemetry) |
 | `mitstack-telemetry-cluster` | A Deployment of one replica on a control-plane node, since a second would send each event twice | The API server's events, the cluster's metrics, among them each node's `Ready` condition, and what it [scrapes from Argo CD and OpenBao](#what-the-cluster-copy-scrapes) |
 
 The Collector reads its configuration only when it starts. Each copy's pod
@@ -2066,6 +2066,50 @@ rule groups by. `collector_test.go` proves both
 on the pinned Collector: a containerd log line from a pod in `app-shop`
 arrives at a stand-in backend tagged `mitstack.app=shop`, with its token,
 password and e-mail address masked.
+
+### How an app on the cluster pushes its own telemetry
+
+An app on the cluster can send its own metrics and logs to the bound backend
+without holding a push token. The node copy takes OTLP over HTTP on port 4318
+of its own pod's address. The Service `mitstack-telemetry-otlp` in
+`kube-system` sets `internalTrafficPolicy: Local`, so each push reaches the
+node copy on the sender's own node, which knows every pod there.
+
+A plane that sets `Telemetry` outputs the receiver's base URL as
+`otlpEndpoint`:
+
+```text
+http://mitstack-telemetry-otlp.kube-system.svc.cluster.local:4318
+```
+
+A sender appends `/v1/metrics` or `/v1/logs`, as an OpenTelemetry SDK does
+with the base URL in `OTEL_EXPORTER_OTLP_ENDPOINT`. A plane that leaves
+`Telemetry` at zero outputs no `otlpEndpoint`, and its cluster runs no
+receiver and no Service.
+
+The Collector decides which app a pushed record belongs to, whatever the
+sender wrote. Pushed records run through pipelines of their own, `logs/otlp`
+and `metrics/otlp`, in three steps:
+
+1. `transform/sender` deletes every attribute whose name starts with `k8s.` or
+   `mitstack.`, on the resource, on each log record and on each data point.
+   The tagger keeps any value it finds, so a claim left in place would stand.
+2. `k8s_attributes/otlp` finds the sending pod by the address its connection
+   comes from. It tags the record with that pod's name, its namespace and
+   `mitstack.app`, before any batch forms, since a batch drops that address.
+3. The record then takes the same masking and subscription tag as every other
+   record.
+
+A push from an address that matches no pod on the node, such as a process on
+the host network, arrives with the subscription tag alone. `collector_test.go`
+proves the tagging on the pinned Collector. A fixture pod in `app-shop` pushes
+a metric and a log record that claim `mitstack.app=other` and the namespace
+`app-other`. Both arrive tagged `mitstack.app=shop` and `app-shop`, with the
+e-mail address in the log record masked.
+
+The receiver speaks plain HTTP, since a push stays on the node it starts on.
+Kyverno's `mitstack-default-deny` blocks an app namespace's egress, so a
+sender there needs a policy of its own that admits `kube-system` on 4318.
 
 ### How the push token stays fresh
 

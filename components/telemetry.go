@@ -13,7 +13,14 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/internal/tmpl"
 )
 
-const TelemetryName = "mitstack-telemetry"
+const (
+	TelemetryName        = "mitstack-telemetry"
+	telemetryOTLPService = TelemetryName + "-otlp"
+	// telemetryOTLPPort is the Collector's default port for OTLP over HTTP.
+	telemetryOTLPPort = "4318"
+	// TelemetryOTLPEndpoint is the base URL a pod pushes OTLP to, through a Service that keeps each push on the pod's node.
+	TelemetryOTLPEndpoint = "http://" + telemetryOTLPService + ".kube-system.svc.cluster.local:" + telemetryOTLPPort
+)
 
 // TelemetryExport is the OTLP backend the block requires, as that resource outputs it; the zero export runs no Collector.
 type TelemetryExport struct {
@@ -54,8 +61,9 @@ var telemetryTemplate string
 
 var telemetryCollector = tmpl.Must("the telemetry Collector", telemetryTemplate)
 
-// TelemetryCollector renders the Collector that pushes the cluster's events, metrics and app logs to e, tagged with
-// subscription, and scrapes Argo CD's application controller and each OpenBao member the set runs.
+// TelemetryCollector renders the Collector that pushes the cluster's events, metrics and app logs, and what its pods
+// push to it, to e, tagged with subscription, and scrapes Argo CD's application controller and each OpenBao member the
+// set runs.
 func (s Set) TelemetryCollector(e TelemetryExport, subscription string) ([]Manifest, error) {
 	if e.IsZero() {
 		return nil, nil
@@ -70,6 +78,8 @@ func (s Set) TelemetryCollector(e TelemetryExport, subscription string) ([]Manif
 		"LogsEndpoint":    e.LogsEndpoint,
 		"TokenHeader":     e.TokenHeader,
 		"OpenBaoMembers":  s.openBaoMembers(),
+		"OTLPService":     telemetryOTLPService,
+		"OTLPPort":        telemetryOTLPPort,
 	}
 	sums := map[string]string{}
 	for _, which := range []string{"node", "cluster"} {

@@ -2,7 +2,9 @@
 # logs and its kubelet's metrics, and the one cluster copy reads the API
 # server's events and the cluster's metrics, and scrapes Argo CD's application
 # controller and, on a cluster that runs OpenBao, each of its members on its
-# own, so a sample names the member it came from. Each tags a record with its
+# own, so a sample names the member it came from. The node copy also receives
+# the OTLP each pod on its node pushes, and tags it by the pod its connection
+# comes from, so no sender can write as another app. Each tags a record with its
 # namespace's app and the subscription, masks secrets and personal data, and
 # pushes to the backend the block requires, under the token the lease job writes.
 apiVersion: v1
@@ -113,6 +115,10 @@ subjects:
               valueFrom:
                 fieldRef:
                   fieldPath: status.hostIP
+            - name: K8S_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
           securityContext:
             runAsNonRoot: true
             runAsUser: 10001
@@ -156,15 +162,27 @@ subjects:
         metrics:
           k8s.pod.volume.usage:
             enabled: true
+      otlp:
+        protocols:
+          http:
+            endpoint: ${env:K8S_POD_IP}:{{ .OTLPPort }}
     processors:
       k8s_attributes:
-        auth_type: serviceAccount
-        wait_for_metadata: true
-        filter:
-          node_from_env_var: K8S_NODE_NAME
-        extract:
-          labels:
-            - {tag_name: mitstack.app, key: mitstack.dev/app, from: namespace}
+{{- template "nodeTagger" }}
+      # The tagger never overwrites a value it finds, and falls back to the
+      # namespace a record names, so a pushed record loses its own claims first.
+      transform/sender:
+        log_statements:
+          - delete_matching_keys(resource.attributes, "^(k8s|mitstack)[.]")
+          - delete_matching_keys(log.attributes, "^(k8s|mitstack)[.]")
+        metric_statements:
+          - delete_matching_keys(resource.attributes, "^(k8s|mitstack)[.]")
+          - delete_matching_keys(datapoint.attributes, "^(k8s|mitstack)[.]")
+      k8s_attributes/otlp:
+{{- template "nodeTagger" }}
+        pod_association:
+          - sources:
+              - from: connection
 {{- template "shared" . }}
     service:
       extensions: [bearertokenauth]
@@ -177,6 +195,24 @@ subjects:
           receivers: [kubelet_stats]
           processors: [memory_limiter, k8s_attributes, redaction, resource/subscription, transform/datapoints, batch]
           exporters: [otlp_http/metrics]
+        # The connection's address is gone once a batch forms, so the tagger runs before it.
+        logs/otlp:
+          receivers: [otlp]
+          processors: [memory_limiter, transform/sender, k8s_attributes/otlp, redaction, resource/subscription, batch]
+          exporters: [otlp_http/logs]
+        metrics/otlp:
+          receivers: [otlp]
+          processors: [memory_limiter, transform/sender, k8s_attributes/otlp, redaction, resource/subscription, transform/datapoints, batch]
+          exporters: [otlp_http/metrics]
+{{- end }}
+{{- define "nodeTagger" }}
+        auth_type: serviceAccount
+        wait_for_metadata: true
+        filter:
+          node_from_env_var: K8S_NODE_NAME
+        extract:
+          labels:
+            - {tag_name: mitstack.app, key: mitstack.dev/app, from: namespace}
 {{- end }}
 {{- define "clusterConfig" }}
     receivers:
@@ -286,6 +322,22 @@ spec:
           hostPath:
             path: /var/log/pods
             type: Directory
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .OTLPService }}
+  namespace: kube-system
+spec:
+  selector:
+    app.kubernetes.io/name: mitstack-telemetry-node
+  # A pod's push reaches the node copy on its own node, which knows the pod.
+  internalTrafficPolicy: Local
+  ports:
+    - name: otlp-http
+      port: {{ .OTLPPort }}
+      targetPort: {{ .OTLPPort }}
+      protocol: TCP
 ---
 apiVersion: apps/v1
 kind: Deployment

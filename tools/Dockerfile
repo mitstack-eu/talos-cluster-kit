@@ -12,8 +12,8 @@
 #
 # machine-config renders a running node's configuration inside the cluster, since only the nodes hold the cluster's
 # keys. It builds from the kit's own source with the Go release go.mod names, which a test holds the stage to. The
-# build needs the components package's Go source and every manifest it embeds, so the image's components directory
-# carries each embedded manifest, of which the gateways serve a subset, and leaves the Go source out.
+# build needs the components package's Go source and every manifest it embeds, so the build context lets the whole
+# components directory in, and the image carries every file of it but the Go source, the gateways serving a subset.
 FROM docker.io/library/golang:1.26.10-alpine@sha256:87c65a688975c0b1d4585d204874c45ca78354670e3a5f11368c5a492303d696 AS machine-config
 
 WORKDIR /src

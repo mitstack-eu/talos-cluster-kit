@@ -5,6 +5,7 @@ package robotcluster_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/operator/robotcluster"
 	"github.com/mitstack-eu/talos-cluster-kit/operator/robotcluster/robotclustertest"
 	"github.com/mitstack-eu/talos-cluster-kit/redundant"
+	"github.com/mitstack-eu/talos-cluster-kit/report"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -122,6 +124,78 @@ func TestUpdate_RunsTheRolloutAgainForAPoolWorkerThatJoinsAfterItRanAndReadsPres
 	assert.NotEqual(t, gone[0].ID, back[0].ID, "the worker is a new server")
 	assert.Contains(t, obs.StatusDetail, "every node runs the release's machine configuration")
 	assert.False(t, holds(e, noderollout.Path(e.Release())), "the rollout is taken out once the new worker runs the release's configuration")
+}
+
+// rolledOut is a standing cluster whose rollout Job ran, with missed, a control-plane node, read behind the release.
+func rolledOut(t *testing.T) (e *robotclustertest.Env, missed string) {
+	t.Helper()
+	e = standingCluster(t)
+	e.Earlier = map[string]string{}
+	for _, name := range nodeNames(e) {
+		e.Earlier[name] = earlierRelease
+	}
+	e.Now = e.Now.Add(time.Minute)
+	e.ReportNodes()
+	e.EnsureOrWait("the subscribe that writes the rollout")
+	e.Now = e.Now.Add(time.Minute)
+	e.Progress()
+	require.True(t, holds(e, noderollout.Path(e.Release())), "main holds the rollout the Job ran from")
+	missed = e.ByRole(controlplane.RoleNode)[0].Name
+	e.Earlier = map[string]string{missed: earlierRelease}
+	return e, missed
+}
+
+func TestUpdate_TakesOutARolloutWhoseJobCompletedWithANodeBehindAndCommitsItAgainOnlyOnceArgoCDPrunesTheJob(t *testing.T) {
+	e, missed := rolledOut(t)
+	path := noderollout.Path(e.Release())
+	e.Now = e.Now.Add(time.Minute)
+	e.ReportNodes()
+
+	completed := e.Observe()
+	assert.Contains(t, completed.StatusDetail, "reads "+missed+" on a machine configuration other than the release's", "the observe names the node behind")
+	assert.Contains(t, completed.StatusDetail, "its Job completed without reaching them, so it is taken out to run again", "the observe says why the rollout is taken out")
+	assert.True(t, completed.Redrive, "the observe asks for the subscribe that takes the rollout out")
+	e.EnsureOrWait("the subscribe that takes the completed rollout out")
+	require.False(t, holds(e, path), "the rollout whose Job completed with a node behind is taken out")
+
+	pruning := e.Observe()
+	assert.Contains(t, pruning.StatusDetail, "the rollout is committed again once Argo CD prunes the release's earlier Job", "the observe while Argo CD still holds the Job")
+	assert.False(t, pruning.Redrive, "no subscribe is asked for while Argo CD still holds the Job")
+	e.EnsureOrWait("the subscribe while Argo CD still holds the Job")
+	assert.False(t, holds(e, path), "the rollout stays out while Argo CD still holds the Job")
+
+	obs, err := e.Settle()
+	require.NoError(t, err, "the subscribes once Argo CD prunes the Job: %s", obs.StatusDetail)
+	assert.Contains(t, obs.StatusDetail, "every node runs the release's machine configuration")
+	assert.NotContains(t, e.Earlier, missed, "a new Job gives the node behind the release's configuration")
+}
+
+func TestUpdate_KeepsTheRolloutAndNamesTheReportWhileTheNewestReportCarriesNoHealthOfWhatArgoCDApplied(t *testing.T) {
+	e, missed := rolledOut(t)
+	e.NoJobHealth = true
+	e.Now = e.Now.Add(time.Minute)
+	e.ReportNodes()
+
+	obs := e.Observe()
+	e.EnsureOrWait("the subscribe on a report that carries no Job health")
+
+	assert.Contains(t, obs.StatusDetail, "reads "+missed+" on a machine configuration other than the release's", "the observe names the node behind")
+	assert.Contains(t, obs.StatusDetail, "carries no health of what the Application "+controlplane.RemovalApplication+" applied", "the observe names the report that carries no Job health")
+	assert.False(t, obs.Redrive, "no subscribe is asked for while the report carries no Job health")
+	assert.True(t, holds(e, noderollout.Path(e.Release())), "the rollout stays while the report carries no Job health")
+}
+
+func TestPlane_ReadsANodeAReportNamesOnAnEarlierMachineConfigurationBehindTheReleaseSoAReplacementWaitsForIt(t *testing.T) {
+	e := standingCluster(t)
+	nodes := e.ByRole(controlplane.RoleNode)
+	e.Earlier = map[string]string{nodes[0].Name: earlierRelease}
+	body, err := json.Marshal(e.Report())
+	require.NoError(t, err)
+
+	behind, err := e.Plane().NodesBehindRelease(report.Read{Body: body, At: e.Now})
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{nodes[0].Name}, behind, "the nodes a replacement of a control-plane node or Cloud worker waits on before it ends")
 }
 
 func TestUpdate_RefusesTheRolloutNamingTheEtcdMemberTheNewestReportReadsUnhealthyAndWritesNoJob(t *testing.T) {

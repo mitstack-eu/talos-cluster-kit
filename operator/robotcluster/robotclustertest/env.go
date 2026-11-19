@@ -81,7 +81,9 @@ type Env struct {
 	Boots string
 	// EtcdDown names the node whose etcd member each later report reads unhealthy.
 	EtcdDown string
-	Created  []contract.CreatedResource
+	// NoJobHealth leaves out of each report the health Argo CD keeps of what an Application applied.
+	NoJobHealth bool
+	Created     []contract.CreatedResource
 
 	mu       sync.Mutex
 	queued   []func()
@@ -412,6 +414,9 @@ func (e *Env) argoCD() (json.RawMessage, error) {
 			object["health"] = nil
 			if object["kind"] == "Job" {
 				object["health"] = report.JobCompleted
+			}
+			if e.NoJobHealth {
+				delete(object, "health")
 			}
 		}
 	}

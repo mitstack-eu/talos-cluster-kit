@@ -74,6 +74,30 @@ func TestCloudOnlyCluster_OfAnOperatorsOwnConfigSettlesOnTheFakesUnderItsBlockID
 	assert.Empty(t, e.Robot.Requests(), "the Robot fake's calls")
 }
 
+func TestCloudOnlyCluster_OfAnOperatorNamingItsClusterTypeReportsAndObservesTheClusterUnderThatName(t *testing.T) {
+	const runnerCluster = "github.runner-cluster"
+	e := robotclustertest.New(t, cloudOnlySub, cloudOnly, robotclustertest.WithOperator(robotcluster.Config{
+		Block: "test-runner-cluster", Boundary: "test-boundary", InstallWorker: installNothing, DeclaredSize: 1, DedicatedServerOptional: true,
+		ClusterType: runnerCluster,
+	}))
+
+	obs, err := e.Settle()
+
+	require.NoError(t, err, "the subscribe: %s", obs.StatusDetail)
+	assert.Contains(t, e.Created, contract.CreatedResource{Name: runnerCluster, Type: runnerCluster, Identity: map[string]string{"subscriptionId": cloudOnlySub}},
+		"the cluster the subscribe reports")
+	for _, c := range e.Created {
+		assert.NotEqual(t, robotcluster.ResourceCluster, c.Name, "a resource the subscribe reports")
+	}
+	observers := e.Cluster.Observers()
+	assert.NotContains(t, observers, robotcluster.ResourceCluster, "the observers the cluster offers")
+	require.Contains(t, observers, runnerCluster, "the observers the cluster offers")
+	read, err := observers[runnerCluster].ObserveResource(context.Background(), contract.ResourceRef{Name: runnerCluster, Type: runnerCluster, Desired: e.Desired()})
+	require.NoError(t, err, "the cluster's observe")
+	assert.Equal(t, contract.Present, read.State, read.StatusDetail)
+	assert.NotEmpty(t, read.Outputs["apiEndpoint"], "the cluster's API endpoint")
+}
+
 func TestCloudOnlyCluster_ReadsItsRobotResourcesAbsentWithNoRobotCall(t *testing.T) {
 	e := robotclustertest.New(t, cloudOnlySub, cloudOnly)
 	_, err := e.Settle()

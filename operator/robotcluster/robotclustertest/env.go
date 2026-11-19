@@ -29,9 +29,11 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane/cloudtest"
-	"github.com/mitstack-eu/talos-cluster-kit/operator"
+	"github.com/mitstack-eu/talos-cluster-kit/nodeconfig"
+	"github.com/mitstack-eu/talos-cluster-kit/noderollout"
 	"github.com/mitstack-eu/talos-cluster-kit/operator/robotcluster"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
+	"github.com/mitstack-eu/talos-cluster-kit/tools"
 	"github.com/stretchr/testify/require"
 )
 
@@ -71,7 +73,11 @@ type Env struct {
 	Reports          []observe.NodeReport
 	// WaitingPods is what each later node report says of the cluster's pods, as the report serves them.
 	WaitingPods []map[string]any
-	Created     []contract.CreatedResource
+	// Earlier names the nodes that run an earlier release's machine configuration until the release's rollout Job runs.
+	Earlier map[string]string
+	// EtcdDown names the node whose etcd member each later report reads unhealthy.
+	EtcdDown string
+	Created  []contract.CreatedResource
 
 	mu       sync.Mutex
 	queued   []func()
@@ -215,7 +221,7 @@ func (e *Env) Progress() {
 	}
 	e.syncArgo()
 	if len(e.ByRole(controlplane.RoleNode)) == len(e.Plane().NodeLocations()) {
-		e.reportNodes()
+		e.ReportNodes()
 	}
 }
 
@@ -267,17 +273,30 @@ func (e *Env) syncArgo() {
 	e.Argo.Sync()
 }
 
-func (e *Env) reportNodes() {
+// ReportNodes sends a report naming each node and Cloud worker Ready once running, the Robot worker once installed,
+// each with the release its machine configuration names, each node's etcd member, and each gateway passing once it
+// runs at its address.
+func (e *Env) ReportNodes() {
 	e.T.Helper()
-	var nodes []operator.ReportedNode
+	e.SendReport(e.Report())
+}
+
+// Report is the body ReportNodes sends now, for a test to change before SendReport sends it.
+func (e *Env) Report() map[string]any {
+	e.T.Helper()
+	var nodes, members []map[string]any
+	add := func(name string, ready bool) {
+		nodes = append(nodes, map[string]any{"name": name, "ready": ready, "machineConfig": e.machineConfigOf(name)})
+	}
 	for _, s := range e.ByRole(controlplane.RoleNode) {
-		nodes = append(nodes, operator.ReportedNode{Name: "node-" + s.Location, Ready: s.Status == controlplane.ServerRunning})
+		add(s.Name, s.Status == controlplane.ServerRunning)
+		members = append(members, map[string]any{"hostname": s.Name, "healthy": s.Status == controlplane.ServerRunning && s.Name != e.EtcdDown})
 	}
 	for _, s := range e.ByRole(controlplane.RoleCloudWorker) {
-		nodes = append(nodes, operator.ReportedNode{Name: s.Name, Ready: s.Status == controlplane.ServerRunning})
+		add(s.Name, s.Status == controlplane.ServerRunning)
 	}
 	if e.Installed() > 0 {
-		nodes = append(nodes, operator.ReportedNode{Name: e.Plane().Name("worker"), Ready: true})
+		add(e.Plane().Name("worker"), true)
 	}
 	network := e.Cloud.OnlyNetwork(e.T, e.Plane().Selector())
 	var gateways []map[string]any
@@ -288,13 +307,39 @@ func (e *Env) reportNodes() {
 		})
 		gateways = append(gateways, map[string]any{"address": addr, "passed": up, "reason": "no answer within 5s"})
 	}
-	report := map[string]any{"subscriptionId": e.Sub, "nodes": nodes, "gateways": gateways, "images": []any{}}
+	report := map[string]any{"subscriptionId": e.Sub, "nodes": nodes, "etcd": map[string]any{"members": members}, "gateways": gateways, "images": []any{}}
 	if e.WaitingPods != nil {
 		report["pods"] = e.WaitingPods
 	}
+	return report
+}
+
+// SendReport adds report to the node reports the cluster reads, received now.
+func (e *Env) SendReport(report map[string]any) {
+	e.T.Helper()
 	body, err := json.Marshal(report)
 	require.NoError(e.T, err)
 	e.Reports = append(e.Reports, observe.NodeReport{ReceivedAt: e.Now, Body: body})
+}
+
+// Release is what a node's machine configuration names once it runs this kit release's.
+func (e *Env) Release() string {
+	e.T.Helper()
+	release, err := noderollout.Release(tools.Image)
+	require.NoError(e.T, err)
+	return release
+}
+
+// machineConfigOf is the release node name runs: the earlier one it was set to until Argo CD runs the rollout Job.
+func (e *Env) machineConfigOf(name string) string {
+	job := testutil.ObjectRef{Group: "batch", Kind: "Job", Namespace: nodeconfig.TalosAPINamespace, Name: noderollout.JobName(e.Release())}
+	if e.Argo.Object(job) != nil {
+		delete(e.Earlier, name)
+	}
+	if earlier, ok := e.Earlier[name]; ok {
+		return earlier
+	}
+	return e.Release()
 }
 
 func (e *Env) nodeReports(context.Context, contract.Desired, string) ([]observe.NodeReport, error) {
@@ -456,6 +501,11 @@ func (gh *GitHub) serveContents(w http.ResponseWriter, r *http.Request, path str
 	}
 	_ = json.NewEncoder(w).Encode(map[string]string{"type": "file", "encoding": "base64",
 		"content": base64.StdEncoding.EncodeToString([]byte(content)), "sha": landing.BlobHash([]byte(content))})
+}
+
+// Plant writes content at path on repository repo's main, as a commit the cluster did not make.
+func (gh *GitHub) Plant(repo, path, content string) {
+	with(&gh.mu, func() { gh.files[repo+"/contents/"+path] = content })
 }
 
 // RepoFiles is each file of repository repo by its path.

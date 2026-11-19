@@ -39,5 +39,5 @@ shop-sub-0466-cloud-worker-fsn1-1: mitstack.dev/block=test-robot-cluster,mitstac
 ## steps of further subscribes
 
 ## observed
-present: nodes 1013 in fsn1 at 10.0.0.5, 1014 in nbg1 at 10.0.0.6, 1015 in hel1 at 10.0.0.7 are on network 1001 behind gateways 1005 in fsn1, 1006 in nbg1, 1007 in hel1, its default route via 10.0.0.2, and an API load balancer in fsn1 reaches them, and its ingress load balancer the workers at 10.0.1.2, the Robot worker is written, and the newest node report reads every node Ready, and Argo CD's component Applications hold each of the release's 321 objects
+present: nodes 1013 in fsn1 at 10.0.0.5, 1014 in nbg1 at 10.0.0.6, 1015 in hel1 at 10.0.0.7 are on network 1001 behind gateways 1005 in fsn1, 1006 in nbg1, 1007 in hel1, its default route via 10.0.0.2, and an API load balancer in fsn1 reaches them, and its ingress load balancer the workers at 10.0.1.2, the Robot worker is written, and the newest node report reads every node Ready, and every node runs the release's machine configuration, and Argo CD's component Applications hold each of the release's 321 objects
 

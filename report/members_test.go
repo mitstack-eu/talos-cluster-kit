@@ -80,9 +80,12 @@ func TestRead_NoNodeIsBehindWhenEveryNodeRunsTheRelease(t *testing.T) {
 	assert.Empty(t, behind)
 }
 
-func TestRead_NodesBehindRefusesAReportItCannotReadOrThatListsNoNode(t *testing.T) {
+func TestRead_NodesBehindRefusesNoReleaseOrAReportItCannotReadOrThatListsNoNode(t *testing.T) {
+	_, err := report.Read{Body: []byte(`{"nodes":[{"name":"poc-cp1"}]}`)}.NodesBehind("")
+	require.ErrorContains(t, err, "names no release", "a node whose annotation names none would read as at it")
+
 	at := time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)
-	_, err := report.Read{Body: []byte("not json"), At: at}.NodesBehind("sha256:5f0c")
+	_, err = report.Read{Body: []byte("not json"), At: at}.NodesBehind("sha256:5f0c")
 	require.ErrorContains(t, err, "the node report read at 2026-11-19T09:00:00Z cannot be read")
 
 	_, err = report.Read{Body: []byte(`{"nodes":[]}`), At: at}.NodesBehind("sha256:5f0c")

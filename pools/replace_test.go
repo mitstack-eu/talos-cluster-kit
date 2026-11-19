@@ -8,6 +8,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
@@ -19,10 +20,12 @@ import (
 
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
 	"github.com/mitstack-eu/talos-cluster-kit/etcd"
+	"github.com/mitstack-eu/talos-cluster-kit/noderollout"
 	"github.com/mitstack-eu/talos-cluster-kit/pools"
 	"github.com/mitstack-eu/talos-cluster-kit/redundant"
 	"github.com/mitstack-eu/talos-cluster-kit/report"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
+	"github.com/mitstack-eu/talos-cluster-kit/tools"
 )
 
 const (
@@ -58,7 +61,14 @@ type workers struct {
 	paused   bool
 	// removedWhileRunning reports whether a Node object went while its server ran, which a kubelet would undo.
 	removedWhileRunning bool
+	// release is the machine configuration each Node object names, none when empty, and behind names the nodes on an
+	// earlier one.
+	release string
+	behind  []string
 }
+
+// earlierRelease is the machine configuration a worker booted from the worker image runs once a later kit release is out.
+const earlierRelease = "sha256:0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
 
 // withWorkers is a site with a Cloud worker in each of fsn1 and nbg1, each running an app pod, and a Robot worker.
 func withWorkers(t *testing.T) (*site, *workers) {
@@ -179,6 +189,14 @@ func (w *workers) body() []byte {
 	nodes := []map[string]any{{"name": "node", "ready": true}}
 	for _, node := range slices.Sorted(maps.Keys(w.objects)) {
 		nodes = append(nodes, map[string]any{"name": node, "ready": w.ready(node)})
+	}
+	for _, node := range nodes {
+		if w.release != "" {
+			node["machineConfig"] = w.release
+		}
+		if slices.Contains(w.behind, node["name"].(string)) {
+			node["machineConfig"] = earlierRelease
+		}
 	}
 	var pods []map[string]any
 	for _, pod := range slices.Sorted(maps.Keys(w.pods)) {
@@ -519,6 +537,55 @@ func TestReplaceStep_BeginsOnlyOnceTheUpgradeHasReplacedTheGatewaysAndTheControl
 		require.NoError(t, w.replace(pool2, nil), "the replacement once %s is gone", key)
 		assert.NotEqual(t, old.ID, w.worker("fsn1-1").ID, "the worker in fsn1 once %s is gone", key)
 	}
+}
+
+func TestReplaceStep_KeepsAReplacementUnderWayUntilANodeReportReadsItsSuccessorAndEveryNodeOnTheReleasesMachineConfiguration(t *testing.T) {
+	s, w := withWorkers(t)
+	release, err := noderollout.Release(tools.Image)
+	require.NoError(t, err)
+	old := w.worker("fsn1-1")
+	s.plane.RollsOutMachineConfig, w.release, w.behind = true, release, []string{old.Name}
+	waits := fmt.Sprintf("reads %s on a machine configuration other than the release's", old.Name)
+	require.NoError(t, w.upgrade(pool2, "fsn1-1"))
+	require.NoError(t, w.replace(pool2, func() bool { return strings.Contains(w.problems(), waits) }))
+
+	step, ok, err := pools.ReplaceStep(context.Background(), s.plane, pool2)
+
+	require.NoError(t, err)
+	assert.False(t, ok, "the step while a report reads the successor on an earlier machine configuration: %s", step.What)
+	assert.NotEqual(t, old.ID, w.worker("fsn1-1").ID, "the worker in fsn1 once its successor exists")
+	assert.True(t, w.recorded("fsn1-1"), "the replacement's record while its successor waits on the rollout")
+	assert.False(t, w.holdsRollout(), "whether the replacement holds the rollout its successor waits on")
+	w.behind = nil
+	require.NoError(t, w.replace(pool2, nil))
+	assert.False(t, w.recorded("fsn1-1"), "the network still records the replacement: %v", w.network().Labels)
+	assert.Len(t, w.eventsNaming("took the place of"), 1, "the events naming the successor: %v", w.events)
+}
+
+func TestHoldsRollout_HoldsTheRolloutWhileAWorkerChangeIsUnderWayAndNotWhileItWaitsToBeginOnTheControlPlane(t *testing.T) {
+	_, w := withWorkers(t)
+	require.False(t, w.holdsRollout(), "precondition: whether a pool with no change recorded holds the rollout")
+	require.NoError(t, w.upgrade(pool2, "fsn1-1"))
+	w.label(controlplane.KeyNodeReplace+"nbg1", "5-1794605517")
+
+	waiting := w.holdsRollout()
+	w.label(controlplane.KeyNodeReplace+"nbg1", "")
+	due := w.holdsRollout()
+	require.NoError(t, w.replace(pool2, func() bool { return slices.Contains(w.commits, "write "+drainPath) }))
+	draining := w.holdsRollout()
+
+	assert.False(t, waiting, "whether a replacement that waits to begin on a control-plane node's holds the rollout")
+	assert.True(t, due, "whether a replacement about to begin holds the rollout")
+	assert.True(t, draining, "whether a replacement whose drain runs holds the rollout")
+}
+
+func (w *workers) holdsRollout() bool {
+	w.s.t.Helper()
+	st, err := w.s.plane.Read(context.Background())
+	require.NoError(w.s.t, err)
+	holds, err := pools.HoldsRollout(context.Background(), w.s.plane, st)
+	require.NoError(w.s.t, err)
+	return holds
 }
 
 func TestReplaceStep_TakesItsHeldDrainOutBeforeItCreatesASuccessorForAWorkerWhoseServerWentMeanwhile(t *testing.T) {

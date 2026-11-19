@@ -1,0 +1,282 @@
+package noderollout_test
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/mitstack-eu/talos-cluster-kit/etcd"
+	"github.com/mitstack-eu/talos-cluster-kit/internal/redundanttest"
+	"github.com/mitstack-eu/talos-cluster-kit/noderollout"
+	"github.com/mitstack-eu/talos-cluster-kit/report"
+	"github.com/mitstack-eu/talos-cluster-kit/testutil"
+)
+
+const release = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+// fakeKubectl lists FAKE_NODES, each "<name>:<address>:<control|worker>", annotated with FAKE_STATE/<name>'s release, its
+// wait answers at once whether that annotation is the release waited for, and it fails the call FAKE_FAIL names.
+const fakeKubectl = `
+[ "$*" != "${FAKE_FAIL:-}" ] || { echo "error: the server is currently unable to handle the request" >&2; exit 1; }
+node_json() {
+  local labels='{}' annotations='{}'
+  [ "$3" = control ] && labels='{"node-role.kubernetes.io/control-plane":""}'
+  [ -f "$FAKE_STATE/$1" ] && annotations="{\"mitstack.dev/machine-config\":\"$(cat "$FAKE_STATE/$1")\"}"
+  printf '{"metadata":{"name":"%s","labels":%s,"annotations":%s},"status":{"addresses":[{"type":"InternalIP","address":"%s"}],"conditions":[{"type":"Ready","status":"True"}]}}' \
+    "$1" "$labels" "$annotations" "$2"
+}
+case "$*" in
+  "get nodes -o json")
+    printf '{"items":['
+    sep=
+    for n in $FAKE_NODES; do IFS=: read -r name address role <<<"$n"; printf '%s' "$sep"; node_json "$name" "$address" "$role"; sep=,; done
+    printf ']}\n' ;;
+  "wait --for=jsonpath="*)
+    [ "$(cat "$FAKE_STATE/${4#node/}" 2>/dev/null)" = "${2##*=}" ] || { echo "error: timed out waiting for the condition on nodes/${4#node/}" >&2; exit 1; } ;;
+esac
+`
+
+// fakeTalosctl answers a node's configuration as text, watches etcd a line per field as Talos prints it, unhealthy on
+// FAKE_UNHEALTHY or, after an apply, FAKE_UNHEALTHY_AFTER_APPLY, recovering on FAKE_RECOVERING and destroyed on FAKE_GONE,
+// records an apply's release as the annotation unless FAKE_APPLY_IGNORED names it, and never answers a FAKE_HANG call.
+const fakeTalosctl = `
+[[ -z "${FAKE_HANG:-}" || "$*" != *"$FAKE_HANG"* ]] || exec timeout 10 tail -f /dev/null
+case "$3 $4" in
+  "get machineconfig") echo "the running configuration of $2" ;;
+  "get service")
+    for address in ${2//,/ }; do
+      [[ " ${FAKE_RECOVERING:-} " != *" $address "* ]] || printf '%s\n' "$address" updated false
+      event=created healthy=true
+      [[ " ${FAKE_GONE:-} " != *" $address "* ]] || event=destroyed
+      [[ " ${FAKE_UNHEALTHY:-} $(cat "$FAKE_STATE/.unhealthy" 2>/dev/null) " != *" $address "* ]] || healthy=false
+      printf '%s\n' "$address" "$event" "$healthy"
+    done ;;
+  "apply-config --mode")
+    [[ " ${FAKE_APPLY_IGNORED:-} " != *" $2 "* ]] || exit 0
+    for n in $FAKE_NODES; do IFS=: read -r name address role <<<"$n"; [ "$address" != "$2" ] || sed -n 's/^release: //p' "$7" > "$FAKE_STATE/$name"; done
+    echo "${FAKE_UNHEALTHY_AFTER_APPLY:-}" >"$FAKE_STATE/.unhealthy" ;;
+esac
+`
+
+// fakeMachineConfig renders a configuration naming the release, and refuses with machine-config's own refusal the
+// configuration of each address FAKE_REBOOT_ONLY names.
+const fakeMachineConfig = `
+running=$(cat)
+for address in ${FAKE_REBOOT_ONLY:-}; do
+  if [ "$running" = "the running configuration of $address" ]; then
+    echo "machine-config: render the running configuration: the release changes machine.install: a node takes this setting only when it reboots" >&2
+    exit 3
+  fi
+done
+printf 'release: %s\n' "$2"
+`
+
+// threeNodes lists a worker first, so the order the Job takes nodes in is its own.
+const threeNodes = "poc-worker1:10.0.1.4:worker poc-cp2:10.0.0.5:control poc-cp1:10.0.0.4:control"
+
+var rolloutBegan = time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)
+
+// etcdReport is a node report read a minute after the Update began, its three members healthy but those unhealthy names.
+func etcdReport(unhealthy ...string) report.Read {
+	var members []string
+	for _, hostname := range []string{"poc-cp1", "poc-cp2", "poc-cp3"} {
+		members = append(members, fmt.Sprintf(`{"hostname":%q,"healthy":%t}`, hostname, !slices.Contains(unhealthy, hostname)))
+	}
+	return report.Read{Body: []byte(`{"etcd":{"members":[` + strings.Join(members, ",") + `]}}`), At: rolloutBegan.Add(time.Minute)}
+}
+
+func rollout(read report.Read) noderollout.Rollout {
+	return noderollout.Rollout{ToolsImage: testutil.ToolsImage, Report: read, StepStart: rolloutBegan, Guard: redundanttest.Guard}
+}
+
+func renderJob(t *testing.T) ([]map[string]any, map[string]any) {
+	t.Helper()
+	rendered, err := noderollout.Job(rollout(etcdReport()))
+	require.NoError(t, err)
+	docs := testutil.Documents(t, rendered)
+	jobs := testutil.Kind(docs, "Job")
+	require.Len(t, jobs, 1)
+	return docs, testutil.Field(t, jobs[0], "spec", "template", "spec", "containers", "0").(map[string]any)
+}
+
+type cluster struct {
+	tools *testutil.Tools
+	state string
+	env   []string
+}
+
+func newCluster(t *testing.T, nodes string, atRelease ...string) cluster {
+	t.Helper()
+	c := cluster{state: t.TempDir(), tools: testutil.NewTools(t, map[string]string{"kubectl": fakeKubectl, "talosctl": fakeTalosctl, "machine-config": fakeMachineConfig})}
+	c.tools.AddImageJq(t)
+	for _, name := range atRelease {
+		require.NoError(t, os.WriteFile(filepath.Join(c.state, name), []byte(release+"\n"), 0o600))
+	}
+	c.env = []string{"FAKE_NODES=" + nodes, "FAKE_STATE=" + c.state, "NODE_WAIT_SECONDS=5"}
+	return c
+}
+
+func (c cluster) run(t *testing.T, extra ...string) (string, error) {
+	t.Helper()
+	_, container := renderJob(t)
+	env := slices.Concat(c.env, []string{"RELEASE=" + testutil.ContainerEnv(t, container)["RELEASE"]}, extra)
+	return testutil.RunBash(t, testutil.Field(t, container, "command", "2").(string), c.tools.Env(env...))
+}
+
+// calls are the tools' calls, an applied file's path read as <rendered>, since the script picks its own directory.
+func (c cluster) calls(t *testing.T) []string {
+	t.Helper()
+	return strings.Split(regexp.MustCompile(`--file \S+`).ReplaceAllString(strings.Join(c.tools.Calls(t), "\n"), "--file <rendered>"), "\n")
+}
+
+func applies(calls []string) []string {
+	return slices.DeleteFunc(slices.Clone(calls), func(call string) bool { return !strings.Contains(call, "apply-config") })
+}
+
+func TestJob_GivesEachNodeTheReleasesConfigurationOneAtATimeTheControlPlaneFirstAndKeepsNoConfiguration(t *testing.T) {
+	c := newCluster(t, threeNodes)
+	tmp := t.TempDir()
+
+	out, err := c.run(t, "TMPDIR="+tmp, "FAKE_RECOVERING=10.0.0.5")
+
+	require.NoError(t, err, out)
+	change := func(address, name string) []string {
+		return []string{"talosctl -n 10.0.0.4,10.0.0.5 get service etcd --watch -o jsonpath={.node}{.event}{.spec.healthy}",
+			"talosctl -n " + address + " apply-config --mode no-reboot --file <rendered>",
+			`kubectl wait --for=jsonpath={.metadata.annotations.mitstack\.dev/machine-config}=` + release + " --timeout=5s node/" + name,
+			"kubectl wait --for=condition=Ready --timeout=5s node/" + name}
+	}
+	assert.Equal(t, slices.Concat([]string{"kubectl get nodes -o json",
+		"talosctl -n 10.0.0.4 get machineconfig v1alpha1 -o jsonpath={.spec}", "machine-config --release " + release,
+		"talosctl -n 10.0.0.5 get machineconfig v1alpha1 -o jsonpath={.spec}", "machine-config --release " + release,
+		"talosctl -n 10.0.1.4 get machineconfig v1alpha1 -o jsonpath={.spec}", "machine-config --release " + release,
+	}, change("10.0.0.4", "poc-cp1"), change("10.0.0.5", "poc-cp2"), change("10.0.1.4", "poc-worker1")),
+		c.calls(t), "every node's configuration is rendered before the first one changes, then each changes once Talos's watch reads etcd healthy again and only after the one before it runs the release")
+	left, err := os.ReadDir(tmp)
+	require.NoError(t, err)
+	assert.Empty(t, left, "files the Job left, which hold the cluster's keys")
+	assert.NotContains(t, out, "the running configuration of", "the Job printed a node's configuration")
+}
+
+func TestJob_ChangesOnlyTheNodesThatDoNotRunTheReleaseYet(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		atRelease, want []string
+	}{
+		{"a sent-again Update", []string{"poc-cp1", "poc-cp2"}, []string{"talosctl -n 10.0.1.4 apply-config --mode no-reboot --file <rendered>"}},
+		{"a cluster at the release", []string{"poc-cp1", "poc-cp2", "poc-worker1"}, []string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newCluster(t, threeNodes, tc.atRelease...)
+
+			out, err := c.run(t)
+
+			require.NoError(t, err, out)
+			assert.Equal(t, tc.want, applies(c.calls(t)))
+			assert.NotRegexp(t, `-n 10\.0\.0\.[45] get`, strings.Join(c.calls(t), "\n"), "the configuration of a node at the release is read")
+		})
+	}
+}
+
+func TestJob_ChangesNoNodeAfterARefusalOrANodeThatDoesNotComeUpAtTheRelease(t *testing.T) {
+	for _, tc := range []struct {
+		name, nodes, env string
+		exit             int
+		applies, names   []string
+	}{
+		{"a setting a node takes only at reboot", threeNodes, "FAKE_REBOOT_ONLY=10.0.1.4", 3, []string{}, []string{"poc-worker1", "machine.install"}},
+		{"an unhealthy etcd member", threeNodes, "FAKE_UNHEALTHY=10.0.0.5", 1, []string{}, []string{"10.0.0.5"}},
+		{"an etcd service that is gone", threeNodes, "FAKE_GONE=10.0.0.5", 1, []string{}, []string{"etcd does not read healthy on 10.0.0.5,"}},
+		{"an etcd watch that never answers", threeNodes, "FAKE_HANG=get service", 1, []string{}, []string{"10.0.0.4,10.0.0.5"}},
+		{"a node list the API server does not answer", threeNodes, "FAKE_FAIL=get nodes -o json", 1, []string{}, []string{"listing the nodes"}},
+		{"an apply that never answers", threeNodes, "FAKE_HANG=apply-config", 1, []string{"talosctl -n 10.0.0.4 apply-config --mode no-reboot --file <rendered>"}, []string{"applying the configuration to poc-cp1"}},
+		{"an etcd member that turns unhealthy after the first node", threeNodes, "FAKE_UNHEALTHY_AFTER_APPLY=10.0.0.5", 1, []string{"talosctl -n 10.0.0.4 apply-config --mode no-reboot --file <rendered>"}, []string{"10.0.0.5", "poc-cp2 keeps its configuration"}},
+		{"a control-plane node listing no address", "poc-cp2:10.0.0.5:control poc-cp1::control", "NODE_WAIT_SECONDS=0", 1, []string{}, []string{"poc-cp1 lists no internal address to read etcd at"}},
+		{"a worker listing no address", "poc-cp1:10.0.0.4:control poc-worker1::worker", "NODE_WAIT_SECONDS=0", 1, []string{}, []string{"poc-worker1 lists no internal address to reach its Talos API at"}},
+		{"a node that does not come up at the release", threeNodes, "FAKE_APPLY_IGNORED=10.0.0.4", 1, []string{"talosctl -n 10.0.0.4 apply-config --mode no-reboot --file <rendered>"}, []string{"poc-cp1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newCluster(t, tc.nodes)
+
+			out, err := c.run(t, tc.env)
+
+			var exit *exec.ExitError
+			require.ErrorAs(t, err, &exit)
+			assert.Equal(t, tc.exit, exit.ExitCode(), "the Job's pod failure policy fails the Job on exit 3 without a retry")
+			assert.Equal(t, tc.applies, applies(c.calls(t)), "the nodes that changed")
+			for _, name := range tc.names {
+				assert.Contains(t, out, name)
+			}
+		})
+	}
+}
+
+func TestJob_RendersNoRolloutUnlessTheReportReadsEveryEtcdMemberServingSinceTheUpdateBegan(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		read report.Read
+		want []string
+	}{
+		{"an unhealthy member", etcdReport("poc-cp2"), []string{"refused:redundancy-below-minimum", `"poc-cp2" read not serving at 2026-11-19T09:01:00Z`}},
+		{"a report read before the Update began", report.Read{Body: etcdReport().Body, At: rolloutBegan.Add(-time.Minute)}, []string{"before the step began"}},
+		{"a report listing no member", report.Read{Body: []byte(`{"etcd":{"members":[]}}`), At: rolloutBegan.Add(time.Minute)}, []string{"no etcd member"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rendered, err := noderollout.Job(rollout(tc.read))
+
+			require.Error(t, err)
+			assert.Empty(t, rendered, "the rollout Job rendered")
+			for _, want := range tc.want {
+				assert.Contains(t, err.Error(), want)
+			}
+		})
+	}
+}
+
+func TestJob_RunsTheToolsImageWithTheLeastRightsAndNoRetryOnARefusal(t *testing.T) {
+	docs, container := renderJob(t)
+	job := testutil.Kind(docs, "Job")[0]
+
+	assert.Equal(t, testutil.ToolsImage, container["image"])
+	assert.Equal(t, release, testutil.ContainerEnv(t, container)["RELEASE"])
+	assert.Equal(t, []any{map[string]any{
+		"action":      "FailJob",
+		"onExitCodes": map[string]any{"containerName": "apply-machine-config", "operator": "In", "values": []any{3}},
+	}}, testutil.Field(t, job, "spec", "podFailurePolicy", "rules"))
+	assert.Equal(t, 3, testutil.Field(t, job, "spec", "backoffLimit"), "the retries of any other failure")
+	var talosRoles []any
+	for _, account := range testutil.Kind(docs, "ServiceAccount") {
+		if account["apiVersion"] == "talos.dev/v1alpha1" {
+			talosRoles = append(talosRoles, testutil.Field(t, account, "spec", "roles").([]any)...)
+		}
+	}
+	assert.Equal(t, []any{"os:admin"}, talosRoles, "Talos applies a configuration and answers one for os:admin alone")
+	roles := testutil.Kind(docs, "ClusterRole")
+	require.Len(t, roles, 1)
+	assert.Equal(t, []any{map[string]any{"apiGroups": []any{""}, "resources": []any{"nodes"}, "verbs": []any{"get", "list", "watch"}}}, roles[0]["rules"])
+}
+
+func TestRelease_IsTheToolsImagesDigestAndNamesItsRolloutInTheClustersOwnDirectory(t *testing.T) {
+	got, err := noderollout.Release(testutil.ToolsImage)
+	require.NoError(t, err)
+	_, err = noderollout.Release("ghcr.io/mitstack-eu/talos-tools:v0.1.0")
+	require.Error(t, err, "a tools image named by its tag alone")
+	path := noderollout.Path(release)
+
+	assert.Equal(t, release, got)
+	assert.Equal(t, "cluster/mitstack-machine-config-0123456789ab.yaml", path)
+	assert.Equal(t, "mitstack-machine-config-0123456789ab", noderollout.JobName(release))
+	assert.True(t, noderollout.IsPath(path))
+	for _, other := range []string{etcd.RemovalPath("poc-cp1"), "cluster/component-argocd.yaml", "components/mitstack-machine-config-0123456789ab.yaml", "cluster/mitstack-machine-config-.yaml"} {
+		assert.False(t, noderollout.IsPath(other), other)
+	}
+}

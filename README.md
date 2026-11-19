@@ -53,6 +53,7 @@ the order a block uses them.
 | `mirror` | Lists every image the nodes pull, each by digest | `List`, `Render` |
 | `gateway` | Renders the cloud-config of the gateway in each location, and mints the cluster's gateway CA and each gateway's certificate | `Render`, `Inputs`, `Deadline`, `NewCA`, `CA.Issue` |
 | `etcd` | Renders the Job that removes a lost node's etcd member and then its Node object, and holds the gateway's script that bootstraps etcd empty or from a snapshot | `RemoveMemberJob`, `BootstrapScript`, `Bootstrap.Args` |
+| `noderollout` | Renders the Job that gives every running node the machine configuration a release renders for it, without a reboot and one node at a time, as [How the rollout Job gives each node the release](#how-the-rollout-job-gives-each-node-the-release) explains | `Job`, `Rollout`, `Release`, `Path`, `IsPath`, `JobName` |
 | `report` | Renders the node report, a CronJob that reads the cluster and posts what it read to the platform, signed for its exact body. [What the node report carries](#what-the-node-report-carries) lists its members, the nine checks it names and what happens when a read fails. It also renders the outside probe, a CronJob in `kube-system` that calls the mesh probe's target with no workload identity and reads each gateway's mirror from outside the mesh, the admission probe namespace and the daily security scan. The report holds no right on Secrets | `Manifests`, `Interval` |
 | `topology` | Renders the topology labeller, a CronJob that labels each Cloud node with its zone and region, labels each burst member of a Cloud pool, a member above the pool's minimum, `mitstack.dev/burst=true`, and holds the zone and region label names | `Manifests`, `Labels`, `ZoneLabel`, `RegionLabel`, `FieldManager` |
 | `openbaoinit` | Renders OpenBao's init Job, which the hosting set carries. On a hosting cluster, a cluster that runs mitstack's own control plane, it initialises OpenBao once, commits the root token and recovery key to the cluster repository as PGP messages, then writes the policy that External Secrets reads with in each slice, the namespace a block gives one app | `Manifests`, `Inputs`, `InitFile` |
@@ -143,9 +144,9 @@ holds that digest.
 `nodeconfig.Rerender` takes a node's current machine configuration as YAML
 bytes and returns the configuration this release gives that node. It applies
 nothing. Its caller reads the configuration from the node through the Talos
-API and applies the result, and this kit does not yet hold that caller.
-The tools image carries `Rerender` as the command `machine-config`, since the
-caller runs inside the cluster, where the nodes hold the cluster's keys.
+API and applies the result. That caller is the rollout Job below, and the
+tools image carries `Rerender` as the command `machine-config` for it, since
+the Job runs inside the cluster, where the nodes hold the cluster's keys.
 
 A block is the program mitstack runs to create and update one kind of cluster,
 such as hcloud-hrobot-talos-cluster, and it renders each node through this
@@ -225,6 +226,54 @@ argument, and 1 on any other refusal, naming the reason on stderr:
 ```sh
 machine-config --release sha256:5f0c… < running.yaml > next.yaml
 ```
+
+### How the rollout Job gives each node the release
+
+`noderollout.Job` renders the Job that reads, renders and applies each node's
+configuration. A block commits it to the cluster repository at
+`noderollout.Path`, in the `cluster/` directory the cluster's own Argo CD
+Application applies, beside the member removals of
+[the etcd package](#what-a-cluster-is-built-from). The Job runs the tools image
+in `mitstack-node` with a Talos identity that holds `os:admin`, the only role
+Talos gives a node's configuration to and applies one from. Its Kubernetes
+identity may only read the Node objects. A release here is the tools image's
+digest, which `noderollout.Release` reads. Each node's configuration sets the
+`mitstack.dev/machine-config` annotation on its Node object to the release it
+was rendered from, so the annotation tells which release a node runs.
+
+A block holds one rollout file at a time. It takes out an earlier release's
+file in the commit that adds the next one, and takes the file out once every
+node names its release. Two files would apply two releases against each other.
+A finished Job is deleted after a day, and while its file stays, the cluster's
+Application, which heals what it is missing, creates it again.
+
+`Job` renders nothing unless the newest node report shows every etcd member
+serving since the block's Update began, the step that changes a running
+cluster. The block passes the guard that judges it, the same one the member
+removals take, so the refusal names the member that is not serving. The Job's script,
+`noderollout/scripts/apply-machine-config.sh`, then works in this order:
+
+1. It lists the nodes and leaves out each one whose `mitstack.dev/machine-config`
+   annotation names the release already, so an Update sent again after a
+   stopped rollout changes only the nodes it had not reached.
+2. It reads each remaining node's configuration through the Talos API and
+   renders the next one with `machine-config`. When any node would take a
+   setting only at reboot, the Job exits 3, naming the node and the setting,
+   before any node changes. Its pod failure policy fails the Job on that code
+   without a retry, since a retry renders the same refusal.
+3. It applies each configuration with `talosctl apply-config --mode no-reboot`,
+   one node at a time, the control-plane nodes first. Before each node it
+   follows Talos's watch of the etcd service until etcd reads healthy on every
+   control-plane node, and after each it follows `kubectl wait` until the node
+   names the release and reads Ready, so it goes on as soon as each change
+   lands rather than on a timer. A node that does not within
+   `NODE_WAIT_SECONDS`, 300 unless set, stops the Job before the next one,
+   and so does any call to Kubernetes or the Talos API that does not answer
+   within it, or a watch that reads the etcd service destroyed.
+
+Any other failure retries up to three times. The configurations the Job writes
+hold the cluster's keys, so they sit in a memory-backed volume, are deleted as
+soon as they are applied, and are never printed.
 
 ## How a block drives the Cloud control plane
 

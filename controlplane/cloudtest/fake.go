@@ -40,6 +40,7 @@ type Fake struct {
 	started, imaging map[int64]time.Time
 	// waits counts the calls the adapter waits on a Hetzner action for, and writes every call that changes something.
 	waits, writes int
+	reads         Reads
 	// InstantBuild powers each builder off as it is powered on, and images each snapshot as it starts.
 	InstantBuild bool
 	// MirrorTakes is how long the gateway's mirror fills from its power-on; no builder powers itself off before then.
@@ -122,6 +123,35 @@ func (f *Fake) Waits() int {
 	return f.waits
 }
 
+// Reads counts calls that read the project by the controlplane.API method that made them, such as ListServers.
+type Reads map[string]int
+
+// read counts a call; the caller holds f.mu.
+func (f *Fake) read(method string) {
+	if f.reads == nil {
+		f.reads = Reads{}
+	}
+	f.reads[method]++
+}
+
+// Reads is a copy of the counts so far, to pass to Since.
+func (f *Fake) Reads() Reads {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return maps.Clone(f.reads)
+}
+
+// Since is the reads made after before was counted, naming only the methods called since.
+func (r Reads) Since(before Reads) Reads {
+	since := Reads{}
+	for method, n := range r {
+		if made := n - before[method]; made > 0 {
+			since[method] = made
+		}
+	}
+	return since
+}
+
 // held reports whether a server or load balancer holds ip on the network.
 func (f *Fake) held(networkID int64, ip string) bool {
 	for _, s := range f.Servers {
@@ -179,6 +209,7 @@ func builds(labels map[string]string) bool {
 func (f *Fake) ListServers(_ context.Context, sel string) ([]controlplane.Server, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.read("ListServers")
 	if err := f.FailNext; err != nil {
 		f.FailNext = nil
 		return nil, err
@@ -233,6 +264,7 @@ func (f *Fake) CreateServers(_ context.Context, specs ...controlplane.ServerSpec
 func (f *Fake) AvailableServerTypes(_ context.Context, location string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.read("AvailableServerTypes")
 	return slices.DeleteFunc([]string{"cx23", "cx33", "cx43", "cx53", "cpx22", "cpx32", "cpx52", "cpx62"},
 		func(name string) bool {
 			return slices.Contains(f.SoldOut, name) || slices.Contains(f.SoldOutIn[location], name)
@@ -242,6 +274,7 @@ func (f *Fake) AvailableServerTypes(_ context.Context, location string) ([]strin
 func (f *Fake) ServerStarted(_ context.Context, id int64) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.read("ServerStarted")
 	_, ok := f.started[id]
 	return ok, nil
 }
@@ -309,6 +342,7 @@ func (f *Fake) SetServerLabels(_ context.Context, id int64, labels map[string]st
 func (f *Fake) LastPowerAction(_ context.Context, id int64) (string, time.Time, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.read("LastPowerAction")
 	actions := f.powerActions[id]
 	if len(actions) == 0 {
 		return "", time.Time{}, nil
@@ -371,6 +405,7 @@ func (f *Fake) DeleteRoute(_ context.Context, networkID int64, r controlplane.Ro
 func (f *Fake) ServerMetrics(_ context.Context, id int64, start, end time.Time) (controlplane.Metrics, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.read("ServerMetrics")
 	f.MetricsReads = append(f.MetricsReads, MetricsRead{ID: id, Start: start, End: end})
 	if f.FailMetrics != nil {
 		return controlplane.Metrics{}, f.FailMetrics
@@ -393,6 +428,7 @@ func (f *Fake) DeleteServer(_ context.Context, id int64) error {
 func (f *Fake) ListNetworks(_ context.Context, sel string) ([]controlplane.Network, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.read("ListNetworks")
 	return selected(f.Networks, func(n *controlplane.Network) map[string]string { return n.Labels }, sel), nil
 }
 
@@ -455,6 +491,7 @@ func (f *Fake) DeleteNetwork(_ context.Context, id int64) error {
 func (f *Fake) ListFirewalls(_ context.Context, sel string) ([]controlplane.Firewall, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.read("ListFirewalls")
 	return selected(f.Firewalls, func(fw *controlplane.Firewall) map[string]string { return fw.Labels }, sel), nil
 }
 
@@ -477,6 +514,7 @@ func (f *Fake) DeleteFirewall(_ context.Context, id int64) error {
 func (f *Fake) ListLoadBalancers(_ context.Context, sel string) ([]controlplane.LoadBalancer, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.read("ListLoadBalancers")
 	return selected(f.LoadBalancers, func(lb *controlplane.LoadBalancer) map[string]string { return lb.Labels }, sel), nil
 }
 
@@ -630,6 +668,7 @@ func (f *Fake) DeleteLoadBalancer(_ context.Context, id int64) error {
 func (f *Fake) ListSnapshots(_ context.Context, sel string) ([]controlplane.Snapshot, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.read("ListSnapshots")
 	return selected(f.Snapshots, func(s *controlplane.Snapshot) map[string]string { return s.Labels }, sel), nil
 }
 

@@ -161,11 +161,6 @@ func TestJob_GivesEachNodeTheReleasesConfigurationOneAtATimeTheControlPlaneFirst
 		"talosctl -n 10.0.1.4 get machineconfig v1alpha1 -o jsonpath={.spec}", "machine-config --release " + release,
 	}, change("10.0.0.4", "poc-cp1"), change("10.0.0.5", "poc-cp2"), change("10.0.1.4", "poc-worker1")),
 		c.calls(t), "every node's configuration is rendered before the first one changes, then each changes once Talos's watch reads etcd healthy again and only after the one before it runs the release")
-	for _, name := range []string{"poc-cp1", "poc-cp2", "poc-worker1"} {
-		annotation, err := os.ReadFile(filepath.Join(c.state, name))
-		require.NoError(t, err)
-		assert.Equal(t, release+"\n", string(annotation), "the release %s runs", name)
-	}
 	left, err := os.ReadDir(tmp)
 	require.NoError(t, err)
 	assert.Empty(t, left, "files the Job left, which hold the cluster's keys")

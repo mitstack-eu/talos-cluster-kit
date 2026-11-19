@@ -281,12 +281,16 @@ func (k *Cluster) ensure(ctx context.Context, d contract.Desired) (map[string]st
 	if err := c.req.gh.Ensure(ctx, c.repo); err != nil {
 		return nil, err
 	}
-	if err := c.carryRelease(ctx); err != nil {
+	due, err := c.carryRelease(ctx)
+	if err != nil {
 		return nil, err
 	}
 	s, ok, err := c.nextStep(ctx, network)
-	if err != nil || !ok {
+	if err != nil {
 		return nil, err
+	}
+	if !ok {
+		return nil, c.rollNodes(ctx, due, network)
 	}
 	err = refusal(s.Take(ctx, k.cfg.Block, req.subID))
 	return req.ownSecrets(), err

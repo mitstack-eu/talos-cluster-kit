@@ -23,13 +23,14 @@ import (
 // MaxTreeAnswerBytes bounds the listing of the repository's files, which names each file and no content.
 const MaxTreeAnswerBytes = 4 << 20
 
-// carryRelease commits once every gateway serves the release's image list, so no manifest names an unmirrored image.
-func (c convergence) carryRelease(ctx context.Context) error {
+// carryRelease commits once every gateway serves the release's image list, so no manifest names an unmirrored image,
+// and answers the carriage it judged.
+func (c convergence) carryRelease(ctx context.Context) (carriage, error) {
 	due, err := c.releaseDue(ctx)
 	if err != nil || len(due.changes) == 0 {
-		return err
+		return due, err
 	}
-	return c.req.gh.rollOut(ctx, due)
+	return due, c.req.gh.rollOut(ctx, due)
 }
 
 // carriage lands a release on main's head, naming each path it writes as true and each it takes out as false.

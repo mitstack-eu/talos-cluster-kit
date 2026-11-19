@@ -339,7 +339,7 @@ func (k *Cluster) observeCluster(ctx context.Context, d contract.Desired) (contr
 	var hosting string
 	if len(problems) == 0 {
 		var problem string
-		if hosting, problem, err = readRelease(ctx, d, p, st, repo); err != nil {
+		if hosting, problem, err = readRelease(ctx, d, p, st, repo, worker); err != nil {
 			return contract.Observation{}, err
 		}
 		if problem != "" {
@@ -398,9 +398,10 @@ func workerDetail(network controlplane.Network) string {
 	return "the Robot worker's install has not begun"
 }
 
-// readRelease reads the release's component set back once main holds it as stated, and names the wait while main
-// differs and no subscribe can commit the set until every gateway serves the release.
-func readRelease(ctx context.Context, d contract.Desired, p controlplane.Plane, st controlplane.State, repo repoObservation) (applied, problem string, err error) {
+// readRelease reads the release's component set back once main holds it as stated, then which nodes run the release's
+// machine configuration, and names the wait while main differs and no subscribe can commit the set until every
+// gateway serves the release.
+func readRelease(ctx context.Context, d contract.Desired, p controlplane.Plane, st controlplane.State, repo repoObservation, worker string) (applied, problem string, err error) {
 	if p.GatewayCA == nil || repo.gh == nil {
 		// A plane without the kept gateway CA renders no node report, and so has carried no release.
 		return "", "", nil
@@ -414,7 +415,14 @@ func readRelease(ctx context.Context, d contract.Desired, p controlplane.Plane, 
 		return "", "", err
 	}
 	if len(due.changes) == 0 {
-		return repo.gh.readBack(ctx, d, release)
+		if applied, problem, err = repo.gh.readBack(ctx, d, release); err != nil || problem != "" {
+			return "", problem, err
+		}
+		r, err := readRollout(ctx, p, st, repo.gh, release.ToolsImage, worker)
+		if err != nil || r.problem != "" {
+			return "", r.problem, err
+		}
+		return "every node runs the release's machine configuration, and " + applied, "", nil
 	}
 	waits, err := carriageWaits(ctx, p, st)
 	if err != nil || !waits {
@@ -446,17 +454,40 @@ func (k *Cluster) stepLeft(ctx context.Context, d contract.Desired, st controlpl
 	} else if err != nil {
 		return "", err
 	}
-	if left, err := c.carriageLeft(ctx); err != nil || left != "" {
+	due, left, err := c.carriageLeft(ctx)
+	if err != nil || left != "" {
 		return left, err
 	}
 	s, ok, err := c.nextStep(ctx, network)
 	switch {
 	case errors.As(err, &refused):
 		return refusalLeft(refused), nil
-	case err != nil || !ok:
+	case err != nil:
 		return "", err
+	case !ok:
+		return c.rolloutLeft(ctx, due, network)
 	}
 	return "the next subscribe takes the step to " + s.What, nil
+}
+
+// rolloutLeft names the rollout commit the next subscribe makes once the plane has no step left, or its refusal.
+func (c convergence) rolloutLeft(ctx context.Context, due carriage, network controlplane.Network) (string, error) {
+	r, err := c.rolloutDue(ctx, due, network)
+	var refused *handler.Refused
+	if err = refusal(err); errors.As(err, &refused) {
+		return refusalLeft(refused), nil
+	} else if err != nil {
+		return "", err
+	}
+	for _, content := range r.changes {
+		if content != nil {
+			return "the next subscribe commits the release's machine configuration rollout to " + c.req.gh.Repo.FullName(), nil
+		}
+	}
+	if len(r.changes) > 0 {
+		return "the next subscribe takes out of " + c.req.gh.Repo.FullName() + " a machine configuration rollout no node waits on", nil
+	}
+	return "", nil
 }
 
 func refusalLeft(r *handler.Refused) string {
@@ -464,12 +495,12 @@ func refusalLeft(r *handler.Refused) string {
 }
 
 // carriageLeft names the commit the next subscribe makes, as ensure carries the release before the plane's next step.
-func (c convergence) carriageLeft(ctx context.Context) (string, error) {
+func (c convergence) carriageLeft(ctx context.Context) (carriage, string, error) {
 	due, err := c.releaseDue(ctx)
 	if err != nil || len(due.changes) == 0 {
-		return "", err
+		return due, "", err
 	}
-	return "the next subscribe commits the release's component set to " + c.req.gh.Repo.FullName() + ", which main does not hold as stated", nil
+	return due, "the next subscribe commits the release's component set to " + c.req.gh.Repo.FullName() + ", which main does not hold as stated", nil
 }
 
 // enrolment gives a cluster not yet present the values a node's enrolment is judged against, once the gateway carries

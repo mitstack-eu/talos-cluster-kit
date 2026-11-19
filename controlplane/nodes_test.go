@@ -583,7 +583,7 @@ func TestPlane_KeepsAReplacementUnderWayUntilANodeReportReadsItsSuccessorAndEver
 	controlplane.SwapToolsImage(t, recordedToolsImage)
 	release, err := noderollout.Release(recordedToolsImage)
 	require.NoError(t, err)
-	h, c := withCluster(t)
+	h, c := withCluster(t, sequential)
 	h.plane.RollsOutMachineConfig, c.release = true, release
 	old := h.nodeIn("fsn1")
 	require.NoError(t, h.replace(c, func() bool { return h.cloud.Servers[old.ID].Status == controlplane.ServerOff }, "fsn1"))

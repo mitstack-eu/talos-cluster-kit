@@ -4,6 +4,7 @@ package robotcluster_test
 // judged by a node report made since the cluster's newest server and naming every node the cluster runs.
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -26,11 +27,11 @@ const (
 )
 
 // standingCluster is a dedicated-server cluster that reads present with main holding the release's component set.
-func standingCluster(t *testing.T) *robotclustertest.Env {
+func standingCluster(t *testing.T, opts ...robotclustertest.Option) *robotclustertest.Env {
 	t.Helper()
-	e := robotclustertest.New(t, rolloutSub, robotclustertest.WithParams(map[string]string{
+	e := robotclustertest.New(t, rolloutSub, append([]robotclustertest.Option{robotclustertest.WithParams(map[string]string{
 		robotcluster.ParamRobotServer: fmt.Sprint(productionServer), "serverType": "cx23,cpx22,cpx32",
-	}))
+	})}, opts...)...)
 	e.Robot.AddServer(robottest.Server{Number: productionServer, IP: "203.0.113.50", DC: "FSN1-DC14"})
 	obs, err := e.Settle()
 	require.NoError(t, err, "the subscribe: %s", obs.StatusDetail)
@@ -92,6 +93,35 @@ func TestUpdate_GivesEveryNodeOnAnEarlierMachineConfigurationTheReleasesThroughO
 	obs, err := e.Settle()
 	require.NoError(t, err)
 	assert.Contains(t, obs.StatusDetail, "every node runs the release's machine configuration")
+}
+
+func TestUpdate_RunsTheRolloutAgainForAPoolWorkerThatJoinsAfterItRanAndReadsPresentOnceTheWorkerRunsTheRelease(t *testing.T) {
+	e := standingCluster(t, robotclustertest.WithParams(map[string]string{
+		"cloudPoolServerTypes": "cpx32", "cloudPoolLocations": "fsn1", "cloudPoolMin": "1", "cloudPoolMax": "1",
+	}))
+	e.Earlier = map[string]string{}
+	for _, name := range nodeNames(e) {
+		e.Earlier[name] = earlierRelease
+	}
+	e.Now = e.Now.Add(time.Minute)
+	e.ReportNodes()
+	e.EnsureOrWait("the subscribe that writes the rollout")
+	e.Now = e.Now.Add(time.Minute)
+	e.Progress()
+	require.True(t, holds(e, noderollout.Path(e.Release())), "main holds the rollout the Job ran from")
+	gone := e.ByRole(controlplane.RoleCloudWorker)
+	require.Len(t, gone, 1)
+
+	e.Boots = earlierRelease
+	require.NoError(t, e.Cloud.DeleteServer(context.Background(), gone[0].ID), "the delete outside mitstack")
+	obs, err := e.Settle()
+
+	require.NoError(t, err, "the subscribe after the delete: %s", obs.StatusDetail)
+	back := e.ByRole(controlplane.RoleCloudWorker)
+	require.Len(t, back, 1, "the pool's workers back at its minimum")
+	assert.NotEqual(t, gone[0].ID, back[0].ID, "the worker is a new server")
+	assert.Contains(t, obs.StatusDetail, "every node runs the release's machine configuration")
+	assert.False(t, holds(e, noderollout.Path(e.Release())), "the rollout is taken out once the new worker runs the release's configuration")
 }
 
 func TestUpdate_RefusesTheRolloutNamingTheEtcdMemberTheNewestReportReadsUnhealthyAndWritesNoJob(t *testing.T) {

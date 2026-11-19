@@ -32,6 +32,7 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/nodeconfig"
 	"github.com/mitstack-eu/talos-cluster-kit/noderollout"
 	"github.com/mitstack-eu/talos-cluster-kit/operator/robotcluster"
+	"github.com/mitstack-eu/talos-cluster-kit/report"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 	"github.com/mitstack-eu/talos-cluster-kit/tools"
 	"github.com/stretchr/testify/require"
@@ -75,6 +76,9 @@ type Env struct {
 	WaitingPods []map[string]any
 	// Earlier names the nodes that run an earlier release's machine configuration until the release's rollout Job runs.
 	Earlier map[string]string
+	// Boots is the machine configuration each server created after it is set runs until the next rollout Job, as a server
+	// booted from an image an earlier release built does.
+	Boots string
 	// EtcdDown names the node whose etcd member each later report reads unhealthy.
 	EtcdDown string
 	Created  []contract.CreatedResource
@@ -83,6 +87,10 @@ type Env struct {
 	queued   []func()
 	installs int
 	events   []string
+	// booted holds each Cloud server the harness has seen, and jobHeld whether Argo CD holds the rollout Job, which runs
+	// once, as Argo CD creates it.
+	booted  map[int64]bool
+	jobHeld bool
 }
 
 // Option changes the Env before its cluster is built.
@@ -271,6 +279,35 @@ func (e *Env) syncArgo() {
 	}
 	e.Argo.Commit(files)
 	e.Argo.Sync()
+	e.boot()
+	held := e.Argo.Object(testutil.ObjectRef{Group: "batch", Kind: "Job", Namespace: nodeconfig.TalosAPINamespace, Name: noderollout.JobName(e.Release())}) != nil
+	if held && !e.jobHeld {
+		for _, s := range append(e.ByRole(controlplane.RoleNode), e.ByRole(controlplane.RoleCloudWorker)...) {
+			if s.Status == controlplane.ServerRunning {
+				delete(e.Earlier, s.Name)
+			}
+		}
+		if e.Installed() > 0 {
+			delete(e.Earlier, e.Plane().Name("worker"))
+		}
+	}
+	e.jobHeld = held
+}
+
+// boot gives each Cloud server the harness has not seen yet the machine configuration Boots names.
+func (e *Env) boot() {
+	if e.booted == nil {
+		e.booted = map[int64]bool{}
+	}
+	for _, s := range append(e.ByRole(controlplane.RoleNode), e.ByRole(controlplane.RoleCloudWorker)...) {
+		if !e.booted[s.ID] && e.Boots != "" {
+			if e.Earlier == nil {
+				e.Earlier = map[string]string{}
+			}
+			e.Earlier[s.Name] = e.Boots
+		}
+		e.booted[s.ID] = true
+	}
 }
 
 // ReportNodes sends a report naming each node and Cloud worker Ready once running, the Robot worker once installed,
@@ -284,6 +321,7 @@ func (e *Env) ReportNodes() {
 // Report is the body ReportNodes sends now, for a test to change before SendReport sends it.
 func (e *Env) Report() map[string]any {
 	e.T.Helper()
+	e.boot()
 	var nodes, members []map[string]any
 	add := func(name string, ready bool) {
 		nodes = append(nodes, map[string]any{"name": name, "ready": ready, "machineConfig": e.machineConfigOf(name)})
@@ -332,10 +370,6 @@ func (e *Env) Release() string {
 
 // machineConfigOf is the release node name runs: the earlier one it was set to until Argo CD runs the rollout Job.
 func (e *Env) machineConfigOf(name string) string {
-	job := testutil.ObjectRef{Group: "batch", Kind: "Job", Namespace: nodeconfig.TalosAPINamespace, Name: noderollout.JobName(e.Release())}
-	if e.Argo.Object(job) != nil {
-		delete(e.Earlier, name)
-	}
 	if earlier, ok := e.Earlier[name]; ok {
 		return earlier
 	}
@@ -343,8 +377,8 @@ func (e *Env) machineConfigOf(name string) string {
 }
 
 func (e *Env) nodeReports(context.Context, contract.Desired, string) ([]observe.NodeReport, error) {
-	var argocd struct{ ArgoCD json.RawMessage }
-	if err := json.Unmarshal(e.Argo.Report(), &argocd); err != nil {
+	argocd, err := e.argoCD()
+	if err != nil {
 		return nil, err
 	}
 	out := make([]observe.NodeReport, 0, len(e.Reports))
@@ -353,11 +387,35 @@ func (e *Env) nodeReports(context.Context, contract.Desired, string) ([]observe.
 		if err := json.Unmarshal(r.Body, &body); err != nil {
 			return nil, err
 		}
-		body["argocd"] = argocd.ArgoCD
+		body["argocd"] = argocd
 		r.Body, _ = json.Marshal(body)
 		out = append(out, r)
 	}
 	return out, nil
+}
+
+// argoCD is Argo CD's state with the health it keeps of each object an Application applied, each Job completed, since
+// the harness runs a Job as Argo CD creates it.
+func (e *Env) argoCD() (json.RawMessage, error) {
+	var state struct {
+		ArgoCD struct {
+			Applications []map[string]any `json:"applications"`
+		} `json:"argocd"`
+	}
+	if err := json.Unmarshal(e.Argo.Report(), &state); err != nil {
+		return nil, err
+	}
+	for _, app := range state.ArgoCD.Applications {
+		resources, _ := app["resources"].([]any)
+		for _, r := range resources {
+			object, _ := r.(map[string]any)
+			object["health"] = nil
+			if object["kind"] == "Job" {
+				object["health"] = report.JobCompleted
+			}
+		}
+	}
+	return json.Marshal(state.ArgoCD)
 }
 
 // Repo is the owner and name of the cluster repository.

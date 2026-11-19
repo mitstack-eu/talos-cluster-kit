@@ -114,6 +114,8 @@ func (k *Cluster) NewPlane(api controlplane.API, subID, appName string) controlp
 		Now:               k.cfg.Now,
 		AppsOnWorkers:     true,
 		WorkerAddresses:   []string{workerAddress.Addr().String()},
+		// A successor boots the configuration its image was built with, which the rollout replaces.
+		RollsOutMachineConfig: true,
 	}
 }
 

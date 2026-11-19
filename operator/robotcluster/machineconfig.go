@@ -21,6 +21,9 @@ type nodeRollout struct {
 	problem string
 	head    string
 	changes map[string]*string
+	// rerun takes out a Job that completed before a node behind the release joined, since Argo CD runs a Job only as
+	// it creates it.
+	rerun bool
 }
 
 // rollNodes commits the rollout once main holds the release's component set and the cluster otherwise stands, since
@@ -31,6 +34,9 @@ func (c convergence) rollNodes(ctx context.Context, due carriage, network contro
 		return refusal(err)
 	}
 	message := "Take out a machine configuration rollout no node waits on"
+	if r.rerun {
+		message = "Take out a machine configuration rollout that ran before a node joined, so it runs again"
+	}
 	for _, content := range r.changes {
 		if content != nil {
 			message = "Give each node the release's machine configuration"
@@ -45,13 +51,16 @@ func (c convergence) rollNodes(ctx context.Context, due carriage, network contro
 
 // rolloutDue is the rollout a subscribe sent now would commit.
 func (c convergence) rolloutDue(ctx context.Context, due carriage, network controlplane.Network) (nodeRollout, error) {
-	if c.plane.GatewayCA == nil || len(due.changes) > 0 || due.release.ToolsImage == "" || pools.ChangeUnderWay(c.state) {
+	if c.plane.GatewayCA == nil || len(due.changes) > 0 || due.release.ToolsImage == "" {
 		return nodeRollout{}, nil
+	}
+	if held, err := pools.HoldsRollout(ctx, c.plane, c.state); err != nil || held {
+		return nodeRollout{}, err
 	}
 	if !c.req.params.cloudOnly && workerProgress(network) != WorkerWritten {
 		return nodeRollout{}, nil
 	}
-	if len(c.plane.Problems(ctx, c.state)) > 0 {
+	if len(c.plane.RolloutBlockers(ctx, c.state)) > 0 {
 		return nodeRollout{}, nil
 	}
 	return readRollout(ctx, c.plane, c.state, c.req.gh, due.release.ToolsImage, c.robotWorker())
@@ -102,7 +111,21 @@ func readRollout(ctx context.Context, p controlplane.Plane, st controlplane.Stat
 	}
 	r.problem = fmt.Sprintf("the newest node report reads %s on a machine configuration other than the release's, which %s gives each node",
 		strings.Join(behind, ", "), noderollout.JobName(release))
-	if holds {
+	jobs, readable, err := read.AppliedJobs(controlplane.RemovalApplication)
+	if err != nil {
+		return nodeRollout{}, err
+	}
+	// The Job lists the nodes once, as it starts, so one that completed has given its configuration to every node then.
+	ran, applied := jobs[noderollout.JobName(release)]
+	switch {
+	case holds && readable && applied && ran.Health == report.JobCompleted:
+		r.changes[path], r.rerun = nil, true
+		r.problem += ", and it completed before they joined, so it is taken out to run again"
+		return r, nil
+	case holds:
+		return r, nil
+	case applied:
+		r.problem += ", and Argo CD has yet to prune the one that completed before they joined"
 		return r, nil
 	}
 	job, err := noderollout.Job(noderollout.Rollout{ToolsImage: toolsImage, Report: *read, StepStart: since, Guard: p.Guard})

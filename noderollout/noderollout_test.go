@@ -25,7 +25,7 @@ import (
 const release = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 // fakeKubectl lists FAKE_NODES, each "<name>:<address>:<control|worker>", with the release FAKE_STATE/<name> holds as
-// the node's machine-config annotation.
+// the node's machine-config annotation, and its wait answers at once whether that annotation is the release waited for.
 const fakeKubectl = `
 node_json() {
   local labels='{}' annotations='{}'
@@ -40,22 +40,23 @@ case "$*" in
     sep=
     for n in $FAKE_NODES; do IFS=: read -r name address role <<<"$n"; printf '%s' "$sep"; node_json "$name" "$address" "$role"; sep=,; done
     printf ']}\n' ;;
-  "get node "*" -o json")
-    for n in $FAKE_NODES; do IFS=: read -r name address role <<<"$n"; [ "$name" != "$3" ] || node_json "$name" "$address" "$role"; done ;;
+  "wait --for=jsonpath="*)
+    [ "$(cat "$FAKE_STATE/${4#node/}" 2>/dev/null)" = "${2##*=}" ] || { echo "error: timed out waiting for the condition on nodes/${4#node/}" >&2; exit 1; } ;;
 esac
 `
 
-// fakeTalosctl answers a node's configuration as text naming its address, reads etcd unhealthy on each address
-// FAKE_UNHEALTHY names, or FAKE_UNHEALTHY_AFTER_APPLY once a node took a configuration, and on an apply records the
-// release the applied file names as the node's annotation, unless FAKE_APPLY_IGNORED names the node's address.
+// fakeTalosctl answers a node's configuration as text naming its address, and watches each address's etcd unhealthy on
+// FAKE_UNHEALTHY, or FAKE_UNHEALTHY_AFTER_APPLY once a node took a configuration, and unhealthy then healthy on
+// FAKE_RECOVERING. An apply records the file's release as the node's annotation, unless FAKE_APPLY_IGNORED names it.
 const fakeTalosctl = `
 case "$3 $4" in
   "get machineconfig") echo "the running configuration of $2" ;;
-  "service etcd")
+  "get service")
     for address in ${2//,/ }; do
-      health=OK
-      [[ " ${FAKE_UNHEALTHY:-} $(cat "$FAKE_STATE/.unhealthy" 2>/dev/null) " != *" $address "* ]] || health=Fail
-      printf 'NODE\t%s\nID\tetcd\nSTATE\tRunning\nHEALTH\t%s\n' "$address" "$health"
+      [[ " ${FAKE_RECOVERING:-} " != *" $address "* ]] || echo "$address false"
+      healthy=true
+      [[ " ${FAKE_UNHEALTHY:-} $(cat "$FAKE_STATE/.unhealthy" 2>/dev/null) " != *" $address "* ]] || healthy=false
+      echo "$address $healthy"
     done ;;
   "apply-config --mode")
     [[ " ${FAKE_APPLY_IGNORED:-} " != *" $2 "* ]] || exit 0
@@ -122,7 +123,7 @@ func newCluster(t *testing.T, nodes string, atRelease ...string) cluster {
 	for _, name := range atRelease {
 		require.NoError(t, os.WriteFile(filepath.Join(c.state, name), []byte(release+"\n"), 0o600))
 	}
-	c.env = []string{"FAKE_NODES=" + nodes, "FAKE_STATE=" + c.state, "NODE_WAIT_SECONDS=0", "POLL_SECONDS=0"}
+	c.env = []string{"FAKE_NODES=" + nodes, "FAKE_STATE=" + c.state, "NODE_WAIT_SECONDS=5"}
 	return c
 }
 
@@ -148,19 +149,21 @@ func TestJob_GivesEachNodeTheReleasesConfigurationOneAtATimeTheControlPlaneFirst
 	c := newCluster(t, threeNodes)
 	tmp := t.TempDir()
 
-	out, err := c.run(t, "TMPDIR="+tmp)
+	out, err := c.run(t, "TMPDIR="+tmp, "FAKE_RECOVERING=10.0.0.5")
 
 	require.NoError(t, err, out)
-	etcdRead := "talosctl -n 10.0.0.4,10.0.0.5 service etcd"
-	assert.Equal(t, []string{
-		"kubectl get nodes -o json",
+	change := func(address, name string) []string {
+		return []string{"talosctl -n 10.0.0.4,10.0.0.5 get service etcd --watch -o jsonpath={.node} {.spec.healthy}",
+			"talosctl -n " + address + " apply-config --mode no-reboot --file <rendered>",
+			`kubectl wait --for=jsonpath={.metadata.annotations.mitstack\.dev/machine-config}=` + release + " --timeout=5s node/" + name,
+			"kubectl wait --for=condition=Ready --timeout=5s node/" + name}
+	}
+	assert.Equal(t, slices.Concat([]string{"kubectl get nodes -o json",
 		"talosctl -n 10.0.0.4 get machineconfig v1alpha1 -o jsonpath={.spec}", "machine-config --release " + release,
 		"talosctl -n 10.0.0.5 get machineconfig v1alpha1 -o jsonpath={.spec}", "machine-config --release " + release,
 		"talosctl -n 10.0.1.4 get machineconfig v1alpha1 -o jsonpath={.spec}", "machine-config --release " + release,
-		etcdRead, "talosctl -n 10.0.0.4 apply-config --mode no-reboot --file <rendered>", "kubectl get node poc-cp1 -o json",
-		etcdRead, "talosctl -n 10.0.0.5 apply-config --mode no-reboot --file <rendered>", "kubectl get node poc-cp2 -o json",
-		etcdRead, "talosctl -n 10.0.1.4 apply-config --mode no-reboot --file <rendered>", "kubectl get node poc-worker1 -o json",
-	}, c.calls(t), "every node's configuration is rendered before the first one changes, then each changes once etcd reads healthy and only after the one before it runs the release")
+	}, change("10.0.0.4", "poc-cp1"), change("10.0.0.5", "poc-cp2"), change("10.0.1.4", "poc-worker1")),
+		c.calls(t), "every node's configuration is rendered before the first one changes, then each changes once Talos's watch reads etcd healthy again and only after the one before it runs the release")
 	for _, name := range []string{"poc-cp1", "poc-cp2", "poc-worker1"} {
 		annotation, err := os.ReadFile(filepath.Join(c.state, name))
 		require.NoError(t, err)
@@ -263,7 +266,7 @@ func TestJob_RunsTheToolsImageWithTheLeastRightsAndNoRetryOnARefusal(t *testing.
 	assert.Equal(t, []any{"os:admin"}, talosRoles, "Talos applies a configuration and answers one for os:admin alone")
 	roles := testutil.Kind(docs, "ClusterRole")
 	require.Len(t, roles, 1)
-	assert.Equal(t, []any{map[string]any{"apiGroups": []any{""}, "resources": []any{"nodes"}, "verbs": []any{"get", "list"}}}, roles[0]["rules"])
+	assert.Equal(t, []any{map[string]any{"apiGroups": []any{""}, "resources": []any{"nodes"}, "verbs": []any{"get", "list", "watch"}}}, roles[0]["rules"])
 }
 
 func TestRelease_IsTheToolsImagesDigestAndNamesItsRolloutInTheClustersOwnDirectory(t *testing.T) {

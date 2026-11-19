@@ -5,6 +5,7 @@
     {
       "metadata": {
         "name": "poc-talos4-cp1",
+        "annotations": {"mitstack.dev/machine-config": "sha256:5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c"},
         "labels": {"mitstack.dev/subscription": "sub_0123456789ab", "topology.kubernetes.io/zone": "fsn1", "topology.kubernetes.io/region": "eu-central"},
         "managedFields": [
           {"manager": "Go-http-client", "operation": "Update", "apiVersion": "v1", "time": "2026-11-04T08:00:00Z",
@@ -26,6 +27,7 @@
     {
       "metadata": {
         "name": "poc-talos4-cp2",
+        "annotations": {"mitstack.dev/machine-config": "sha256:9a1e9a1e9a1e9a1e9a1e9a1e9a1e9a1e9a1e9a1e9a1e9a1e9a1e9a1e9a1e9a1e", "node.alpha.kubernetes.io/ttl": "0"},
         "labels": {"topology.kubernetes.io/zone": "nbg1"},
         "managedFields": [
           {"manager": "kubectl-label", "operation": "Update", "apiVersion": "v1", "time": "2026-11-04T08:07:00Z",

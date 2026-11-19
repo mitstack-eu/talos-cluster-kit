@@ -262,10 +262,12 @@ removals take, so the refusal names the member that is not serving. The Job's sc
    before any node changes. Its pod failure policy fails the Job on that code
    without a retry, since a retry renders the same refusal.
 3. It applies each configuration with `talosctl apply-config --mode no-reboot`,
-   one node at a time, the control-plane nodes first. Before each node it waits
-   until etcd reads healthy on every control-plane node, and after each it
-   waits until the node names the release and reads Ready. A node that does not
-   stops the Job before the next one.
+   one node at a time, the control-plane nodes first. Before each node it
+   follows Talos's watch of the etcd service until etcd reads healthy on every
+   control-plane node, and after each it follows `kubectl wait` until the node
+   names the release and reads Ready, so it goes on as soon as each change
+   lands rather than on a timer. A node that does not within
+   `NODE_WAIT_SECONDS`, 300 unless set, stops the Job before the next one.
 
 Any other failure retries up to three times. The configurations the Job writes
 hold the cluster's keys, so they sit in a memory-backed volume, are deleted as

@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Gives each node the machine configuration this release renders for it, without a reboot, one node at a time and the
 # control-plane nodes first, and leaves each node whose machine-config annotation names the release as it is.
-# Usage: RELEASE=<the release's digest> [NODE_WAIT_SECONDS=300] [POLL_SECONDS=5] apply-machine-config.sh
+# Usage: RELEASE=<the release's digest> [NODE_WAIT_SECONDS=300] apply-machine-config.sh
 # It exists because a node keeps the configuration it was installed with until something applies a new one, and a
 # release that changes a setting a node takes only at reboot must stop before any node changes.
 set -euo pipefail
 
 annotation=mitstack.dev/machine-config
+node_wait=${NODE_WAIT_SECONDS:-300}
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
@@ -59,30 +60,29 @@ render() {
   rm -f "$work/$name.running"
 }
 
-# within runs its arguments until they succeed or NODE_WAIT_SECONDS pass, so a node has time to settle.
-within() {
-  local deadline=$((SECONDS + ${NODE_WAIT_SECONDS:-300}))
-  until "$@"; do
-    [ "$SECONDS" -lt "$deadline" ] || return 1
-    sleep "${POLL_SECONDS:-5}"
-  done
-}
-
-# etcd_healthy reads every control-plane node's etcd healthy, naming each one that is not.
+# etcd_healthy reads Talos's watch of the etcd service on every control-plane node, which prints each node's health
+# at once and again at each change, until each reads healthy or NODE_WAIT_SECONDS pass, naming each node that does not.
 etcd_healthy() {
-  if ! talosctl -n "$1" service etcd >"$work/etcd.txt" 2>&1; then
-    tail -n 1 "$work/etcd.txt" >"$work/unhealthy.txt"
-    return 1
-  fi
-  awk '$1 == "NODE" { node = $2 } $1 == "HEALTH" && $2 != "OK" { print node }' "$work/etcd.txt" >"$work/unhealthy.txt"
-  [ ! -s "$work/unhealthy.txt" ] && [ "$(grep -c '^HEALTH' "$work/etcd.txt")" -eq "$(tr , '\n' <<<"$1" | grep -c .)" ]
+  local fd pid node healthy left
+  local -A unhealthy=()
+  for node in ${1//,/ }; do unhealthy[$node]=1; done
+  exec {fd}< <(exec talosctl -n "$1" get service etcd --watch -o 'jsonpath={.node} {.spec.healthy}')
+  pid=$!
+  local deadline=$((SECONDS + node_wait))
+  while [ "${#unhealthy[@]}" -gt 0 ] && left=$((deadline - SECONDS)) && [ "$left" -gt 0 ] &&
+    read -r -t "$left" -u "$fd" node healthy; do
+    if [ "$healthy" = true ]; then unset "unhealthy[$node]"; else unhealthy[$node]=1; fi
+  done
+  kill "$pid" 2>/dev/null || true
+  exec {fd}<&-
+  printf '%s\n' "${!unhealthy[@]}" >"$work/unhealthy.txt"
+  [ "${#unhealthy[@]}" -eq 0 ]
 }
 
-# at_release is whether the node runs the release and reads Ready.
+# at_release waits on Kubernetes' watch of the node until its annotation names the release and it reads Ready.
 at_release() {
-  kubectl get node "$1" -o json | jq -e --arg annotation "$annotation" --arg release "$RELEASE" '
-    (.metadata.annotations[$annotation] // "") == $release
-      and ([.status.conditions[]? | select(.type == "Ready") | .status] | first) == "True"' >/dev/null
+  kubectl wait --for="jsonpath={.metadata.annotations.mitstack\.dev/machine-config}=$RELEASE" --timeout="${node_wait}s" "node/$1" &&
+    kubectl wait --for=condition=Ready --timeout="${node_wait}s" "node/$1"
 }
 
 main() {
@@ -100,11 +100,11 @@ main() {
     render "$name" "$address"
   done 3<<<"$nodes"
   while read -r -u 3 name address role; do
-    within etcd_healthy "$control_planes" ||
-      fail "etcd does not read healthy on $(paste -sd, "$work/unhealthy.txt"), so $name keeps its configuration"
+    etcd_healthy "$control_planes" ||
+      fail "etcd does not read healthy on $(sort "$work/unhealthy.txt" | paste -sd,), so $name keeps its configuration"
     talosctl -n "$address" apply-config --mode no-reboot --file "$work/$name.yaml"
     rm -f "$work/$name.yaml"
-    within at_release "$name" || fail "$name does not run $RELEASE and read Ready after it took the configuration"
+    at_release "$name" >/dev/null || fail "$name does not run $RELEASE and read Ready within ${node_wait}s of taking the configuration"
     echo "apply-machine-config: the $role node $name runs $RELEASE"
   done 3<<<"$nodes"
 }

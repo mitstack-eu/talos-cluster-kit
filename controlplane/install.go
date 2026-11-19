@@ -13,6 +13,7 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/gateway"
 	"github.com/mitstack-eu/talos-cluster-kit/nodeconfig"
+	"github.com/mitstack-eu/talos-cluster-kit/noderollout"
 )
 
 const (
@@ -187,6 +188,10 @@ func (p Plane) renderNodes(ctx context.Context, apiAddr netip.Addr, now time.Tim
 	if err != nil {
 		return installation{}, components.Set{}, err
 	}
+	release, err := noderollout.Release(toolsImage())
+	if err != nil {
+		return installation{}, components.Set{}, err
+	}
 	cluster := nodeconfig.Cluster{
 		Name:                 p.clusterName(),
 		SubscriptionID:       p.Subscription,
@@ -199,6 +204,7 @@ func (p Plane) renderNodes(ctx context.Context, apiAddr netip.Addr, now time.Tim
 		GatewayCA:            p.GatewayCA.Cert,
 		ServiceAccountIssuer: issuerURL(bucket, p.Subscription),
 		AppsOnWorkers:        p.AppsOnWorkers,
+		Release:              release,
 	}
 	inst := installation{
 		cluster: cluster, enrolmentDigest: enrolmentTokenDigest(token), issuerBucket: bucket, gatewayCA: *p.GatewayCA,

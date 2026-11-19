@@ -486,7 +486,7 @@ func (c convergence) rolloutLeft(ctx context.Context, due carriage, network cont
 		}
 	}
 	if r.rerun {
-		return "the next subscribe takes out of " + c.req.gh.Repo.FullName() + " a machine configuration rollout that ran before a node joined, so it runs again", nil
+		return "the next subscribe takes out of " + c.req.gh.Repo.FullName() + " a machine configuration rollout whose Job completed without reaching a node, so it runs again", nil
 	}
 	if len(r.changes) > 0 {
 		return "the next subscribe takes out of " + c.req.gh.Repo.FullName() + " a machine configuration rollout no node waits on", nil

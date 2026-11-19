@@ -21,8 +21,8 @@ type nodeRollout struct {
 	problem string
 	head    string
 	changes map[string]*string
-	// rerun takes out a Job that completed before a node behind the release joined, since Argo CD runs a Job only as
-	// it creates it.
+	// rerun takes out a Job that completed without reaching a node behind the release, since Argo CD runs a Job only
+	// as it creates it.
 	rerun bool
 }
 
@@ -35,7 +35,7 @@ func (c convergence) rollNodes(ctx context.Context, due carriage, network contro
 	}
 	message := "Take out a machine configuration rollout no node waits on"
 	if r.rerun {
-		message = "Take out a machine configuration rollout that ran before a node joined, so it runs again"
+		message = "Take out a machine configuration rollout whose Job completed without reaching a node, so it runs again"
 	}
 	for _, content := range r.changes {
 		if content != nil {
@@ -120,12 +120,15 @@ func readRollout(ctx context.Context, p controlplane.Plane, st controlplane.Stat
 	switch {
 	case holds && readable && applied && ran.Health == report.JobCompleted:
 		r.changes[path], r.rerun = nil, true
-		r.problem += ", and it completed before they joined, so it is taken out to run again"
+		r.problem += ", and its Job completed without reaching them, so it is taken out to run again"
+		return r, nil
+	case holds && !readable:
+		r.problem += ", and " + read.UnreadJobs(controlplane.RemovalApplication)
 		return r, nil
 	case holds:
 		return r, nil
 	case applied:
-		r.problem += ", and Argo CD has yet to prune the one that completed before they joined"
+		r.problem += ", and the rollout is committed again once Argo CD prunes the release's earlier Job"
 		return r, nil
 	}
 	job, err := noderollout.Job(noderollout.Rollout{ToolsImage: toolsImage, Report: *read, StepStart: since, Guard: p.Guard})

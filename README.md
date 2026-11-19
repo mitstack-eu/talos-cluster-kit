@@ -267,7 +267,9 @@ removals take, so the refusal names the member that is not serving. The Job's sc
    control-plane node, and after each it follows `kubectl wait` until the node
    names the release and reads Ready, so it goes on as soon as each change
    lands rather than on a timer. A node that does not within
-   `NODE_WAIT_SECONDS`, 300 unless set, stops the Job before the next one.
+   `NODE_WAIT_SECONDS`, 300 unless set, stops the Job before the next one,
+   and so does any call to Kubernetes or the Talos API that does not answer
+   within it, or a watch that reads the etcd service destroyed.
 
 Any other failure retries up to three times. The configurations the Job writes
 hold the cluster's keys, so they sit in a memory-backed volume, are deleted as

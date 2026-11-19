@@ -5,6 +5,7 @@
 # It exists because a node keeps the configuration it was installed with until something applies a new one, and a
 # release that changes a setting a node takes only at reboot must stop before any node changes.
 set -euo pipefail
+shopt -s inherit_errexit
 
 annotation=mitstack.dev/machine-config
 node_wait=${NODE_WAIT_SECONDS:-300}
@@ -25,7 +26,8 @@ refuse() {
 # pending prints "<name> <address> <control|worker>" for each node not at the release, the control-plane nodes first,
 # with "-" for a node that lists no address, since read would take an empty field from the next one.
 pending() {
-  kubectl get nodes -o json >"$work/nodes.json"
+  timeout "$node_wait" kubectl get nodes -o json >"$work/nodes.json" ||
+    fail "listing the nodes failed or did not answer within ${node_wait}s"
   jq -r --arg annotation "$annotation" --arg release "$RELEASE" '
     [.items[] | {
       name: .metadata.name,
@@ -45,12 +47,10 @@ control_plane_addresses() {
     | join(",")' "$work/nodes.json"
 }
 
-# render writes the configuration the release gives the node at address into the file name, refusing a reboot-only
-# change.
 render() {
   local name=$1 address=$2 status=0
-  talosctl -n "$address" get machineconfig v1alpha1 -o 'jsonpath={.spec}' >"$work/$name.running" ||
-    fail "reading the configuration $name runs failed"
+  timeout "$node_wait" talosctl -n "$address" get machineconfig v1alpha1 -o 'jsonpath={.spec}' >"$work/$name.running" ||
+    fail "reading the configuration $name runs failed or did not answer within ${node_wait}s"
   machine-config --release "$RELEASE" <"$work/$name.running" >"$work/$name.yaml" 2>"$work/$name.err" || status=$?
   case $status in
     0) ;;
@@ -60,29 +60,23 @@ render() {
   rm -f "$work/$name.running"
 }
 
-# etcd_healthy reads Talos's watch of the etcd service on every control-plane node, which prints each node's health
-# at once and again at each change, until each reads healthy or NODE_WAIT_SECONDS pass, naming each node that does not.
+# etcd_healthy counts each control-plane node unhealthy until Talos's watch, which prints each field of an event on a
+# line of its own, reads its etcd healthy, so a node the watch never names stops the Job after NODE_WAIT_SECONDS.
 etcd_healthy() {
-  local fd pid node healthy left
+  local fd pid node event healthy left
   local -A unhealthy=()
   for node in ${1//,/ }; do unhealthy[$node]=1; done
-  exec {fd}< <(exec talosctl -n "$1" get service etcd --watch -o 'jsonpath={.node} {.spec.healthy}')
+  exec {fd}< <(exec talosctl -n "$1" get service etcd --watch -o 'jsonpath={.node}{.event}{.spec.healthy}')
   pid=$!
   local deadline=$((SECONDS + node_wait))
   while [ "${#unhealthy[@]}" -gt 0 ] && left=$((deadline - SECONDS)) && [ "$left" -gt 0 ] &&
-    read -r -t "$left" -u "$fd" node healthy; do
-    if [ "$healthy" = true ]; then unset "unhealthy[$node]"; else unhealthy[$node]=1; fi
+    read -r -t "$left" -u "$fd" node && read -r -t "$left" -u "$fd" event && read -r -t "$left" -u "$fd" healthy; do
+    if [ "$event" != destroyed ] && [ "$healthy" = true ]; then unset "unhealthy[$node]"; else unhealthy[$node]=1; fi
   done
   kill "$pid" 2>/dev/null || true
   exec {fd}<&-
   printf '%s\n' "${!unhealthy[@]}" >"$work/unhealthy.txt"
   [ "${#unhealthy[@]}" -eq 0 ]
-}
-
-# at_release waits on Kubernetes' watch of the node until its annotation names the release and it reads Ready.
-at_release() {
-  kubectl wait --for="jsonpath={.metadata.annotations.mitstack\.dev/machine-config}=$RELEASE" --timeout="${node_wait}s" "node/$1" &&
-    kubectl wait --for=condition=Ready --timeout="${node_wait}s" "node/$1"
 }
 
 main() {
@@ -102,9 +96,13 @@ main() {
   while read -r -u 3 name address role; do
     etcd_healthy "$control_planes" ||
       fail "etcd does not read healthy on $(sort "$work/unhealthy.txt" | paste -sd,), so $name keeps its configuration"
-    talosctl -n "$address" apply-config --mode no-reboot --file "$work/$name.yaml"
+    timeout "$node_wait" talosctl -n "$address" apply-config --mode no-reboot --file "$work/$name.yaml" ||
+      fail "applying the configuration to $name failed or did not answer within ${node_wait}s"
     rm -f "$work/$name.yaml"
-    at_release "$name" >/dev/null || fail "$name does not run $RELEASE and read Ready within ${node_wait}s of taking the configuration"
+    kubectl wait --for="jsonpath={.metadata.annotations.mitstack\.dev/machine-config}=$RELEASE" --timeout="${node_wait}s" \
+      "node/$name" >/dev/null || fail "$name does not name $RELEASE within ${node_wait}s of taking the configuration"
+    kubectl wait --for=condition=Ready --timeout="${node_wait}s" "node/$name" >/dev/null ||
+      fail "$name does not read Ready within ${node_wait}s of naming $RELEASE"
     echo "apply-machine-config: the $role node $name runs $RELEASE"
   done 3<<<"$nodes"
 }

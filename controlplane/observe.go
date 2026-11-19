@@ -14,6 +14,21 @@ import (
 
 // Problems names every way the plane falls short of what it builds, judged from what Hetzner holds.
 func (p Plane) Problems(ctx context.Context, st State) []string {
+	return p.problems(ctx, st, p.nodeReplacementProblems)
+}
+
+// RolloutBlockers are the problems that keep the rollout of the release's machine configuration from starting: each
+// one Problems names, but no node replacement's while the first one's successor serves and waits on that rollout alone.
+func (p Plane) RolloutBlockers(ctx context.Context, st State) []string {
+	return p.problems(ctx, st, func(ctx context.Context, st State, network Network) []string {
+		if p.awaitsRollout(ctx, st, network) {
+			return nil
+		}
+		return p.nodeReplacementProblems(ctx, st, network)
+	})
+}
+
+func (p Plane) problems(ctx context.Context, st State, replacements func(context.Context, State, Network) []string) []string {
 	missing := st.Duplicates()
 	if len(missing) > 0 {
 		return missing
@@ -55,7 +70,7 @@ func (p Plane) Problems(ctx context.Context, st State) []string {
 	}
 	missing = append(missing, gateways...)
 	missing = append(missing, st.nodeProblems(p.NodeLocations(), network, firewall)...)
-	missing = append(missing, p.nodeReplacementProblems(ctx, st, network)...)
+	missing = append(missing, replacements(ctx, st, network)...)
 	missing = append(missing, p.loadBalancerProblems(st, network)...)
 	return missing
 }

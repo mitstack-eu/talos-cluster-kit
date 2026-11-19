@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mitstack-eu/talos-cluster-kit/etcd"
+	"github.com/mitstack-eu/talos-cluster-kit/noderollout"
 	"github.com/mitstack-eu/talos-cluster-kit/redundant"
 	"github.com/mitstack-eu/talos-cluster-kit/report"
 )
@@ -192,10 +193,10 @@ func (p Plane) recordReplacements(ctx context.Context, st State, _ Network, rec 
 	return nil
 }
 
-// endNodeReplacementStep takes r's record off the network once a node report reads the successor serving, so the next
-// node an upgrade names goes only when this one has joined.
+// endNodeReplacementStep takes r's record off the network once a node report reads the successor serving, and every
+// node on the release's machine configuration, so the next node an upgrade names goes only when this one has joined.
 func (p Plane) endNodeReplacementStep(ctx context.Context, network Network, r nodeReplacement, successor Server) (Step, bool, error) {
-	if serves, err := p.successorServes(ctx, successor); err != nil || !serves {
+	if read, behind, err := p.successorRead(ctx, successor); err != nil || read == nil || len(behind) > 0 {
 		return Step{}, false, err
 	}
 	return Step{"take the replacement's record off the network, since a node report reads the new node in " + r.loc + " serving", func(ctx context.Context) error {
@@ -208,21 +209,55 @@ func (p Plane) endNodeReplacementStep(ctx context.Context, network Network, r no
 	}}, true, nil
 }
 
-func (p Plane) successorServes(ctx context.Context, successor Server) (bool, error) {
+// successorRead is the node report received since successor's creation when it reads successor serving, else nil, with
+// the nodes that report reads behind the release's machine configuration.
+func (p Plane) successorRead(ctx context.Context, successor Server) (*report.Read, []string, error) {
 	read, err := p.ReadReport(ctx, successor.Created)
 	if err != nil || read == nil {
-		return false, err
+		return nil, nil, err
 	}
 	members, err := read.EtcdMembers()
 	if err != nil {
-		return false, err
+		return nil, nil, err
 	}
 	nodes, err := read.Nodes([]string{successor.Name})
 	if err != nil {
-		return false, err
+		return nil, nil, err
 	}
 	serves := func(m report.Member) bool { return m.Name == successor.Name && m.Reading != nil && m.Reading.Serving }
-	return slices.ContainsFunc(members, serves) && slices.ContainsFunc(nodes, serves), nil
+	if !slices.ContainsFunc(members, serves) || !slices.ContainsFunc(nodes, serves) {
+		return nil, nil, nil
+	}
+	behind, err := p.NodesBehindRelease(*read)
+	return read, behind, err
+}
+
+// NodesBehindRelease names each node read lists on a machine configuration other than the release's, and none on a
+// plane whose block gives no node the release's.
+func (p Plane) NodesBehindRelease(read report.Read) ([]string, error) {
+	if !p.RollsOutMachineConfig {
+		return nil, nil
+	}
+	release, err := noderollout.Release(toolsImage())
+	if err != nil {
+		return nil, err
+	}
+	return read.NodesBehind(release)
+}
+
+// awaitsRollout is whether the first replacement network records waits on the rollout alone: a node report reads its
+// successor serving and a node behind the release's machine configuration. One that cannot be judged does not.
+func (p Plane) awaitsRollout(ctx context.Context, st State, network Network) bool {
+	recorded, err := nodeReplacements(network)
+	if _, what := p.lacks(); err != nil || what != "" || len(recorded) == 0 {
+		return false
+	}
+	node, ok := st.NodeIn(recorded[0].loc)
+	if !ok || !recorded[0].succeededBy(node) {
+		return false
+	}
+	read, behind, err := p.successorRead(ctx, node)
+	return err == nil && read != nil && len(behind) > 0
 }
 
 // nodeReplacementProblems names where each replacement the network records stands, so a plane with one under way never
@@ -275,10 +310,13 @@ func (p Plane) replacementDetail(ctx context.Context, st State, network Network,
 }
 
 func (p Plane) successorProblem(ctx context.Context, network Network, r nodeReplacement, successor Server) string {
-	switch serves, err := p.successorServes(ctx, successor); {
+	switch read, behind, err := p.successorRead(ctx, successor); {
 	case err != nil:
 		return fmt.Sprintf("node %d in %s, which replaces the node the upgrade named, cannot be judged: %v", successor.ID, r.loc, err)
-	case serves:
+	case read != nil && len(behind) > 0:
+		return fmt.Sprintf("node %d in %s serves, and the node report read at %s reads %s on a machine configuration other than the release's, so the replacement the upgrade asked for waits on the rollout that gives each node the release's",
+			successor.ID, r.loc, read.At.UTC().Format(time.RFC3339), strings.Join(behind, ", "))
+	case read != nil:
 		return fmt.Sprintf("node %d in %s serves, and network %d still carries its replacement's record", successor.ID, r.loc, network.ID)
 	}
 	return fmt.Sprintf("node %d in %s has not been read serving since its creation at %s, so the replacement the upgrade asked for waits on a node report that reads its etcd member healthy and its Node object Ready",

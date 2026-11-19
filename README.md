@@ -247,6 +247,15 @@ node names its release. Two files would apply two releases against each other.
 A finished Job is deleted after a day, and while its file stays, the cluster's
 Application, which heals what it is missing, creates it again.
 
+A node that takes a replaced node's place boots from the snapshot an install
+built, so it runs that install's release until the rollout reaches it. A block
+that rolls the release out sets `Plane.RollsOutMachineConfig`, and the plane
+then ends a node's or a Cloud worker's replacement only once a node report
+reads every node on the release. The rollout waits on no such replacement:
+`Plane.RolloutBlockers` leaves out a node's replacement whose successor serves,
+and `pools.HoldsRollout` holds the rollout only until a worker's successor
+reads Ready, so neither waits on the other.
+
 `Job` renders nothing unless the newest node report shows every etcd member
 serving since the block's Update began, the step that changes a running
 cluster. The block passes the guard that judges it, the same one the member
@@ -319,6 +328,8 @@ plane := controlplane.Plane{
 	Records:           records,                                // what the upgrade's call records beside the plane, such as pools.ReplaceWorkers
 	AppsOnWorkers:     true,
 	WorkerAddresses:   []string{"10.0.1.2"}, // the Robot worker's address in the network's vSwitch subnet
+
+	RollsOutMachineConfig: true, // the block gives each running node the release's machine configuration
 }
 st, err := plane.Read(ctx)
 ```
@@ -3893,7 +3904,9 @@ changes:
    is not the list's first.
 8. Once a node report received since the new node's creation reads its etcd
    member healthy and its Node object Ready, it takes the label off the
-   network. Only then does the next named node begin.
+   network. Only then does the next named node begin. With
+   `RollsOutMachineConfig` set, that report must also read every node on the
+   release, and until it does the problem names each node behind it.
 
 A refusal in step 2 carries one of three classes. The guard's class
 `redundancy-below-minimum` names each member with its reading, and
@@ -4157,7 +4170,9 @@ takes one of these changes:
    not order when it is not the list's first.
 8. Once a node report received since the successor's creation reads its Node
    object Ready, it takes the label off the network, and the next named
-   worker begins.
+   worker begins. With `RollsOutMachineConfig` set, that report must also read
+   every node on the release, and until it does the wait names each node
+   behind it.
 
 A refusal in step 2 takes the label off the network, since the worker still
 runs untouched. The guard's class `redundancy-below-minimum` names the worker

@@ -70,10 +70,13 @@ type Plane struct {
 	ReplaceNodes []string
 	// Removals is the cluster repository a replaced node's or Cloud worker's removal is written to; nil refuses an
 	// upgrade that names either.
-	Removals  *Removals
-	Records   []Record
-	Signers   []components.Signer
-	Telemetry components.TelemetryExport
+	Removals *Removals
+	// RollsOutMachineConfig tells a plane whose block gives each running node the release's machine configuration, so
+	// a replacement ends only once a node report reads its successor, and every other node, on the release's.
+	RollsOutMachineConfig bool
+	Records               []Record
+	Signers               []components.Signer
+	Telemetry             components.TelemetryExport
 }
 
 // Record adds to the network's labels what an upgrade asks of a part beside the plane, inside the upgrade's one write.

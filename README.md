@@ -58,7 +58,7 @@ the order a block uses them.
 | `topology` | Renders the topology labeller, a CronJob that labels each Cloud node with its zone and region, labels each burst member of a Cloud pool, a member above the pool's minimum, `mitstack.dev/burst=true`, and holds the zone and region label names | `Manifests`, `Labels`, `ZoneLabel`, `RegionLabel`, `FieldManager` |
 | `openbaoinit` | Renders OpenBao's init Job, which the hosting set carries. On a hosting cluster, a cluster that runs mitstack's own control plane, it initialises OpenBao once, commits the root token and recovery key to the cluster repository as PGP messages, then writes the policy that External Secrets reads with in each slice, the namespace a block gives one app | `Manifests`, `Inputs`, `InitFile` |
 | `rollout` | Gives a running cluster a release's component set, the manifests one kit release carries; [How a running cluster takes a release's components](#how-a-running-cluster-takes-a-releases-components) defines each term. A block commits the set's files to the cluster repository, where Argo CD applies each component through an Application of its own, which is Argo CD's record of one repository directory it keeps applied to the cluster. Files that an earlier release committed and this release no longer states are retired, which means deleted. Each component's sync runs a handover Job, which has Talos give up the fields it set when it created the component's objects, so they hold only what the release states. After OpenBao's sync, OpenBao's rollout Job moves each member onto the StatefulSet's new revision, as [How OpenBao's members take a new revision](#how-openbaos-members-take-a-new-revision) explains, which also says what a member, a StatefulSet and a revision are. The read-back then checks from the node report that the cluster runs each component as the release states it | `Release.Files`, `Release.Retired`, `Release.ReadBack`, `Release.ToolsImage`, `LegacyFiles` |
-| `controlplane` | Builds and deletes a Talos control plane on Hetzner Cloud: a network, a firewall, a builder that makes the cluster's own snapshot, one or three nodes with a gateway beside each, and an API and an ingress load balancer. Three nodes run in `fsn1`, `nbg1` and `hel1`, and one node runs in `fsn1`. Each call reads the resources by their labels and takes the one change still missing. A refusal is a `*Refusal` with a `Class` and a `Message`, which the block answers as its own framework's refusal | `Plane`, `Plane.NodeLocations`, `DefaultSize`, `KeySize`, `Plane.Read`, `Plane.EnsureNetwork`, `Plane.SizeRefusal`, `Plane.NextStep`, `Plane.Problems`, `Plane.Unhealthy`, `Plane.Outputs`, `State.IngressAddresses`, `Plane.Release`, `ErrNoIngressAddress`, `Plane.GatewaysAwaitRelease`, `Plane.GatewaysServeRelease`, `Plane.Delete`, `NewAPI`, `Refusal`, `TopologyLabels`, `GatewayUpgradeBound`, `GatewayCertRenewBefore`, `KeyGatewayCertExpires` |
+| `controlplane` | Builds and deletes a Talos control plane on Hetzner Cloud: a network, a firewall, a builder that makes the cluster's own snapshot, one or three nodes with a gateway beside each, and an API and an ingress load balancer. Three nodes run in `fsn1`, `nbg1` and `hel1`, and one node runs in `fsn1`. Each call reads the resources by their labels and takes the one change still missing, and [How a request reads the Cloud once](#how-a-request-reads-the-cloud-once) says how one request lists each kind once. A refusal is a `*Refusal` with a `Class` and a `Message`, which the block answers as its own framework's refusal | `Plane`, `Plane.NodeLocations`, `DefaultSize`, `KeySize`, `Plane.Read`, `ReadOncePerRequest`, `RequestReads`, `NewRequestReads`, `WithoutRequestReads`, `Plane.EnsureNetwork`, `Plane.SizeRefusal`, `Plane.NextStep`, `Plane.Problems`, `Plane.Unhealthy`, `Plane.Outputs`, `State.IngressAddresses`, `Plane.Release`, `ErrNoIngressAddress`, `Plane.GatewaysAwaitRelease`, `Plane.GatewaysServeRelease`, `Plane.Delete`, `NewAPI`, `Refusal`, `TopologyLabels`, `GatewayUpgradeBound`, `GatewayCertRenewBefore`, `KeyGatewayCertExpires` |
 | `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image carries and the gateway copies out of it, `tools/jq.env`, which pins the tools image's jq, and `tools/kube-bench-talos.yaml`, the settings kube-bench reads over its own on Talos. Its Dockerfile builds `cmd/machine-config` into the tools image. It names the tools image a release published and the directory in that image that holds the node report's, its outside probe's, the labeller's, the cluster tokens', the handover's and OpenBao's rollout's scripts, and where in that image each served manifest sits | `Env`, `Pin`, `Image`, `ScriptDir`, `ManifestPath` |
 | `redundant` | Carries a removal's redundant set, each member with its reading, to the guard the block passes, block-kit's `redundancy.Set.AllowRemoval`, which this module does not import | `Set`, `Guard`, `Held` |
 | `scaling` | Decides from the node reports alone how a Cloud pool whose minimum is below its maximum follows its cluster's load, so only the block's operator, which holds the Hetzner token, changes the pool. [How a Cloud pool scales with the load](#how-a-cloud-pool-scales-with-the-load) gives the rules | `Decide`, `Decision`, `CauseAtMaximum` |
@@ -368,6 +368,69 @@ so a block that adds workers renders them there with
 `nodeconfig.RenderWorker`. When `Installed` returns an error, the plane
 deletes the gateways and builders it just created, and a later call starts the
 install again.
+
+### How a request reads the Cloud once
+
+One request to a block, such as a single subscribe call from the engine,
+often reads its control plane several times. Each `Plane.Read` lists five
+kinds of resource: servers, load balancers, networks, firewalls and
+snapshots. Each list is a call to the
+Hetzner API, and Hetzner caps how many calls it answers in an hour. So a block
+can have one request list each kind once.
+
+The block wraps its API with `controlplane.ReadOncePerRequest`. It also passes
+a function that finds the request's `controlplane.RequestReads` in a call's
+`context.Context`, which is the Go value that carries one request's data from
+call to call. The block makes the `RequestReads` with
+`controlplane.NewRequestReads` when the request starts. It keeps one state for
+each plane selector, so one `RequestReads` serves the planes of one Hetzner
+project. In this example
+`plane` is the block's `controlplane.Plane`, `token` its Hetzner API token, and
+the second argument of `controlplane.NewAPI` the name each call to Hetzner
+carries in its user agent:
+
+```go
+type requestReadsKey struct{}
+
+readsOf := func(ctx context.Context) *controlplane.RequestReads {
+	reads, _ := ctx.Value(requestReadsKey{}).(*controlplane.RequestReads)
+	return reads
+}
+plane.API = controlplane.ReadOncePerRequest(controlplane.NewAPI(token, "hcloud-hrobot-talos-cluster"), readsOf)
+ctx = context.WithValue(ctx, requestReadsKey{}, controlplane.NewRequestReads())
+```
+
+From then on, the plane reads in three steps.
+
+1. The first `Plane.Read` in the request lists all five kinds. It keeps what
+   it read only when every list answered, so a failed read keeps nothing.
+2. A later read in the same request answers from what was kept. Each read gets
+   its own copy, so a caller that changes its copy changes no other read's.
+3. Every write through the wrapped API drops what was kept when it starts and
+   again when it ends, whether Hetzner took the write or refused it. While any
+   write runs, every read lists and nothing is kept, so no read answers from a
+   list made before a write that has not ended. A write is any method that
+   changes the project, such as `CreateServers` or `SetServerLabels`, while a
+   method that only lists or checks something, such as `ListServers` or
+   `ServerStarted`, is a read. A list that a write overlapped is not kept
+   either, since it may have read the Cloud before the write took effect.
+
+Two reads that run at the same time in one request may each list, because
+neither waits on the other's calls to Hetzner.
+
+A context without a `RequestReads`, or a plane whose API is not wrapped, lists
+all five kinds on every read. `ReadOncePerRequest` must be the outermost
+wrapper around the plane's API. `Plane.Read` finds it by checking whether
+`Plane.API` is that wrapper itself, so a plane whose API is some other wrapper
+around it lists on every read.
+
+Work that outlives its request, such as a background job that a subscribe
+starts and leaves running after it answers, reads with
+`controlplane.WithoutRequestReads(ctx)`. Its reads list afresh, while its
+writes still drop what the request kept. A block's loop that waits for the
+Cloud to change, such as a wait for a server to take its address, reads what it
+waits for with the API's own list calls, such as `ListServers`. Those pass
+straight through, while a kept read would never show the change.
 
 ### How many control-plane nodes a plane runs
 

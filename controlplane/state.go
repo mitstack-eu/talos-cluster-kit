@@ -19,8 +19,16 @@ type State struct {
 	WorkerSnapshots []Snapshot
 }
 
-// Read lists every resource of the plane's subscription.
+// Read lists every resource of the plane's subscription, once per request when its API is ReadOncePerRequest's own
+// rather than a wrapper around it.
 func (p Plane) Read(ctx context.Context) (State, error) {
+	if once, ok := p.API.(*readOncePerRequest); ok {
+		return once.read(ctx, p)
+	}
+	return p.list(ctx)
+}
+
+func (p Plane) list(ctx context.Context) (State, error) {
 	sel := p.Selector()
 	st := State{Servers: map[Role][]Server{}, LoadBalancers: map[Role][]LoadBalancer{}}
 	servers, err := p.API.ListServers(ctx, sel)

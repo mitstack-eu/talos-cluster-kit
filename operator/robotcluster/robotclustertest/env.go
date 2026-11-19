@@ -87,7 +87,7 @@ func WithParams(params map[string]string) Option {
 	return func(e *Env) { maps.Copy(e.Params, params) }
 }
 
-// WithOperator builds the cluster from an operator's own Config, its clients and clock replaced by the fakes.
+// WithOperator builds from an operator's own Config, its clients faked and its InstallWorker kept; it replaces earlier options.
 func WithOperator(cfg robotcluster.Config) Option {
 	return func(e *Env) { e.Config = e.faked(cfg) }
 }
@@ -225,7 +225,6 @@ func (e *Env) gatewayHolds() bool {
 	return err == nil && len(gw) == 1 && len(networks) == 1 && gw[0].PrivateIPs[networks[0].ID] == controlplane.GatewayAddress
 }
 
-// install does to Robot and Cloud what the rescue install does around the image write.
 func (e *Env) install(ctx context.Context, in robotcluster.WorkerInstall) error {
 	with(&e.mu, func() { e.installs++ })
 	w := in.Worker
@@ -256,7 +255,6 @@ func (e *Env) Installed() int {
 	return e.installs
 }
 
-// syncArgo syncs Argo CD to the repository's files, a deleted one included.
 func (e *Env) syncArgo() {
 	files := map[string][]byte{}
 	for _, name := range e.Argo.Files() {
@@ -269,7 +267,6 @@ func (e *Env) syncArgo() {
 	e.Argo.Sync()
 }
 
-// reportNodes reports a server Ready once running, the Robot worker once installed, a gateway once at its address.
 func (e *Env) reportNodes() {
 	e.T.Helper()
 	var nodes []operator.ReportedNode
@@ -300,7 +297,6 @@ func (e *Env) reportNodes() {
 	e.Reports = append(e.Reports, observe.NodeReport{ReceivedAt: e.Now, Body: body})
 }
 
-// nodeReports joins Argo CD's state now to each report, as the platform's node reports carry it.
 func (e *Env) nodeReports(context.Context, contract.Desired, string) ([]observe.NodeReport, error) {
 	var argocd struct{ ArgoCD json.RawMessage }
 	if err := json.Unmarshal(e.Argo.Report(), &argocd); err != nil {

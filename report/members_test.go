@@ -63,6 +63,35 @@ func TestRead_NodesServeWhenReadyAndAreUnreadWhenTheReportNamesNone(t *testing.T
 		serving(t, read, names, members))
 }
 
+func TestRead_NodesBehindNamesEachNodeWhoseMachineConfigurationIsNotTheRelease(t *testing.T) {
+	behind, err := healthyRead(t).NodesBehind("sha256:5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c")
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"poc-talos4-cp2", "poc-talos4-cp3"}, behind,
+		"a node at another release is behind, and so is one whose release the report does not name")
+}
+
+func TestRead_NoNodeIsBehindWhenEveryNodeRunsTheRelease(t *testing.T) {
+	read := report.Read{Body: []byte(`{"nodes":[{"name":"poc-cp1","machineConfig":"sha256:5f0c"},{"name":"poc-worker1","machineConfig":"sha256:5f0c"}]}`)}
+
+	behind, err := read.NodesBehind("sha256:5f0c")
+
+	require.NoError(t, err)
+	assert.Empty(t, behind)
+}
+
+func TestRead_NodesBehindRefusesNoReleaseOrAReportItCannotReadOrThatListsNoNode(t *testing.T) {
+	_, err := report.Read{Body: []byte(`{"nodes":[{"name":"poc-cp1"}]}`)}.NodesBehind("")
+	require.ErrorContains(t, err, "names no release", "a node whose annotation names none would read as at it")
+
+	at := time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)
+	_, err = report.Read{Body: []byte("not json"), At: at}.NodesBehind("sha256:5f0c")
+	require.ErrorContains(t, err, "the node report read at 2026-11-19T09:00:00Z cannot be read")
+
+	_, err = report.Read{Body: []byte(`{"nodes":[]}`), At: at}.NodesBehind("sha256:5f0c")
+	require.ErrorContains(t, err, "the node report read at 2026-11-19T09:00:00Z lists no node, so which nodes are behind is unknown")
+}
+
 func TestGatewayReadAt_IsTheProbesTimeElseTheReportsMadeAtElseWhenThePlatformReceivedIt(t *testing.T) {
 	received := time.Date(2026, 11, 8, 9, 5, 0, 0, time.UTC)
 	gateway := netip.MustParseAddr("10.0.0.248")

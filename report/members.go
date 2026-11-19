@@ -2,6 +2,7 @@ package report
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/netip"
 	"time"
@@ -48,8 +49,9 @@ const openBaoNamespace = "openbao"
 
 type members struct {
 	Nodes []struct {
-		Name  string `json:"name"`
-		Ready bool   `json:"ready"`
+		Name          string `json:"name"`
+		Ready         bool   `json:"ready"`
+		MachineConfig string `json:"machineConfig"`
 	} `json:"nodes"`
 	Etcd struct {
 		Members []struct {
@@ -164,6 +166,28 @@ func (r Read) Nodes(names []string) ([]Member, error) {
 		out = append(out, member)
 	}
 	return out, nil
+}
+
+// NodesBehind names each node the report lists whose annotation does not name release, a node with none included; it
+// refuses an empty release and a report that lists no node, since either would read as none behind.
+func (r Read) NodesBehind(release string) ([]string, error) {
+	if release == "" {
+		return nil, errors.New("NodesBehind names no release to judge the nodes by")
+	}
+	m, err := r.members()
+	if err != nil {
+		return nil, err
+	}
+	if len(m.Nodes) == 0 {
+		return nil, fmt.Errorf("the node report read at %s lists no node, so which nodes are behind is unknown", r.At.UTC().Format(time.RFC3339))
+	}
+	var behind []string
+	for _, n := range m.Nodes {
+		if n.MachineConfig != release {
+			behind = append(behind, n.Name)
+		}
+	}
+	return behind, nil
 }
 
 // OpenBaoMembers reads each OpenBao member, serving when it is initialized and unsealed, with the node its pod runs on.

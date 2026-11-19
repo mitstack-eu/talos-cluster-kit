@@ -694,7 +694,8 @@ body() {
         region: (.metadata.labels["topology.kubernetes.io/region"] // null),
         zoneLabelManagers: zone_label_managers,
         taints: [.spec.taints[]? | {key, value: (.value // null), effect}],
-        unschedulable: (.spec.unschedulable // false)
+        unschedulable: (.spec.unschedulable // false),
+        machineConfig: (.metadata.annotations["mitstack.dev/machine-config"] // null)
       }],
       etcd: etcd,
       systemVolumes: beside($volumes_status; $volumes_err;

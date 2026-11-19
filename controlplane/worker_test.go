@@ -14,6 +14,7 @@ import (
 
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane/cloudtest"
+	"github.com/mitstack-eu/talos-cluster-kit/nodeconfig"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 )
 
@@ -60,6 +61,21 @@ func TestPlane_TheWorkerImageHoldsNoneOfTheClustersCAKeysAndItsUserDataFitsHetzn
 	assert.Equal(t, "worker", testutil.Field(t, testutil.Documents(t, []byte(config))[0], "machine", "type"), "the worker image's machine type")
 	for name, key := range keys {
 		assert.False(t, strings.Contains(config, key), "the worker image holds the control plane's %s", name)
+	}
+}
+
+func TestPlane_EveryNodeAnInstallBuildsNamesTheReleaseOfTheToolsImage(t *testing.T) {
+	controlplane.SwapToolsImage(t, recordedToolsImage)
+	h := newHarness(t, sequential)
+
+	require.NoError(t, h.converge())
+
+	for _, role := range []controlplane.Role{controlplane.RoleBuilder, controlplane.RoleWorkerBuilder} {
+		config := decodeCloudConfig(t, h.cloud.SpecFor(t, role).UserData).file(t, controlplane.BuilderConfigPath).Content
+		nodeConfigs := testutil.Kind(testutil.Documents(t, []byte(config)), "KubeNodeConfig")
+		require.Len(t, nodeConfigs, 1, "the %s's KubeNodeConfig documents", role)
+		assert.Equal(t, map[string]any{nodeconfig.MachineConfigAnnotation: "sha256:" + strings.Repeat("0", 64)},
+			testutil.Field(t, nodeConfigs[0], "annotations"), "the %s names the release its configuration was rendered from", role)
 	}
 }
 

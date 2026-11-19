@@ -33,7 +33,7 @@ func (k *Cluster) readCreated(ctx context.Context, d contract.Desired) ([]contra
 	if err != nil {
 		return nil, err
 	}
-	out := createdResources(st, d.SubscriptionID, clusterrepo.For(d.Secrets["github"]["owner"], d.Params["appName"]))
+	out := createdResources(st, k.cfg.ClusterType, d.SubscriptionID, clusterrepo.For(d.Secrets["github"]["owner"], d.Params["appName"]))
 	t, _, ok := k.robotReader(ctx, d)
 	if !ok {
 		return out, nil
@@ -46,7 +46,7 @@ func (k *Cluster) readCreated(ctx context.Context, d contract.Desired) ([]contra
 }
 
 // createdResources reports each declared Cloud and GitHub resource by its identity, leaving out one not yet made.
-func createdResources(st controlplane.State, subID string, repo clusterrepo.Repo) []contract.CreatedResource {
+func createdResources(st controlplane.State, clusterType, subID string, repo clusterrepo.Repo) []contract.CreatedResource {
 	var out []contract.CreatedResource
 	add := func(name, typ, key string, id int64, ok bool) {
 		if ok {
@@ -73,7 +73,7 @@ func createdResources(st controlplane.State, subID string, repo clusterrepo.Repo
 		add(Located(ResourceNode, loc), TypeServer, "serverId", node.ID, nodeOK)
 	}
 	out = append(out, cloudWorkerResources(st)...)
-	return append(out, contract.CreatedResource{Name: ResourceCluster, Type: ResourceCluster, Identity: map[string]string{"subscriptionId": subID}})
+	return append(out, contract.CreatedResource{Name: clusterType, Type: clusterType, Identity: map[string]string{"subscriptionId": subID}})
 }
 
 // createdResources reports the worker's Robot resources once the server carries the subscription's name.

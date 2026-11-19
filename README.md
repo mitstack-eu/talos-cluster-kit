@@ -4583,6 +4583,13 @@ request. The request's own size, `params.controlPlaneSize`, sets the plane's
 `Size`, as [How many control-plane nodes a plane runs](#how-many-control-plane-nodes-a-plane-runs)
 describes.
 
+`Config.ClusterType` is the resource name and type the block's manifest
+declares the cluster under, and the one the block provides. The subscribe
+reports the cluster under it, and `Observers` reads the cluster there. Left
+empty, it is `hetzner.kubernetes-cluster`, which hcloud-hrobot-talos-cluster
+provides. hcloud-talos-runner-cluster sets `github.runner-cluster`, so an app's
+runner block binds only to a runner cluster.
+
 | Part | What it does | Main entry points |
 |---|---|---|
 | Lifecycle | Answers each call mitstack makes to the operator. `Ensure` builds or upgrades the cluster one step per call. `EnsureOwning` does the same and also returns the block's own secrets the call minted, the values mitstack keeps for the block such as the gateway CA's key. `EnsureResourcesOwning` also lists the resources the call created. `Observe` reads the whole cluster, `Observers` and `TypeObservers` read one resource by its name or by its type, and `Delete` tears the cluster down | `New`, `Config`, `Cluster.Ensure`, `Cluster.EnsureOwning`, `Cluster.EnsureResourcesOwning`, `Cluster.Observe`, `Cluster.Observers`, `Cluster.TypeObservers`, `Cluster.Delete` |

@@ -15,6 +15,7 @@ import (
 	"github.com/mitstack-eu/block-kit/contract"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
 	"github.com/mitstack-eu/talos-cluster-kit/operator/robotcluster"
+	"github.com/mitstack-eu/talos-cluster-kit/operator/robotcluster/robotclustertest"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 	"github.com/stretchr/testify/require"
 )
@@ -28,52 +29,52 @@ func TestDedicatedServerCluster_TakesTheStepsAndRobotCallsItsGoldenRecords(t *te
 	assertDedicatedServerGolden(t)
 }
 
-func assertDedicatedServerGolden(t *testing.T, opts ...envOption) {
+func assertDedicatedServerGolden(t *testing.T, opts ...robotclustertest.Option) {
 	t.Helper()
-	steps := captureSteps(t)
-	e := newEnv(t, productionSub, append([]envOption{withParams(map[string]string{
+	steps := robotclustertest.CaptureSteps(t)
+	e := robotclustertest.New(t, productionSub, append([]robotclustertest.Option{robotclustertest.WithParams(map[string]string{
 		robotcluster.ParamRobotServer: fmt.Sprint(productionServer), "serverType": "cx23,cpx22,cpx32",
 	})}, opts...)...)
-	e.robot.AddServer(robottest.Server{Number: productionServer, IP: "203.0.113.50", DC: "FSN1-DC14"})
+	e.Robot.AddServer(robottest.Server{Number: productionServer, IP: "203.0.113.50", DC: "FSN1-DC14"})
 
-	obs, err := e.settle()
+	obs, err := e.Settle()
 	require.NoError(t, err, "the subscribe: %s", obs.StatusDetail)
 	var golden strings.Builder
-	section(&golden, "steps to present", steps.steps())
-	section(&golden, "created", createdLines(e.created))
+	section(&golden, "steps to present", steps.Steps())
+	section(&golden, "created", createdLines(e.Created))
 	section(&golden, "observed", []string{string(obs.State) + ": " + obs.StatusDetail})
-	section(&golden, "robot requests", robotLines(e.robot.Requests()))
-	section(&golden, "progress", withoutSerials(e.eventsSoFar()))
-	section(&golden, "worker installs", []string{fmt.Sprint(e.installed())})
+	section(&golden, "robot requests", robotLines(e.Robot.Requests()))
+	section(&golden, "progress", withoutSerials(e.EventsSoFar()))
+	section(&golden, "worker installs", []string{fmt.Sprint(e.Installed())})
 
-	requests, events := len(e.robot.Requests()), len(e.eventsSoFar())
-	require.NoError(t, e.delete(), "the unsubscribe")
-	gone := e.observe()
-	section(&golden, "robot requests to absent", robotLines(e.robot.Requests()[requests:]))
-	section(&golden, "progress to absent", e.eventsSoFar()[events:])
-	section(&golden, "cloud resources after delete", []string{fmt.Sprint(e.cloud.Count())})
+	requests, events := len(e.Robot.Requests()), len(e.EventsSoFar())
+	require.NoError(t, e.Delete(), "the unsubscribe")
+	gone := e.Observe()
+	section(&golden, "robot requests to absent", robotLines(e.Robot.Requests()[requests:]))
+	section(&golden, "progress to absent", e.EventsSoFar()[events:])
+	section(&golden, "cloud resources after delete", []string{fmt.Sprint(e.Cloud.Count())})
 	section(&golden, "observed after delete", []string{string(gone.State) + ": " + gone.StatusDetail})
-	require.False(t, e.github.exists(e.repo()), "the cluster repository after the unsubscribe")
+	require.False(t, e.GitHub.Exists(e.Repo()), "the cluster repository after the unsubscribe")
 
 	testutil.Golden(t, "testdata/dedicated-server-cluster.golden", []byte(golden.String()))
 }
 
 func TestDedicatedServerCluster_WithProductionsSetSizeCloudPoolKeepsItsMemberSteadyAsItsGoldenRecords(t *testing.T) {
-	steps := captureSteps(t)
-	e := newEnv(t, productionSub, withParams(map[string]string{
+	steps := robotclustertest.CaptureSteps(t)
+	e := robotclustertest.New(t, productionSub, robotclustertest.WithParams(map[string]string{
 		robotcluster.ParamRobotServer: fmt.Sprint(productionServer), "serverType": "cx23,cpx22,cpx32",
 		"cloudPoolServerTypes": "cpx32", "cloudPoolLocations": "fsn1", "cloudPoolMin": "1", "cloudPoolMax": "1",
 	}))
-	e.robot.AddServer(robottest.Server{Number: productionServer, IP: "203.0.113.50", DC: "FSN1-DC14"})
+	e.Robot.AddServer(robottest.Server{Number: productionServer, IP: "203.0.113.50", DC: "FSN1-DC14"})
 
-	obs, err := e.settle()
+	obs, err := e.Settle()
 	require.NoError(t, err, "the subscribe: %s", obs.StatusDetail)
-	e.ensureOrWait("the subscribe that carries the release")
-	present := len(steps.steps())
+	e.EnsureOrWait("the subscribe that carries the release")
+	present := len(steps.Steps())
 	var golden strings.Builder
-	section(&golden, "steps to present", steps.steps())
+	section(&golden, "steps to present", steps.Steps())
 	var members []string
-	for _, w := range e.byRole(controlplane.RoleCloudWorker) {
+	for _, w := range e.ByRole(controlplane.RoleCloudWorker) {
 		labels := slices.Sorted(maps.Keys(w.Labels))
 		for i, k := range labels {
 			labels[i] = k + "=" + w.Labels[k]
@@ -81,14 +82,14 @@ func TestDedicatedServerCluster_WithProductionsSetSizeCloudPoolKeepsItsMemberSte
 		members = append(members, w.Name+": "+strings.Join(labels, ","))
 	}
 	section(&golden, "cloud pool members", members)
-	section(&golden, "labeller burst nodes", []string{e.labellerBurstNodes()})
+	section(&golden, "labeller burst nodes", []string{e.LabellerBurstNodes()})
 
 	for range 3 {
-		e.progress()
-		e.ensureOrWait("a further subscribe")
+		e.Progress()
+		e.EnsureOrWait("a further subscribe")
 	}
-	section(&golden, "steps of further subscribes", steps.steps()[present:])
-	section(&golden, "observed", []string{string(e.observe().State) + ": " + e.observe().StatusDetail})
+	section(&golden, "steps of further subscribes", steps.Steps()[present:])
+	section(&golden, "observed", []string{string(e.Observe().State) + ": " + e.Observe().StatusDetail})
 
 	testutil.Golden(t, "testdata/production-cloud-pool.golden", []byte(golden.String()))
 }

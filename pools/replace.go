@@ -113,6 +113,38 @@ func ChangeUnderWay(st controlplane.State) bool {
 	return ok && recordsReplacement(network)
 }
 
+// HoldsRollout reports whether the first change the network records keeps the rollout of the release's machine
+// configuration from starting. It holds the rollout from the change's beginning until a node report reads the
+// successor Ready, so a successor that waits on the rollout, or a change that waits to begin on the control plane,
+// leaves it free. A change it cannot judge holds the rollout.
+func HoldsRollout(ctx context.Context, plane controlplane.Plane, st controlplane.State) (bool, error) {
+	network, ok := st.Network()
+	if !ok {
+		return false, nil
+	}
+	asked, err := workerReplacements(network)
+	if err != nil {
+		return true, err
+	}
+	if len(asked) == 0 {
+		return false, nil
+	}
+	if _, what := lacks(plane); what != "" {
+		return true, nil
+	}
+	x := replacer{plane: plane, st: st, network: network, r: asked[0]}
+	worker, ok := memberOf(st.Servers[RoleCloudWorker], x.r.key)
+	switch {
+	case !ok:
+		return true, nil
+	case worker.ID != x.r.old:
+		read, err := x.successorRead(ctx, worker)
+		return err != nil || read == nil, err
+	}
+	_, begun := controlplane.RemovalBegan(worker, x.r.plan())
+	return begun || worker.Status != controlplane.ServerRunning || !waitsOnControlPlane(network), nil
+}
+
 func workerReplacements(network controlplane.Network) ([]workerReplacement, error) {
 	var asked []workerReplacement
 	for _, label := range slices.Sorted(maps.Keys(network.Labels)) {
@@ -430,10 +462,8 @@ func (x replacer) allowRemoval(read report.Read, worker controlplane.Server, beg
 // begin holds a replacement while the upgrade replaces the gateways or a control-plane node, so no worker goes while
 // the control plane is short of a member.
 func (x replacer) begin(worker controlplane.Server) (progress, error) {
-	for label := range x.network.Labels {
-		if label == controlplane.KeyGatewayUpgrade || strings.HasPrefix(label, controlplane.KeyNodeReplace) {
-			return waitsOn("it begins once the upgrade has replaced the gateways and the control-plane nodes it names")
-		}
+	if waitsOnControlPlane(x.network) {
+		return waitsOn("it begins once the upgrade has replaced the gateways and the control-plane nodes it names")
 	}
 	named := "which the upgrade named"
 	if x.r.removal {
@@ -445,6 +475,12 @@ func (x replacer) begin(worker controlplane.Server) (progress, error) {
 		}
 		x.notify(ctx, "began %s Cloud worker %d (%s), %s", x.r.gerund(), worker.ID, x.r.key, named)
 		return nil
+	})
+}
+
+func waitsOnControlPlane(network controlplane.Network) bool {
+	return slices.ContainsFunc(slices.Collect(maps.Keys(network.Labels)), func(label string) bool {
+		return label == controlplane.KeyGatewayUpgrade || strings.HasPrefix(label, controlplane.KeyNodeReplace)
 	})
 }
 
@@ -741,28 +777,48 @@ func (x replacer) createSuccessor(ctx context.Context, held []string) (progress,
 }
 
 // endStep takes the record off the network once a node report since the successor's creation reads its Node object
-// Ready, so the next worker an upgrade names goes only once this one has joined.
+// Ready, and every node on the release's machine configuration, so the next worker an upgrade names goes only once
+// this one has joined.
 func (x replacer) endStep(ctx context.Context, successor controlplane.Server) (progress, error) {
-	read, err := x.plane.ReadReport(ctx, successor.Created)
+	read, err := x.successorRead(ctx, successor)
 	if err != nil {
 		return progress{}, err
 	}
-	if read != nil {
-		nodes, err := read.Nodes([]string{successor.Name})
-		if err != nil {
-			return progress{}, err
-		}
-		if reading := nodes[0].Reading; reading != nil && reading.Serving {
-			return next("take the replacement's record off the network, since a node report reads the successor of Cloud worker "+x.r.key+" Ready", func(ctx context.Context) error {
-				if err := x.unrecord(ctx); err != nil {
-					return err
-				}
-				x.notify(ctx, "Cloud worker %d (%s), created at %s, took the place of the worker the upgrade replaced", successor.ID, x.r.key, stamp(successor.Created))
-				return nil
-			})
-		}
+	if read == nil {
+		return waitsOn("Cloud worker %d (%s) has not been read Ready since its creation at %s", successor.ID, x.r.key, stamp(successor.Created))
 	}
-	return waitsOn("Cloud worker %d (%s) has not been read Ready since its creation at %s", successor.ID, x.r.key, stamp(successor.Created))
+	behind, err := x.plane.NodesBehindRelease(*read)
+	if err != nil {
+		return progress{}, err
+	}
+	if len(behind) > 0 {
+		return waitsOn("the node report read at %s reads Cloud worker %d (%s) Ready, and reads %s on a machine configuration other than the release's, so the replacement waits on the rollout that gives each node the release's",
+			stamp(read.At), successor.ID, x.r.key, strings.Join(behind, ", "))
+	}
+	return next("take the replacement's record off the network, since a node report reads the successor of Cloud worker "+x.r.key+" Ready", func(ctx context.Context) error {
+		if err := x.unrecord(ctx); err != nil {
+			return err
+		}
+		x.notify(ctx, "Cloud worker %d (%s), created at %s, took the place of the worker the upgrade replaced", successor.ID, x.r.key, stamp(successor.Created))
+		return nil
+	})
+}
+
+// successorRead is the node report received since successor's creation when it reads successor's Node object Ready,
+// else nil.
+func (x replacer) successorRead(ctx context.Context, successor controlplane.Server) (*report.Read, error) {
+	read, err := x.plane.ReadReport(ctx, successor.Created)
+	if err != nil || read == nil {
+		return nil, err
+	}
+	nodes, err := read.Nodes([]string{successor.Name})
+	if err != nil {
+		return nil, err
+	}
+	if reading := nodes[0].Reading; reading == nil || !reading.Serving {
+		return nil, nil
+	}
+	return read, nil
 }
 
 func (x replacer) notify(ctx context.Context, format string, args ...any) {

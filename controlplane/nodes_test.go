@@ -17,6 +17,7 @@ import (
 
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
 	"github.com/mitstack-eu/talos-cluster-kit/etcd"
+	"github.com/mitstack-eu/talos-cluster-kit/noderollout"
 	"github.com/mitstack-eu/talos-cluster-kit/redundant"
 	"github.com/mitstack-eu/talos-cluster-kit/report"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
@@ -49,6 +50,10 @@ type cluster struct {
 	unread string
 	// others are the removals of another kind main holds, which a block lists beside the etcd member removals.
 	others []string
+	// release is the machine configuration each Node object names, none when empty, and behind names the nodes on an
+	// earlier one.
+	release string
+	behind  []string
 }
 
 func removalJob(name string) testutil.ObjectRef {
@@ -116,7 +121,14 @@ func (c *cluster) body() []byte {
 	var nodes, members, pods, openBao []map[string]any
 	for i, hostname := range slices.Sorted(maps.Keys(c.objects)) {
 		member := "openbao-" + string(rune('0'+i))
-		nodes = append(nodes, map[string]any{"name": hostname, "ready": running[hostname]})
+		node := map[string]any{"name": hostname, "ready": running[hostname]}
+		if c.release != "" {
+			node["machineConfig"] = c.release
+		}
+		if slices.Contains(c.behind, hostname) {
+			node["machineConfig"] = earlierRelease
+		}
+		nodes = append(nodes, node)
 		pods = append(pods, map[string]any{"namespace": "openbao", "name": member, "node": hostname})
 		openBao = append(openBao, map[string]any{"name": member, "initialized": true, "sealed": !running[hostname] || slices.Contains(c.sealed, hostname)})
 	}
@@ -562,6 +574,34 @@ func TestPlane_NamesAReplacementUnderWayInItsProblemsUntilANodeReportReadsItsSuc
 	require.NoError(t, h.replace(c, nil))
 	assert.GreaterOrEqual(t, h.now.Sub(successor.Created), c.joinTakes, "how long after the successor's creation its replacement ended")
 	assert.NotContains(t, h.problems(), "fsn1", "the plane's problems once a report reads the successor serving")
+}
+
+// earlierRelease is the machine configuration a node booted from the kept snapshot runs once a later kit release is out.
+const earlierRelease = "sha256:0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
+
+func TestPlane_KeepsAReplacementUnderWayUntilANodeReportReadsItsSuccessorAndEveryNodeOnTheReleasesMachineConfiguration(t *testing.T) {
+	controlplane.SwapToolsImage(t, recordedToolsImage)
+	release, err := noderollout.Release(recordedToolsImage)
+	require.NoError(t, err)
+	h, c := withCluster(t, sequential)
+	h.plane.RollsOutMachineConfig, c.release = true, release
+	old := h.nodeIn("fsn1")
+	require.NoError(t, h.replace(c, func() bool { return h.cloud.Servers[old.ID].Status == controlplane.ServerOff }, "fsn1"))
+	c.behind = []string{old.Name}
+	waits := fmt.Sprintf("reads %s on a machine configuration other than the release's", old.Name)
+	require.NoError(t, h.replace(c, func() bool { return strings.Contains(h.problems(), waits) }))
+	successor := h.nodeIn("fsn1")
+
+	require.NoError(t, h.replace(c, func() bool { return h.now.After(successor.Created.Add(3 * reportEvery)) }))
+
+	assert.True(t, h.replacing(), "the replacement's mark while a report reads its successor serving on an earlier machine configuration")
+	assert.Contains(t, h.problems(), fmt.Sprintf("node %d in fsn1 serves", successor.ID), "the plane's problems while its successor waits on the rollout")
+	assert.Contains(t, h.problems(), waits, "the plane's problems while its successor waits on the rollout")
+	assert.Empty(t, h.plane.RolloutBlockers(context.Background(), h.read()), "what keeps the rollout from giving the successor the release's machine configuration")
+	c.behind = nil
+	require.NoError(t, h.replace(c, nil))
+	assert.False(t, h.replacing(), "the network still carries the replacement's mark: %v", h.network().Labels)
+	assert.Len(t, h.eventsNaming("took the place of"), 1, "the events naming the successor: %v", h.events)
 }
 
 func TestPlane_ReplacesTheNodesAnUpgradeNamesOneAtATimeAndNoneOnACallThatIsNoUpgrade(t *testing.T) {

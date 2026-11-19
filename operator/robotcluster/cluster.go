@@ -117,7 +117,7 @@ func (k *Cluster) NewPlane(api controlplane.API, subID, appName string) controlp
 	}
 }
 
-// PlaneFor reads a size the request cannot run as the default, since its own verb refuses it.
+// PlaneFor drops a size error, since Ensure and PlanReplacements refuse that size themselves.
 func (k *Cluster) PlaneFor(api controlplane.API, d contract.Desired) controlplane.Plane {
 	p := k.placeApps(k.NewPlane(api, d.SubscriptionID, d.Params["appName"]), d)
 	p.Size, _ = operator.ControlPlaneSize(d)

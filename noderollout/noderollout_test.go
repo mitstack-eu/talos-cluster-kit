@@ -21,12 +21,12 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 )
 
-// release is the release testutil.ToolsImage carries, the digest each node's annotation names once it runs it.
 const release = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
-// fakeKubectl lists FAKE_NODES, each "<name>:<address>:<control|worker>", with the release FAKE_STATE/<name> holds as
-// the node's machine-config annotation, and its wait answers at once whether that annotation is the release waited for.
+// fakeKubectl lists FAKE_NODES, each "<name>:<address>:<control|worker>", annotated with FAKE_STATE/<name>'s release, its
+// wait answers at once whether that annotation is the release waited for, and it fails the call FAKE_FAIL names.
 const fakeKubectl = `
+[ "$*" != "${FAKE_FAIL:-}" ] || { echo "error: the server is currently unable to handle the request" >&2; exit 1; }
 node_json() {
   local labels='{}' annotations='{}'
   [ "$3" = control ] && labels='{"node-role.kubernetes.io/control-plane":""}'
@@ -45,18 +45,20 @@ case "$*" in
 esac
 `
 
-// fakeTalosctl answers a node's configuration as text naming its address, and watches each address's etcd unhealthy on
-// FAKE_UNHEALTHY, or FAKE_UNHEALTHY_AFTER_APPLY once a node took a configuration, and unhealthy then healthy on
-// FAKE_RECOVERING. An apply records the file's release as the node's annotation, unless FAKE_APPLY_IGNORED names it.
+// fakeTalosctl answers a node's configuration as text, watches etcd a line per field as Talos prints it, unhealthy on
+// FAKE_UNHEALTHY or, after an apply, FAKE_UNHEALTHY_AFTER_APPLY, recovering on FAKE_RECOVERING and destroyed on FAKE_GONE,
+// records an apply's release as the annotation unless FAKE_APPLY_IGNORED names it, and never answers a FAKE_HANG call.
 const fakeTalosctl = `
+[[ -z "${FAKE_HANG:-}" || "$*" != *"$FAKE_HANG"* ]] || exec timeout 10 tail -f /dev/null
 case "$3 $4" in
   "get machineconfig") echo "the running configuration of $2" ;;
   "get service")
     for address in ${2//,/ }; do
-      [[ " ${FAKE_RECOVERING:-} " != *" $address "* ]] || echo "$address false"
-      healthy=true
+      [[ " ${FAKE_RECOVERING:-} " != *" $address "* ]] || printf '%s\n' "$address" updated false
+      event=created healthy=true
+      [[ " ${FAKE_GONE:-} " != *" $address "* ]] || event=destroyed
       [[ " ${FAKE_UNHEALTHY:-} $(cat "$FAKE_STATE/.unhealthy" 2>/dev/null) " != *" $address "* ]] || healthy=false
-      echo "$address $healthy"
+      printf '%s\n' "$address" "$event" "$healthy"
     done ;;
   "apply-config --mode")
     [[ " ${FAKE_APPLY_IGNORED:-} " != *" $2 "* ]] || exit 0
@@ -81,7 +83,6 @@ printf 'release: %s\n' "$2"
 // threeNodes lists a worker first, so the order the Job takes nodes in is its own.
 const threeNodes = "poc-worker1:10.0.1.4:worker poc-cp2:10.0.0.5:control poc-cp1:10.0.0.4:control"
 
-// rolloutBegan is when the Update began, a minute before the node report it is judged by.
 var rolloutBegan = time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)
 
 // etcdReport is a node report read a minute after the Update began, its three members healthy but those unhealthy names.
@@ -97,7 +98,6 @@ func rollout(read report.Read) noderollout.Rollout {
 	return noderollout.Rollout{ToolsImage: testutil.ToolsImage, Report: read, StepStart: rolloutBegan, Guard: redundanttest.Guard}
 }
 
-// renderJob renders the rollout while every etcd member reads healthy, with its Job's container.
 func renderJob(t *testing.T) ([]map[string]any, map[string]any) {
 	t.Helper()
 	rendered, err := noderollout.Job(rollout(etcdReport()))
@@ -108,8 +108,6 @@ func renderJob(t *testing.T) ([]map[string]any, map[string]any) {
 	return docs, testutil.Field(t, jobs[0], "spec", "template", "spec", "containers", "0").(map[string]any)
 }
 
-// cluster is a run of the Job's script against the fake cluster of nodes, where each name of atRelease runs the
-// release already.
 type cluster struct {
 	tools *testutil.Tools
 	state string
@@ -130,12 +128,11 @@ func newCluster(t *testing.T, nodes string, atRelease ...string) cluster {
 func (c cluster) run(t *testing.T, extra ...string) (string, error) {
 	t.Helper()
 	_, container := renderJob(t)
-	args := append(slices.Clone(c.env), "RELEASE="+testutil.ContainerEnv(t, container)["RELEASE"])
-	return testutil.RunBash(t, testutil.Field(t, container, "command", "2").(string), c.tools.Env(append(args, extra...)...))
+	env := slices.Concat(c.env, []string{"RELEASE=" + testutil.ContainerEnv(t, container)["RELEASE"]}, extra)
+	return testutil.RunBash(t, testutil.Field(t, container, "command", "2").(string), c.tools.Env(env...))
 }
 
-// calls are the tools' calls, each applied file's path read as <rendered>, since the script writes it in a directory
-// of its own.
+// calls are the tools' calls, an applied file's path read as <rendered>, since the script picks its own directory.
 func (c cluster) calls(t *testing.T) []string {
 	t.Helper()
 	return strings.Split(regexp.MustCompile(`--file \S+`).ReplaceAllString(strings.Join(c.tools.Calls(t), "\n"), "--file <rendered>"), "\n")
@@ -153,7 +150,7 @@ func TestJob_GivesEachNodeTheReleasesConfigurationOneAtATimeTheControlPlaneFirst
 
 	require.NoError(t, err, out)
 	change := func(address, name string) []string {
-		return []string{"talosctl -n 10.0.0.4,10.0.0.5 get service etcd --watch -o jsonpath={.node} {.spec.healthy}",
+		return []string{"talosctl -n 10.0.0.4,10.0.0.5 get service etcd --watch -o jsonpath={.node}{.event}{.spec.healthy}",
 			"talosctl -n " + address + " apply-config --mode no-reboot --file <rendered>",
 			`kubectl wait --for=jsonpath={.metadata.annotations.mitstack\.dev/machine-config}=` + release + " --timeout=5s node/" + name,
 			"kubectl wait --for=condition=Ready --timeout=5s node/" + name}
@@ -203,6 +200,10 @@ func TestJob_ChangesNoNodeAfterARefusalOrANodeThatDoesNotComeUpAtTheRelease(t *t
 	}{
 		{"a setting a node takes only at reboot", threeNodes, "FAKE_REBOOT_ONLY=10.0.1.4", 3, []string{}, []string{"poc-worker1", "machine.install"}},
 		{"an unhealthy etcd member", threeNodes, "FAKE_UNHEALTHY=10.0.0.5", 1, []string{}, []string{"10.0.0.5"}},
+		{"an etcd service that is gone", threeNodes, "FAKE_GONE=10.0.0.5", 1, []string{}, []string{"etcd does not read healthy on 10.0.0.5,"}},
+		{"an etcd watch that never answers", threeNodes, "FAKE_HANG=get service", 1, []string{}, []string{"10.0.0.4,10.0.0.5"}},
+		{"a node list the API server does not answer", threeNodes, "FAKE_FAIL=get nodes -o json", 1, []string{}, []string{"listing the nodes"}},
+		{"an apply that never answers", threeNodes, "FAKE_HANG=apply-config", 1, []string{"talosctl -n 10.0.0.4 apply-config --mode no-reboot --file <rendered>"}, []string{"applying the configuration to poc-cp1"}},
 		{"an etcd member that turns unhealthy after the first node", threeNodes, "FAKE_UNHEALTHY_AFTER_APPLY=10.0.0.5", 1, []string{"talosctl -n 10.0.0.4 apply-config --mode no-reboot --file <rendered>"}, []string{"10.0.0.5", "poc-cp2 keeps its configuration"}},
 		{"a control-plane node listing no address", "poc-cp2:10.0.0.5:control poc-cp1::control", "NODE_WAIT_SECONDS=0", 1, []string{}, []string{"poc-cp1 lists no internal address to read etcd at"}},
 		{"a worker listing no address", "poc-cp1:10.0.0.4:control poc-worker1::worker", "NODE_WAIT_SECONDS=0", 1, []string{}, []string{"poc-worker1 lists no internal address to reach its Talos API at"}},

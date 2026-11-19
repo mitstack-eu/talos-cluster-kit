@@ -27,7 +27,7 @@ func (k *Cluster) Observers() map[string]handler.Observer {
 		Located(ResourceIngressLoadBalancer, gw): labelledObserver{k: k, kind: gw + " ingress load balancer", list: loadBalancersIn(controlplane.RoleIngress, gw), outputs: loadBalancerOutputs(controlplane.RoleIngress, gw, exposurePublic)},
 		ResourceRepository:                       clusterrepo.RepositoryObserver{Dial: k.dialRepository, Check: deployKeyCheck},
 		ResourceSeedCommit:                       clusterrepo.SeedObserver{Dial: k.dialRepository},
-		ResourceCluster:                          operator.ObserverFunc(k.observeCluster),
+		k.cfg.ClusterType:                        operator.ObserverFunc(k.observeCluster),
 		ResourceCloudWorker:                      cloudWorkerObserver{k: k},
 		ResourceDedicatedServer:                  robotObserver{k: k, judge: judgeDedicatedServer},
 		ResourceVSwitch:                          robotObserver{k: k, judge: judgeVSwitch},

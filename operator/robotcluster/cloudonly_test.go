@@ -95,7 +95,7 @@ func TestCloudOnlyCluster_OfAnOperatorNamingItsClusterTypeReportsAndObservesTheC
 	read, err := observers[runnerCluster].ObserveResource(context.Background(), contract.ResourceRef{Name: runnerCluster, Type: runnerCluster, Desired: e.Desired()})
 	require.NoError(t, err, "the cluster's observe")
 	assert.Equal(t, contract.Present, read.State, read.StatusDetail)
-	assert.NotEmpty(t, read.Outputs["apiEndpoint"], "the cluster's API endpoint")
+	assert.Equal(t, cloudOnlySub, read.Outputs["subscriptionId"], "the subscription the cluster names")
 }
 
 func TestCloudOnlyCluster_ReadsItsRobotResourcesAbsentWithNoRobotCall(t *testing.T) {

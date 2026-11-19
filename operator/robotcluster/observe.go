@@ -260,7 +260,8 @@ func (k *Cluster) hetznerReader(d contract.Desired) (controlplane.Plane, contrac
 // Observe reads the whole cluster: present once the control plane stands as the block makes it, no Cloud worker's
 // replacement is under way, the worker is written, the newest node report since the last node's creation reads every
 // node Ready, the worker among them, and, unless a gateway built from an earlier image list still stands, main holds
-// the release's component set as stated and that report reads it back; absent when no labelled resource or marked
+// the release's component set as stated, that report reads it back and reads every node on the release's machine
+// configuration; absent when no labelled resource or marked
 // repository is left; unknown, naming what is missing, in between.
 func (k *Cluster) Observe(ctx context.Context, d contract.Desired) (contract.Observation, error) {
 	return k.observeCluster(ctx, d)
@@ -419,6 +420,10 @@ func readRelease(ctx context.Context, d contract.Desired, p controlplane.Plane, 
 			return "", problem, err
 		}
 		r, err := readRollout(ctx, p, st, repo.gh, release.ToolsImage, worker)
+		var refused *handler.Refused
+		if err = refusal(err); errors.As(err, &refused) {
+			return "", "the release's machine configuration rollout is refused with " + refused.Class + ": " + refused.Detail, nil
+		}
 		if err != nil || r.problem != "" {
 			return "", r.problem, err
 		}

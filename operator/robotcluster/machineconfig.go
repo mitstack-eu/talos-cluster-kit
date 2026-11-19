@@ -17,7 +17,7 @@ import (
 )
 
 // nodeRollout is what the release's machine configuration asks of main: the rollout written while a node is behind,
-// and every other rollout main holds taken out.
+// and each rollout main holds that no node waits on taken out.
 type nodeRollout struct {
 	// problem names the nodes behind the release, or why the newest report cannot tell which are.
 	problem string
@@ -67,7 +67,6 @@ func (c convergence) robotWorker() string {
 	return c.plane.Name("worker")
 }
 
-// readRollout judges each node by the newest report made since the cluster's newest server was created.
 func readRollout(ctx context.Context, p controlplane.Plane, st controlplane.State, gh *githubAccess, toolsImage, worker string) (nodeRollout, error) {
 	release, err := noderollout.Release(toolsImage)
 	if err != nil {

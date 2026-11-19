@@ -4666,6 +4666,16 @@ e := robotclustertest.New(t, "sub_0c10d0a1b2c3", robotclustertest.WithOperator(c
 obs, err := e.Settle()
 ```
 
+`Env.Block` hands `kittest.AssertBlock` the operator's own handler config, so
+its `TestDeclaredResources` needs no provider of its own. Each subscribe
+settles on the fakes until the cluster reads present, and each observer reads
+with the own secrets every answer minted, as the platform sends them:
+
+```go
+cfg := handlerConfig("https://api.mitstack.test/.well-known/jwks.json", nil)
+kittest.AssertBlock(t, e.Block(cfg))
+```
+
 ### A cluster with no dedicated server
 
 An operator can let a cluster start on Hetzner Cloud servers alone, and take

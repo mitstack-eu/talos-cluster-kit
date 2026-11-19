@@ -102,8 +102,12 @@ func TestUpdate_RefusesTheRolloutNamingTheEtcdMemberTheNewestReportReadsUnhealth
 	e.Now = e.Now.Add(time.Minute)
 	e.ReportNodes()
 
+	obs := e.Observe()
 	err := e.Ensure()
 
+	assert.Equal(t, contract.Unknown, obs.State, "the observe while an etcd member is unhealthy")
+	assert.Contains(t, obs.StatusDetail, redundant.ClassBelowMinimum, "the observe names the refusal")
+	assert.Contains(t, obs.StatusDetail, nodes[1].Name, "the observe names the unhealthy member")
 	var refused *handler.Refused
 	require.ErrorAs(t, err, &refused, "the subscribe while an etcd member is unhealthy")
 	assert.Equal(t, redundant.ClassBelowMinimum, refused.Class)

@@ -1,0 +1,107 @@
+# Gives each node the machine configuration release {{ .Release }} renders for
+# it, without a reboot. The Talos identity holds os:admin, the only role Talos
+# answers a node's configuration to and applies one for, and the Kubernetes
+# identity may only read the Node objects.
+apiVersion: talos.dev/v1alpha1
+kind: ServiceAccount
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+spec:
+  roles:
+    - os:admin
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Name }}
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Name }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Name }}
+    namespace: {{ .Namespace }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+  labels:
+    mitstack.dev/rendered-by: talos-cluster-kit
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 86400
+  podFailurePolicy:
+    rules:
+      - action: FailJob
+        onExitCodes:
+          containerName: apply-machine-config
+          operator: In
+          values: [3]
+  template:
+    spec:
+      serviceAccountName: {{ .Name }}
+      restartPolicy: Never
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: apply-machine-config
+          image: {{ .Image }}
+          terminationMessagePolicy: FallbackToLogsOnError
+          command:
+            - bash
+            - -c
+            - |
+{{ indent 14 .Script }}
+          env:
+            - name: RELEASE
+              value: {{ printf "%q" .Release }}
+            - name: HOME
+              value: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: talos-secrets
+              mountPath: /var/run/secrets/talos.dev
+              readOnly: true
+      volumes:
+        # The configurations the Job writes hold the cluster's keys, so they stay
+        # off the node's disk.
+        - name: tmp
+          emptyDir:
+            medium: Memory
+        - name: talos-secrets
+          secret:
+            secretName: {{ .Name }}

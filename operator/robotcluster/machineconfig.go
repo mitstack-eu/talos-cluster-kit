@@ -16,8 +16,6 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/report"
 )
 
-// nodeRollout is what the release's machine configuration asks of main: the rollout written while a node is behind,
-// and each rollout main holds that no node waits on taken out.
 type nodeRollout struct {
 	// problem names the nodes behind the release, or why the newest report cannot tell which are.
 	problem string
@@ -45,8 +43,7 @@ func (c convergence) rollNodes(ctx context.Context, due carriage, network contro
 	return nil
 }
 
-// rolloutDue is the rollout a subscribe sent now would commit, none while the release's component set is not held as
-// stated or the cluster has a problem or a change under way.
+// rolloutDue is the rollout a subscribe sent now would commit.
 func (c convergence) rolloutDue(ctx context.Context, due carriage, network controlplane.Network) (nodeRollout, error) {
 	if c.plane.GatewayCA == nil || len(due.changes) > 0 || due.release.ToolsImage == "" || pools.ChangeUnderWay(c.state) {
 		return nodeRollout{}, nil
@@ -154,8 +151,8 @@ func rolloutReport(ctx context.Context, p controlplane.Plane, st controlplane.St
 	return read, "", nil
 }
 
-// newestServer is when the cluster's newest gateway, node or Cloud worker was created, the last server an Update or a
-// replacement builds.
+// newestServer stands in for the Update's start, which the platform does not pass a block: the last server an Update
+// or a replacement builds.
 func newestServer(st controlplane.State) time.Time {
 	var newest time.Time
 	for _, role := range []controlplane.Role{controlplane.RoleGateway, controlplane.RoleNode, pools.RoleCloudWorker} {

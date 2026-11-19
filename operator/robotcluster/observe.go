@@ -257,12 +257,9 @@ func (k *Cluster) hetznerReader(d contract.Desired) (controlplane.Plane, contrac
 	return k.PlaneFor(k.cfg.CloudAPI(token), d), contract.Observation{}, true
 }
 
-// Observe reads the whole cluster: present once the control plane stands as the block makes it, no Cloud worker's
-// replacement is under way, the worker is written, the newest node report since the last node's creation reads every
-// node Ready, the worker among them, and, unless a gateway built from an earlier image list still stands, main holds
-// the release's component set as stated, that report reads it back and reads every node on the release's machine
-// configuration; absent when no labelled resource or marked repository is left; unknown, naming what is missing, in
-// between.
+// Observe reads the whole cluster: present once it stands as the block makes it and every node runs the release's
+// machine configuration, absent once no labelled resource or marked repository is left, unknown naming what is missing
+// in between.
 func (k *Cluster) Observe(ctx context.Context, d contract.Desired) (contract.Observation, error) {
 	return k.observeCluster(ctx, d)
 }
@@ -475,7 +472,6 @@ func (k *Cluster) stepLeft(ctx context.Context, d contract.Desired, st controlpl
 	return "the next subscribe takes the step to " + s.What, nil
 }
 
-// rolloutLeft names the rollout commit the next subscribe makes once the plane has no step left, or its refusal.
 func (c convergence) rolloutLeft(ctx context.Context, due carriage, network controlplane.Network) (string, error) {
 	r, err := c.rolloutDue(ctx, due, network)
 	var refused *handler.Refused

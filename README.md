@@ -4596,7 +4596,7 @@ runner block binds only to a runner cluster.
 | Control plane and gateways | Builds the one or three Cloud nodes the request's size names and the gateways in front of them through the kit's `controlplane` package, and reads each gateway's newest report. A gateway is the Cloud server in each node's location that the nodes route out through and pull their images from | `Cluster.NewPlane`, `Cluster.PlaneFor`, `Cluster.WithGateways`, `GatewayReports`, `NewGatewayReports`, `GuardRemoval` |
 | Robot worker | Refuses a Robot server that is missing, cancelled, outside the cluster's locations or named for another subscription, before anything is written. It then joins the server to the cluster's network over a vSwitch, Hetzner's private link between Robot and Cloud servers, sets its firewall, and runs the install `Config` names in the background | `RobotName`, `Worker`, `WorkerInstall`, `WorkerFirewall`, `WorkerFirewallFor`, `HoldsWorkerRules`, `WaitOutRobotLimit`, `Cluster.JobRunning`, `Cluster.StopJob` |
 | Cloud pool and node replace | Scales the pool of Cloud workers through the kit's `pools` package, and names the control-plane nodes and Cloud workers an upgrade's request asks to replace that the cluster runs. That dry run also refuses a control-plane size other than the one the running cluster was subscribed with, as the upgrade itself would. Before it scales, it relabels each member `pools.Reclassify` names, so the pool again holds its minimum of steady members, and the labeller carries the change to the nodes at the next release. It names in the cluster's health a hold for pods only a steady member takes, and a failed labeller run | `MemberName`, `Located`, `Cluster.PlanReplacements`, `CauseHeldForSteady`, `CauseLabellerFailed` |
-| Rollout | Writes a release's components to the cluster repository and reads them back from the cluster's node report, then gives each node the release's machine configuration through the rollout Job, as [How an Update reaches each node's configuration](#how-an-update-reaches-each-nodes-configuration) explains. It keeps the blob SHA of each file a release renders, the hash Git names a file's content by, so each release is rendered once. `Rendering.Blobs` gives those hashes | `ReleaseFor`, `Cluster.RenderingOf`, `Rendering.Blobs` |
+| Rollout | Writes a release's components to the cluster repository and reads them back from the cluster's node report. It then gives each node the release's machine configuration, as [How an Update reaches each node's configuration](#how-an-update-reaches-each-nodes-configuration) explains. It keeps the blob SHA of each file a release renders, the hash Git names a file's content by, so each release is rendered once. `Rendering.Blobs` gives those hashes | `ReleaseFor`, `Cluster.RenderingOf`, `Rendering.Blobs` |
 | Hosting | For the cluster that hosts mitstack itself, commits the keys that recover the cluster's OpenBao store and its sealed secrets to its repository. Each is encrypted with OpenPGP to the owner's public key, so only the owner's private key opens it. It also creates the two deploy keys that repository is read and written with | `HostsPlatform`, `EncryptTo`, `DeployKey` |
 
 The view below shows the module's parts and the kit packages and outside
@@ -4676,53 +4676,76 @@ cfg := handlerConfig("https://api.mitstack.test/.well-known/jwks.json", nil)
 kittest.AssertBlock(t, e.Block(cfg))
 ```
 
-Each node in the harness's reports names this kit release's machine
-configuration unless a test sets an earlier one in `Env.Earlier`, which holds
-until Argo CD's fake runs the rollout Job. `Env.EtcdDown` names the node whose
-etcd member the later reports read unhealthy. `Env.Report` builds the next
-report and `Env.SendReport` sends it, so a test can change a report first:
+The harness also sends the cluster's node reports, the reports
+[What the node report carries](#what-the-node-report-carries) describes. In
+them each node names this kit release as the source of its machine
+configuration. A test can give a node an earlier release instead, by its
+tools image digest in `Env.Earlier`. The node keeps that release until the
+fake Argo CD applies the rollout Job. `Env.EtcdDown` names the node whose etcd
+member the later reports read unhealthy. `Env.Report` builds the next report
+and `Env.SendReport` sends it, so a test can change a report before it is sent.
+In this example the first control-plane node runs an earlier release, whose
+digest stands in for any other than this kit's:
 
 ```go
 node := e.ByRole(controlplane.RoleNode)[0].Name
-e.Earlier = map[string]string{node: "sha256:..."}
+e.Earlier = map[string]string{node: "sha256:5f0c…"}
 e.ReportNodes()
-obs := e.Observe() // unknown, naming the node as behind the release
+obs := e.Observe() // obs.State is Unknown, and obs.StatusDetail names the node as behind the release
 ```
 
 ### How an Update reaches each node's configuration
 
-A Talos node never takes a new machine configuration on its own, so an Update
-to a new kit release ends with
-[the rollout Job](#how-the-rollout-job-gives-each-node-the-release). The module
-commits that Job only once the rest of the Update has landed. Main must hold
-the release's component set as stated, the Robot worker must be written, no
-Cloud worker may be under replacement, and the control plane must read no
-problem. The Job changes one node at a time, so it never runs beside a step
-that replaces a node.
+An Update is the subscribe that moves a running cluster onto a newer release
+of its block, which can carry a newer kit release. A subscribe is the call
+mitstack sends the operator to build or change the cluster, which `Ensure`
+answers one step at a time. A Talos node never takes a new machine
+configuration on its own, so an Update ends with
+[the rollout Job](#how-the-rollout-job-gives-each-node-the-release), held in
+the cluster repository as the rollout file at `noderollout.Path`.
+
+The module commits that file to the repository's `main` branch, the branch
+the cluster's Argo CD applies, only once the rest of the Update has landed:
+
+1. `main` holds each file of the release's component set as the release
+   states it, as
+   [How a running cluster takes a release's components](#how-a-running-cluster-takes-a-releases-components)
+   describes.
+2. The Robot worker is written.
+3. No Cloud worker is being replaced.
+4. The control plane names no problem.
+
+The Job changes one node at a time, so it never runs beside a step that
+replaces a node.
 
 The module reads which nodes are behind from the newest node report, and only
 from a report it can trust:
 
-1. The report was made after the cluster's newest server was created, the last
-   server an Update or a replacement builds, since an older report misses a
-   node it never saw.
+1. The report was made after the cluster's newest server was created. That is
+   the last server an Update or a replacement builds, and an older report
+   misses any node created after it.
 2. The report names every node the cluster runs, the Robot worker included,
    and reads each one Ready.
 
-While either is untrue, the cluster reads unknown, its status names what is
-missing, and main keeps whatever rollout file it holds. With a report the
-module trusts, each subscribe makes at most one commit to the cluster
-repository:
+While either is untrue, `Observe` reads the cluster Unknown, the state that
+says the module cannot tell whether the cluster is as asked. Its status names
+what is missing, and `main` keeps whatever rollout file it holds. With a
+report the module trusts, each subscribe makes at most one commit to the
+cluster repository:
 
 1. While any node names an earlier release, the commit adds the release's
    rollout file and takes out an earlier release's file.
 2. Once every node names the release, the commit takes the rollout file out.
 
 The cluster reads present only once every node runs the release's
-configuration, and the status then says so. The etcd guard refuses the Job
-while the newest report reads an etcd member unhealthy. The subscribe then
-refuses with `redundancy-below-minimum`, naming the member, and the cluster
-reads unknown with the same refusal in its status.
+configuration, and the status then says so.
+
+The etcd guard refuses the Job while the newest report reads an etcd member
+unhealthy. The subscribe then refuses with the guard's class
+`redundancy-below-minimum`, naming the member, as
+[How a control-plane node is replaced](#how-a-control-plane-node-is-replaced)
+describes for the same guard. The cluster reads Unknown with the same refusal
+in its status.
 
 ### A cluster with no dedicated server
 

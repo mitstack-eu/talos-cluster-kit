@@ -2,6 +2,7 @@ package robotclustertest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"strconv"
@@ -46,6 +47,7 @@ type settling struct {
 }
 
 func (s settling) EnsureResourcesOwning(ctx context.Context, d contract.Desired) ([]contract.CreatedResource, map[string]string, error) {
+	var last error
 	for range rounds {
 		d.OwnSecrets = merged(s.e.Own, d.OwnSecrets)
 		created, own, err := s.owning.EnsureResourcesOwning(ctx, d)
@@ -55,11 +57,13 @@ func (s settling) EnsureResourcesOwning(ctx context.Context, d contract.Desired)
 		}
 		s.e.Now = s.e.Now.Add(time.Minute)
 		s.e.Progress()
-		if obs, oerr := s.e.Cluster.Observe(ctx, s.e.Desired()); err == nil && oerr == nil && obs.State == contract.Present {
+		obs, oerr := s.e.Cluster.Observe(ctx, s.e.Desired())
+		if err == nil && oerr == nil && obs.State == contract.Present {
 			return created, s.e.Own, nil
 		}
+		last = errors.Join(err, oerr, fmt.Errorf("the cluster reads %s: %s", obs.State, obs.StatusDetail))
 	}
-	return nil, s.e.Own, fmt.Errorf("the cluster read present after none of %d subscribes", rounds)
+	return nil, s.e.Own, fmt.Errorf("the cluster read present after none of %d subscribes: %w", rounds, last)
 }
 
 type carrying struct {
@@ -81,11 +85,14 @@ func merged(a, b map[string]string) map[string]string {
 	return out
 }
 
-// provider lists what carries the subscription's labels or the repository's mark, and loses a resource from under the block.
+// provider stands in for the Hetzner and GitHub accounts the kit's guards list and lose resources through.
 type provider struct{ e *Env }
 
 func (p provider) ListTagged(ctx context.Context, _ string) ([]observe.Tagged, error) {
 	st, err := p.e.Cluster.PlaneFor(p.e.Cloud, p.e.Desired()).Read(ctx)
+	if err != nil {
+		return nil, err
+	}
 	var tagged []observe.Tagged
 	add := func(typ string, ids []int64) {
 		for _, id := range ids {
@@ -106,7 +113,7 @@ func (p provider) ListTagged(ctx context.Context, _ string) ([]observe.Tagged, e
 		tagged = append(tagged, observe.Tagged{Type: robotcluster.TypeRepository, ID: p.e.Repo()},
 			observe.Tagged{Type: robotcluster.ResourceSeedCommit, ID: p.e.Repo()})
 	}
-	return tagged, err
+	return tagged, nil
 }
 
 func (p provider) Lose(ctx context.Context, r contract.CreatedResource) error {
@@ -128,10 +135,11 @@ func (p provider) Lose(ctx context.Context, r contract.CreatedResource) error {
 		return p.e.Config.GitHubClient("", githubToken).DeleteRepo(ctx, Owner, App+"-cluster")
 	case p.e.clusterType():
 		snaps, err := c.ListSnapshots(ctx, p.e.Plane().Selector())
+		if err == nil && len(snaps) == 0 {
+			err = fmt.Errorf("resource %s has no snapshot under %s to lose", r.Name, p.e.Plane().Selector())
+		}
 		for _, s := range snaps {
-			if err == nil {
-				err = c.DeleteSnapshot(ctx, s.ID)
-			}
+			err = errors.Join(err, c.DeleteSnapshot(ctx, s.ID))
 		}
 		return err
 	}

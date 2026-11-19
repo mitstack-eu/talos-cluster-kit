@@ -4727,11 +4727,14 @@ the cluster's Argo CD applies, only once the rest of the Update has landed:
    [How a running cluster takes a release's components](#how-a-running-cluster-takes-a-releases-components)
    describes.
 2. The Robot worker is written.
-3. No Cloud worker is being replaced.
-4. The control plane names no problem.
+3. No Cloud worker is being replaced, apart from one whose successor reads
+   Ready.
+4. The control plane names no problem, apart from a node's replacement whose
+   successor serves.
 
-The Job changes one node at a time, so it never runs beside a step that
-replaces a node.
+The Job changes one node at a time, so it starts only once a replaced node's
+successor serves. The module sets `Plane.RollsOutMachineConfig`, so such a
+replacement ends only once every node runs the release.
 
 The module reads which nodes are behind from the newest node report, and only
 from a report it can trust:
@@ -4750,7 +4753,17 @@ cluster repository:
 
 1. While any node names an earlier release, the commit adds the release's
    rollout file and takes out an earlier release's file.
-2. Once every node names the release, the commit takes the rollout file out.
+2. While a node names an earlier release and the report reads the release's
+   Job completed, the commit takes the rollout file out, and the next commit
+   adds it again. The Job lists the nodes once, as it starts, and Argo CD runs
+   a Job only as it creates it, so a node that joined after the Job ran, such
+   as a replaced node's successor or a worker the pool grew, is reached only
+   by a new Job. The Job fails on a node it lists that does not come to name
+   the release, so a completed Job leaves behind only a node it did not list,
+   or one a report read before the Job reached it. Each new Job lists every
+   node present as it starts, and leaves a node already on the release as it
+   is.
+3. Once every node names the release, the commit takes the rollout file out.
 
 The cluster reads present only once every node runs the release's
 configuration, and the status then says so.

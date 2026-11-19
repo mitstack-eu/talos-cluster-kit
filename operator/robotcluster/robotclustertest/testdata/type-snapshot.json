@@ -1,0 +1,598 @@
+{
+  "version": 107,
+  "types": [
+    {
+      "id": "github.gitops-commit",
+      "capability": "github",
+      "kind": "gitops-revision",
+      "scope": "per-app",
+      "stateful": false,
+      "pricing": {
+        "priced": false
+      },
+      "category": "source-and-work",
+      "outputs": [
+        {
+          "name": "sourceBranch",
+          "secret": false,
+          "required": false,
+          "meaning": "The branch holding that commit.",
+          "shape": "git branch name",
+          "example": "main"
+        },
+        {
+          "name": "sourceSha",
+          "secret": false,
+          "required": true,
+          "meaning": "The commit holding the manifests Argo CD applies.",
+          "shape": "40-character git commit sha",
+          "example": "3f9c2b1e8d7a6c5b4a39281706f5e4d3c2b1a098"
+        }
+      ],
+      "observe": "the git commits API returns the commit, and the branch ref points at it or at a descendant",
+      "absence": "the git refs API answers 404 for the branch that carried the commit",
+      "timeBudgets": {
+        "delete": "1m",
+        "ensure": "2m",
+        "observe": "30s"
+      },
+      "failures": [
+        {
+          "class": "transient",
+          "cause": "the GitHub API rate-limited the call or answered a server error"
+        },
+        {
+          "class": "permanent",
+          "cause": "the GitHub App installation lacks the permission the call needs"
+        },
+        {
+          "class": "transient",
+          "cause": "the branch ref moved while the commit was pushed"
+        },
+        {
+          "class": "permanent",
+          "cause": "the branch is protected against direct pushes"
+        }
+      ],
+      "version": 2
+    },
+    {
+      "id": "github.gitops-repository",
+      "capability": "github",
+      "kind": "gitops-repository",
+      "scope": "per-app",
+      "stateful": true,
+      "pricing": {
+        "priced": false
+      },
+      "category": "source-and-work",
+      "outputs": [
+        {
+          "name": "repo",
+          "secret": false,
+          "required": true,
+          "meaning": "The repository Argo CD applies manifests from.",
+          "shape": "GitHub repository as owner/name",
+          "example": "acme/shop-gitops"
+        }
+      ],
+      "observe": "the repos API returns the repository with its visibility and settings",
+      "absence": "the repos API answers 404 for the repository, or returns it archived when archive_on_destroy is set",
+      "timeBudgets": {
+        "delete": "1m",
+        "ensure": "2m",
+        "observe": "30s"
+      },
+      "failures": [
+        {
+          "class": "transient",
+          "cause": "the GitHub API rate-limited the call or answered a server error"
+        },
+        {
+          "class": "permanent",
+          "cause": "the GitHub App installation lacks the permission the call needs"
+        },
+        {
+          "class": "permanent",
+          "cause": "the repository name is taken in the organisation"
+        }
+      ],
+      "version": 2
+    },
+    {
+      "id": "github.runner-cluster",
+      "capability": "github",
+      "kind": "kubernetes-cluster",
+      "scope": "org-wide",
+      "stateful": false,
+      "pricing": {
+        "priced": true,
+        "key": "HetznerCloud"
+      },
+      "category": "compute",
+      "outputs": [
+        {
+          "name": "apiEndpoint",
+          "secret": false,
+          "required": false,
+          "meaning": "The address of the cluster's Kubernetes API.",
+          "shape": "https URL of a host and port",
+          "example": "https://203.0.113.10:6443"
+        },
+        {
+          "name": "caCertificate",
+          "secret": false,
+          "required": false,
+          "meaning": "The certificate authority that signs the serving certificate of the cluster's Kubernetes API.",
+          "shape": "PEM-encoded X.509 certificate",
+          "example": "-----BEGIN CERTIFICATE-----\nMIIBdzCCAR2gAwIBAgIBADAKBggqhkjOPQQDAjAjMSEwHwYDVQQDDBhrM3Mtc2Vy\n-----END CERTIFICATE-----"
+        },
+        {
+          "name": "clusterCredential",
+          "secret": true,
+          "required": false,
+          "meaning": "The credential a client presents to the cluster's Kubernetes API.",
+          "shape": "Kubernetes bearer token"
+        },
+        {
+          "name": "clusterRepoUrl",
+          "secret": false,
+          "required": false,
+          "meaning": "The web address of the private repository Argo CD syncs the app's cluster from.",
+          "shape": "https URL",
+          "example": "https://github.com/acme/orbitdemo-cluster",
+          "recorded": "observed"
+        },
+        {
+          "name": "enrolmentTokenSha256",
+          "secret": false,
+          "required": false,
+          "meaning": "The SHA-256 digest of the token the cluster's node presents to enrol with the platform; the token itself is never published.",
+          "shape": "52 lowercase base32 characters",
+          "example": "abcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcd",
+          "recorded": "observed"
+        },
+        {
+          "name": "issuerBucket",
+          "secret": false,
+          "required": false,
+          "meaning": "The name of the bucket that hosts the cluster's service-account issuer.",
+          "shape": "S3 bucket name, mitstack-oidc- and 26 lowercase base32 characters",
+          "example": "mitstack-oidc-abcdefghabcdefghabcdefghab"
+        },
+        {
+          "name": "issuerUrl",
+          "secret": false,
+          "required": false,
+          "meaning": "The service-account issuer the cluster names in the tokens it signs, served from the issuer bucket.",
+          "shape": "https URL",
+          "example": "https://mitstack-oidc-abcdefghabcdefghabcdefghab.s3.eu-central-1.amazonaws.com/abcd2345-6f7a-4b2c-9d3e-5f6a7b2c3d4e"
+        },
+        {
+          "name": "otlpEndpoint",
+          "secret": false,
+          "required": false,
+          "meaning": "The address a pod on the cluster pushes its OpenTelemetry metrics and logs to over HTTP. The cluster's Collector tags each record with the pod's app and forwards it to the OTLP backend the cluster is bound to, and only a cluster bound to one has this output.",
+          "shape": "http URL of a cluster-internal Service host and port with no path, to which a sender appends /v1/metrics or /v1/logs",
+          "example": "http://mitstack-telemetry-otlp.kube-system.svc.cluster.local:4318"
+        },
+        {
+          "name": "privateEndpoint",
+          "secret": false,
+          "required": false,
+          "meaning": "The address of the cluster's Kubernetes API on the cluster's private network.",
+          "shape": "https URL of a private IP address and port",
+          "example": "https://10.255.0.2:6443"
+        },
+        {
+          "name": "publicIpByLocation",
+          "secret": false,
+          "required": false,
+          "meaning": "The public IPv4 address of the cluster's public load balancer in each location it runs in, each serving ports 80 and 443.",
+          "shape": "JSON object mapping each location name, fsn1, nbg1 or hel1, to an IPv4 address",
+          "example": "{\"fsn1\":\"203.0.113.10\"}"
+        },
+        {
+          "name": "subscriptionId",
+          "secret": false,
+          "required": false,
+          "meaning": "The id of the subscription that created the cluster.",
+          "shape": "platform subscription id",
+          "example": "sub_3f9c2b1e8d7a6c5b"
+        }
+      ],
+      "inputs": [
+        {
+          "name": "controlPlaneSize",
+          "label": "Control-plane servers",
+          "description": "How many control-plane servers the runner cluster runs, each with a gateway server beside it. A runner cluster runs 1, and its block refuses 3 before it changes anything. The cluster stops until a lost server is replaced, while the runners' work waits in GitHub's queue. The size cannot change once the cluster stands.",
+          "required": true,
+          "secret": false,
+          "allowedValues": [
+            "1",
+            "3"
+          ],
+          "kind": "enum",
+          "onChange": "fixed"
+        }
+      ],
+      "observe": "every server, load balancer, firewall and network the cluster's subscription created runs, and every node's latest node report reads it Ready",
+      "absence": "GET /servers/{id}, /load_balancers/{id}, /firewalls/{id}, /networks/{id} and /images/{id} answer 404 for every server, load balancer, firewall, network and snapshot the cluster's subscription created",
+      "timeBudgets": {
+        "delete": "10m",
+        "ensure": "20m",
+        "observe": "1m"
+      },
+      "failures": [
+        {
+          "class": "transient",
+          "cause": "the Hetzner Cloud API rate-limited the call or answered a server error"
+        },
+        {
+          "class": "permanent",
+          "cause": "the project's Hetzner Cloud API token is invalid or lacks write access"
+        },
+        {
+          "class": "transient",
+          "cause": "the location has no capacity for the server type"
+        },
+        {
+          "class": "transient",
+          "cause": "Kubernetes has not yet reported every node Ready"
+        },
+        {
+          "class": "permanent",
+          "cause": "the project's server limit is reached"
+        },
+        {
+          "class": "permanent",
+          "cause": "a server the block powered back on after an outage does not serve; read its console log and replace it with an upgrade"
+        },
+        {
+          "class": "transient",
+          "cause": "a gateway the block powered back on after an outage does not serve, so the block replaces it from the same list once a node report reads the other gateways serving; read its console log for why it failed"
+        },
+        {
+          "class": "transient",
+          "cause": "a gateway runs past its deadline and the newest node report since its creation does not read it serving, so the block replaces it from the same list once a node report reads the other gateways serving; read its console log for why it failed"
+        },
+        {
+          "class": "permanent",
+          "cause": "a gateway the block built from the same list to replace one that failed has failed too, so the block leaves it; read its console log, and upgrade to a release with a new list to replace it"
+        },
+        {
+          "class": "transient",
+          "cause": "the Cloud pool holds its maximum while pods wait for a node; raise cloudPoolMax or lower the load"
+        }
+      ],
+      "version": 1
+    },
+    {
+      "id": "hetzner.firewall",
+      "capability": "hetzner",
+      "kind": "firewall",
+      "scope": "per-app",
+      "stateful": false,
+      "pricing": {
+        "priced": false
+      },
+      "category": "network",
+      "outputs": [],
+      "observe": "GET /firewalls/{id} returns the firewall with its rules and the resources it applies to",
+      "absence": "GET /firewalls/{id} answers 404",
+      "timeBudgets": {
+        "delete": "5m",
+        "ensure": "2m",
+        "observe": "30s"
+      },
+      "failures": [
+        {
+          "class": "transient",
+          "cause": "the Hetzner Cloud API rate-limited the call or answered a server error"
+        },
+        {
+          "class": "permanent",
+          "cause": "the project's Hetzner Cloud API token is invalid or lacks write access"
+        },
+        {
+          "class": "transient",
+          "cause": "delete is refused while the firewall is still applied to a resource"
+        },
+        {
+          "class": "permanent",
+          "cause": "a firewall of the name exists in the project"
+        }
+      ],
+      "version": 2
+    },
+    {
+      "id": "hetzner.load-balancer",
+      "capability": "hetzner",
+      "kind": "load-balancer",
+      "scope": "per-app",
+      "stateful": false,
+      "pricing": {
+        "priced": true,
+        "key": "HetznerCloud"
+      },
+      "category": "network",
+      "outputs": [
+        {
+          "name": "publicIp",
+          "secret": false,
+          "required": true,
+          "meaning": "The public IP address the load balancer serves the app's traffic on.",
+          "shape": "IPv4 address",
+          "example": "203.0.113.10"
+        }
+      ],
+      "observe": "GET /load_balancers/{id} returns the load balancer with its addresses, services and targets",
+      "absence": "GET /load_balancers/{id} answers 404",
+      "timeBudgets": {
+        "delete": "2m",
+        "ensure": "2m",
+        "observe": "30s"
+      },
+      "failures": [
+        {
+          "class": "transient",
+          "cause": "the Hetzner Cloud API rate-limited the call or answered a server error"
+        },
+        {
+          "class": "permanent",
+          "cause": "the project's Hetzner Cloud API token is invalid or lacks write access"
+        },
+        {
+          "class": "permanent",
+          "cause": "a load balancer of the name exists in the project"
+        },
+        {
+          "class": "permanent",
+          "cause": "the project's load balancer limit is reached"
+        },
+        {
+          "class": "permanent",
+          "cause": "the requested private address is taken in the network"
+        }
+      ],
+      "version": 2
+    },
+    {
+      "id": "hetzner.network",
+      "capability": "hetzner",
+      "kind": "network",
+      "scope": "per-app",
+      "stateful": false,
+      "pricing": {
+        "priced": false
+      },
+      "category": "network",
+      "outputs": [],
+      "observe": "GET /networks/{id} returns the network with its IP range and subnets",
+      "absence": "GET /networks/{id} answers 404",
+      "timeBudgets": {
+        "delete": "5m",
+        "ensure": "2m",
+        "observe": "30s"
+      },
+      "failures": [
+        {
+          "class": "transient",
+          "cause": "the Hetzner Cloud API rate-limited the call or answered a server error"
+        },
+        {
+          "class": "permanent",
+          "cause": "the project's Hetzner Cloud API token is invalid or lacks write access"
+        },
+        {
+          "class": "transient",
+          "cause": "delete is refused while a server or load balancer is still attached to the network"
+        },
+        {
+          "class": "permanent",
+          "cause": "a network of the name exists in the project"
+        }
+      ],
+      "version": 2
+    },
+    {
+      "id": "hetzner.server",
+      "capability": "hetzner",
+      "kind": "host",
+      "scope": "per-app",
+      "stateful": false,
+      "pricing": {
+        "priced": true,
+        "key": "HetznerCloud"
+      },
+      "category": "compute",
+      "languages": [
+        "any-container"
+      ],
+      "outputs": [
+        {
+          "name": "cloud.region",
+          "secret": false,
+          "required": false,
+          "meaning": "The cloud region the app runs in.",
+          "shape": "cloud region code",
+          "example": "eu-central-1"
+        },
+        {
+          "name": "execKind",
+          "secret": false,
+          "required": true,
+          "meaning": "How the platform runs commands on the app's host.",
+          "shape": "mechanism name",
+          "example": "aws-ssm"
+        },
+        {
+          "name": "execTarget",
+          "secret": false,
+          "required": true,
+          "meaning": "The host that commands are sent to.",
+          "shape": "host id",
+          "example": "i-0abc123def4567890"
+        },
+        {
+          "name": "host.type",
+          "secret": false,
+          "required": false,
+          "meaning": "The machine type the app runs on.",
+          "shape": "cloud instance type",
+          "example": "t3.small"
+        },
+        {
+          "name": "hostId",
+          "secret": false,
+          "required": true,
+          "meaning": "The id of the host the app runs on.",
+          "shape": "host id",
+          "example": "i-0abc123def4567890"
+        }
+      ],
+      "inputs": [
+        {
+          "name": "location",
+          "label": "Hetzner location",
+          "description": "The Hetzner location the host runs in, fsn1, nbg1 or hel1. These are Hetzner's locations in the EU, so the app's data stays there, and they share one network zone, so servers in different locations can sync data over a private network. The server, its primary IP and its volume all live in this one location, which cannot change once they stand. Left empty, they live in nbg1.",
+          "required": false,
+          "secret": false,
+          "default": "nbg1",
+          "allowedValues": [
+            "fsn1",
+            "nbg1",
+            "hel1"
+          ],
+          "kind": "enum",
+          "onChange": "fixed"
+        },
+        {
+          "name": "serverType",
+          "label": "Server type",
+          "description": "The Hetzner server types, in the order the block tries them, such as cx23 alone, or cx23 then cpx22. Each type's vCPUs are shared: cx23 and cpx22 have 2 vCPUs and 4 GB of memory, cx33 and cpx32 have 4 vCPUs and 8 GB, and cx43 and cpx42 have 8 vCPUs and 16 GB. cpx52 has 12 vCPUs and 24 GB, and cx53 and cpx62 have 16 vCPUs and 32 GB. A cpx type has twice the disk of the cx type with as many vCPUs. The server is created as the first type of the list that Hetzner can order in its location, so a later type stands in when an earlier one is sold out. It has no default, because blocks that create a server want different sizes, and each block refuses a type it does not run on or a list longer than it takes. A server keeps the type it was created with, so an upgrade may add types to the list but never drop one.",
+          "required": true,
+          "secret": false,
+          "allowedValues": [
+            "cx23",
+            "cx33",
+            "cx43",
+            "cx53",
+            "cpx22",
+            "cpx32",
+            "cpx42",
+            "cpx52",
+            "cpx62"
+          ],
+          "kind": "list",
+          "example": "cx23,cpx22",
+          "onChange": "keep-entries"
+        }
+      ],
+      "manyInputs": [
+        {
+          "name": "cloudPoolServerTypes",
+          "label": "Cloud pool server types",
+          "description": "The Hetzner server types of the Cloud pool's workers, in the order the block tries them, such as cpx32 alone or cpx32,cx43. A worker is created as the first type of the list that Hetzner can order in its location.",
+          "required": false,
+          "secret": false,
+          "allowedValues": [
+            "cx23",
+            "cx33",
+            "cx43",
+            "cx53",
+            "cpx22",
+            "cpx32",
+            "cpx42",
+            "cpx52",
+            "cpx62"
+          ],
+          "kind": "list",
+          "example": "cpx32,cx43",
+          "onChange": "replace"
+        },
+        {
+          "name": "cloudPoolLocations",
+          "label": "Cloud pool locations",
+          "description": "The Hetzner locations the Cloud pool's workers spread over, such as fsn1,nbg1. A new worker takes the listed location that holds the fewest workers.",
+          "required": false,
+          "secret": false,
+          "allowedValues": [
+            "fsn1",
+            "nbg1",
+            "hel1"
+          ],
+          "kind": "list",
+          "example": "fsn1,nbg1",
+          "onChange": "replace"
+        },
+        {
+          "name": "cloudPoolMin",
+          "label": "Cloud pool minimum",
+          "description": "The fewest Cloud workers the pool keeps. A minimum equal to the maximum keeps that many workers. A lower minimum lets the pool add a worker for each pod that waits for room, and remove a worker that stood idle for cloudPoolIdleMinutes, between the two bounds.",
+          "required": false,
+          "secret": false,
+          "kind": "number",
+          "min": 0,
+          "max": 9007199254740991,
+          "example": "2",
+          "onChange": "in-place"
+        },
+        {
+          "name": "cloudPoolMax",
+          "label": "Cloud pool maximum",
+          "description": "The most Cloud workers the pool keeps, which caps what its burst can cost. A maximum equal to the minimum keeps that many workers.",
+          "required": false,
+          "secret": false,
+          "kind": "number",
+          "min": 0,
+          "max": 9007199254740991,
+          "example": "2",
+          "onChange": "in-place"
+        },
+        {
+          "name": "cloudPoolIdleMinutes",
+          "label": "Cloud pool idle minutes",
+          "description": "How many minutes a Cloud worker of a pool whose minimum is below its maximum may run no pod but the cluster's own before the pool drains and deletes it, from 1 to 120. Such a pool needs it, and a pool of a set size ignores it. The window stops at 120 minutes so it fits inside the node reports mitstack keeps of the cluster.",
+          "required": false,
+          "secret": false,
+          "kind": "number",
+          "min": 1,
+          "max": 120,
+          "example": "15",
+          "onChange": "in-place"
+        }
+      ],
+      "observe": "GET /servers/{id} returns the server with status running",
+      "absence": "GET /servers/{id} answers 404",
+      "timeBudgets": {
+        "delete": "5m",
+        "ensure": "10m",
+        "observe": "1m"
+      },
+      "failures": [
+        {
+          "class": "transient",
+          "cause": "the Hetzner Cloud API rate-limited the call or answered a server error"
+        },
+        {
+          "class": "permanent",
+          "cause": "the project's Hetzner Cloud API token is invalid or lacks write access"
+        },
+        {
+          "class": "transient",
+          "cause": "the location has no capacity for the server type"
+        },
+        {
+          "class": "permanent",
+          "cause": "the project's server limit is reached"
+        },
+        {
+          "class": "permanent",
+          "cause": "the image names no image available in the location"
+        }
+      ],
+      "version": 12
+    }
+  ]
+}

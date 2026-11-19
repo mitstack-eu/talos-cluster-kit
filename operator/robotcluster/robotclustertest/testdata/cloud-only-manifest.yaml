@@ -1,0 +1,53 @@
+# The manifest of a cluster of one with no dedicated server, as an operator declares it.
+apiVersion: mitstack/v1beta
+type: capability
+metadata:
+  id: test-robot-cluster
+  name: Test robot cluster
+  owner: mitstack
+spec:
+  version: 0.1.0
+  releaseClass: feature
+  releaseNote: >-
+    0.1.0: a cluster on Hetzner Cloud servers alone, for the kit's own tests.
+  description: >
+    A cluster of one on Hetzner Cloud servers alone, which the kit's block guards drive.
+  lifecycle:
+    endpoint: https://api.mitstack.dev/operators/test-robot-cluster/hook
+    operations: [subscribe, unsubscribe, upgrade, validate]
+    contract: kit/v1
+    # The image build and the gateway's mirror, the snapshot and the nodes' first boot take up to 75m.
+    settleBudget: 90m
+    verbConnections:
+      validate: [hetzner, github]
+      unsubscribe: [hetzner, github]
+  resources:
+    - hetzner.network
+    - hetzner.firewall
+    - name: api-load-balancer-fsn1
+      type: hetzner.load-balancer
+    - name: ingress-load-balancer-fsn1
+      type: hetzner.load-balancer
+    - name: github.repository
+      type: github.gitops-repository
+    - github.gitops-commit
+    - name: gateway-fsn1
+      type: hetzner.server
+    - name: node-fsn1
+      type: hetzner.server
+    - name: cloud-worker
+      type: hetzner.server
+      many: true
+    - github.runner-cluster
+  provides:
+    - github.runner-cluster
+  # block-kit refuses snapshot and restore unless an entry hands over by snapshot.
+  continuity:
+    - { name: etcd-data, kind: etcd, stateful: false, handover: none }
+    - { name: openbao-data, kind: openbao, stateful: false, handover: none }
+    - { name: sealed-secrets-key-pair, kind: key-pair, stateful: false, handover: none }
+    - { name: openbao-seal-key, kind: key, stateful: false, handover: none }
+    - { name: machine-config, kind: machine-config, stateful: false, handover: none }
+    - { name: node-cache, kind: cache, stateful: false, handover: none }
+    - { name: control-plane-volumes, kind: volume, stateful: false, handover: none }
+    - { name: worker-volumes, kind: volume, stateful: false, handover: none }

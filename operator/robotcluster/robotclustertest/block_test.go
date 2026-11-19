@@ -3,7 +3,7 @@ package robotclustertest_test
 // Block drives the kit's block guards over a cluster of one with no dedicated server, settled on the fakes.
 
 import (
-	_ "embed"
+	"os"
 	"testing"
 
 	"github.com/mitstack-eu/block-kit/contract"
@@ -11,13 +11,6 @@ import (
 	"github.com/mitstack-eu/block-kit/verify/kittest"
 	"github.com/mitstack-eu/talos-cluster-kit/operator/robotcluster/robotclustertest"
 	"github.com/stretchr/testify/require"
-)
-
-var (
-	//go:embed testdata/cloud-only-manifest.yaml
-	cloudOnlyManifest []byte
-	//go:embed testdata/type-snapshot.json
-	typeSnapshot []byte
 )
 
 func cloudOnly(e *robotclustertest.Env) {
@@ -28,15 +21,19 @@ func cloudOnly(e *robotclustertest.Env) {
 
 func TestBlock_HoldsTheKitsBlockGuardsOverAClusterOfOneWithNoDedicatedServer(t *testing.T) {
 	e := robotclustertest.New(t, "sub_0b10c4d1e2f3", cloudOnly)
-	m, err := contract.ParseManifest(cloudOnlyManifest)
+	manifest, err := os.ReadFile("testdata/cloud-only-manifest.yaml")
 	require.NoError(t, err)
-	types, err := contract.ParseTypeSnapshot(typeSnapshot)
+	m, err := contract.ParseManifest(manifest)
+	require.NoError(t, err)
+	snapshot, err := os.ReadFile("testdata/type-snapshot.json")
+	require.NoError(t, err)
+	types, err := contract.ParseTypeSnapshot(snapshot)
 	require.NoError(t, err)
 	observers, all := map[string]handler.Observer{}, e.Cluster.Observers()
 	for _, r := range m.Block.Spec.Resources {
 		observers[r.Name] = all[r.Name]
 	}
 
-	kittest.AssertBlock(t, e.Block(handler.Config{Resource: e.Cluster, Manifest: cloudOnlyManifest, Observers: observers, Types: types,
+	kittest.AssertBlock(t, e.Block(handler.Config{Resource: e.Cluster, Manifest: manifest, Observers: observers, Types: types,
 		JWKSURL: "https://api.mitstack.test/.well-known/jwks.json"}))
 }

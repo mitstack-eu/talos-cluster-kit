@@ -4646,6 +4646,19 @@ go -C operator/robotcluster vet ./...
 go -C operator/robotcluster test -race ./...
 ```
 
+An operator's tests settle its cluster on the same fakes the module's own tests
+use, so neither keeps a copy of them. The package
+`operator/robotcluster/robotclustertest` builds a cluster against fakes of
+Hetzner Cloud and Robot, GitHub, Argo CD and the node reports, and moves its
+clock a minute per subscribe until the cluster reads present.
+`robotclustertest.WithOperator` builds that cluster from the operator's own
+`Config`, with each client replaced by its fake:
+
+```go
+e := robotclustertest.New(t, "sub_0c10d0a1b2c3", robotclustertest.WithOperator(clusterConfig()))
+obs, err := e.Settle()
+```
+
 ### A cluster with no dedicated server
 
 An operator can let a cluster start on Hetzner Cloud servers alone, and take

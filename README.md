@@ -26,8 +26,8 @@ neither Hetzner, GitHub nor the platform. `controlplane` is the one package
 that calls Hetzner: it creates and deletes a Cloud control plane through
 Hetzner's Cloud API. The block hands it the token, the HTTP client that sends
 every call, and the poll schedule, which says how long to wait before each ask
-about whether a Hetzner action has finished. It imports neither block-kit nor
-operator-kit, so any block framework can drive it. Keeping the
+whether Hetzner has finished a change it started. It imports neither block-kit
+nor operator-kit, so any block framework can drive it. Keeping the
 install in one module means a fix to the boot, to etcd recovery or to the
 Cloud control plane lands once and reaches every block.
 
@@ -304,8 +304,8 @@ the snapshot, `worker-builder`, `worker-image`, `serving`, `api` and
 `ingress`. Each call reads the labels back and takes
 the one change still missing, such as creating the firewall once the network
 exists. A block names its plane once per call, from its own id and the
-subscription. `calls` is a `controlplane.Calls`, holding the block's HTTP
-client and its poll schedule, which a block on block-kit takes from that kit's
+subscription. `calls` is a `controlplane.Calls` holding the block's HTTP
+client and its poll schedule. A block on block-kit takes both from that kit's
 `capabilities/hetzner/cloud` package:
 
 ```go

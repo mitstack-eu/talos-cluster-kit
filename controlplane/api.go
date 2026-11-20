@@ -224,8 +224,8 @@ const (
 // Endpoint is Hetzner's Cloud API, which a block never takes from a request.
 const Endpoint = "https://api.hetzner.cloud/v1"
 
-// Calls is how the adapter reaches Hetzner, both handed to it by its block: HTTP sends every call, and PollBackoff
-// says how long to wait before each ask about an action, given how many asks came before it.
+// Calls holds the two parts of how the adapter reaches Hetzner, both from its block: HTTP sends every call, and
+// PollBackoff says how long to wait before each ask about an action, given how many asks came before it.
 type Calls struct {
 	HTTP        *http.Client
 	PollBackoff func(retries int) time.Duration
@@ -236,7 +236,7 @@ func NewAPI(token, application string, calls Calls) API {
 	return NewAPIAt(Endpoint, token, application, calls)
 }
 
-// NewAPIAt calls the API at endpoint, which only a test's fake sets. It panics on calls missing either part, since
+// NewAPIAt calls the API at endpoint, which only a test's fake sets, and panics on calls missing either part, since
 // hcloud-go would otherwise fall back to a client and a half-second schedule of its own.
 func NewAPIAt(endpoint, token, application string, calls Calls) API {
 	if calls.HTTP == nil {

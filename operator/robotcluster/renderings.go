@@ -63,8 +63,9 @@ func (k *Cluster) RenderingOf(release rollout.Release, repository string) (*Rend
 	return k.renderings.keep(key, r), nil
 }
 
-// renderingKey hashes repository and every field of release and its components, all Files renders from but the kit's
-// templates, with two seeded maphash hashes, since every call computes it and only the kit's rendering reaches it.
+// renderingKey hashes repository and every field of release and its components, the address Argo CD reads at among
+// them, all Files renders from but the kit's templates, with two seeded maphash hashes, since every call computes it
+// and only the kit's rendering reaches it.
 func renderingKey(release rollout.Release, repository string) renderingID {
 	var key renderingID
 	for i, seed := range renderingSeeds {
@@ -72,6 +73,7 @@ func renderingKey(release rollout.Release, repository string) renderingID {
 		h.SetSeed(seed)
 		writeField(&h, []byte(repository))
 		writeField(&h, []byte(release.ToolsImage))
+		writeField(&h, []byte(release.RepoURL))
 		for _, m := range release.Components {
 			writeField(&h, []byte(m.Name))
 			writeField(&h, []byte(m.Path))

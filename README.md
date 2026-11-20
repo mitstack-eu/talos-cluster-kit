@@ -4768,6 +4768,11 @@ cfg := handlerConfig("https://api.mitstack.test/.well-known/jwks.json", nil)
 kittest.AssertBlock(t, e.Block(cfg))
 ```
 
+The rounds of one settling subscribe read with
+`controlplane.WithoutRequestReads`. Each round stands in for a call the
+platform makes afresh, and the fakes move between rounds without a write that
+would drop what the call kept.
+
 The harness also sends the cluster's node reports, the reports
 [What the node report carries](#what-the-node-report-carries) describes. In
 them each node names this kit release as the source of its machine

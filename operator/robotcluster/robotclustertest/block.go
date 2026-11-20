@@ -47,6 +47,8 @@ type settling struct {
 }
 
 func (s settling) EnsureResourcesOwning(ctx context.Context, d contract.Desired) ([]contract.CreatedResource, map[string]string, error) {
+	// Each round stands in for a call the platform makes afresh, and the Cloud moves between rounds with no write.
+	ctx = controlplane.WithoutRequestReads(ctx)
 	var last error
 	for range rounds {
 		d.OwnSecrets = merged(s.e.Own, d.OwnSecrets)

@@ -557,6 +557,41 @@ func TestPlane_RefusesANodeReplacementBeforeAnyChangeToTheNode(t *testing.T) {
 	}
 }
 
+func TestPlane_RefusesANodeReplacementWhoseLocationSellsNoListedTypeWhoseDiskHoldsTheImageAndTheOldNodeKeepsServing(t *testing.T) {
+	onlyCx33InFsn1 := func(h *harness) { h.cloud.SoldOutIn = map[string][]string{"fsn1": {"cx43"}} }
+	for _, tc := range []struct {
+		name string
+		// late sells only cx33 in fsn1 once the upgrade's own call has ended.
+		late bool
+	}{
+		{"at the upgrade's own call", false},
+		{"once the upgrade's own call ended, before the node is powered off", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, c := withCluster(t, builtOnCx43)
+			old := h.nodeIn("fsn1")
+			require.Equal(t, "cx43", old.ServerType, "precondition: the node's type in fsn1")
+			var until func() bool
+			if tc.late {
+				until = func() bool { onlyCx33InFsn1(h); return false }
+			} else {
+				onlyCx33InFsn1(h)
+			}
+
+			err := h.replace(c, until, "fsn1")
+
+			require.Error(t, err, "the replacement while fsn1 sells only cx33")
+			assert.Equal(t, "server-unavailable", refusalClass(t, err), "the refusal's class")
+			for _, want := range []string{"fsn1", "160 GB", "cx33 has 80 GB"} {
+				assert.Contains(t, err.Error(), want, "the refusal names the location, the image's disk and each type's disk")
+			}
+			assert.Equal(t, old, h.nodeIn("fsn1"), "the node in fsn1 after the refusal")
+			assert.Empty(t, c.commits, "the commits of a refused replacement")
+			assert.False(t, h.replacing(), "the network still carries the refused replacement's mark: %v", h.network().Labels)
+		})
+	}
+}
+
 func TestPlane_NamesAReplacementUnderWayInItsProblemsUntilANodeReportReadsItsSuccessorServing(t *testing.T) {
 	h, c := withCluster(t)
 	c.joinsSlowly()

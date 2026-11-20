@@ -522,6 +522,57 @@ func TestPlane_ANodeCreateHetznerRefusesIsRetriedWithTheTypesReadAgain(t *testin
 	assert.Equal(t, "cpx22", node.ServerType, "the node the retry created once cx23 sold out in fsn1")
 }
 
+// builtOnCx43 lists cx33 then cx43 with cx33 sold out where the builders run, so the cluster image holds cx43's 160 GB.
+func builtOnCx43(h *harness) {
+	h.plane.ServerTypes = []string{"cx33", "cx43"}
+	h.cloud.SoldOutIn = map[string][]string{"fsn1": {"cx33"}}
+}
+
+func TestPlane_WithTheBuilderOnALargerDiskThanTheListsFirstTypeEachNodeTakesTheFirstTypeWhoseDiskHoldsTheImage(t *testing.T) {
+	h := newHarness(t, builtOnCx43)
+
+	h.built()
+
+	require.Equal(t, "cx43", h.cloud.SpecFor(t, controlplane.RoleBuilder).ServerType, "precondition: the builder's server type")
+	typeByLocation := map[string]string{}
+	for _, node := range h.byRole(controlplane.RoleNode) {
+		typeByLocation[node.Location] = node.ServerType
+	}
+	assert.Equal(t, map[string]string{"fsn1": "cx43", "nbg1": "cx43", "hel1": "cx43"}, typeByLocation, "each location's node server type")
+	named := slices.DeleteFunc(h.eventsNaming("nbg1"), func(event string) bool { return !strings.Contains(event, "cx43") })
+	require.Len(t, named, 1, "the events naming the type nbg1's node took: %v", h.events)
+	assert.Contains(t, named[0], "160 GB", "the event names the cluster image's disk")
+}
+
+func TestPlane_RefusesANodeWhoseLocationSellsNoListedTypeWhoseDiskHoldsTheImageBeforeAnyCreateNamingEachTypesDisk(t *testing.T) {
+	h := newHarness(t, builtOnCx43)
+	h.cloud.SoldOutIn["hel1"] = []string{"cx43"}
+
+	err := h.settle(nil)
+
+	assert.Equal(t, "server-unavailable", refusalClass(t, err))
+	for _, want := range []string{"hel1", "160 GB", "cx33 has 80 GB", "cx43"} {
+		assert.Contains(t, err.Error(), want, "the refusal names the location, the image's disk and each type's disk")
+	}
+	assert.Len(t, h.byRole(controlplane.RoleNode), 2, "nodes after the refusal")
+	sent := 0
+	for _, nodes := range h.cloud.NodesPerCreate {
+		sent += nodes
+	}
+	assert.Equal(t, 2, sent, "the node creates sent to Hetzner, hel1's refused one included")
+}
+
+func TestPlane_ANodeRefusedForNoTypeWhoseDiskHoldsTheImageIsCreatedOnceItsLocationSellsOneAgain(t *testing.T) {
+	h := newHarness(t, builtOnCx43)
+	h.cloud.SoldOutIn["hel1"] = []string{"cx43"}
+	require.Equal(t, "server-unavailable", refusalClass(t, h.settle(nil)), "precondition: the refusal while hel1 sells only cx33")
+	delete(h.cloud.SoldOutIn, "hel1")
+
+	h.built()
+
+	assert.Equal(t, "cx43", h.nodeIn("hel1").ServerType, "the node created in hel1 once it sells cx43 again")
+}
+
 func TestPlane_EveryNodeBootsFromTheClustersOwnSnapshot(t *testing.T) {
 	h := newHarness(t)
 

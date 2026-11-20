@@ -71,9 +71,9 @@ type workers struct {
 const earlierRelease = "sha256:0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
 
 // withWorkers is a site with a Cloud worker in each of fsn1 and nbg1, each running an app pod, and a Robot worker.
-func withWorkers(t *testing.T) (*site, *workers) {
+func withWorkers(t *testing.T, builder ...func(*controlplane.ServerSpec)) (*site, *workers) {
 	t.Helper()
-	s := newSite(t)
+	s := newSite(t, builder...)
 	s.reach(pool2)
 	w := &workers{s: s, argo: testutil.BuildCluster(t), files: map[string][]byte{}, written: map[string][]byte{}, objects: map[string]bool{robot: true},
 		down: map[string]bool{}, pods: map[string]string{}, held: map[string]bool{}, attempts: 6, failed: map[string]int{}, jobs: map[string]string{}}
@@ -487,6 +487,41 @@ func TestReplaceWorkers_RefusesAnUpgradeItCannotCarryOutBeforeRecordingAnything(
 
 			assert.Equal(t, tc.class, refusalClass(t, err), "the refusal's class")
 			assert.Equal(t, before, w.network().Labels, "the network's labels after a refused upgrade")
+		})
+	}
+}
+
+func TestReplaceWorkers_RefusesAWorkerReplacementWhoseLocationSellsNoListedTypeWhoseDiskHoldsTheWorkerImageAndKeepsTheWorker(t *testing.T) {
+	onlyCx33InFsn1 := func(s *site) { s.cloud.SoldOutIn = map[string][]string{"fsn1": {"cx43"}} }
+	for _, tc := range []struct {
+		name string
+		// late sells only cx33 in fsn1 once the upgrade has recorded the replacement.
+		late bool
+	}{
+		{"at the upgrade's call, which records nothing", false},
+		{"once the upgrade recorded it, before the worker is drained", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, w := withWorkers(t, imagedOn("cx43"))
+			old := w.worker("fsn1-1")
+			require.Equal(t, "cx43", old.ServerType, "precondition: the worker's type in fsn1")
+			if !tc.late {
+				onlyCx33InFsn1(s)
+			}
+
+			err := w.upgrade(pool2, "fsn1-1")
+			if err == nil && tc.late {
+				onlyCx33InFsn1(s)
+				err = w.replace(pool2, nil)
+			}
+
+			assert.Equal(t, "no-server-type-available", refusalClass(t, err), "the refusal's class")
+			for _, want := range []string{"fsn1", "160 GB", "cx33 has 80 GB"} {
+				assert.Contains(t, err.Error(), want, "the refusal names the location, the worker image's disk and each type's disk")
+			}
+			assert.Equal(t, old, w.worker("fsn1-1"), "the worker in fsn1 after the refusal")
+			assert.Empty(t, w.commits, "the commits of a refused replacement")
+			assert.False(t, w.replacing(), "the network still records the refused replacement: %v", w.network().Labels)
 		})
 	}
 }

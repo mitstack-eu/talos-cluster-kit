@@ -52,29 +52,20 @@ func (k *Cluster) PlanReplacements(ctx context.Context, d contract.Desired) ([]s
 	if err != nil || !ok {
 		return nil, nil
 	}
-	networks, err := p.API.ListNetworks(ctx, p.Selector())
+	st, err := p.Read(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("reading the cluster's network to judge the control-plane size an upgrade asks for: %w", err)
+		return nil, fmt.Errorf("reading the cluster to judge the control-plane size and the replacements an upgrade asks for: %w", err)
 	}
-	if err := refusal(p.SizeRefusal(controlplane.State{Networks: networks})); err != nil {
+	if err := refusal(p.SizeRefusal(st)); err != nil {
 		return nil, err
 	}
-	if len(locs)+len(keys) == 0 {
-		return nil, nil
-	}
-	nodes, err := p.API.ListServers(ctx, p.RoleSelector(controlplane.RoleNode))
-	if err != nil {
-		return nil, fmt.Errorf("reading the cluster's nodes to name those an upgrade would replace: %w", err)
-	}
-	st := controlplane.State{Servers: map[controlplane.Role][]controlplane.Server{controlplane.RoleNode: nodes}}
 	var names []string
 	for _, loc := range locs {
 		if _, runs := st.NodeIn(loc); runs {
 			names = append(names, Located(ResourceNode, loc))
 		}
 	}
-	workers, err := heldWorkers(ctx, p, keys)
-	return append(names, workers...), err
+	return append(names, heldWorkers(st, keys)...), nil
 }
 
 // removals lets the plane write a member removal, and the Cloud pool the Jobs of a worker it replaces or removes, to

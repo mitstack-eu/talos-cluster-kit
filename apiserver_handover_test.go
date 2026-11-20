@@ -96,7 +96,8 @@ func ciliumBefore(t *testing.T) components.Manifest {
 // carriedFile is the file a block commits for the component m.
 func carriedFile(t *testing.T, m components.Manifest) []byte {
 	t.Helper()
-	files, err := rollout.Release{Components: []components.Manifest{m}, ToolsImage: testutil.ToolsImage}.Files("acme/shop-cluster")
+	files, err := rollout.Release{Components: []components.Manifest{m}, ToolsImage: testutil.ToolsImage, RepoURL: "https://github.com/acme/shop-cluster"}.
+		Files("acme/shop-cluster")
 	require.NoError(t, err)
 	require.Equal(t, "components/"+m.Name+"/manifest.yaml", files[0].Path)
 	return files[0].Bytes

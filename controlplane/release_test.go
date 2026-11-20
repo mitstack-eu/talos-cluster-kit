@@ -181,7 +181,9 @@ func TestRelease_CarriesWhatTheBuildAppliedButTheHostingKeysTheEnrolmentTokenAnd
 			assert.ElementsMatch(t, manifestNames(carriedAtBuild), manifestNames(release.Components), "the manifests the release carries")
 			assert.Subset(t, manifestNames(release.Components), []string{"mitstack-node-report", "mitstack-cluster-tokens", "mitstack-node-topology"}, "the plane's own manifests")
 			assert.Equal(t, tools.Image, release.ToolsImage, "the tools image each component's handover Job runs, which this kit release published")
-			want, err := rollout.Release{Components: carriedAtBuild, ToolsImage: release.ToolsImage}.Files(testutil.InitRepository)
+			atBuild := release
+			atBuild.Components = carriedAtBuild
+			want, err := atBuild.Files(testutil.InitRepository)
 			require.NoError(t, err)
 			got, err := release.Files(testutil.InitRepository)
 			require.NoError(t, err)
@@ -206,19 +208,28 @@ func TestRelease_CarriesWhatTheBuildAppliedButTheHostingKeysTheEnrolmentTokenAnd
 func TestRelease_RefusesAPlaneThatCannotRenderTheBuildsOwnManifests(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
+		opts  []func(*harness)
 		plane func(h *harness) controlplane.Plane
 		want  string
 	}{
-		{"a plane without the gateway CA", func(h *harness) controlplane.Plane { return h.plane }, "gateway CA"},
-		{"a plane without the cluster repository", func(h *harness) controlplane.Plane {
+		{"a plane without the gateway CA", nil, func(h *harness) controlplane.Plane { return h.plane }, "gateway CA"},
+		{"a plane that hosts no platform and names no address for the cluster repository", nil, func(h *harness) controlplane.Plane {
 			p, err := h.plane.WithGatewayCA()
 			require.NoError(h.t, err)
 			p.RepoURL = ""
 			return p
 		}, "repository"},
+		{"a hosting plane that names no cluster repository", []func(*harness){hosting}, func(h *harness) controlplane.Plane {
+			p, err := h.plane.WithGatewayCA()
+			require.NoError(h.t, err)
+			hosted := *p.Hosting
+			hosted.Repository = ""
+			p.Hosting = &hosted
+			return p
+		}, "repository"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			h := newHarness(t)
+			h := newHarness(t, tc.opts...)
 
 			_, err := tc.plane(h).Release(h.read())
 

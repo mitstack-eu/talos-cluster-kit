@@ -27,7 +27,7 @@ const (
 func openBaoFile(t *testing.T) []byte {
 	t.Helper()
 	openBao := testutil.Manifest(t, "openbao", components.HostingServed().Served)
-	files, err := rollout.Release{ToolsImage: testutil.ToolsImage, Components: []components.Manifest{openBao}}.Files(repository)
+	files, err := rollout.Release{ToolsImage: testutil.ToolsImage, RepoURL: address, Components: []components.Manifest{openBao}}.Files(repository)
 	require.NoError(t, err)
 	require.Equal(t, "components/openbao/manifest.yaml", files[0].Path)
 	return files[0].Bytes
@@ -98,7 +98,7 @@ func TestRelease_RunsTheRolloutJobForOpenBaosComponentAlone(t *testing.T) {
 			others = append(others, m)
 		}
 	}
-	files, err := rollout.Release{ToolsImage: testutil.ToolsImage, Components: others}.Files(repository)
+	files, err := rollout.Release{ToolsImage: testutil.ToolsImage, RepoURL: address, Components: others}.Files(repository)
 	require.NoError(t, err)
 
 	for _, f := range files {

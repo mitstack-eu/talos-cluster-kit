@@ -120,13 +120,22 @@ func (p Plane) zoneStep(ctx context.Context, st State, s site) (Step, bool, erro
 			}}, true, nil
 		}
 	}
+	waiting := false
 	for _, loc := range p.NodeLocations() {
 		gw, _ := st.GatewayIn(loc)
-		if gw.PrivateIPs[s.network.ID] == "" {
-			return p.onceIdle(ctx, gw, Step{"attach the gateway in " + loc + " to the network at its fixed address before its first boot", func(ctx context.Context) error {
-				return p.API.AttachServerToNetwork(ctx, gw.ID, s.network.ID, GatewayAddresses[loc])
-			}})
+		if gw.PrivateIPs[s.network.ID] != "" {
+			continue
 		}
+		step, ok, err := p.onceIdle(ctx, gw, Step{"attach the gateway in " + loc + " to the network at its fixed address before its first boot", func(ctx context.Context) error {
+			return p.API.AttachServerToNetwork(ctx, gw.ID, s.network.ID, GatewayAddresses[loc])
+		}})
+		if err != nil || ok {
+			return step, ok, err
+		}
+		waiting = true
+	}
+	if waiting {
+		return Step{}, false, nil
 	}
 	for _, loc := range p.NodeLocations() {
 		if _, recorded := gatewayGoneAt(s.network, loc); recorded {
@@ -308,7 +317,8 @@ func poweredOnAt(gw Server) (time.Time, bool) {
 }
 
 // downAfterPowerOn reports a gateway powered back on that has not served since: it is off again with no action Hetzner
-// still runs on it, or a report since reads its mirror failing. Its reading says why.
+// still runs on it, or still off gateway.Deadline after its power-on, or a report since reads its mirror failing. Its
+// reading says why.
 func (p Plane) downAfterPowerOn(ctx context.Context, gw Server) (bool, GatewayReading, error) {
 	at, ok := poweredOnAt(gw)
 	if !ok {
@@ -320,6 +330,9 @@ func (p Plane) downAfterPowerOn(ctx context.Context, gw Server) (bool, GatewayRe
 	}
 	if gw.Status == ServerRunning {
 		return r.Read, r, nil
+	}
+	if !p.now().Before(at.Add(gateway.Deadline)) {
+		return true, r, nil
 	}
 	busy, err := p.Busy(ctx, gw)
 	return busy == "" && err == nil, r, err

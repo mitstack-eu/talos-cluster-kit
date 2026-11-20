@@ -370,8 +370,11 @@ func (x replacer) next(ctx context.Context) (progress, error) {
 		return g, err
 	}
 	why, err := x.plane.Unsettled(ctx, worker)
-	if err != nil || why == "" {
-		return g, err
+	switch {
+	case err != nil:
+		return progress{}, err
+	case why == "":
+		return g, nil
 	}
 	return waitsOn("Cloud worker %d is %s", worker.ID, why)
 }

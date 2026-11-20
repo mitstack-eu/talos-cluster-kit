@@ -378,8 +378,11 @@ func (p Plane) replaceNode(ctx context.Context, st State, network Network, r nod
 		return g, err
 	}
 	why, err := p.Unsettled(ctx, node)
-	if err != nil || why == "" {
-		return g, err
+	switch {
+	case err != nil:
+		return progress{}, err
+	case why == "":
+		return g, nil
 	}
 	return waitsOn("it is %s", why)
 }

@@ -217,16 +217,19 @@ func (p Plane) powerOnGateway(gw Server) Step {
 }
 
 // gatewayOffStep powers on a gateway that never ran or whose builder finished, and refuses the build of one that ran and
-// is off before then, since its build powers it off only when a stage of it fails or overruns its bound.
+// is off before then, since its build powers it off only when a stage of it fails or overruns its bound; while Hetzner
+// still runs an action on the gateway, only an unfinished build waits on it until its deadline.
 func (p Plane) gatewayOffStep(ctx context.Context, gw, builder Server, hasBuilder bool) (Step, bool, error) {
 	busy, changed, err := p.waitOn(ctx, gw)
-	switch {
-	case err != nil:
+	if err != nil || changed != "" {
 		return Step{}, false, err
-	case busy != "" && hasBuilder:
+	}
+	if busy != "" {
+		finished, err := p.builderFinished(ctx, builder, hasBuilder)
+		if err != nil || !hasBuilder || finished {
+			return Step{}, false, err
+		}
 		return p.waitStep(build{builder, clusterImage}, gw, busy)
-	case busy != "" || changed != "":
-		return Step{}, false, nil
 	}
 	started, err := p.API.ServerStarted(ctx, gw.ID)
 	if err != nil {
@@ -235,14 +238,12 @@ func (p Plane) gatewayOffStep(ctx context.Context, gw, builder Server, hasBuilde
 	if !started {
 		return p.powerOnGateway(gw), true, nil
 	}
-	if hasBuilder && builder.Status == ServerOff {
-		finished, err := p.API.ServerStarted(ctx, builder.ID)
-		if err != nil {
-			return Step{}, false, err
-		}
-		if finished {
-			return p.powerOnGateway(gw), true, nil
-		}
+	finished, err := p.builderFinished(ctx, builder, hasBuilder)
+	if err != nil {
+		return Step{}, false, err
+	}
+	if finished {
+		return p.powerOnGateway(gw), true, nil
 	}
 	refusal := refuse("gateway-mirror-failed",
 		"the gateway powered itself off before the builder finished, as it does when a copy into the gateway's image mirror fails, so the cluster's image cannot be built; unsubscribe and subscribe again to rebuild the cluster")
@@ -255,6 +256,14 @@ func (p Plane) gatewayOffStep(ctx context.Context, gw, builder Server, hasBuilde
 		}
 		return refusal
 	}}, true, nil
+}
+
+// builderFinished reports a builder that ran and powered itself off, as its script does once its image is built.
+func (p Plane) builderFinished(ctx context.Context, builder Server, hasBuilder bool) (bool, error) {
+	if !hasBuilder || builder.Status != ServerOff {
+		return false, nil
+	}
+	return p.API.ServerStarted(ctx, builder.ID)
 }
 
 // workerImageStep builds the worker image once the gateway the worker builder routes through runs, and deletes the

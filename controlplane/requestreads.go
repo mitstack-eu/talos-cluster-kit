@@ -130,6 +130,10 @@ func (w *readOncePerRequest) RunningAction(ctx context.Context, id int64) (strin
 	return w.api.RunningAction(ctx, id)
 }
 
+func (w *readOncePerRequest) GetServer(ctx context.Context, id int64) (Server, bool, error) {
+	return w.api.GetServer(ctx, id)
+}
+
 func (w *readOncePerRequest) AttachServerToNetwork(ctx context.Context, serverID, networkID int64, ip string) error {
 	defer w.writing(ctx)()
 	return w.api.AttachServerToNetwork(ctx, serverID, networkID, ip)

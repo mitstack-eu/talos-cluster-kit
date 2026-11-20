@@ -219,13 +219,13 @@ func (p Plane) powerOnGateway(gw Server) Step {
 // gatewayOffStep powers on a gateway that never ran or whose builder finished, and refuses the build of one that ran and
 // is off before then, since its build powers it off only when a stage of it fails or overruns its bound.
 func (p Plane) gatewayOffStep(ctx context.Context, gw, builder Server, hasBuilder bool) (Step, bool, error) {
-	busy, err := p.Busy(ctx, gw)
+	busy, changed, err := p.waitOn(ctx, gw)
 	switch {
 	case err != nil:
 		return Step{}, false, err
 	case busy != "" && hasBuilder:
 		return p.waitStep(build{builder, clusterImage}, gw, busy)
-	case busy != "":
+	case busy != "" || changed != "":
 		return Step{}, false, nil
 	}
 	started, err := p.API.ServerStarted(ctx, gw.ID)
@@ -339,16 +339,17 @@ type build struct {
 	img     imageBuild
 }
 
-// onceIdleWithin takes step once Hetzner runs no action on server, and while it still runs one waits until b's deadline.
+// onceIdleWithin takes step once Hetzner runs no action on server and holds it as listed, and while it still runs one
+// waits until b's deadline.
 func (p Plane) onceIdleWithin(ctx context.Context, b build, server Server, step Step) (Step, bool, error) {
-	busy, err := p.Busy(ctx, server)
+	busy, changed, err := p.waitOn(ctx, server)
 	switch {
-	case err != nil:
+	case err != nil || changed != "":
 		return Step{}, false, err
-	case busy == "":
-		return step, true, nil
+	case busy != "":
+		return p.waitStep(b, server, busy)
 	}
-	return p.waitStep(b, server, busy)
+	return step, true, nil
 }
 
 // waitStep waits on a server Hetzner still runs an action on until b's deadline, then deletes the builder and refuses the
@@ -387,11 +388,11 @@ func (p Plane) builderStep(ctx context.Context, builder Server, img imageBuild) 
 				img.builder, BuildDeadline, img.what, img.builder, metrics.stall())
 		}}, true, nil
 	case ServerOff:
-		busy, err := p.Busy(ctx, builder)
-		if err != nil {
+		busy, changed, err := p.waitOn(ctx, builder)
+		switch {
+		case err != nil || changed != "":
 			return Step{}, false, err
-		}
-		if busy != "" {
+		case busy != "":
 			return p.waitStep(build{builder, img}, builder, busy)
 		}
 		started, err := p.API.ServerStarted(ctx, builder.ID)

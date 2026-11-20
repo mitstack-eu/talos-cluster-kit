@@ -49,8 +49,10 @@ func (p Plane) problems(ctx context.Context, st State, replacements func(context
 	} else if snap.Status != SnapshotAvailable {
 		missing = append(missing, fmt.Sprintf("snapshot %d of the cluster's image is %s", snap.ID, snap.Status))
 	}
-	if serving, ok := st.Server(RoleServing); ok {
+	if serving, ok := st.Server(RoleServing); ok && serving.Status == ServerRunning {
 		missing = append(missing, fmt.Sprintf("serving server %d still holds the manifests the builder fetches", serving.ID))
+	} else if ok {
+		missing = append(missing, fmt.Sprintf("serving server %d is %s", serving.ID, p.stateOf(ctx, serving)))
 	}
 	if builder, ok := st.Server(RoleWorkerBuilder); ok {
 		missing = append(missing, p.buildDetail(ctx, builder, workerImage))

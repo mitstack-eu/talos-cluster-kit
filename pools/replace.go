@@ -367,9 +367,23 @@ func (x replacer) next(ctx context.Context) (progress, error) {
 	if err != nil {
 		return progress{}, err
 	}
-	switch {
-	case busy != "":
+	if busy != "" {
 		return waitsOn("Cloud worker %d is %s", worker.ID, busy)
+	}
+	g, err := x.byStatus(ctx, worker, held)
+	if err != nil || g.step.Run == nil {
+		return g, err
+	}
+	changed, err := x.plane.Changed(ctx, worker)
+	if err != nil || changed == "" {
+		return g, err
+	}
+	return waitsOn("Cloud worker %d is %s", worker.ID, changed)
+}
+
+// byStatus is the replacement's next step or wait by the worker's listed status.
+func (x replacer) byStatus(ctx context.Context, worker controlplane.Server, held []string) (progress, error) {
+	switch {
 	case worker.Status == controlplane.ServerRunning && slices.Contains(held, jobPath(drainStep, x.r.key)):
 		return x.draining(ctx, worker)
 	case worker.Status == controlplane.ServerRunning:

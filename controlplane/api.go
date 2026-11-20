@@ -27,6 +27,8 @@ type API interface {
 	ServerStarted(ctx context.Context, id int64) (bool, error)
 	// RunningAction names the command of the action Hetzner still runs on the server, empty when it runs none.
 	RunningAction(ctx context.Context, id int64) (string, error)
+	// GetServer reads the server as Hetzner holds it now, found false once it is gone.
+	GetServer(ctx context.Context, id int64) (Server, bool, error)
 	// AttachServerToNetwork with an empty ip lets Hetzner give the server the network's first free address.
 	AttachServerToNetwork(ctx context.Context, serverID, networkID int64, ip string) error
 	PowerOnServer(ctx context.Context, id int64) error
@@ -361,6 +363,17 @@ func (a *hcloudAPI) RunningAction(ctx context.Context, id int64) (string, error)
 		return "", nil
 	}
 	return actions[0].Command, nil
+}
+
+func (a *hcloudAPI) GetServer(ctx context.Context, id int64) (Server, bool, error) {
+	s, _, err := a.client.Server.GetByID(ctx, id)
+	switch {
+	case err != nil:
+		return Server{}, false, fmt.Errorf("reading server %d: %w", id, err)
+	case s == nil:
+		return Server{}, false, nil
+	}
+	return serverFromHcloud(s), true, nil
 }
 
 func (a *hcloudAPI) AttachServerToNetwork(ctx context.Context, serverID, networkID int64, ip string) error {

@@ -378,6 +378,19 @@ func (p Plane) replaceNode(ctx context.Context, st State, network Network, r nod
 	if busy != "" {
 		return waitsOn("it is %s", busy)
 	}
+	g, err := p.nodeProgress(ctx, st, network, r, node)
+	if err != nil || g.step.Run == nil {
+		return g, err
+	}
+	changed, err := p.Changed(ctx, node)
+	if err != nil || changed == "" {
+		return g, err
+	}
+	return waitsOn("it is %s", changed)
+}
+
+// nodeProgress is the replacement's next step or wait by the node's listed status.
+func (p Plane) nodeProgress(ctx context.Context, st State, network Network, r nodeReplacement, node Server) (progress, error) {
 	switch node.Status {
 	case ServerRunning:
 		return p.powerOffNode(ctx, st, network, r, node)

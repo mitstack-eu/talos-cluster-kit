@@ -426,11 +426,14 @@ around it lists on every read.
 
 Work that outlives its request, such as a background job that a subscribe
 starts and leaves running after it answers, reads with
-`controlplane.WithoutRequestReads(ctx)`. Its reads list afresh, while its
-writes still drop what the request kept. A block's loop that waits for the
+`controlplane.WithoutRequestReads(ctx)`. That call hides the request's
+`RequestReads` from the job's reads only, so each of them lists afresh. A write
+in the job still finds the `RequestReads` and drops what the request kept, so
+the request's next read lists afresh too. A block's loop that waits for the
 Cloud to change, such as a wait for a server to take its address, reads what it
-waits for with the API's own list calls, such as `ListServers`. Those pass
-straight through, while a kept read would never show the change.
+waits for with the API's own list calls, such as `ListServers`. Those calls
+pass through `ReadOncePerRequest`, which keeps nothing they return, while a
+kept read would never show the change.
 
 ### How many control-plane nodes a plane runs
 
@@ -4667,6 +4670,17 @@ reports the cluster under it, and `Observers` reads the cluster there. Left
 empty, it is `hetzner.kubernetes-cluster`, which hcloud-hrobot-talos-cluster
 provides. hcloud-talos-runner-cluster sets `github.runner-cluster`, so an app's
 runner block binds only to a runner cluster.
+
+Every plane `Cluster.NewPlane` builds wraps its API with
+`controlplane.ReadOncePerRequest`, so one call from mitstack lists each kind of
+Cloud resource once, as
+[How a request reads the Cloud once](#how-a-request-reads-the-cloud-once)
+describes. The module keeps the call's `RequestReads` in block-kit's `reqcache`
+package, the store the block's handler opens for each call it serves, and a
+context without that store lists on every read. The worker install's job reads
+with `controlplane.WithoutRequestReads`. The image server's wait for the
+gateway lists the gateways and firewalls on each check. Neither answers from a
+list the call made earlier.
 
 | Part | What it does | Main entry points |
 |---|---|---|

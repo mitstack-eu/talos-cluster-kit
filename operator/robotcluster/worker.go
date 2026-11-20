@@ -119,7 +119,7 @@ func (k *Cluster) startWorkerInstall(ctx context.Context, req ensureRequest, p c
 	if err := setWorkerProgress(ctx, p, network.ID, WorkerRunning); err != nil {
 		return err
 	}
-	jobCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), workerInstallTimeout)
+	jobCtx, cancel := context.WithTimeout(controlplane.WithoutRequestReads(context.WithoutCancel(ctx)), workerInstallTimeout)
 	j := &workerJob{cancel: cancel, done: make(chan struct{})}
 	k.jobs.Lock()
 	k.jobs.running[req.subID] = j
@@ -418,12 +418,18 @@ func (c imageCloud) coupleSubnet(ctx context.Context) error {
 	return c.plane.API.AddVSwitchSubnet(ctx, c.network, all[i].ID, workerSubnet)
 }
 
+// awaitGateway lists the gateways and firewalls on each check, since a plane read could answer from its request's first read.
 func (c imageCloud) awaitGateway(ctx context.Context) (int64, error) {
 	for {
-		st, err := c.plane.Read(ctx)
+		gateways, err := c.plane.API.ListServers(ctx, c.plane.RoleSelector(controlplane.RoleGateway))
 		if err != nil {
-			return 0, err
+			return 0, fmt.Errorf("listing the subscription's gateways: %w", err)
 		}
+		firewalls, err := c.plane.API.ListFirewalls(ctx, c.plane.Selector())
+		if err != nil {
+			return 0, fmt.Errorf("listing the subscription's firewalls: %w", err)
+		}
+		st := controlplane.State{Servers: map[controlplane.Role][]controlplane.Server{controlplane.RoleGateway: gateways}, Firewalls: firewalls}
 		gw, gwOK := st.GatewayIn(controlplane.GatewayLocation)
 		fw, fwOK := st.Firewall()
 		if gwOK && fwOK && gw.PrivateIPs[c.network] == controlplane.GatewayAddress {

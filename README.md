@@ -311,7 +311,7 @@ plane := controlplane.Plane{
 	Subscription:      "sub_0123456789ab",
 	AppName:           "shop",
 	Size:              3,                         // 1 or 3 control-plane nodes; 0 builds 3
-	ServerTypes:       []string{"cx23", "cpx22"}, // each node and builder takes the first its location can order
+	ServerTypes:       []string{"cx23", "cpx22"}, // by preference, each node's disk holding the cluster's snapshot
 	Boundary:          "mitstack-hcloud-hrobot-talos-cluster", // separates the parts of the gateway's user data
 	PlatformURL:       "https://api.mitstack.dev",             // where every node registers and reports
 	ReportProofScript: reportproof.TokenRequestScript,         // block-kit's script that signs each node report
@@ -342,14 +342,15 @@ created, through `controlplane.OrderableTypes`, as each gateway does from
 none of the list in a location, the call refuses with the class
 `server-unavailable`, naming the list and the location.
 
-A node boots from the cluster's snapshot, whose disk is the disk of the builder
-it images. Hetzner creates no server from a snapshot larger than the server
-type's disk. So each node takes the first type of the list that Hetzner can
-order in its location and whose disk holds the snapshot, through
-`OrderableTypes.FirstHolding`. With `ServerTypes` set to `cx33, cx43` and
-`cx33` sold out in `fsn1`, the builder runs on `cx43` and its snapshot holds
-160 GB. Every node then takes `cx43`, since a `cx33` disk holds 80 GB, and an
-event names the snapshot's disk wherever a node passed a type of the list. When
+A node boots from the cluster's snapshot, a saved copy of the builder's disk,
+so the snapshot is as large as that disk. Hetzner creates no server from a
+snapshot larger than the server type's disk. So each node takes the first type
+of the list that Hetzner can order in its location and whose disk holds the
+snapshot, through `OrderableTypes.FirstHolding`. With `ServerTypes` set to
+`cx33, cx43` and `cx33` sold out in `fsn1` while the builder is created, the
+builder runs on `cx43` and its snapshot holds 160 GB. Every node, in each
+location, then takes `cx43`, since a `cx33` disk holds 80 GB. Where a node
+skips a type of the list for its disk, an event names the snapshot's disk. When
 no type of the list fits in a location, the call refuses with
 `server-unavailable` before it creates that node. The refusal names the
 location, the snapshot's disk, and each type's disk or that it is not on sale.
@@ -3944,7 +3945,7 @@ step is due, each with its own class:
 | Class | What the upgrade named |
 |---|---|
 | `node-replacement-unknown` | A location where the cluster does not run exactly one node |
-| `server-unavailable` | A location where Hetzner can order none of `ServerTypes` now whose disk holds the cluster's snapshot |
+| `server-unavailable` | A location where Hetzner sells no type of `ServerTypes` now with a disk that holds the cluster's snapshot |
 | `node-removal-unwritable` | A node, on a plane whose block passes no `Removals` |
 | `node-replacement-unjudged` | A node, on a plane whose block passes no `ReadReport` or no `Guard` |
 
@@ -4134,11 +4135,12 @@ lists with the subscription's labels and the role `cloud-worker`, and answers a
 - `Create` lists servers to create. They boot from the worker image the install
   keeps, with no user data, on the cluster's network and firewall. A server is
   created only while the pool, a member that is leaving included, holds fewer
-  than its size. The worker image's disk is the disk of the worker builder it
-  images, and Hetzner creates no server from an image larger than its type's
-  disk. So a server goes to the listed location holding the fewest members
-  among those where Hetzner sells one of the pool's types whose disk holds the
-  worker image, and it takes the first such type. A pool over `nbg1` and
+  than its size. The worker image is a saved copy of the worker builder's disk,
+  so it is as large as that disk, and Hetzner creates no server from an image
+  larger than its type's disk. A server therefore goes only to a listed
+  location where Hetzner sells one of the pool's types whose disk holds the
+  worker image. Among those locations it goes to the one holding the fewest
+  members, and it takes the first such type there. A pool over `nbg1` and
   `hel1` whose worker image holds 160 GB grows in `hel1` on `cx43` while `nbg1`
   sells only `cx33`, whose disk holds 80 GB. When no listed location sells such
   a type, the plan refuses with the class `no-server-type-available`, naming
@@ -4228,7 +4230,7 @@ class:
 | Class | What the upgrade named |
 |---|---|
 | `worker-replacement-unknown` | A key no member of the pool holds |
-| `no-server-type-available` | A worker whose location offers none of the pool's `ServerTypes` now whose disk holds the worker image |
+| `no-server-type-available` | A worker whose location sells no type of the pool's `ServerTypes` now with a disk that holds the worker image |
 | `worker-image-missing` | A worker, while the cluster has no available worker image to boot its successor from |
 | `worker-removal-unwritable` | A worker, on a plane whose block passes no `Removals` |
 | `worker-replacement-unjudged` | A worker, on a plane whose block passes no `ReadReport` or no `Guard` |
@@ -4271,8 +4273,8 @@ takes one of these changes:
    same location, under the same key and name, from the worker image with no
    user data. The successor takes the first of the pool's `ServerTypes` its
    location can order whose disk holds the worker image. When that is not the
-   list's first, the event names the type, the ones it passed and the image's
-   disk.
+   list's first, the event names the type, the types it skipped and the
+   image's disk.
 8. Once a node report received since the successor's creation reads its Node
    object Ready, it takes the label off the network, and the next named
    worker begins. With `RollsOutMachineConfig` set, that report must also read

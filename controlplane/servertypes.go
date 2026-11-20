@@ -65,7 +65,8 @@ func (o *OrderableTypes) Offered(ctx context.Context, loc string) ([]ServerType,
 	return offered, nil
 }
 
-// FirstFitting is the first of types offered with a disk of at least diskGB, empty when none is.
+// FirstFitting is the first of types offered with a disk of diskGB or more, since Hetzner boots an image on an equal
+// disk, and empty when none is.
 func FirstFitting(offered []ServerType, types []string, diskGB float64) string {
 	for _, name := range types {
 		if t, ok := typeNamed(offered, name); ok && t.DiskGB >= diskGB {

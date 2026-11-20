@@ -253,7 +253,7 @@ func (c *creation) place(ctx context.Context, pool CloudPool, members []controlp
 	return c.firstHolding(ctx, pool, locations)
 }
 
-// serverType is the first type of the pool that loc offers now whose disk holds the worker image.
+// serverType is firstHolding for the one location a member already holds, so its successor takes the rule that placed it.
 func (c *creation) serverType(ctx context.Context, pool CloudPool, loc string) (string, error) {
 	_, serverType, err := c.firstHolding(ctx, pool, []string{loc})
 	return serverType, err
@@ -273,15 +273,23 @@ func (c *creation) firstHolding(ctx context.Context, pool CloudPool, locations [
 		}
 		offers[loc] = loc + ": " + controlplane.DescribeOffer(offered, pool.ServerTypes)
 	}
-	var described []string
-	for _, loc := range pool.Locations {
-		if offer, ok := offers[loc]; ok {
-			described = append(described, offer)
-		}
+	tried := slices.Clone(locations)
+	slices.SortStableFunc(tried, func(a, b string) int { return listedAt(pool.Locations, a) - listedAt(pool.Locations, b) })
+	described := make([]string, 0, len(tried))
+	for _, loc := range tried {
+		described = append(described, offers[loc])
 	}
 	return "", "", &controlplane.Refusal{Class: "no-server-type-available", Message: fmt.Sprintf(
 		"Hetzner can order none of the Cloud pool's server types in %s now whose disk holds the worker image's %g GB (%s); retry once it sells one there again",
-		strings.Join(locations, " or "), c.image.DiskGB, strings.Join(described, "; "))}
+		strings.Join(tried, " or "), c.image.DiskGB, strings.Join(described, "; "))}
+}
+
+// listedAt is loc's place in locations, after every listed one when the list drops it.
+func listedAt(locations []string, loc string) int {
+	if i := slices.Index(locations, loc); i >= 0 {
+		return i
+	}
+	return len(locations)
 }
 
 // specAt boots the member of key in loc from the worker image, which embeds the node's configuration.

@@ -2,7 +2,9 @@ package controlplane_test
 
 // The adapter on the wire: a node with no user data and no public address, a private load balancer with no public
 // interface, a server Hetzner cannot place refused, a snapshot started unwaited, a start read from its action, a
-// server's metrics read a minute a point, and a worker targeted by its address.
+// server's metrics read a minute a point, a worker targeted by its address, every call sent through the caller's
+// client with each ask about an action on the caller's schedule, and an action that outlasts its context returning
+// the context's error.
 
 import (
 	"context"
@@ -11,6 +13,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,6 +24,11 @@ import (
 )
 
 const finishedAction = `{"id": 1, "command": "x", "status": "success", "progress": 100, "resources": []}`
+
+// callsTo sends every call through srv's own client and asks about an action at once.
+func callsTo(srv *httptest.Server) controlplane.Calls {
+	return controlplane.Calls{HTTP: srv.Client(), PollBackoff: func(int) time.Duration { return 0 }}
+}
 
 // recordHetzner answers each path with its canned body and records each request body by method and path.
 func recordHetzner(t *testing.T, answers map[string]string) (controlplane.API, map[string]map[string]any) {
@@ -41,7 +50,7 @@ func recordHetzner(t *testing.T, answers map[string]string) (controlplane.API, m
 		_, _ = w.Write([]byte(answer))
 	}))
 	t.Cleanup(srv.Close)
-	return controlplane.NewAPIAt(srv.URL, "token", "mitstack-test"), bodies
+	return controlplane.NewAPIAt(srv.URL, "token", "mitstack-test", callsTo(srv)), bodies
 }
 
 // nodes is the selector a load balancer finds a plane's nodes by.
@@ -152,7 +161,7 @@ func TestHetznerAdapter_RefusesAServerHetznerCannotPlaceNamingItsReason(t *testi
 		_, _ = w.Write([]byte(`{"error": {"code": "resource_unavailable", "message": "server type cx33 unavailable in nbg1"}}`))
 	}))
 	t.Cleanup(srv.Close)
-	api := controlplane.NewAPIAt(srv.URL, "token", "mitstack-test")
+	api := controlplane.NewAPIAt(srv.URL, "token", "mitstack-test", callsTo(srv))
 
 	_, err := api.CreateServers(context.Background(), controlplane.ServerSpec{Name: "node", ServerType: "cx33", Location: "nbg1", ImageID: 42})
 
@@ -208,7 +217,7 @@ func TestHetznerAdapter_ReadsTheServersCPUAndDiskMetricsAMinuteAPoint(t *testing
 			"disk.0.bandwidth.write": {"values": [[1761156600, "0.000000"], [1761156660, "156655104.000000"]]}}}}`))
 	}))
 	t.Cleanup(srv.Close)
-	api := controlplane.NewAPIAt(srv.URL, "token", "mitstack-test")
+	api := controlplane.NewAPIAt(srv.URL, "token", "mitstack-test", callsTo(srv))
 	start := time.Date(2026, 10, 22, 18, 9, 28, 0, time.UTC)
 
 	m, err := api.ServerMetrics(context.Background(), 7, start, start.Add(2*time.Minute))
@@ -349,6 +358,152 @@ func TestHetznerAdapter_ReadsTheAddressHetznerAssignedALoadBalancerWhetherOrNotI
 			require.Len(t, lbs, 1)
 			assert.Equal(t, tc.wantPublic, lbs[0].PublicIPv4, "the address read from public_net %s", tc.publicNet)
 			assert.Equal(t, tc.wantAssigned, lbs[0].AssignedPublicIPv4, "the assigned address read from public_net %s", tc.publicNet)
+		})
+	}
+}
+
+// sentThrough records the method and path of each request it sends on through next.
+type sentThrough struct {
+	next http.RoundTripper
+	mu   sync.Mutex
+	sent []string
+}
+
+func (s *sentThrough) RoundTrip(r *http.Request) (*http.Response, error) {
+	s.mu.Lock()
+	s.sent = append(s.sent, r.Method+" "+r.URL.Path)
+	s.mu.Unlock()
+	return s.next.RoundTrip(r)
+}
+
+// createdServer answers a server create whose action is still running.
+const createdServer = `{"server": {"id": 7, "name": "node", "status": "initializing", "public_net": {}, "private_net": []},
+	"action": {"id": 5, "command": "create_server", "status": "running", "progress": 0, "resources": []}, "next_actions": []}`
+
+// actionOnAsk answers the ask numbered ask about the create's action, which finishes on the ask numbered finishedOn.
+func actionOnAsk(ask, finishedOn int) string {
+	status := "running"
+	if ask >= finishedOn {
+		status = "success"
+	}
+	return `{"actions": [{"id": 5, "command": "create_server", "status": "` + status + `", "progress": 0, "resources": []}]}`
+}
+
+// creating answers a server create whose action finishes on the ask numbered finishedOn, and reads when each ask about
+// that action arrived.
+func creating(t *testing.T, finishedOn int) (*httptest.Server, func() []time.Time) {
+	var mu sync.Mutex
+	var asks []time.Time
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(createdServer))
+			return
+		}
+		mu.Lock()
+		asks = append(asks, time.Now())
+		ask := len(asks)
+		mu.Unlock()
+		_, _ = w.Write([]byte(actionOnAsk(ask, finishedOn)))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, func() []time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(asks)
+	}
+}
+
+func TestNewAPIAt_SendsEveryCallThroughTheCallersClient(t *testing.T) {
+	var mu sync.Mutex
+	var received []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		received = append(received, r.Method+" "+r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method + " " + r.URL.Path {
+		case "GET /servers":
+			_, _ = w.Write([]byte(`{"servers": []}`))
+		case "POST /servers":
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(createdServer))
+		default:
+			_, _ = w.Write([]byte(actionOnAsk(1, 1)))
+		}
+	}))
+	t.Cleanup(srv.Close)
+	client := &sentThrough{next: srv.Client().Transport}
+	api := controlplane.NewAPIAt(srv.URL, "token", "mitstack-test",
+		controlplane.Calls{HTTP: &http.Client{Transport: client}, PollBackoff: func(int) time.Duration { return 0 }})
+	ctx := context.Background()
+
+	_, listErr := api.ListServers(ctx, "a=b")
+	_, createErr := api.CreateServers(ctx, controlplane.ServerSpec{Name: "node", ServerType: "cx33", Location: "nbg1", ImageID: 42})
+
+	require.NoError(t, listErr)
+	require.NoError(t, createErr)
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, []string{"GET /servers", "POST /servers", "GET /actions"}, received, "the requests the server received")
+	assert.Equal(t, received, client.sent, "the requests sent through the caller's client")
+}
+
+func TestNewAPIAt_AsksAboutAnActionOnTheCallersSchedule(t *testing.T) {
+	const finishedOn = 3
+	srv, asked := creating(t, finishedOn)
+	var retries []int
+	schedule := func(retry int) time.Duration {
+		retries = append(retries, retry)
+		return time.Duration(retry) * time.Second
+	}
+	api := controlplane.NewAPIAt(srv.URL, "token", "mitstack-test", controlplane.Calls{HTTP: srv.Client(), PollBackoff: schedule})
+
+	_, err := api.CreateServers(context.Background(), controlplane.ServerSpec{Name: "node", ServerType: "cx33", Location: "nbg1", ImageID: 42})
+
+	require.NoError(t, err)
+	asks := asked()
+	assert.Equal(t, []int{0, 1, 2}, retries, "the retries the schedule was asked for, for an action finished on ask %d", finishedOn)
+	require.Len(t, asks, finishedOn, "the asks about an action finished on ask %d", finishedOn)
+	assert.GreaterOrEqual(t, asks[1].Sub(asks[0]), time.Second, "the time between the first and second ask")
+	assert.GreaterOrEqual(t, asks[2].Sub(asks[1]), 2*time.Second, "the time between the second and third ask")
+}
+
+func TestNewAPIAt_ReturnsTheContextsErrorForAnActionThatOutlastsIt(t *testing.T) {
+	const finishedOn = 2
+	srv, asked := creating(t, finishedOn)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	// The context ends in the wait before the second ask, which the schedule makes an hour long, so only the context's
+	// end can return the wait.
+	schedule := func(retry int) time.Duration {
+		if retry == 0 {
+			return 0
+		}
+		cancel()
+		return time.Hour
+	}
+	api := controlplane.NewAPIAt(srv.URL, "token", "mitstack-test", controlplane.Calls{HTTP: srv.Client(), PollBackoff: schedule})
+
+	_, err := api.CreateServers(ctx, controlplane.ServerSpec{Name: "node", ServerType: "cx33", Location: "nbg1", ImageID: 42})
+
+	require.ErrorIs(t, err, context.Canceled, "the create whose action would finish on ask %d", finishedOn)
+	assert.Len(t, asked(), 1, "the asks about the action before its context ended")
+}
+
+func TestNewAPIAt_RefusesCallsWithoutAClientOrASchedule(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		calls controlplane.Calls
+	}{
+		{"calls with no client", controlplane.Calls{PollBackoff: func(int) time.Duration { return 0 }}},
+		{"calls with no schedule", controlplane.Calls{HTTP: &http.Client{}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			build := func() { controlplane.NewAPIAt(controlplane.Endpoint, "token", "mitstack-test", tc.calls) }
+
+			assert.Panics(t, build, "NewAPIAt with %s", tc.name)
 		})
 	}
 }

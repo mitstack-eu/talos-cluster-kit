@@ -102,7 +102,6 @@ func (cfg Config) withDefaults() Config {
 	return cfg
 }
 
-// NewPlane's reads list each kind of Cloud resource once in a request, until a write through its API drops them.
 func (k *Cluster) NewPlane(api controlplane.API, subID, appName string) controlplane.Plane {
 	return controlplane.Plane{
 		API:               controlplane.ReadOncePerRequest(api, requestReads),

@@ -22,7 +22,6 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/nodeconfig"
 )
 
-// The network labels that record the worker's install, and the stages they record.
 const (
 	KeyWorkerInstall   = "mitstack.dev/worker-install"
 	KeyWorkerInstallAt = "mitstack.dev/worker-install-at"
@@ -179,7 +178,6 @@ func serverDropped(n controlplane.Network) string {
 		workerProgress(n))
 }
 
-// workerDone is whether the Robot worker is written, or the cluster has none to write.
 func (c convergence) workerDone(n controlplane.Network) bool {
 	return c.req.params.cloudOnly || workerProgress(n) == WorkerWritten
 }
@@ -231,7 +229,6 @@ func WaitOutRobotLimit(err error) error {
 	return err
 }
 
-// robotTarget is the subscription's dedicated server and the names it and its vSwitch carry.
 type robotTarget struct {
 	robot  *robot.Client
 	server int64
@@ -263,8 +260,6 @@ func (t robotTarget) admits(ctx context.Context) error {
 	return nil
 }
 
-// robotState is what Robot holds of the worker: its server's name, the vSwitch named for the subscription with
-// whether the server is on it, and the server's firewall.
 type robotState struct {
 	server    robot.Server
 	vswitch   robot.VSwitch
@@ -378,8 +373,7 @@ type imageCloud struct {
 	network int64
 	robot   *robot.Client
 	vswitch string
-	// poll is how long the image server's creation waits between reads of the gateway.
-	poll time.Duration
+	poll    time.Duration
 }
 
 // CreateServer couples the vSwitch's subnet to the network first, so the server reaches the worker, and waits

@@ -559,7 +559,7 @@ func TestPlane_RefusesANodeWhoseLocationSellsNoListedTypeWhoseDiskHoldsTheImageB
 	for _, nodes := range h.cloud.NodesPerCreate {
 		sent += nodes
 	}
-	assert.Equal(t, 2, sent, "the node creates sent to Hetzner, hel1's refused one included")
+	assert.Equal(t, 2, sent, "the node creates sent to Hetzner, none of them for hel1")
 }
 
 func TestPlane_ANodeRefusedForNoTypeWhoseDiskHoldsTheImageIsCreatedOnceItsLocationSellsOneAgain(t *testing.T) {

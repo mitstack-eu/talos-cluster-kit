@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
+	"github.com/mitstack-eu/talos-cluster-kit/controlplane/cloudtest"
 	"github.com/mitstack-eu/talos-cluster-kit/etcd"
 	"github.com/mitstack-eu/talos-cluster-kit/noderollout"
 	"github.com/mitstack-eu/talos-cluster-kit/redundant"
@@ -286,6 +287,73 @@ func TestPlane_AConfirmedUpgradeReplacesTheNamedNodeFromTheKeptSnapshotOnceItsEt
 	assert.Equal(t, []string{"write " + path, "delete " + path}, c.commits, "the removal's commits to the cluster repository")
 	assert.False(t, h.replacing(), "the network still carries a replacement's mark: %v", h.network().Labels)
 	assert.Len(t, h.eventsNaming("powered off node"), 1, "the events of a power-off: %v", h.events)
+}
+
+func TestPlane_ANodeWhosePowerOffOutlivesItsCallIsReadPoweringOffAndReplacedOnceItFinishes(t *testing.T) {
+	h, c := withCluster(t)
+	old := h.nodeIn("fsn1")
+	h.cloud.HoldNext[controlplane.RoleNode] = controlplane.StopServerCommand
+	require.ErrorIs(t, h.replace(c, nil, "fsn1"), context.DeadlineExceeded, "the call whose power-off of the node outlived it")
+
+	err := h.ensure()
+
+	require.NoError(t, err, "a call while the node's power-off runs")
+	assert.Equal(t, []string{controlplane.StopServerCommand}, h.cloud.ActionsSent(old.ID), "the actions sent at the node")
+	assert.Contains(t, h.problems(), "powering off, since Hetzner still runs its stop_server action on it", "the problems while the node's power-off runs")
+	h.cloud.FinishAction(old.ID)
+	require.NoError(t, h.replace(c, nil), "the replacement once the node's power-off finished")
+	assert.NotContains(t, h.cloud.Servers, old.ID, "the node whose power-off finished")
+	assert.NotEqual(t, old.ID, h.nodeIn("fsn1").ID, "the node in fsn1 after its replacement")
+}
+
+func TestPlane_ANodeWhosePowerOffEndsBetweenTheListAndTheStepIsSentNoSecondPowerOffAndReplaced(t *testing.T) {
+	h, c := withCluster(t)
+	old := h.nodeIn("fsn1")
+	h.cloud.HoldNext[controlplane.RoleNode] = controlplane.StopServerCommand
+	require.ErrorIs(t, h.replace(c, nil, "fsn1"), context.DeadlineExceeded, "the call whose power-off of the node outlived it")
+	h.cloud.EndAfterList[old.ID] = true
+
+	err := h.ensure()
+
+	require.NoError(t, err, "the call that listed the node running before its power-off ended")
+	assert.Equal(t, []string{controlplane.StopServerCommand}, h.cloud.ActionsSent(old.ID), "the actions sent at the node")
+	require.NoError(t, h.replace(c, nil), "the replacement once the node's power-off finished")
+	assert.NotEqual(t, old.ID, h.nodeIn("fsn1").ID, "the node in fsn1 after its replacement")
+}
+
+func TestPlane_ANodeWhosePowerBackOnOutlivesItsCallIsReadStartingAndItsReplacementWithdrawnOnceItFinishes(t *testing.T) {
+	h, c := withCluster(t)
+	old, other := h.nodeIn("fsn1"), h.nodeIn("nbg1")
+	require.NoError(t, h.replace(c, func() bool { return h.cloud.Servers[old.ID].Status == controlplane.ServerOff }, "fsn1"))
+	c.unhealthy = []string{other.Name}
+	h.cloud.HoldNext[controlplane.RoleNode] = cloudtest.StartServerCommand
+	require.ErrorIs(t, h.replace(c, nil), context.DeadlineExceeded, "the call whose power-back-on of the node outlived it")
+
+	err := h.ensure()
+
+	require.NoError(t, err, "a call while the node's power-back-on runs")
+	assert.Equal(t, 1, h.sent(old.ID, cloudtest.StartServerCommand), "the starts sent at the node: %v", h.cloud.ActionsSent(old.ID))
+	assert.Contains(t, h.problems(), "starting, since Hetzner still runs its start_server action on it", "the problems while the node's power-back-on runs")
+	h.cloud.FinishAction(old.ID)
+	err = h.replace(c, nil)
+	assert.Equal(t, redundant.ClassBelowMinimum, refusalClass(t, err), "the refusal once the node's power-back-on finished")
+	assert.Equal(t, 1, h.sent(old.ID, cloudtest.StartServerCommand), "the starts sent at the node once its power-back-on finished: %v", h.cloud.ActionsSent(old.ID))
+	assert.Equal(t, controlplane.ServerRunning, h.nodeIn("fsn1").Status, "the node in fsn1 once its power-back-on finished")
+	assert.False(t, h.replacing(), "the network still carries the refused replacement's mark: %v", h.network().Labels)
+}
+
+func TestPlane_ACallThatOnlyWaitsOnANodeReportReadsNoActionOfTheNode(t *testing.T) {
+	h, c := withCluster(t)
+	require.NoError(t, h.replace(c, func() bool { return len(h.eventsNaming("began replacing")) == 1 }, "fsn1"))
+	h.plane.ReadReport = func(context.Context, time.Time) (*report.Read, error) { return nil, nil }
+	before := h.cloud.Reads()
+
+	err := h.ensure()
+
+	require.NoError(t, err, "a call while no node report was received since the replacement began")
+	reads := h.cloud.Reads().Since(before)
+	assert.Zero(t, reads["RunningAction"]+reads["GetServer"], "the reads of the node by a call that sends it nothing: %v", reads)
+	assert.Contains(t, h.problems(), "no node report was received since its replacement began", "where the replacement stands")
 }
 
 func TestPlane_RefusesANodeReplacementThroughTheRedundancyGuardNamingTheMemberThatDoesNotServe(t *testing.T) {

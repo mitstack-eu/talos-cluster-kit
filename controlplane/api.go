@@ -25,6 +25,10 @@ type API interface {
 	AvailableServerTypes(ctx context.Context, location string) ([]ServerType, error)
 	// ServerStarted reports whether Hetzner has finished powering the server on at least once.
 	ServerStarted(ctx context.Context, id int64) (bool, error)
+	// RunningAction names the command of the action Hetzner still runs on the server, empty when it runs none.
+	RunningAction(ctx context.Context, id int64) (string, error)
+	// GetServer reads the server as Hetzner holds it now, found false once it is gone.
+	GetServer(ctx context.Context, id int64) (Server, bool, error)
 	// AttachServerToNetwork with an empty ip lets Hetzner give the server the network's first free address.
 	AttachServerToNetwork(ctx context.Context, serverID, networkID int64, ip string) error
 	PowerOnServer(ctx context.Context, id int64) error
@@ -252,7 +256,8 @@ func NewAPIAt(endpoint, token, application string, calls Calls) API {
 	)}
 }
 
-// hcloudAPI waits for every Hetzner action a call starts, so the next call never meets a locked resource.
+// hcloudAPI waits for each Hetzner action a call starts until the call's deadline, and an action that outlives it still
+// locks its server, which the plane reads through RunningAction before it acts on that server again.
 type hcloudAPI struct {
 	client *hcloud.Client
 }
@@ -346,6 +351,29 @@ func (a *hcloudAPI) ServerStarted(ctx context.Context, id int64) (bool, error) {
 		return false, fmt.Errorf("listing the finished actions of server %d: %w", id, err)
 	}
 	return slices.ContainsFunc(actions, func(a *hcloud.Action) bool { return a.Command == startServerCommand }), nil
+}
+
+func (a *hcloudAPI) RunningAction(ctx context.Context, id int64) (string, error) {
+	actions, err := a.client.Server.Action.AllFor(ctx, &hcloud.Server{ID: id},
+		hcloud.ActionListOpts{Status: []hcloud.ActionStatus{hcloud.ActionStatusRunning}})
+	if err != nil {
+		return "", fmt.Errorf("reading the actions Hetzner runs on server %d: %w", id, err)
+	}
+	if len(actions) == 0 {
+		return "", nil
+	}
+	return actions[0].Command, nil
+}
+
+func (a *hcloudAPI) GetServer(ctx context.Context, id int64) (Server, bool, error) {
+	s, _, err := a.client.Server.GetByID(ctx, id)
+	switch {
+	case err != nil:
+		return Server{}, false, fmt.Errorf("reading server %d: %w", id, err)
+	case s == nil:
+		return Server{}, false, nil
+	}
+	return serverFromHcloud(s), true, nil
 }
 
 func (a *hcloudAPI) AttachServerToNetwork(ctx context.Context, serverID, networkID int64, ip string) error {

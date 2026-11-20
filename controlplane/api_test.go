@@ -41,6 +41,7 @@ func recordHetzner(t *testing.T, answers map[string]string) (controlplane.API, m
 		bodies[r.Method+" "+r.URL.Path] = body
 		answer, ok := answers[r.Method+" "+r.URL.Path]
 		if !ok {
+			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"error": {"code": "not_found", "message": "not found"}}`))
 			return
@@ -204,6 +205,53 @@ func TestHetznerAdapter_AServerHasStartedOnceItsStartActionSucceeded(t *testing.
 		require.NoError(t, err)
 		assert.Equal(t, want, started, "a server whose finished action is %s", command)
 	}
+}
+
+func TestHetznerAdapter_NamesTheActionHetznerStillRunsOnAServerByItsRunningActionsAlone(t *testing.T) {
+	finished := `{"id": 3, "command": "stop_server", "status": "success", "progress": 100, "resources": []}`
+	for _, tc := range []struct {
+		name, running, want string
+	}{
+		{name: "a server Hetzner still starts", running: `{"id": 4, "command": "start_server", "status": "running", "progress": 40, "resources": []}`, want: "start_server"},
+		{name: "a server whose actions all finished", want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var path string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				path = r.URL.Path
+				actions := finished
+				if r.URL.Query().Get("status") == "running" {
+					actions = tc.running
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"actions": [` + actions + `], "meta": {"pagination": {"page": 1, "per_page": 50, "total_entries": 1}}}`))
+			}))
+			t.Cleanup(srv.Close)
+			api := controlplane.NewAPIAt(srv.URL, "token", "mitstack-test", callsTo(srv))
+
+			command, err := api.RunningAction(context.Background(), 7)
+
+			require.NoError(t, err)
+			assert.Equal(t, "/servers/7/actions", path, "the path read for %s", tc.name)
+			assert.Equal(t, tc.want, command, "the running action of %s", tc.name)
+		})
+	}
+}
+
+func TestHetznerAdapter_ReadsOneServerAsHetznerHoldsItNowAndAServerGoneAsNotFound(t *testing.T) {
+	api, _ := recordHetzner(t, map[string]string{
+		"GET /servers/7": `{"server": {"id": 7, "name": "builder", "status": "running", "public_net": {},
+			"private_net": [{"network": 3, "ip": "10.0.0.9"}]}}`,
+	})
+	server, found, err := api.GetServer(context.Background(), 7)
+	_, gone, goneErr := api.GetServer(context.Background(), 8)
+
+	require.NoError(t, err)
+	assert.True(t, found, "GetServer(7), a server Hetzner holds, found")
+	assert.Equal(t, controlplane.ServerRunning, server.Status, "GetServer(7)'s status")
+	assert.Equal(t, map[int64]string{3: "10.0.0.9"}, server.PrivateIPs, "GetServer(7)'s private addresses")
+	require.NoError(t, goneErr, "GetServer(8), a server Hetzner does not hold")
+	assert.False(t, gone, "GetServer(8), a server Hetzner does not hold, found")
 }
 
 func TestHetznerAdapter_ReadsTheServersCPUAndDiskMetricsAMinuteAPoint(t *testing.T) {

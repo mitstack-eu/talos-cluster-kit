@@ -365,6 +365,42 @@ func TestReplaceStep_AConfirmedUpgradeDrainsTheNamedWorkerRemovesItsNodeObjectAn
 	}
 }
 
+func TestReplaceStep_AWorkerWhosePowerOffOutlivesItsCallIsReadPoweringOffAndReplacedOnceItFinishes(t *testing.T) {
+	s, w := withWorkers(t)
+	old := w.worker("fsn1-1")
+	require.NoError(t, w.upgrade(pool2, "fsn1-1"))
+	s.cloud.HoldNext[controlplane.RoleCloudWorker] = controlplane.StopServerCommand
+	require.ErrorIs(t, w.replace(pool2, nil), context.DeadlineExceeded, "the call whose power-off of the worker outlived it")
+
+	step, ok, err := pools.ReplaceStep(context.Background(), s.plane, pool2)
+
+	require.NoError(t, err, "a call while the worker's power-off runs")
+	assert.False(t, ok, "a call while the worker's power-off runs took the step to %s", step.What)
+	assert.Equal(t, []string{controlplane.StopServerCommand}, s.cloud.ActionsSent(old.ID), "the actions sent at the worker")
+	assert.Contains(t, w.problems(), "powering off, since Hetzner still runs its stop_server action on it", "the problems while the worker's power-off runs")
+	s.cloud.FinishAction(old.ID)
+	require.NoError(t, w.replace(pool2, nil), "the replacement once the worker's power-off finished")
+	assert.NotContains(t, s.cloud.Servers, old.ID, "the worker whose power-off finished")
+	assert.NotEqual(t, old.ID, w.worker("fsn1-1").ID, "the worker in fsn1 after its replacement")
+}
+
+func TestReplaceStep_AWorkerWhosePowerOffEndsBetweenTheListAndTheStepIsSentNoSecondPowerOffAndReplaced(t *testing.T) {
+	s, w := withWorkers(t)
+	old := w.worker("fsn1-1")
+	require.NoError(t, w.upgrade(pool2, "fsn1-1"))
+	s.cloud.HoldNext[controlplane.RoleCloudWorker] = controlplane.StopServerCommand
+	require.ErrorIs(t, w.replace(pool2, nil), context.DeadlineExceeded, "the call whose power-off of the worker outlived it")
+	s.cloud.EndAfterList[old.ID] = true
+
+	step, ok, err := pools.ReplaceStep(context.Background(), s.plane, pool2)
+
+	require.NoError(t, err, "the call that listed the worker running before its power-off ended")
+	assert.False(t, ok, "the call that listed the worker running before its power-off ended took the step to %s", step.What)
+	require.NoError(t, w.replace(pool2, nil), "the replacement once the worker's power-off finished")
+	assert.Equal(t, []string{controlplane.StopServerCommand}, s.cloud.ActionsSent(old.ID), "the actions sent at the worker")
+	assert.NotEqual(t, old.ID, w.worker("fsn1-1").ID, "the worker in fsn1 after its replacement")
+}
+
 func TestReplaceStep_RefusesToReplaceTheOnlyReadyWorkerThroughTheRedundancyGuardNamingIt(t *testing.T) {
 	s, w := withWorkers(t)
 	old := w.worker("fsn1-1")
@@ -701,6 +737,21 @@ func TestReplaceStep_NamesADrainJobArgoCDHasNotAppliedYet(t *testing.T) {
 
 	assert.Contains(t, w.problems(), "lists no Job mitstack-drain-fsn1-1, so the Application cluster has not applied its file", "where the replacement stands")
 	assert.NotContains(t, w.problems(), "has not finished", "where the replacement stands")
+}
+
+func TestReplaceStep_ACallThatOnlyWaitsOnTheDrainReadsNoActionOfTheWorker(t *testing.T) {
+	s, w := withWorkers(t)
+	w.paused = true
+	require.NoError(t, w.upgrade(pool2, "fsn1-1"))
+	require.NoError(t, w.replace(pool2, func() bool { return len(w.commits) == 1 }))
+	before := s.cloud.Reads()
+
+	step, ok, err := pools.ReplaceStep(context.Background(), s.plane, pool2)
+
+	require.NoError(t, err, "a call while the drain Job is not applied")
+	require.False(t, ok, "a call while the drain Job is not applied took the step to %s", step.What)
+	reads := s.cloud.Reads().Since(before)
+	assert.Zero(t, reads["RunningAction"]+reads["GetServer"], "the reads of the worker by a call that sends it nothing: %v", reads)
 }
 
 func TestReplaceStep_AnIdleWorkersRemovalDrainsItRemovesItsNodeObjectAndDeletesItsServerWithNoSuccessor(t *testing.T) {

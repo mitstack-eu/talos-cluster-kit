@@ -2,11 +2,14 @@
 package robotclustertest
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"maps"
 	"net/http"
@@ -33,6 +36,7 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/noderollout"
 	"github.com/mitstack-eu/talos-cluster-kit/operator/robotcluster"
 	"github.com/mitstack-eu/talos-cluster-kit/report"
+	"github.com/mitstack-eu/talos-cluster-kit/serve"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 	"github.com/mitstack-eu/talos-cluster-kit/tools"
 	"github.com/stretchr/testify/require"
@@ -93,6 +97,9 @@ type Env struct {
 	// once, as Argo CD creates it.
 	booted  map[int64]bool
 	jobHeld bool
+	// rootAddress is the address the cluster's own Applications read the cluster repository at, empty until the harness
+	// hands Argo CD the manifest that holds them, once, as Talos applies it at the cluster's first boot.
+	rootAddress string
 }
 
 // Option changes the Env before its cluster is built.
@@ -272,6 +279,9 @@ func (e *Env) Installed() int {
 }
 
 func (e *Env) syncArgo() {
+	if e.rootAddress == "" {
+		e.rootArgo()
+	}
 	files := map[string][]byte{}
 	for _, name := range e.Argo.Files() {
 		files[name] = nil
@@ -294,6 +304,79 @@ func (e *Env) syncArgo() {
 		}
 	}
 	e.jobHeld = held
+}
+
+// rootArgo builds Argo CD again from the hosting policies and the manifest of the cluster's own Applications the builder's
+// configuration carries, once the plane has created a builder, so Argo CD opens only the address the build gives it.
+func (e *Env) rootArgo() {
+	manifest := e.builtApplications()
+	if manifest == nil {
+		return
+	}
+	e.Argo = testutil.BuildCluster(e.T, components.HostingPolicies()[0].Bytes, manifest)
+	for _, app := range testutil.Kind(testutil.Documents(e.T, manifest), "Application") {
+		address, _ := testutil.Field(e.T, app, "spec", "source", "repoURL").(string)
+		require.NotEmpty(e.T, address, "the address the build's Application %v reads", testutil.Field(e.T, app, "metadata", "name"))
+		require.Contains(e.T, []string{"", address}, e.rootAddress, "the addresses the build's Applications read")
+		e.rootAddress = address
+	}
+}
+
+// RootAddress is the address the cluster's own Applications read the cluster repository at, as the build renders them,
+// set at the first Argo CD sync after the plane creates a builder.
+func (e *Env) RootAddress() string { return e.rootAddress }
+
+// builtApplications is the inline manifest of the builder's configuration that holds Applications, read from the
+// builder's create request, or nil before the plane creates a builder.
+func (e *Env) builtApplications() []byte {
+	i := slices.IndexFunc(e.Cloud.ServerSpecs, func(s controlplane.ServerSpec) bool {
+		return controlplane.Role(s.Labels[controlplane.KeyRole]) == controlplane.RoleBuilder
+	})
+	if i < 0 {
+		return nil
+	}
+	var held [][]byte
+	for _, inline := range testutil.Kind(builderConfiguration(e.T, e.Cloud.ServerSpecs[i].UserData), "KubeInlineManifestConfig") {
+		manifest := []byte(testutil.Field(e.T, inline, "manifest").(string))
+		if len(testutil.Kind(testutil.Documents(e.T, manifest), "Application")) > 0 {
+			held = append(held, manifest)
+		}
+	}
+	require.Len(e.T, held, 1, "the inline manifests of the builder's configuration that hold an Application")
+	return held[0]
+}
+
+// builderConfiguration is the documents of the file the builder's cloud-config writes with the inline manifests,
+// decompressed as cloud-init does.
+func builderConfiguration(t *testing.T, userData string) []map[string]any {
+	t.Helper()
+	for _, written := range testutil.Field(t, testutil.Documents(t, []byte(userData))[0], "write_files").([]any) {
+		file, _ := written.(map[string]any)
+		text, ok := file["content"].(string)
+		if !ok {
+			continue
+		}
+		content := []byte(text)
+		if file["encoding"] == serve.GzipBase64 {
+			content = gunzipped(t, content)
+		}
+		if bytes.Contains(content, []byte("kind: KubeInlineManifestConfig")) {
+			return testutil.Documents(t, content)
+		}
+	}
+	require.FailNow(t, "the builder's cloud-config writes no file of inline manifests")
+	return nil
+}
+
+func gunzipped(t *testing.T, encoded []byte) []byte {
+	t.Helper()
+	zipped, err := base64.StdEncoding.DecodeString(string(encoded))
+	require.NoError(t, err, "the base64 of a builder file")
+	r, err := gzip.NewReader(bytes.NewReader(zipped))
+	require.NoError(t, err, "the gzip of a builder file")
+	plain, err := io.ReadAll(r)
+	require.NoError(t, err, "the gzip of a builder file")
+	return plain
 }
 
 // boot gives each Cloud server the harness has not seen yet the machine configuration Boots names.
@@ -487,11 +570,12 @@ type GitHub struct {
 	keys    map[string][]robotcluster.DeployKey
 	nextKey int64
 	git     map[string]*landingtest.Fake
+	landed  map[string][][]string
 }
 
 func newGitHub(t *testing.T) *GitHub {
 	gh := &GitHub{t: t, repos: map[string][]string{}, files: map[string]string{}, keys: map[string][]robotcluster.DeployKey{},
-		nextKey: 100, git: map[string]*landingtest.Fake{}}
+		nextKey: 100, git: map[string]*landingtest.Fake{}, landed: map[string][][]string{}}
 	gh.server = httptest.NewServer(http.HandlerFunc(gh.serve))
 	t.Cleanup(gh.server.Close)
 	return gh
@@ -555,6 +639,8 @@ func (gh *GitHub) serveContents(w http.ResponseWriter, r *http.Request, path str
 		}
 		decoded, _ := base64.StdEncoding.DecodeString(body.Content)
 		gh.files[path] = string(decoded)
+		repo, file, _ := strings.Cut(path, "/contents/")
+		gh.landed[repo] = append(gh.landed[repo], []string{file})
 		w.WriteHeader(http.StatusCreated)
 		return
 	}
@@ -603,6 +689,7 @@ func (gh *GitHub) serveGit(w http.ResponseWriter, r *http.Request, repo string) 
 	rec := httptest.NewRecorder()
 	f.Config.Handler.ServeHTTP(rec, r)
 	if r.Method == http.MethodPatch && rec.Code == http.StatusOK {
+		gh.landed[repo] = append(gh.landed[repo], changedPaths(files, f.Main()))
 		maps.DeleteFunc(gh.files, func(path, _ string) bool { return strings.HasPrefix(path, repo+"/contents/") })
 		for path, content := range f.Main() {
 			gh.files[repo+"/contents/"+path] = content
@@ -610,6 +697,31 @@ func (gh *GitHub) serveGit(w http.ResponseWriter, r *http.Request, repo string) 
 	}
 	w.WriteHeader(rec.Code)
 	_, _ = w.Write(rec.Body.Bytes())
+}
+
+// Landed is the paths each write the cluster made to repository repo's main changed, oldest first, whether it moved
+// the ref through the git routes or wrote one file through the contents route.
+func (gh *GitHub) Landed(repo string) [][]string {
+	gh.mu.Lock()
+	defer gh.mu.Unlock()
+	return slices.Clone(gh.landed[repo])
+}
+
+// changedPaths is each path written, changed or taken out between before and after, sorted.
+func changedPaths(before, after map[string]string) []string {
+	var paths []string
+	for path, content := range after {
+		if was, ok := before[path]; !ok || was != content {
+			paths = append(paths, path)
+		}
+	}
+	for path := range before {
+		if _, kept := after[path]; !kept {
+			paths = append(paths, path)
+		}
+	}
+	slices.Sort(paths)
+	return paths
 }
 
 func (gh *GitHub) serveKeys(w http.ResponseWriter, r *http.Request, path string) {

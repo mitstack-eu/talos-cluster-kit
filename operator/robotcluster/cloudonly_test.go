@@ -5,15 +5,25 @@ package robotcluster_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"maps"
+	"net/url"
+	"path"
+	"slices"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/mitstack-eu/block-kit/capabilities/hetzner/robot/robottest"
 	"github.com/mitstack-eu/block-kit/contract"
 	"github.com/mitstack-eu/block-kit/handler"
+	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
 	"github.com/mitstack-eu/talos-cluster-kit/operator/robotcluster"
 	"github.com/mitstack-eu/talos-cluster-kit/operator/robotcluster/robotclustertest"
+	"github.com/mitstack-eu/talos-cluster-kit/rollout"
+	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -226,4 +236,109 @@ func TestCloudOnlyRequest_OnAClusterBuiltOnADedicatedServerIsRefusedAndLeavesThe
 	refusedAs(t, e.Delete(), "robot-left-in-place")
 	assert.Zero(t, e.Cloud.Count(), "the Cloud resources left after the unsubscribe")
 	assert.Len(t, e.Robot.Requests(), requests, "the Robot fake's calls after the number was dropped")
+}
+
+func TestCloudOnlyCluster_HasEveryComponentApplicationSyncedWithItsObjectsAppliedAtTheRootApplicationsHTTPSAddress(t *testing.T) {
+	e := robotclustertest.New(t, cloudOnlySub, cloudOnly)
+
+	obs, err := e.Settle()
+
+	require.NoError(t, err, "the subscribe: %s", obs.StatusDetail)
+	root, err := url.Parse(e.RootAddress())
+	require.NoError(t, err, "the root Application's address")
+	assert.Equal(t, "https", root.Scheme, "the scheme a cluster without hosting reads its repository over")
+	for file, content := range componentApplicationFiles(t, e) {
+		assert.Equal(t, e.RootAddress(), repoURLOf(t, content), "the address %s reads the repository at", file)
+	}
+	assertEverySyncedWithItsObjects(t, componentApplications(t, e))
+}
+
+func TestCloudOnlyCluster_UpgradeMovesEveryComponentApplicationAtTheSSHAddressToTheRootApplicationsAddressInOneCommit(t *testing.T) {
+	e := robotclustertest.New(t, cloudOnlySub, cloudOnly)
+	_, err := e.Settle()
+	require.NoError(t, err)
+	held := componentApplicationFiles(t, e)
+	for file, content := range held {
+		require.Contains(t, content, strconv.Quote(e.RootAddress()), "the address %s reads before the upgrade's stand-in", file)
+		e.GitHub.Plant(e.Repo(), file, strings.Replace(content, strconv.Quote(e.RootAddress()), strconv.Quote(components.RepositorySSHURL(e.Repo())), 1))
+	}
+	e.Progress()
+	for name, app := range componentApplications(t, e) {
+		require.Equal(t, "Unknown", app.Sync, "%s's sync status at the SSH address", name)
+	}
+	before := len(e.GitHub.Landed(e.Repo()))
+
+	obs, err := e.Settle()
+
+	require.NoError(t, err, "the upgrade's subscribe: %s", obs.StatusDetail)
+	var moves [][]string
+	for _, commit := range e.GitHub.Landed(e.Repo())[before:] {
+		if moved := slices.DeleteFunc(slices.Clone(commit), func(file string) bool { _, ok := held[file]; return !ok }); len(moved) > 0 {
+			moves = append(moves, moved)
+		}
+	}
+	assert.Equal(t, [][]string{slices.Sorted(maps.Keys(held))}, moves, "the commits that change a component Application")
+	for file, content := range componentApplicationFiles(t, e) {
+		assert.Equal(t, e.RootAddress(), repoURLOf(t, content), "the address %s reads the repository at after the upgrade", file)
+	}
+	assertEverySyncedWithItsObjects(t, componentApplications(t, e))
+}
+
+// reportedApplication is one Argo CD Application as the node report lists it.
+type reportedApplication struct {
+	Sync      string
+	Resources []struct{ Kind, Name, Sync string }
+}
+
+// componentApplications is each component's Application the stand-in Argo CD reports, by name.
+func componentApplications(t *testing.T, e *robotclustertest.Env) map[string]reportedApplication {
+	t.Helper()
+	var report struct {
+		ArgoCD struct {
+			Applications []struct {
+				Name string
+				reportedApplication
+			}
+		} `json:"argocd"`
+	}
+	require.NoError(t, json.Unmarshal(e.Argo.Report(), &report))
+	apps := map[string]reportedApplication{}
+	for _, app := range report.ArgoCD.Applications {
+		if strings.HasPrefix(app.Name, rollout.ApplicationPrefix) {
+			apps[app.Name] = app.reportedApplication
+		}
+	}
+	require.NotEmpty(t, apps, "the component Applications Argo CD reports")
+	return apps
+}
+
+func assertEverySyncedWithItsObjects(t *testing.T, apps map[string]reportedApplication) {
+	t.Helper()
+	for name, app := range apps {
+		assert.Equal(t, "Synced", app.Sync, "%s's sync status", name)
+		assert.NotEmpty(t, app.Resources, "the objects %s applied", name)
+		for _, r := range app.Resources {
+			assert.Equal(t, "Synced", r.Sync, "%s's %s %s", name, r.Kind, r.Name)
+		}
+	}
+}
+
+// componentApplicationFiles is each component Application's file the cluster repository holds, by its path.
+func componentApplicationFiles(t *testing.T, e *robotclustertest.Env) map[string]string {
+	t.Helper()
+	files := map[string]string{}
+	for file, content := range e.GitHub.RepoFiles(e.Repo()) {
+		if strings.HasPrefix(path.Base(file), rollout.ApplicationPrefix) {
+			files[file] = content
+		}
+	}
+	require.NotEmpty(t, files, "the component Applications the cluster repository holds")
+	return files
+}
+
+func repoURLOf(t *testing.T, application string) string {
+	t.Helper()
+	address, _ := testutil.Field(t, testutil.Documents(t, []byte(application))[0], "spec", "source", "repoURL").(string)
+	require.NotEmpty(t, address, "the address the Application reads")
+	return address
 }

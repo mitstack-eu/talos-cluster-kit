@@ -110,10 +110,9 @@ func (p Plane) ownComponents(enrolmentToken string, poolWorkers []Server) ([]com
 	}, data, nil
 }
 
-// repositoryAccess is the address Argo CD reads the cluster repository at, which the cluster's own Application and each
-// component's Application name, and the credential the cluster opens it with: a hosting cluster reads over SSH with its
-// deploy key, and any other at the plane's address with the platform's token. The address is empty when the plane
-// names no repository.
+// repositoryAccess is the address Argo CD reads the cluster repository at, for the cluster's own Application and each
+// component's, and the credential it opens it with: a hosting cluster's SSH address and deploy key, or any other's
+// plane address and the platform's token, with the address empty when the plane names no repository.
 func (p Plane) repositoryAccess() (address, credential string) {
 	if p.Hosting == nil {
 		return p.RepoURL, "platform-token"

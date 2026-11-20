@@ -57,7 +57,7 @@ the order a block uses them.
 | `report` | Renders the node report, a CronJob that reads the cluster and posts what it read to the platform, signed for its exact body. [What the node report carries](#what-the-node-report-carries) lists its members, the nine checks it names and what happens when a read fails. It also renders the outside probe, a CronJob in `kube-system` that calls the mesh probe's target with no workload identity and reads each gateway's mirror from outside the mesh, the admission probe namespace and the daily security scan. The report holds no right on Secrets | `Manifests`, `Interval` |
 | `topology` | Renders the topology labeller, a CronJob that labels each Cloud node with its zone and region, labels each burst member of a Cloud pool, a member above the pool's minimum, `mitstack.dev/burst=true`, and holds the zone and region label names | `Manifests`, `Labels`, `ZoneLabel`, `RegionLabel`, `FieldManager` |
 | `openbaoinit` | Renders OpenBao's init Job, which the hosting set carries. On a hosting cluster, a cluster that runs mitstack's own control plane, it initialises OpenBao once, commits the root token and recovery key to the cluster repository as PGP messages, then writes the policy that External Secrets reads with in each slice, the namespace a block gives one app | `Manifests`, `Inputs`, `InitFile` |
-| `rollout` | Gives a running cluster a release's component set, the manifests one kit release carries; [How a running cluster takes a release's components](#how-a-running-cluster-takes-a-releases-components) defines each term. A block commits the set's files to the cluster repository, where Argo CD applies each component through an Application of its own, which is Argo CD's record of one repository directory it keeps applied to the cluster. Files that an earlier release committed and this release no longer states are retired, which means deleted. Each component's sync runs a handover Job, which has Talos give up the fields it set when it created the component's objects, so they hold only what the release states. After OpenBao's sync, OpenBao's rollout Job moves each member onto the StatefulSet's new revision, as [How OpenBao's members take a new revision](#how-openbaos-members-take-a-new-revision) explains, which also says what a member, a StatefulSet and a revision are. The read-back then checks from the node report that the cluster runs each component as the release states it | `Release.Files`, `Release.Retired`, `Release.ReadBack`, `Release.ToolsImage`, `LegacyFiles` |
+| `rollout` | Gives a running cluster a release's component set, the manifests one kit release carries; [How a running cluster takes a release's components](#how-a-running-cluster-takes-a-releases-components) defines each term. A block commits the set's files to the cluster repository, where Argo CD applies each component through an Application of its own, which is Argo CD's record of one repository directory it keeps applied to the cluster. Files that an earlier release committed and this release no longer states are retired, which means deleted. Each component's sync runs a handover Job, which has Talos give up the fields it set when it created the component's objects, so they hold only what the release states. After OpenBao's sync, OpenBao's rollout Job moves each member onto the StatefulSet's new revision, as [How OpenBao's members take a new revision](#how-openbaos-members-take-a-new-revision) explains, which also says what a member, a StatefulSet and a revision are. Every Application reads the cluster repository at `Release.RepoURL`, the one address the cluster holds a credential for. The read-back then checks from the node report that the cluster runs each component as the release states it | `Release.Files`, `Release.Retired`, `Release.ReadBack`, `Release.ToolsImage`, `Release.RepoURL`, `LegacyFiles` |
 | `controlplane` | Builds and deletes a Talos control plane on Hetzner Cloud: a network, a firewall, a builder that makes the cluster's own snapshot, one or three nodes with a gateway beside each, and an API and an ingress load balancer. Three nodes run in `fsn1`, `nbg1` and `hel1`, and one node runs in `fsn1`. Each call reads the resources by their labels and takes the one change still missing, and [How a request reads the Cloud once](#how-a-request-reads-the-cloud-once) says how one request lists each kind once. A refusal is a `*Refusal` with a `Class` and a `Message`, which the block answers as its own framework's refusal | `Plane`, `Plane.NodeLocations`, `DefaultSize`, `KeySize`, `Plane.Read`, `ReadOncePerRequest`, `RequestReads`, `NewRequestReads`, `WithoutRequestReads`, `Plane.EnsureNetwork`, `Plane.SizeRefusal`, `Plane.NextStep`, `Plane.Problems`, `Plane.Unhealthy`, `Plane.Outputs`, `State.IngressAddresses`, `Plane.Release`, `ErrNoIngressAddress`, `Plane.GatewaysAwaitRelease`, `Plane.GatewaysServeRelease`, `Plane.Delete`, `NewAPI`, `Refusal`, `TopologyLabels`, `GatewayUpgradeBound`, `GatewayCertRenewBefore`, `KeyGatewayCertExpires` |
 | `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image carries and the gateway copies out of it, `tools/jq.env`, which pins the tools image's jq, and `tools/kube-bench-talos.yaml`, the settings kube-bench reads over its own on Talos. Its Dockerfile builds `cmd/machine-config` into the tools image. It names the tools image a release published and the directory in that image that holds the node report's, its outside probe's, the labeller's, the cluster tokens', the handover's and OpenBao's rollout's scripts, and where in that image each served manifest sits | `Env`, `Pin`, `Image`, `ScriptDir`, `ManifestPath` |
 | `redundant` | Carries a removal's redundant set, each member with its reading, to the guard the block passes, block-kit's `redundancy.Set.AllowRemoval`, which this module does not import | `Set`, `Guard`, `Held` |
@@ -2890,13 +2890,17 @@ builder takes about 27,400 and 27,500 bytes.
 
 ### How Argo CD reads the cluster repository
 
-This section is for an engineer who builds a cluster block that hosts
-mitstack's platform, and for anyone checking which key such a cluster reads
-its code with. It uses seven terms.
+This section is for an engineer who builds a cluster block, and for anyone
+checking which address and which key a cluster reads its code with. It uses
+eleven terms.
 
 | Term | Meaning here |
 |---|---|
+| Platform | mitstack's control plane, which issues each cluster its tokens |
 | Platform-hosting cluster | A cluster that runs mitstack's own control plane |
+| Plane | The `controlplane.Plane` a cluster block fills in for a cluster, which names the cluster repository's address in `RepoURL` and, for a platform-hosting cluster, its keys in `Hosting` |
+| Enrolment | The Job that trades a new cluster's one-time token for its platform tokens and stores each in a Secret, the repository token among them |
+| Application | An Argo CD object naming one directory of a Git repository, at one address, for Argo CD to apply to the cluster |
 | Hosting set | The manifests `components.Hosting` returns for a platform-hosting cluster, which the install renders from the keys it mints |
 | Inline manifest | A manifest of the set that travels inside each node's machine configuration instead of being served over the network, which is where every secret goes |
 | Cluster block | A block, a unit of infrastructure an app subscribes to, whose Go program imports this module and installs a Talos cluster, such as hcloud-hrobot-talos-cluster |
@@ -2905,10 +2909,31 @@ its code with. It uses seven terms.
 | Sealed Secret | An object holding values encrypted to the cluster's RSA key pair, which the Sealed Secrets controller decrypts into an ordinary Secret |
 
 Argo CD is the controller that applies a cluster's Git repositories to the
-cluster, and it needs a credential to read them. A platform-hosting cluster
-reads its cluster repository with a read-only deploy key, over GitHub's SSH
-endpoint on port 443. The cluster's gateway forwards only port 443 and the
-log receiver's port, so port 22 is closed to it. The URL has this form:
+cluster, and it needs a credential to read them. Argo CD gives an Application
+the credential stored for the address the Application reads. Each cluster
+holds one credential for its cluster repository, at one address. So every
+Application the kit renders reads the repository at that address: the
+cluster's own Application, `cluster`, and each component's Application,
+`component-<name>`.
+
+| Cluster | The address every Application reads | The credential |
+|---|---|---|
+| One that hosts no platform | The plane's `RepoURL`, such as `https://github.com/acme/shop-cluster` | The short-lived token the platform issues, which the enrolment writes into the Secret `cluster-repository` in `argocd` |
+| One that hosts the platform | `ssh://git@ssh.github.com:443/acme/shop-cluster.git`, built from the plane's `Hosting.Repository` | The read-only deploy key, which Sealed Secrets opens into the Secret `mitstack-cluster-repository` in `argocd` |
+
+The plane decides both in one place, `repositoryAccess` in
+`controlplane/manifests.go`, so the build's `cluster` Application and every
+release's component Applications name the same address. `Plane.Release`
+hands that address to the rollout as `Release.RepoURL`, and refuses a plane
+that names none. `Release.Files` renders it into each `component-`
+Application and refuses a release whose `RepoURL` is empty. A block that
+builds a `rollout.Release` itself sets `RepoURL` to the address its `cluster`
+Application reads.
+
+A platform-hosting cluster reads its cluster repository with a read-only
+deploy key, over GitHub's SSH endpoint on port 443. The cluster's gateway
+forwards only port 443 and the log receiver's port, so port 22 is closed to
+it. The URL has this form:
 
 ```text
 ssh://git@ssh.github.com:443/acme/shop-cluster.git
@@ -2969,7 +2994,8 @@ takes no repository token from the platform, and the cluster runs no CronJob
 that renews one. The environment value `REPOSITORY_CREDENTIAL=deploy-key` tells
 `controlplane/scripts/cluster-tokens.sh` so. A cluster that hosts no platform
 reads its repository with the short-lived token the platform issues, as
-`REPOSITORY_CREDENTIAL=platform-token`.
+`REPOSITORY_CREDENTIAL=platform-token`. The enrolment stores that token for
+the address in `REPO_URL`, which is the plane's `RepoURL`.
 
 ### How Argo CD tells the platform its verdict
 
@@ -3150,8 +3176,10 @@ reading, err := release.ReadBack(reportBody)     // what the newest node report 
 ```
 
 In the example, `"acme/shop-cluster"` is the cluster repository as GitHub
-names it, `owner/name`: `Release.Files` builds each Application's source URL
-from it and refuses any other form. `heldPaths` is every file path the cluster repository holds at
+names it, `owner/name`. `Release.Files` only checks that form, and refuses any
+other. Each Application's source URL is the release's `RepoURL`, as
+[How Argo CD reads the cluster repository](#how-argo-cd-reads-the-cluster-repository)
+explains. `heldPaths` is every file path the cluster repository holds at
 the commit the block builds on, as the block lists them from its checkout, and
 `reportBody` is the JSON body of the newest node report the platform received
 from the cluster. `ReadBack` returns a `rollout.Reading`, which the end of this
@@ -3329,7 +3357,10 @@ v0.32.0 shipped it, as Talos would apply it. The other is built from the
 files kit release v0.46.0 committed, as Talos and Argo CD would. The cluster in `testutil/argocd.go` stands in for
 the cluster's API and for Argo CD. It applies each Application's directory,
 prunes what the directory no longer holds, and deletes an Application's
-objects when the Application carrying the finalizer goes. It replaces an
+objects when the Application carrying the finalizer goes. Once it holds the
+`cluster` Application, it applies nothing for an Application that reads the
+repository at another address, since the cluster holds a credential for that
+one address, and reports that Application's sync as `Unknown`. It replaces an
 object whole and tracks no field manager, so it shows a cluster as it stands
 once each handover has run. The next section names the test that runs a
 handover through a real API server.

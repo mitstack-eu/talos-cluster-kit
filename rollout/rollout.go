@@ -50,8 +50,8 @@ type Release struct {
 	Components []components.Manifest
 	// ToolsImage is the tools image the kit release published, by digest, which each component's handover Job runs.
 	ToolsImage string
-	// RepoURL is the address each component's Application reads the cluster repository at. It is the cluster's own
-	// Application's address, since the cluster holds a repository credential for that address alone.
+	// RepoURL is the address each component's Application reads the cluster repository at, which is the cluster's own
+	// Application's address because the cluster holds a repository credential for that address alone.
 	RepoURL string
 }
 
@@ -78,7 +78,7 @@ func (c carried) file() string { return c.dir() + "/" + manifestFile }
 func (c carried) applicationFile() string { return clusterDir + "/" + c.app + ".yaml" }
 
 // Files are what a block commits to the cluster repository: each component's manifest, then the Applications that
-// apply them, so Argo CD never syncs an Application whose directory is empty.
+// apply them from r.RepoURL, so Argo CD never syncs an Application whose directory is empty.
 func (r Release) Files(repository string) ([]File, error) {
 	if err := openbaoinit.CheckRepository(repository); err != nil {
 		return nil, fmt.Errorf("the component rollout: %w", err)

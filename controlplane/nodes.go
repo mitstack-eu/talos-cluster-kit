@@ -181,7 +181,7 @@ func (p Plane) recordReplacements(ctx context.Context, st State, _ Network, rec 
 		if _, recorded := rec.labels[KeyNodeReplace+loc]; recorded {
 			continue
 		}
-		if _, err := orderable.First(ctx, nodeWhat, p.ServerTypes, loc); err != nil {
+		if err := p.successorOrderable(ctx, orderable, st, loc); err != nil {
 			return err
 		}
 		rec.labels[KeyNodeReplace+loc] = nodeReplacement{loc: loc, old: node.ID, asked: p.now()}.record()
@@ -380,8 +380,20 @@ func (p Plane) replaceNode(ctx context.Context, st State, network Network, r nod
 	return waitsOn("Hetzner reads it neither running nor off")
 }
 
+// successorOrderable checks that Hetzner can order a successor for the node in loc now, of a type whose disk holds the
+// cluster's snapshot, which createNode boots it from; with no single snapshot to read, a type it can order passes.
+func (p Plane) successorOrderable(ctx context.Context, orderable *OrderableTypes, st State, loc string) error {
+	var err error
+	if snap, ok := st.Snapshot(); ok {
+		_, err = orderable.FirstHolding(ctx, nodeWhat, p.ServerTypes, loc, snap)
+	} else {
+		_, err = orderable.First(ctx, nodeWhat, p.ServerTypes, loc)
+	}
+	return err
+}
+
 func (p Plane) powerOffNode(ctx context.Context, st State, network Network, r nodeReplacement, node Server) (progress, error) {
-	if _, err := (&OrderableTypes{API: p.API}).First(ctx, nodeWhat, p.ServerTypes, r.loc); err != nil {
+	if err := p.successorOrderable(ctx, &OrderableTypes{API: p.API}, st, r.loc); err != nil {
 		return p.refused(network, r, err)
 	}
 	began, begun := RemovalBegan(node, r.plan())

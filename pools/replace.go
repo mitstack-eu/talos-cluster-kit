@@ -192,7 +192,7 @@ func ReplaceWorkers(pool CloudPool, keys []string) controlplane.Record {
 		if class, what := lacks(plane); class != "" {
 			return "", refuse(class, "the upgrade names a Cloud worker to replace, and the block passes %s, so nothing was changed", what)
 		}
-		site, err := newSite(st)
+		site, err := newSite(plane, st)
 		if err != nil {
 			return "", err
 		}
@@ -210,7 +210,7 @@ func ReplaceWorkers(pool CloudPool, keys []string) controlplane.Record {
 			if _, removing := labels[KeyWorkerRemove+key]; removing {
 				return "", refuse("worker-removal-under-way", "the upgrade names the Cloud worker %q to replace, and the pool's scaling is removing it, so nothing was changed; upgrade again once its removal ends", key)
 			}
-			if _, err := site.serverType(ctx, plane, pool, worker.Location); err != nil {
+			if _, err := site.serverType(ctx, pool, worker.Location); err != nil {
 				return "", err
 			}
 			labels[KeyWorkerReplace+key] = workerReplacement{key: key, old: worker.ID, asked: now(plane)}.record()
@@ -424,11 +424,11 @@ func (x replacer) successorOrderable(ctx context.Context) error {
 	if x.r.removal {
 		return nil
 	}
-	site, err := newSite(x.st)
+	site, err := newSite(x.plane, x.st)
 	if err != nil {
 		return err
 	}
-	_, err = site.serverType(ctx, x.plane, x.pool, x.r.location())
+	_, err = site.serverType(ctx, x.pool, x.r.location())
 	return err
 }
 
@@ -750,7 +750,7 @@ func (x replacer) createSuccessor(ctx context.Context, held []string) (progress,
 	if g, removed, err := x.removal(*read, x.plane.LocatedName(RoleCloudWorker, x.r.key), held); err != nil || !removed {
 		return g, err
 	}
-	site, err := newSite(x.st)
+	site, err := newSite(x.plane, x.st)
 	if err != nil {
 		return progress{}, err
 	}
@@ -761,7 +761,8 @@ func (x replacer) createSuccessor(ctx context.Context, held []string) (progress,
 	}
 	why := ""
 	if i := slices.Index(x.pool.ServerTypes, spec.ServerType); i > 0 {
-		why = fmt.Sprintf(", since Hetzner can order no %s there now", strings.Join(x.pool.ServerTypes[:i], " or "))
+		why = fmt.Sprintf(", since Hetzner can order no %s there now whose disk holds the worker image's %g GB",
+			strings.Join(x.pool.ServerTypes[:i], " or "), site.image.DiskGB)
 	}
 	path := jobPath(removeNodeStep, x.r.key)
 	return next("take "+path+" out and create the successor of Cloud worker "+x.r.key+" in "+loc+" from the worker image", func(ctx context.Context) error {

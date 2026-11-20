@@ -369,9 +369,9 @@ func (p Plane) missingNodeStep(st State, s site, snap Snapshot) (Step, bool, err
 }
 
 // createNode boots a node from the cluster's own snapshot, with no user data and no public address, named for its
-// location, of the first of ServerTypes Hetzner can order there now.
+// location, of the first of ServerTypes Hetzner can order there now whose disk holds the snapshot.
 func (p Plane) createNode(ctx context.Context, s site, snap Snapshot, loc string) error {
-	serverType, err := (&OrderableTypes{API: p.API}).First(ctx, nodeWhat, p.ServerTypes, loc)
+	serverType, err := (&OrderableTypes{API: p.API}).FirstHolding(ctx, nodeWhat, p.ServerTypes, loc, snap)
 	if err != nil {
 		return err
 	}
@@ -388,7 +388,8 @@ func (p Plane) createNode(ctx context.Context, s site, snap Snapshot, loc string
 		return fmt.Errorf("creating the cluster node in %s from snapshot %d: %w", loc, snap.ID, err)
 	}
 	if passed := p.ServerTypes[:slices.Index(p.ServerTypes, serverType)]; len(passed) > 0 {
-		p.notify(ctx, "created the node in %s as %s, since Hetzner can order no %s there now", loc, serverType, strings.Join(passed, ", "))
+		p.notify(ctx, "created the node in %s as %s, since Hetzner can order no %s there now whose disk holds the cluster image's %g GB",
+			loc, serverType, strings.Join(passed, ", "), snap.DiskGB)
 	}
 	return nil
 }

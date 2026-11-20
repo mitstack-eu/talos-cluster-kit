@@ -118,7 +118,7 @@ func (w *readOncePerRequest) CreateServers(ctx context.Context, specs ...ServerS
 	return w.api.CreateServers(ctx, specs...)
 }
 
-func (w *readOncePerRequest) AvailableServerTypes(ctx context.Context, location string) ([]string, error) {
+func (w *readOncePerRequest) AvailableServerTypes(ctx context.Context, location string) ([]ServerType, error) {
 	return w.api.AvailableServerTypes(ctx, location)
 }
 

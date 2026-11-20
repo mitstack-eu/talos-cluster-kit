@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mitstack-eu/block-kit/capabilities/github/ghapi"
+	"github.com/mitstack-eu/block-kit/capabilities/hetzner/cloud"
 	"github.com/mitstack-eu/block-kit/capabilities/hetzner/robot"
 	"github.com/mitstack-eu/block-kit/contract"
 	"github.com/mitstack-eu/block-kit/handler"
@@ -68,12 +69,19 @@ func New(cfg Config) *Cluster {
 	return &Cluster{cfg: cfg.withDefaults(), jobs: installJobs{running: map[string]*workerJob{}}, renderings: renderingCache{kept: map[renderingID]*Rendering{}}}
 }
 
+// CloudAPIAt is a released operator's Cloud API at endpoint, whose calls go through block-kit's client, which holds a
+// token's calls once Hetzner refuses one for its rate limit, and whose action waits ask on block-kit's poll schedule.
+func CloudAPIAt(endpoint, block string) func(token string) controlplane.API {
+	calls := controlplane.Calls{HTTP: cloud.HTTPClient(), PollBackoff: cloud.PollBackoff}
+	return func(token string) controlplane.API { return controlplane.NewAPIAt(endpoint, token, block, calls) }
+}
+
 func (cfg Config) withDefaults() Config {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
 	if cfg.CloudAPI == nil {
-		cfg.CloudAPI = func(token string) controlplane.API { return controlplane.NewAPI(token, cfg.Block) }
+		cfg.CloudAPI = CloudAPIAt(controlplane.Endpoint, cfg.Block)
 	}
 	if cfg.RobotClient == nil {
 		cfg.RobotClient = robot.New

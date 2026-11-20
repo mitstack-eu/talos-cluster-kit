@@ -762,6 +762,18 @@ func TestPlane_AServerOfTheBuildWhoseStartOutlivesItsCallIsReadStartingAndSentNo
 	}
 }
 
+func TestPlane_ACallWhileTheWorkerBuildersStartRunsWritesNothing(t *testing.T) {
+	held := heldStarts[slices.IndexFunc(heldStarts, func(h heldStart) bool { return h.role == controlplane.RoleWorkerBuilder })]
+	h := newHarness(t)
+	h.holdStart(held)
+	before := h.cloud.Writes()
+
+	err := h.ensure()
+
+	require.NoError(t, err, "a call while the start of the worker builder runs")
+	assert.Equal(t, before, h.cloud.Writes(), "the writes of a call while the start of the worker builder runs")
+}
+
 func TestPlane_AServerOfTheBuildWhoseStartOutlivedItsCallBuildsOnOnceItFinishesAndIsStartedAgainOnlyOnceItFailed(t *testing.T) {
 	for _, held := range heldStarts {
 		for _, tc := range []struct {

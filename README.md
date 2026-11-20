@@ -4738,14 +4738,16 @@ poll schedule, the growing wait between two questions about whether a Hetzner
 action has finished, as
 [How a block drives the Cloud control plane](#how-a-block-drives-the-cloud-control-plane)
 asks of a block. Once Hetzner refuses a call for its rate limit, that client
-sends no other call with the same token until its hold ends. A hold lasts one
-minute after a first refusal and doubles with each refusal in a row, up to an
-hour. When the reset time Hetzner names comes sooner, the hold ends at the
-reset instead. Each call the client holds back returns block-kit's
+sends no other call with the same Hetzner token until its hold ends. A hold
+lasts one minute after a first refusal and doubles with each refusal in a row,
+up to an hour. When the reset time Hetzner names comes sooner, the hold ends at
+the reset instead. Each call the client holds back returns block-kit's
 `handler.Waiting`, the error that asks the platform to call again at a given
 time, which names the hold's end in UTC. So a validate reads each resource as
-unknown and a subscribe waits, and neither fails. A test that needs the hold
-passes `CloudAPIAt` the address that `cloudtest.Fake.Serve` returns.
+unknown and a subscribe waits, and neither fails. A test that needs the
+rate-limit hold sets `Config.CloudAPI` to `CloudAPIAt(fake.Serve(t), cfg.Block)`,
+where `fake` is the test's `cloudtest.Fake`, so the cluster's Cloud calls reach
+that fake over HTTP through block-kit's client.
 
 `Config.DeclaredSize` is the one control-plane size the block's manifest lists
 servers for. The platform keeps a subscribe pending until every server the

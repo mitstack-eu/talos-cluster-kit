@@ -203,8 +203,6 @@ type SnapshotSpec struct {
 }
 
 const (
-	hetznerTimeout = 60 * time.Second
-
 	ServerOff         = string(hcloud.ServerStatusOff)
 	ServerRunning     = string(hcloud.ServerStatusRunning)
 	SnapshotAvailable = string(hcloud.ImageStatusAvailable)

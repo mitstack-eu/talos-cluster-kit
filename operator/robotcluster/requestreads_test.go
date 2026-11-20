@@ -40,15 +40,21 @@ func TestValidate_ReadsEachCloudKindOnce(t *testing.T) {
 	require.NoError(t, err, "the subscribe: %s", obs.StatusDetail)
 
 	t.Run("a validate", func(t *testing.T) {
-		made := listsOfOneRequest(e, func(ctx context.Context) { observeEach(t, ctx, e) })
+		made := listsOfOneRequest(e, func(ctx context.Context) { validate(t, ctx, e, e.Desired()) })
 		assertEachKindListedOnce(t, "one validate", made)
+	})
+	t.Run("an upgrade's dry run naming a node and a Cloud worker", func(t *testing.T) {
+		d := e.Desired()
+		d.Replace = []string{robotcluster.Located(robotcluster.ResourceNode, controlplane.Locations[0]), robotcluster.MemberName("w1")}
+		made := listsOfOneRequest(e, func(ctx context.Context) { validate(t, ctx, e, d) })
+		assertEachKindListedOnce(t, "one dry run of an upgrade", made)
 	})
 	t.Run("a subscribe that changes nothing", func(t *testing.T) {
 		writes := e.Cloud.Writes()
 		made := listsOfOneRequest(e, func(ctx context.Context) {
 			_, _, err := e.Cluster.EnsureResourcesOwning(ctx, e.Desired())
 			assert.NoError(t, err, "the subscribe of a cluster that is already present")
-			observeEach(t, ctx, e)
+			observeEach(t, ctx, e, e.Desired())
 		})
 		assert.Equal(t, writes, e.Cloud.Writes(), "the Cloud writes of a subscribe that changes nothing")
 		assertEachKindListedOnce(t, "one subscribe that changes nothing", made)
@@ -62,11 +68,19 @@ func listsOfOneRequest(e *robotclustertest.Env, call func(ctx context.Context)) 
 	return e.Cloud.Reads().Since(before)
 }
 
+// validate plans the replacements d names and then reads every resource, in the order the handler's validate takes.
+func validate(t *testing.T, ctx context.Context, e *robotclustertest.Env, d contract.Desired) {
+	t.Helper()
+	_, err := e.Cluster.PlanReplacements(ctx, d)
+	require.NoError(t, err, "the replacement plan")
+	observeEach(t, ctx, e, d)
+}
+
 // observeEach reads every resource through its observer, as the handler does after a subscribe's ensure and in a validate.
-func observeEach(t *testing.T, ctx context.Context, e *robotclustertest.Env) {
+func observeEach(t *testing.T, ctx context.Context, e *robotclustertest.Env, d contract.Desired) {
 	t.Helper()
 	for name, o := range e.Cluster.Observers() {
-		_, err := o.ObserveResource(ctx, contract.ResourceRef{Name: name, Type: name, Desired: e.Desired()})
+		_, err := o.ObserveResource(ctx, contract.ResourceRef{Name: name, Type: name, Desired: d})
 		require.NoError(t, err, "the observe of %s", name)
 	}
 }

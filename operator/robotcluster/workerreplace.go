@@ -1,8 +1,6 @@
 package robotcluster
 
 import (
-	"context"
-	"fmt"
 	"slices"
 
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
@@ -19,20 +17,11 @@ func namedWorkers(replace []string) (keys []string) {
 	return keys
 }
 
-// heldWorkers names each Cloud worker of keys that the pool holds, as a validate answers it under replaces.
-func heldWorkers(ctx context.Context, p controlplane.Plane, keys []string) ([]string, error) {
-	if len(keys) == 0 {
-		return nil, nil
-	}
-	workers, err := p.API.ListServers(ctx, p.RoleSelector(pools.RoleCloudWorker))
-	if err != nil {
-		return nil, fmt.Errorf("reading the Cloud workers to name those an upgrade would replace: %w", err)
-	}
-	var names []string
+func heldWorkers(st controlplane.State, keys []string) (names []string) {
 	for _, key := range keys {
-		if slices.ContainsFunc(workers, func(w controlplane.Server) bool { return w.Labels[pools.KeyMember] == key }) {
+		if slices.ContainsFunc(st.Servers[pools.RoleCloudWorker], func(w controlplane.Server) bool { return w.Labels[pools.KeyMember] == key }) {
 			names = append(names, MemberName(key))
 		}
 	}
-	return names, nil
+	return names
 }

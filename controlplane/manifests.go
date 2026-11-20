@@ -87,20 +87,17 @@ func (p Plane) ownComponents(enrolmentToken string, poolWorkers []Server) ([]com
 	if err != nil {
 		return nil, nil, err
 	}
+	address, credential := p.repositoryAccess()
 	data := map[string]any{
 		"Namespace":            nodeconfig.TalosAPINamespace,
 		"Image":                toolsImage(),
 		"Script":               clusterTokensScript,
 		"PlatformURL":          p.PlatformURL,
 		"SubscriptionID":       p.Subscription,
-		"RepoURL":              p.RepoURL,
+		"RepoURL":              address,
 		"EnrolmentToken":       enrolmentToken,
-		"RepositoryCredential": "platform-token",
+		"RepositoryCredential": credential,
 		"LeaseResource":        p.Telemetry.Resource,
-	}
-	if p.Hosting != nil {
-		data["RepoURL"] = components.RepositorySSHURL(p.Hosting.Repository)
-		data["RepositoryCredential"] = "deploy-key"
 	}
 	tokens, err := execute(clusterTokens, data)
 	if err != nil {
@@ -111,6 +108,20 @@ func (p Plane) ownComponents(enrolmentToken string, poolWorkers []Server) ([]com
 		{Name: "mitstack-node-topology", Path: "topology/topology.yaml", Bytes: labeller},
 		{Name: "mitstack-cluster-tokens", Path: manifestDir + "cluster-tokens.yaml", Bytes: tokens},
 	}, data, nil
+}
+
+// repositoryAccess is the address Argo CD reads the cluster repository at, which the cluster's own Application and each
+// component's Application name, and the credential the cluster opens it with: a hosting cluster reads over SSH with its
+// deploy key, and any other at the plane's address with the platform's token. The address is empty when the plane
+// names no repository.
+func (p Plane) repositoryAccess() (address, credential string) {
+	if p.Hosting == nil {
+		return p.RepoURL, "platform-token"
+	}
+	if p.Hosting.Repository == "" {
+		return "", "deploy-key"
+	}
+	return components.RepositorySSHURL(p.Hosting.Repository), "deploy-key"
 }
 
 func execute(t *template.Template, data map[string]any) ([]byte, error) {

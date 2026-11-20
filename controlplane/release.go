@@ -21,7 +21,8 @@ var ErrNoIngressAddress = errors.New("the release's Traefik has no ingress addre
 // holds, plus two the build cannot apply: the telemetry Collector of a plane that names a backend, and Talos's CoreDNS
 // spread over the plane's node locations.
 func (p Plane) Release(st State) (rollout.Release, error) {
-	if p.Hosting == nil && p.RepoURL == "" || p.Hosting != nil && p.Hosting.Repository == "" {
+	address, _ := p.repositoryAccess()
+	if address == "" {
 		return rollout.Release{}, errors.New("the cluster's credentials name the cluster repository, and the plane names none")
 	}
 	signatures, err := p.signaturePolicy()
@@ -47,7 +48,11 @@ func (p Plane) Release(st State) (rollout.Release, error) {
 	if err != nil {
 		return rollout.Release{}, err
 	}
-	return rollout.Release{Components: slices.Concat(set.Served, set.Inline, own, signatures, telemetry, coreDNS), ToolsImage: toolsImage()}, nil
+	return rollout.Release{
+		Components: slices.Concat(set.Served, set.Inline, own, signatures, telemetry, coreDNS),
+		ToolsImage: toolsImage(),
+		RepoURL:    address,
+	}, nil
 }
 
 // The gateways serve the set without an address, since one tools image is built for every cluster.

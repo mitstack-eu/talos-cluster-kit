@@ -80,7 +80,9 @@ func only(t *testing.T, labeller components.Manifest, kind string) map[string]an
 // Argo CD apply them.
 func carryLabeller(t *testing.T, cluster *testutil.Cluster, release rollout.Release) {
 	t.Helper()
-	files, err := rollout.Release{Components: []components.Manifest{releasedLabeller(t, release)}, ToolsImage: release.ToolsImage}.Files(testutil.InitRepository)
+	labeller := release
+	labeller.Components = []components.Manifest{releasedLabeller(t, release)}
+	files, err := labeller.Files(testutil.InitRepository)
 	require.NoError(t, err)
 	committed := map[string][]byte{}
 	for _, f := range files {

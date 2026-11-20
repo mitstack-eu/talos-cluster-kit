@@ -20,7 +20,13 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/tools"
 )
 
-const repository = "acme/shop-cluster"
+const (
+	repository = "acme/shop-cluster"
+	// address is where a cluster that hosts no platform has Argo CD read its repository, and sshAddress where a hosting
+	// cluster does.
+	address    = "https://github.com/" + repository
+	sshAddress = "ssh://git@ssh.github.com:443/" + repository + ".git"
+)
 
 var (
 	flows      = testutil.ObjectRef{Group: "cilium.io", Kind: "CiliumClusterwideNetworkPolicy", Name: "mitstack-hosting-flows"}
@@ -49,7 +55,7 @@ func nodeReport(t *testing.T, url string) components.Manifest {
 // firstRelease carries the hosting flows, the node report and local-path's namespace.
 func firstRelease(t *testing.T) rollout.Release {
 	t.Helper()
-	return rollout.Release{ToolsImage: testutil.ToolsImage, Components: []components.Manifest{
+	return rollout.Release{ToolsImage: testutil.ToolsImage, RepoURL: address, Components: []components.Manifest{
 		components.HostingPolicies()[0], nodeReport(t, "https://api.mitstack.dev/v1/cluster-reports"), defaultManifest(t, "local-path-provisioner-namespace"),
 	}}
 }
@@ -57,7 +63,7 @@ func firstRelease(t *testing.T) rollout.Release {
 // secondRelease changes the report's endpoint, adds the database slices' flows and drops local-path's namespace.
 func secondRelease(t *testing.T) rollout.Release {
 	t.Helper()
-	return rollout.Release{ToolsImage: testutil.ToolsImage, Components: []components.Manifest{
+	return rollout.Release{ToolsImage: testutil.ToolsImage, RepoURL: address, Components: []components.Manifest{
 		components.HostingPolicies()[0], nodeReport(t, "https://api.mitstack.dev/v2/cluster-reports"), defaultManifest(t, "mitstack-database-slices"),
 	}}
 }
@@ -289,7 +295,7 @@ func TestRelease_CommitsEachComponentBeforeTheApplicationsThatApplyItWithServerS
 	app := testutil.Documents(t, files[4].Bytes)[0]
 	assert.Equal(t, "component-mitstack-node-report", testutil.Field(t, app, "metadata", "name"), "the Application's name")
 	assert.Equal(t, []any{"resources-finalizer.argocd.argoproj.io"}, testutil.Field(t, app, "metadata", "finalizers"), "what deleting the Application deletes")
-	assert.Equal(t, components.RepositorySSHURL(repository), testutil.Field(t, app, "spec", "source", "repoURL"), "the repository Argo CD reads")
+	assert.Equal(t, address, testutil.Field(t, app, "spec", "source", "repoURL"), "the address Argo CD reads the repository at, which the release names")
 	assert.Equal(t, "components/mitstack-node-report", testutil.Field(t, app, "spec", "source", "path"), "the directory it applies")
 	assert.Equal(t, map[string]any{"prune": true, "selfHeal": true}, testutil.Field(t, app, "spec", "syncPolicy", "automated"), "how it syncs")
 	assert.Contains(t, testutil.Field(t, app, "spec", "syncPolicy", "syncOptions"), "ServerSideApply=true", "how it applies a resource definition past 262,144 bytes")
@@ -308,7 +314,7 @@ func TestRelease_CommitsNoSecretsDataNoJobAndNoHookOfAComponentAndCarriesTheRest
 	}, "---\n"))}
 	keyOnly := components.Manifest{Name: "mitstack-openbao-seal-key", Bytes: []byte("apiVersion: v1\nkind: Secret\nmetadata:\n  name: seal\n  namespace: openbao\ndata:\n  key: c2VhbA==\n")}
 
-	files, err := rollout.Release{ToolsImage: testutil.ToolsImage, Components: []components.Manifest{mixed, keyOnly}}.Files(repository)
+	files, err := rollout.Release{ToolsImage: testutil.ToolsImage, RepoURL: address, Components: []components.Manifest{mixed, keyOnly}}.Files(repository)
 
 	require.NoError(t, err)
 	require.Len(t, files, 2, "the files a block commits: the mixed manifest's carried part and its Application, and nothing of the key")
@@ -349,7 +355,7 @@ func TestRelease_RefusesAComponentWhoseNameCannotNameAnApplicationOrItsHandoverJ
 		{"a name that leaves no room for the handover Job's suffix", strings.Repeat("a", 50)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			release := rollout.Release{ToolsImage: testutil.ToolsImage, Components: []components.Manifest{
+			release := rollout.Release{ToolsImage: testutil.ToolsImage, RepoURL: address, Components: []components.Manifest{
 				{Name: tc.component, Bytes: []byte("apiVersion: v1\nkind: Namespace\nmetadata:\n  name: x\n")}}}
 
 			_, err := release.Files(repository)
@@ -367,6 +373,71 @@ func TestRelease_RefusesAToolsImageThatIsNotNamedByDigest(t *testing.T) {
 		_, err := release.Files(repository)
 
 		assert.ErrorContains(t, err, "tools image", "Files with the tools image %q, which the handover Job would run", image)
+	}
+}
+
+func TestRelease_RefusesAReleaseThatNamesNoAddressForArgoCDToReadTheRepositoryAt(t *testing.T) {
+	release := firstRelease(t)
+	release.RepoURL = ""
+
+	files, err := release.Files(repository)
+
+	assert.ErrorContains(t, err, "address", "Files of a release whose Applications would read no repository")
+	assert.Empty(t, files, "the files rendered before the refusal")
+}
+
+// rootApplication is the cluster's own Application as the build applies it, reading the cluster repository at url.
+func rootApplication(url string) []byte {
+	return fmt.Appendf(nil, "apiVersion: argoproj.io/v1alpha1\nkind: Application\nmetadata:\n  name: cluster\n  namespace: argocd\n"+
+		"spec:\n  source:\n    repoURL: %q\n    path: cluster\n", url)
+}
+
+// syncOf is the sync status the node report gives the Application app.
+func syncOf(t *testing.T, c *testutil.Cluster, app string) string {
+	t.Helper()
+	var body struct {
+		ArgoCD struct {
+			Applications []struct{ Name, Sync string } `json:"applications"`
+		} `json:"argocd"`
+	}
+	require.NoError(t, json.Unmarshal(c.Report(), &body))
+	for _, a := range body.ArgoCD.Applications {
+		if a.Name == app {
+			return a.Sync
+		}
+	}
+	require.Failf(t, "not reported", "the node report lists no Application %s", app)
+	return ""
+}
+
+// The cluster holds a repository credential for its root Application's address alone, as the build gives it.
+func TestRelease_ArgoCDAppliesAComponentOnlyWhenItsApplicationReadsTheRootApplicationsAddress(t *testing.T) {
+	for _, tc := range []struct {
+		name, address, sync string
+		served              bool
+		problem             string
+	}{
+		{"a release at the root Application's address has each component synced and its objects applied", address, "Synced", true, ""},
+		{"a release at another address leaves each component at sync Unknown with nothing applied", sshAddress, "Unknown", false,
+			`Argo CD's Application component-mitstack-node-report reads sync "Unknown"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := testutil.BuildCluster(t, rootApplication(address))
+			release := firstRelease(t)
+			release.RepoURL = tc.address
+
+			upgrade(t, c, release)
+			c.Sync()
+			reading := readBack(t, c, release)
+
+			assert.Equal(t, tc.sync, syncOf(t, c, "component-mitstack-node-report"), "the report component's sync status")
+			assert.Equal(t, tc.served, c.Object(reportJob) != nil, "whether the cluster's API serves the report's CronJob")
+			if tc.problem == "" {
+				assert.Empty(t, reading.Problem, "the read-back of a release Argo CD synced")
+			} else {
+				assert.Contains(t, reading.Problem, tc.problem, "the read-back's problem")
+			}
+		})
 	}
 }
 
@@ -416,7 +487,7 @@ func TestRelease_RunsAComponentsHandoverJobAndAppliesItsMarkerInTheWaveOfItsLast
 		return func(t *testing.T) []byte {
 			document := "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: %s\n  annotations:\n    argocd.argoproj.io/sync-wave: %q\n---\n"
 			waved := components.Manifest{Name: "waved", Bytes: fmt.Appendf(nil, document+document, "first", first, "later", later)}
-			files, err := rollout.Release{ToolsImage: testutil.ToolsImage, Components: []components.Manifest{waved}}.Files(repository)
+			files, err := rollout.Release{ToolsImage: testutil.ToolsImage, RepoURL: address, Components: []components.Manifest{waved}}.Files(repository)
 			require.NoError(t, err)
 			return files[0].Bytes
 		}
@@ -721,7 +792,7 @@ func TestRelease_ReadsTheSSMPolicyBackFromAClusterBuiltOnV0320(t *testing.T) {
 	built, err := os.ReadFile("testdata/v0.32.0-flows.yaml")
 	require.NoError(t, err)
 	c := testutil.BuildCluster(t, built)
-	release := rollout.Release{ToolsImage: testutil.ToolsImage, Components: components.HostingPolicies()}
+	release := rollout.Release{ToolsImage: testutil.ToolsImage, RepoURL: address, Components: components.HostingPolicies()}
 
 	upgrade(t, c, release)
 	c.Sync()

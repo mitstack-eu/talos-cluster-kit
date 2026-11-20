@@ -48,12 +48,19 @@ type Cluster struct {
 	repository map[string][]byte
 	// applied is what each Application applied at its last sync, which it prunes once the repository drops it.
 	applied map[string]map[ObjectRef]map[string]any
+	// unread are the Applications whose address the cluster holds no repository credential for, so their last sync
+	// compared and applied nothing.
+	unread map[string]bool
 }
+
+// rootApplication is the cluster's own Application, whose address alone the cluster's repository credential opens.
+var rootApplication = ObjectRef{Group: "argoproj.io", Kind: "Application", Namespace: "argocd", Name: "cluster"}
 
 // BuildCluster creates each object of manifests once, as Talos does at a cluster's first build.
 func BuildCluster(t *testing.T, manifests ...[]byte) *Cluster {
 	t.Helper()
-	c := &Cluster{t: t, objects: map[ObjectRef]map[string]any{}, repository: map[string][]byte{}, applied: map[string]map[ObjectRef]map[string]any{}}
+	c := &Cluster{t: t, objects: map[ObjectRef]map[string]any{}, repository: map[string][]byte{}, applied: map[string]map[ObjectRef]map[string]any{},
+		unread: map[string]bool{}}
 	for _, m := range manifests {
 		for _, doc := range Documents(t, m) {
 			c.objects[refOf(t, doc)] = doc
@@ -80,14 +87,28 @@ func (c *Cluster) Files() []string { return slices.Sorted(maps.Keys(c.repository
 // Object is the object the cluster's API serves under ref, or nil.
 func (c *Cluster) Object(ref ObjectRef) map[string]any { return c.objects[ref] }
 
-// Sync runs each Application once, the cluster Application first, so one it applies syncs in the same pass.
+// Sync runs each Application once, the cluster Application first, so one it applies syncs in the same pass. On a cluster
+// that holds the root Application, an Application at any other address applies nothing and reads sync "Unknown".
 func (c *Cluster) Sync() {
 	c.sync("cluster", "cluster")
 	for _, app := range sortedRefs(c.objects) {
-		if app.Kind == "Application" && app.Name != "cluster" {
-			c.sync(app.Name, Field(c.t, c.objects[app], "spec", "source", "path").(string))
+		if app.Kind != "Application" || app.Name == "cluster" {
+			continue
 		}
+		if !c.readable(c.objects[app]) {
+			c.unread[app.Name] = true
+			continue
+		}
+		delete(c.unread, app.Name)
+		c.sync(app.Name, Field(c.t, c.objects[app], "spec", "source", "path").(string))
 	}
+}
+
+// readable is whether the cluster's repository credential opens app's address: any address on a cluster built without
+// the root Application, and otherwise the root Application's alone.
+func (c *Cluster) readable(app map[string]any) bool {
+	root, rooted := c.objects[rootApplication]
+	return !rooted || Field(c.t, app, "spec", "source", "repoURL") == Field(c.t, root, "spec", "source", "repoURL")
 }
 
 func (c *Cluster) sync(app, path string) {
@@ -114,6 +135,7 @@ func (c *Cluster) delete(ref ObjectRef) {
 	}
 	applied := c.applied[ref.Name]
 	delete(c.applied, ref.Name)
+	delete(c.unread, ref.Name)
 	metadata, _ := obj["metadata"].(map[string]any)
 	finalizers, _ := metadata["finalizers"].([]any)
 	if !slices.Contains(finalizers, any(resourcesFinalizer)) {
@@ -164,7 +186,8 @@ func (c *Cluster) parsed(data []byte) []map[string]any {
 }
 
 // Report is a node report body holding Argo CD's Applications as report/scripts/report.sh reads them, each object
-// Synced while the API serves it as the Application last applied it.
+// Synced while the API serves it as the Application last applied it, and each unread Application at sync "Unknown" with
+// no sync run and nothing listed.
 func (c *Cluster) Report() []byte {
 	type resource struct {
 		Group     string  `json:"group"`
@@ -180,8 +203,19 @@ func (c *Cluster) Report() []byte {
 		Operation map[string]any `json:"operation"`
 		Resources []resource     `json:"resources"`
 	}
+	names := slices.Collect(maps.Keys(c.applied))
+	for name := range c.unread {
+		if _, applied := c.applied[name]; !applied {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
 	var apps []application
-	for _, name := range slices.Sorted(maps.Keys(c.applied)) {
+	for _, name := range names {
+		if c.unread[name] {
+			apps = append(apps, application{Name: name, Health: "Healthy", Sync: "Unknown", Resources: []resource{}})
+			continue
+		}
 		app := application{Name: name, Health: "Healthy", Sync: "Synced", Operation: map[string]any{"phase": "Succeeded", "message": nil}, Resources: []resource{}}
 		for _, ref := range sortedRefs(c.applied[name]) {
 			r := resource{Group: ref.Group, Kind: ref.Kind, Name: ref.Name, Sync: "Synced"}

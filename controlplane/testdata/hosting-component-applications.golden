@@ -1,0 +1,1428 @@
+# cluster/component-cilium.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-cilium
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/cilium
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-cilium-policy-crd.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-cilium-policy-crd
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/cilium-policy-crd
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-argocd.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-argocd
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/argocd
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-kyverno.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-kyverno
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/kyverno
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-cloudnative-pg.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-cloudnative-pg
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/cloudnative-pg
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-local-path-provisioner.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-local-path-provisioner
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/local-path-provisioner
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-istio-base.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-istio-base
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/istio-base
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-istiod.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-istiod
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/istiod
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-istio-cni.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-istio-cni
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/istio-cni
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-ztunnel.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-ztunnel
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/ztunnel
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-mitstack-mesh-probe.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-mitstack-mesh-probe
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/mitstack-mesh-probe
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-openbao.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-openbao
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/openbao
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-cert-manager.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-cert-manager
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/cert-manager
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-trust-manager.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-trust-manager
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/trust-manager
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-external-secrets.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-external-secrets
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/external-secrets
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-sealed-secrets.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-sealed-secrets
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/sealed-secrets
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-traefik.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-traefik
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/traefik
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-mitstack-hosting-tls.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-mitstack-hosting-tls
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/mitstack-hosting-tls
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-plugin-barman-cloud.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-plugin-barman-cloud
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/plugin-barman-cloud
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-mitstack-hosting-flows.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-mitstack-hosting-flows
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/mitstack-hosting-flows
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-mitstack-hosting-mesh.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-mitstack-hosting-mesh
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/mitstack-hosting-mesh
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-mitstack-metadata-block.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-mitstack-metadata-block
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/mitstack-metadata-block
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-mitstack-require-app-label.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-mitstack-require-app-label
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/mitstack-require-app-label
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-mitstack-generate-default-deny.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-mitstack-generate-default-deny
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/mitstack-generate-default-deny
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-cloudnative-pg-namespace.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-cloudnative-pg-namespace
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/cloudnative-pg-namespace
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-mitstack-database-slices.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-mitstack-database-slices
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/mitstack-database-slices
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-local-path-provisioner-namespace.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-local-path-provisioner-namespace
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/local-path-provisioner-namespace
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-mitstack-local-path-flows.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-mitstack-local-path-flows
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/mitstack-local-path-flows
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-mitstack-strict-mtls.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-mitstack-strict-mtls
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/mitstack-strict-mtls
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-mitstack-ambient-probes.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-mitstack-ambient-probes
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/mitstack-ambient-probes
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-mitstack-mesh-cloudnative-pg.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-mitstack-mesh-cloudnative-pg
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/mitstack-mesh-cloudnative-pg
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-mitstack-mesh-argocd.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-mitstack-mesh-argocd
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/mitstack-mesh-argocd
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-mitstack-require-mesh.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-mitstack-require-mesh
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/mitstack-require-mesh
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-mitstack-require-strict-mtls.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-mitstack-require-strict-mtls
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/mitstack-require-strict-mtls
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-mitstack-disallow-host-path.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-mitstack-disallow-host-path
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/mitstack-disallow-host-path
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-mitstack-require-resource-limits.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-mitstack-require-resource-limits
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/mitstack-require-resource-limits
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-mitstack-restrict-image-registries.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-mitstack-restrict-image-registries
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/mitstack-restrict-image-registries
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-mitstack-require-image-digest.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-mitstack-require-image-digest
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/mitstack-require-image-digest
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-mitstack-node-report.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-mitstack-node-report
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/mitstack-node-report
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-mitstack-node-topology.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-mitstack-node-topology
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/mitstack-node-topology
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-mitstack-cluster-tokens.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-mitstack-cluster-tokens
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/mitstack-cluster-tokens
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+# cluster/component-coredns.yaml
+# Argo CD applies one component of the release from its directory, changing each object a release changes and pruning
+# each one it drops. Server-side apply writes no last-applied annotation, which a resource definition past Kubernetes's
+# 262,144 bytes of annotations would overflow. The finalizer deletes the component's objects once a release drops it,
+# and the retries wait out a resource definition another component's Application has yet to apply. A retry takes the
+# newest commit, so a later release still reaches a component whose sync keeps failing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: component-coredns
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "ssh://git@ssh.github.com:443/mitstack-eu/shop-cluster.git"
+    targetRevision: HEAD
+    path: components/coredns
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      refresh: true
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

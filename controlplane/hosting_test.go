@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -21,6 +22,7 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane/cloudtest"
+	"github.com/mitstack-eu/talos-cluster-kit/rollout"
 	"github.com/mitstack-eu/talos-cluster-kit/serve"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 )
@@ -200,4 +202,99 @@ func TestHosting_TheClusterTakesOnlyItsReportTokenFromThePlatformAndArgoCDReadsI
 			}
 		})
 	}
+}
+
+// componentApplications are the files of a release that each hold the Argo CD Application applying one component.
+func componentApplications(t *testing.T, files []rollout.File) []rollout.File {
+	t.Helper()
+	var apps []rollout.File
+	for _, f := range files {
+		if strings.HasPrefix(f.Path, "cluster/component-") {
+			apps = append(apps, f)
+		}
+	}
+	require.NotEmpty(t, apps, "the component Applications the release commits")
+	return apps
+}
+
+// enrolmentEnv is the environment of the build's Job that enrols the cluster and writes its repository credential.
+func enrolmentEnv(t *testing.T, build ...[]components.Manifest) map[string]string {
+	t.Helper()
+	jobs := testutil.Kind(testutil.Documents(t, testutil.Manifest(t, "mitstack-cluster-tokens", build...).Bytes), "Job")
+	require.Len(t, jobs, 1, "enrolment Jobs")
+	return testutil.ContainerEnv(t, testutil.Field(t, jobs[0], "spec", "template", "spec", "containers", "0"))
+}
+
+// rootAddress is the address the build's own Application, named cluster, reads the cluster repository at.
+func rootAddress(t *testing.T, build ...[]components.Manifest) any {
+	t.Helper()
+	for _, app := range testutil.Kind(testutil.Documents(t, testutil.Manifest(t, "mitstack-cluster-application", build...).Bytes), "Application") {
+		if testutil.Field(t, app, "metadata", "name") == "cluster" {
+			return testutil.Field(t, app, "spec", "source", "repoURL")
+		}
+	}
+	require.Fail(t, "the build applies no Application named cluster")
+	return nil
+}
+
+// The cluster's repository credential opens the root Application's address alone, so Argo CD reads no component
+// whose Application names another.
+func TestHosting_EveryComponentApplicationReadsTheRepositoryAtTheRootApplicationsAddressWithTheClustersOneCredential(t *testing.T) {
+	for _, tc := range []struct {
+		name                            string
+		opts                            []func(*harness)
+		repository, address, credential string
+		// credentialAddress is the address the build gives the repository credential that opens the cluster repository.
+		credentialAddress func(t *testing.T, build ...[]components.Manifest) any
+	}{
+		{"a cluster that hosts no platform reads every component over HTTPS with the platform token", nil,
+			"acme/shop-cluster", testRepoURL, "platform-token",
+			func(t *testing.T, build ...[]components.Manifest) any { return enrolmentEnv(t, build...)["REPO_URL"] }},
+		{"a hosting cluster reads every component over SSH with its deploy key", []func(*harness){hosting},
+			testutil.InitRepository, components.RepositorySSHURL(testutil.InitRepository), "deploy-key",
+			func(t *testing.T, build ...[]components.Manifest) any {
+				sealed := testutil.Documents(t, testutil.Manifest(t, "mitstack-cluster-repository", build...).Bytes)[0]
+				return testutil.Field(t, sealed, "spec", "template", "data", "url")
+			}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, tc.opts...)
+			h.withLoadBalancers()
+			plane, err := h.plane.WithGatewayCA()
+			require.NoError(t, err)
+			built, err := plane.BuildSet(context.Background(), testStart, "enrolment-token")
+			require.NoError(t, err)
+
+			files, err := h.releaseOf(plane).Files(tc.repository)
+
+			require.NoError(t, err)
+			root := rootAddress(t, built.Served, built.Inline)
+			assert.Equal(t, tc.address, root, "the address the root Application reads the cluster repository at")
+			assert.Equal(t, root, tc.credentialAddress(t, built.Served, built.Inline), "the address the cluster's repository credential opens")
+			assert.Equal(t, tc.credential, enrolmentEnv(t, built.Served, built.Inline)["REPOSITORY_CREDENTIAL"], "the one credential the cluster reads its repository with")
+			for _, f := range componentApplications(t, files) {
+				app := testutil.Documents(t, f.Bytes)[0]
+				assert.Equal(t, root, testutil.Field(t, app, "spec", "source", "repoURL"), "the address %s reads the cluster repository at", f.Path)
+			}
+		})
+	}
+}
+
+// A hosting cluster's component Applications keep the bytes its repository already holds, so a kit upgrade commits
+// none of them anew.
+func TestHosting_AHostingClustersComponentApplicationsAreTheBytesItsRepositoryHolds(t *testing.T) {
+	h := newHarness(t, hosting)
+	h.withLoadBalancers()
+	plane, err := h.plane.WithGatewayCA()
+	require.NoError(t, err)
+
+	files, err := h.releaseOf(plane).Files(testutil.InitRepository)
+
+	require.NoError(t, err)
+	var apps []byte
+	for _, f := range componentApplications(t, files) {
+		apps = append(apps, "# "+f.Path+"\n"...)
+		apps = append(apps, f.Bytes...)
+	}
+	testutil.Golden(t, "testdata/hosting-component-applications.golden", apps)
 }

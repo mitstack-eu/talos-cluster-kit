@@ -224,16 +224,33 @@ const (
 // Endpoint is Hetzner's Cloud API, which a block never takes from a request.
 const Endpoint = "https://api.hetzner.cloud/v1"
 
-// NewAPI calls Hetzner Cloud with token, naming application in each request's user agent.
-func NewAPI(token, application string) API { return NewAPIAt(Endpoint, token, application) }
+// Calls is how the adapter reaches Hetzner, both handed to it by its block: HTTP sends every call, and PollBackoff
+// says how long to wait before each ask about an action, given how many asks came before it.
+type Calls struct {
+	HTTP        *http.Client
+	PollBackoff func(retries int) time.Duration
+}
 
-// NewAPIAt calls the API at endpoint, which only a test's fake sets.
-func NewAPIAt(endpoint, token, application string) API {
+// NewAPI calls Hetzner Cloud with token through calls, naming application in each request's user agent.
+func NewAPI(token, application string, calls Calls) API {
+	return NewAPIAt(Endpoint, token, application, calls)
+}
+
+// NewAPIAt calls the API at endpoint, which only a test's fake sets. It panics on calls missing either part, since
+// hcloud-go would otherwise fall back to a client and a half-second schedule of its own.
+func NewAPIAt(endpoint, token, application string, calls Calls) API {
+	if calls.HTTP == nil {
+		panic("controlplane: NewAPIAt needs its block's HTTP client, and the Calls it was handed hold none")
+	}
+	if calls.PollBackoff == nil {
+		panic("controlplane: NewAPIAt needs its block's action-poll schedule, and the Calls it was handed hold none")
+	}
 	return &hcloudAPI{client: hcloud.NewClient(
 		hcloud.WithToken(token),
 		hcloud.WithEndpoint(endpoint),
 		hcloud.WithApplication(application, ""),
-		hcloud.WithHTTPClient(&http.Client{Timeout: hetznerTimeout}),
+		hcloud.WithHTTPClient(calls.HTTP),
+		hcloud.WithPollOpts(hcloud.PollOpts{BackoffFunc: calls.PollBackoff}),
 	)}
 }
 

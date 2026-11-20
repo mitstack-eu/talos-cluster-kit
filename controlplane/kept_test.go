@@ -120,6 +120,31 @@ func TestPlane_CreatesNoGatewayWhileTheNewestNodeReportPredatesTheLocationsLossA
 	assert.NotContains(t, h.network().Labels, controlplane.KeyGatewayGone+"hel1", "the record of the loss once hel1 has its gateway")
 }
 
+func TestPlane_KeepsTheRecordOfALocationsLossWhileTheAttachOfItsNewGatewayRuns(t *testing.T) {
+	h := newHarness(t, withReports)
+	h.built()
+	h.lose("hel1")
+	for calls := 0; len(controlplane.ServersIn(h.byRole(controlplane.RoleGateway), "hel1")) == 0; calls++ {
+		require.Less(t, calls, 50, "the gateway in hel1 was not rebuilt within 50 calls")
+		require.NoError(t, h.ensure())
+		h.now = h.now.Add(time.Minute)
+		h.cloud.Advance(h.buildTakes, h.imageTakes)
+	}
+	h.cloud.HoldNext[controlplane.RoleGateway] = cloudtest.AttachToNetworkCommand
+	require.ErrorIs(t, h.converge(), context.DeadlineExceeded, "the call whose attach of the new gateway in hel1 outlived it")
+	held := h.held(controlplane.RoleGateway)
+	require.Equal(t, "hel1", held.Location, "the location of the gateway whose attach outlived its call")
+
+	for range 3 {
+		require.NoError(t, h.converge(), "a call while the attach of gateway %d runs", held.ID)
+	}
+
+	assert.Contains(t, h.network().Labels, controlplane.KeyGatewayGone+"hel1", "the record of the loss while the new gateway is not on the network")
+	h.cloud.FinishAction(held.ID)
+	h.built()
+	assert.NotContains(t, h.network().Labels, controlplane.KeyGatewayGone+"hel1", "the record of the loss once hel1 has its gateway")
+}
+
 func TestPlane_CreatesNoGatewayFromANodeReportReceivedInTheSecondBeforeTheLossWasSeen(t *testing.T) {
 	h := newHarness(t, withReports)
 	h.built()

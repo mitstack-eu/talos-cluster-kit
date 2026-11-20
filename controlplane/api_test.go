@@ -227,10 +227,7 @@ func TestHetznerAdapter_NamesTheActionHetznerStillRunsOnAServerByItsRunningActio
 				_, _ = w.Write([]byte(`{"actions": [` + actions + `], "meta": {"pagination": {"page": 1, "per_page": 50, "total_entries": 1}}}`))
 			}))
 			t.Cleanup(srv.Close)
-			api, ok := controlplane.NewAPIAt(srv.URL, "token", "mitstack-test", callsTo(srv)).(interface {
-				RunningAction(ctx context.Context, id int64) (string, error)
-			})
-			require.True(t, ok, "the Hetzner adapter reads no running action")
+			api := controlplane.NewAPIAt(srv.URL, "token", "mitstack-test", callsTo(srv))
 
 			command, err := api.RunningAction(context.Background(), 7)
 
@@ -246,13 +243,8 @@ func TestHetznerAdapter_ReadsOneServerAsHetznerHoldsItNowAndAServerGoneAsNotFoun
 		"GET /servers/7": `{"server": {"id": 7, "name": "builder", "status": "running", "public_net": {},
 			"private_net": [{"network": 3, "ip": "10.0.0.9"}]}}`,
 	})
-	reader, ok := api.(interface {
-		GetServer(ctx context.Context, id int64) (controlplane.Server, bool, error)
-	})
-	require.True(t, ok, "the Hetzner adapter reads no single server")
-
-	server, found, err := reader.GetServer(context.Background(), 7)
-	_, gone, goneErr := reader.GetServer(context.Background(), 8)
+	server, found, err := api.GetServer(context.Background(), 7)
+	_, gone, goneErr := api.GetServer(context.Background(), 8)
 
 	require.NoError(t, err)
 	assert.True(t, found, "GetServer(7), a server Hetzner holds, found")

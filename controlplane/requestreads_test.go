@@ -561,6 +561,39 @@ func TestPlaneRead_ServesReadsAndWritesRunningTogether(t *testing.T) {
 	assert.Equal(t, labels, gateway.Labels, "the gateway's labels the read after the reads and the write lists")
 }
 
+func TestPlaneRead_ServesManyWritesBesideTheReadsAndKeepsAgainOnceTheyEnd(t *testing.T) {
+	const together = 16
+	h := newHarness(t, readingOncePerRequest)
+	s := h.seed()
+	ctx := inRequest()
+	labels := relabelled(h)
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for range together {
+		wg.Go(func() {
+			<-start
+			_, err := h.plane.Read(ctx)
+			assert.NoError(t, err)
+		})
+		wg.Go(func() {
+			<-start
+			assert.NoError(t, h.plane.API.SetServerLabels(ctx, s.server, labels))
+		})
+	}
+	close(start)
+	wg.Wait()
+	require.NoError(t, h.plane.API.SetServerLabels(ctx, s.server, labels))
+	before := h.cloud.Reads()
+	h.readIn(ctx)
+	st := h.readIn(ctx)
+
+	assert.Equal(t, lists(1), h.cloud.Reads().Since(before), "the reads of two plane reads once every write has ended")
+	gateway, ok := st.Server(controlplane.RoleGateway)
+	require.True(t, ok, "the gateway the read after every write lists")
+	assert.Equal(t, labels, gateway.Labels, "the gateway's labels the read after every write lists")
+}
+
 // seedEveryField seeds one resource of each kind, a worker image among them, with every slice and map it has filled.
 func (h *harness) seedEveryField() {
 	s := h.seed()

@@ -22,7 +22,6 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/nodeconfig"
 )
 
-// The network labels that record the worker's install, and the stages they record.
 const (
 	KeyWorkerInstall   = "mitstack.dev/worker-install"
 	KeyWorkerInstallAt = "mitstack.dev/worker-install-at"
@@ -119,7 +118,7 @@ func (k *Cluster) startWorkerInstall(ctx context.Context, req ensureRequest, p c
 	if err := setWorkerProgress(ctx, p, network.ID, WorkerRunning); err != nil {
 		return err
 	}
-	jobCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), workerInstallTimeout)
+	jobCtx, cancel := context.WithTimeout(controlplane.WithoutRequestReads(context.WithoutCancel(ctx)), workerInstallTimeout)
 	j := &workerJob{cancel: cancel, done: make(chan struct{})}
 	k.jobs.Lock()
 	k.jobs.running[req.subID] = j
@@ -179,7 +178,6 @@ func serverDropped(n controlplane.Network) string {
 		workerProgress(n))
 }
 
-// workerDone is whether the Robot worker is written, or the cluster has none to write.
 func (c convergence) workerDone(n controlplane.Network) bool {
 	return c.req.params.cloudOnly || workerProgress(n) == WorkerWritten
 }
@@ -231,7 +229,6 @@ func WaitOutRobotLimit(err error) error {
 	return err
 }
 
-// robotTarget is the subscription's dedicated server and the names it and its vSwitch carry.
 type robotTarget struct {
 	robot  *robot.Client
 	server int64
@@ -263,8 +260,6 @@ func (t robotTarget) admits(ctx context.Context) error {
 	return nil
 }
 
-// robotState is what Robot holds of the worker: its server's name, the vSwitch named for the subscription with
-// whether the server is on it, and the server's firewall.
 type robotState struct {
 	server    robot.Server
 	vswitch   robot.VSwitch
@@ -378,8 +373,7 @@ type imageCloud struct {
 	network int64
 	robot   *robot.Client
 	vswitch string
-	// poll is how long the image server's creation waits between reads of the gateway.
-	poll time.Duration
+	poll    time.Duration
 }
 
 // CreateServer couples the vSwitch's subnet to the network first, so the server reaches the worker, and waits
@@ -418,19 +412,34 @@ func (c imageCloud) coupleSubnet(ctx context.Context) error {
 	return c.plane.API.AddVSwitchSubnet(ctx, c.network, all[i].ID, workerSubnet)
 }
 
+// awaitGateway lists the firewalls until it finds the subscription's, then only the gateways on each check, since a plane
+// read could answer from its request's first read.
 func (c imageCloud) awaitGateway(ctx context.Context) (int64, error) {
+	var fw controlplane.Firewall
+	found := false
 	for {
-		st, err := c.plane.Read(ctx)
-		if err != nil {
-			return 0, err
+		if !found {
+			firewalls, err := c.plane.API.ListFirewalls(ctx, c.plane.Selector())
+			if err != nil {
+				return 0, fmt.Errorf("listing the subscription's firewalls: %w", err)
+			}
+			fw, found = controlplane.State{Firewalls: firewalls}.Firewall()
 		}
-		gw, gwOK := st.GatewayIn(controlplane.GatewayLocation)
-		fw, fwOK := st.Firewall()
-		if gwOK && fwOK && gw.PrivateIPs[c.network] == controlplane.GatewayAddress {
-			return fw.ID, nil
+		if found {
+			gateways, err := c.plane.API.ListServers(ctx, c.plane.RoleSelector(controlplane.RoleGateway))
+			if err != nil {
+				return 0, fmt.Errorf("listing the subscription's gateways: %w", err)
+			}
+			gw, ok := controlplane.State{Servers: map[controlplane.Role][]controlplane.Server{controlplane.RoleGateway: gateways}}.GatewayIn(controlplane.GatewayLocation)
+			if ok && gw.PrivateIPs[c.network] == controlplane.GatewayAddress {
+				return fw.ID, nil
+			}
 		}
 		select {
 		case <-ctx.Done():
+			if !found {
+				return 0, fmt.Errorf("the subscription's firewall never appeared, so the image server was not created: %w", ctx.Err())
+			}
 			return 0, fmt.Errorf("the gateway never took %s on network %d, so the image server was not created: %w", controlplane.GatewayAddress, c.network, ctx.Err())
 		case <-time.After(c.poll):
 		}

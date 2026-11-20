@@ -13,6 +13,7 @@ import (
 	"github.com/mitstack-eu/block-kit/handler"
 	"github.com/mitstack-eu/block-kit/helpers/events"
 	"github.com/mitstack-eu/block-kit/helpers/reportproof"
+	"github.com/mitstack-eu/block-kit/helpers/reqcache"
 	"github.com/mitstack-eu/block-kit/observe"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
 	"github.com/mitstack-eu/talos-cluster-kit/operator"
@@ -103,7 +104,7 @@ func (cfg Config) withDefaults() Config {
 
 func (k *Cluster) NewPlane(api controlplane.API, subID, appName string) controlplane.Plane {
 	return controlplane.Plane{
-		API:               api,
+		API:               controlplane.ReadOncePerRequest(api, requestReads),
 		Block:             k.cfg.Block,
 		Subscription:      subID,
 		AppName:           appName,
@@ -117,6 +118,20 @@ func (k *Cluster) NewPlane(api controlplane.API, subID, appName string) controlp
 		// A successor boots the configuration its image was built with, which the rollout replaces.
 		RollsOutMachineConfig: true,
 	}
+}
+
+type requestReadsKey struct{}
+
+// requestReadsMu gives the first calls of one request a single holder, since reqcache looks up and stores in two steps.
+var requestReadsMu sync.Mutex
+
+func requestReads(ctx context.Context) *controlplane.RequestReads {
+	requestReadsMu.Lock()
+	defer requestReadsMu.Unlock()
+	reads, _ := reqcache.Immutable(ctx, requestReadsKey{}, func() (*controlplane.RequestReads, error) {
+		return controlplane.NewRequestReads(), nil
+	})
+	return reads
 }
 
 // PlaneFor drops a size error, since Ensure and PlanReplacements refuse that size themselves.

@@ -424,13 +424,17 @@ wrapper around the plane's API. `Plane.Read` finds it by checking whether
 `Plane.API` is that wrapper itself, so a plane whose API is some other wrapper
 around it lists on every read.
 
-Work that outlives its request, such as a background job that a subscribe
-starts and leaves running after it answers, reads with
-`controlplane.WithoutRequestReads(ctx)`. Its reads list afresh, while its
-writes still drop what the request kept. A block's loop that waits for the
+A subscribe, the call from mitstack that builds or changes a cluster, can start
+a background job and leave it running after it answers. Such work outlives its
+request, so it reads with `controlplane.WithoutRequestReads(ctx)`. That call
+hides the request's `RequestReads` from the job's reads only, so each of them
+lists afresh. A write
+in the job still finds the `RequestReads` and drops what the request kept, so
+the request's next read lists afresh too. A block's loop that waits for the
 Cloud to change, such as a wait for a server to take its address, reads what it
-waits for with the API's own list calls, such as `ListServers`. Those pass
-straight through, while a kept read would never show the change.
+waits for with the API's own list calls, such as `ListServers`. Those calls
+pass through `ReadOncePerRequest`, which keeps nothing they return, while a
+kept read would never show the change.
 
 ### How many control-plane nodes a plane runs
 
@@ -4668,6 +4672,21 @@ empty, it is `hetzner.kubernetes-cluster`, which hcloud-hrobot-talos-cluster
 provides. hcloud-talos-runner-cluster sets `github.runner-cluster`, so an app's
 runner block binds only to a runner cluster.
 
+Every plane `Cluster.NewPlane` builds wraps its API with
+`controlplane.ReadOncePerRequest`, so one call from mitstack lists each kind of
+Cloud resource once, as
+[How a request reads the Cloud once](#how-a-request-reads-the-cloud-once)
+describes. The module keeps the call's `RequestReads` in block-kit's `reqcache`
+package, the store the block's handler opens for each call it serves, and a
+context without that store lists on every read. The worker install, the
+background job that writes the worker's disk image onto the Robot server, reads
+with `controlplane.WithoutRequestReads`. Before the install creates its image
+server, the short-lived Cloud server that builds and serves the worker's image,
+it waits for the gateway to take its address on the cluster's network. That
+wait lists the firewalls until it finds the subscription's, then lists only the
+gateways on each check. Neither the install nor the wait answers from a list
+the call made earlier.
+
 | Part | What it does | Main entry points |
 |---|---|---|
 | Lifecycle | Answers each call mitstack makes to the operator. `Ensure` builds or upgrades the cluster one step per call. `EnsureOwning` does the same and also returns the block's own secrets the call minted, the values mitstack keeps for the block such as the gateway CA's key. `EnsureResourcesOwning` also lists the resources the call created. `Observe` reads the whole cluster, `Observers` and `TypeObservers` read one resource by its name or by its type, and `Delete` tears the cluster down | `New`, `Config`, `Cluster.Ensure`, `Cluster.EnsureOwning`, `Cluster.EnsureResourcesOwning`, `Cluster.Observe`, `Cluster.Observers`, `Cluster.TypeObservers`, `Cluster.Delete` |
@@ -4753,6 +4772,11 @@ with the own secrets every answer minted, as the platform sends them:
 cfg := handlerConfig("https://api.mitstack.test/.well-known/jwks.json", nil)
 kittest.AssertBlock(t, e.Block(cfg))
 ```
+
+The rounds of one settling subscribe read with
+`controlplane.WithoutRequestReads`. Each round stands in for a call the
+platform makes afresh, and the fakes move between rounds without a write that
+would drop what the call kept.
 
 The harness also sends the cluster's node reports, the reports
 [What the node report carries](#what-the-node-report-carries) describes. In

@@ -402,39 +402,44 @@ ctx = context.WithValue(ctx, requestReadsKey{}, controlplane.NewRequestReads())
 
 From then on, the plane reads in three steps.
 
-1. The first `Plane.Read` in the request lists all five kinds. It keeps what
-   it read only when every list answered, so a failed read keeps nothing.
-2. A later read in the same request answers from what was kept. Each read gets
-   its own copy, so a caller that changes its copy changes no other read's.
+1. The first `Plane.Read` in the request lists all five kinds. It keeps the
+   five lists only when every one answered, so a failed `Plane.Read` keeps
+   nothing.
+2. A later `Plane.Read` in the same request answers from what was kept. Each
+   caller gets its own copy, so a caller that changes its copy changes no
+   other caller's.
 3. Every write through the wrapped API drops what was kept when it starts and
    again when it ends, whether Hetzner took the write or refused it. While any
-   write runs, every read lists and nothing is kept, so no read answers from a
-   list made before a write that has not ended. A write is any method that
-   changes the project, such as `CreateServers` or `SetServerLabels`, while a
-   method that only lists or checks something, such as `ListServers` or
-   `ServerStarted`, is a read. A list that a write overlapped is not kept
-   either, since it may have read the Cloud before the write took effect.
+   write runs, every `Plane.Read` lists and nothing is kept, so no
+   `Plane.Read` answers from a list made before a write that has not ended. A
+   write is any API method that changes the project, such as `CreateServers`
+   or `SetServerLabels`. An API method that only lists or checks something,
+   such as `ListServers` or `ServerStarted`, is no write. The wrapper sends
+   such a call to Hetzner each time and keeps nothing it returns. A list that
+   a write overlapped is not kept either, since it may have run before the
+   write took effect.
 
-Two reads that run at the same time in one request may each list, because
-neither waits on the other's calls to Hetzner.
+Two `Plane.Read` calls that run at the same time in one request may each list,
+because neither waits on the other's calls to Hetzner.
 
 A context without a `RequestReads`, or a plane whose API is not wrapped, lists
-all five kinds on every read. `ReadOncePerRequest` must be the outermost
-wrapper around the plane's API. `Plane.Read` finds it by checking whether
-`Plane.API` is that wrapper itself, so a plane whose API is some other wrapper
-around it lists on every read.
+all five kinds on every `Plane.Read`. `ReadOncePerRequest` must be the
+outermost wrapper around the plane's API. `Plane.Read` finds it by checking
+whether `Plane.API` is that wrapper itself, so a plane whose API is some other
+wrapper around it lists on every `Plane.Read`.
 
 A subscribe, the call from mitstack that builds or changes a cluster, can start
 a background job and leave it running after it answers. Such work outlives its
-request, so it reads with `controlplane.WithoutRequestReads(ctx)`. That call
-hides the request's `RequestReads` from the job's reads only, so each of them
-lists afresh. A write
-in the job still finds the `RequestReads` and drops what the request kept, so
-the request's next read lists afresh too. A block's loop that waits for the
-Cloud to change, such as a wait for a server to take its address, reads what it
-waits for with the API's own list calls, such as `ListServers`. Those calls
-pass through `ReadOncePerRequest`, which keeps nothing they return, while a
-kept read would never show the change.
+request, so it runs under `controlplane.WithoutRequestReads(ctx)`. That
+context hides the request's `RequestReads` from the job's `Plane.Read` calls
+only, so each of them lists afresh. A write in the job still finds the
+`RequestReads` and drops what the request kept, so the request's next
+`Plane.Read` lists afresh too. A block's loop that waits for the Cloud to
+change, such as a wait for a server to take its address, calls an API list
+method on each check, such as `ListServers`. The wrapper keeps nothing such a
+call returns, so each check sees the Cloud as it stands then. A `Plane.Read`
+in the loop could answer every check from the request's first list, so the
+loop would never see the change.
 
 ### How many control-plane nodes a plane runs
 
@@ -4678,14 +4683,22 @@ Cloud resource once, as
 [How a request reads the Cloud once](#how-a-request-reads-the-cloud-once)
 describes. The module keeps the call's `RequestReads` in block-kit's `reqcache`
 package, the store the block's handler opens for each call it serves, and a
-context without that store lists on every read. The worker install, the
-background job that writes the worker's disk image onto the Robot server, reads
-with `controlplane.WithoutRequestReads`. Before the install creates its image
-server, the short-lived Cloud server that builds and serves the worker's image,
-it waits for the gateway to take its address on the cluster's network. That
-wait lists the firewalls until it finds the subscription's, then lists only the
-gateways on each check. Neither the install nor the wait answers from a list
-the call made earlier.
+context without that store lists on every `Plane.Read`.
+
+A validate first runs `Cluster.PlanReplacements`, which names the nodes and
+Cloud workers an upgrade would replace, and then reads each resource. The plan
+takes the network it judges the control-plane size by, and the nodes and Cloud
+workers it names, from `Plane.Read`. So the plan shares the validate's one
+list.
+
+The worker install, the background job that writes the worker's disk image
+onto the Robot server, runs under `controlplane.WithoutRequestReads`. Before
+the install creates its image server, the short-lived Cloud server that builds
+and serves the worker's image, it waits for the gateway to take its address on
+the cluster's network. The image server is created behind the subscription's
+firewall, so the wait lists the firewalls until it finds that firewall. It
+then lists only the gateways on each check. Neither the install nor the wait
+answers from a list the call made earlier.
 
 | Part | What it does | Main entry points |
 |---|---|---|

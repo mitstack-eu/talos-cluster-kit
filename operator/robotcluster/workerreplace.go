@@ -17,7 +17,6 @@ func namedWorkers(replace []string) (keys []string) {
 	return keys
 }
 
-// heldWorkers names each Cloud worker of keys that the pool holds in st, as a validate answers it under replaces.
 func heldWorkers(st controlplane.State, keys []string) (names []string) {
 	for _, key := range keys {
 		if slices.ContainsFunc(st.Servers[pools.RoleCloudWorker], func(w controlplane.Server) bool { return w.Labels[pools.KeyMember] == key }) {

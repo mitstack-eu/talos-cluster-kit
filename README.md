@@ -24,8 +24,10 @@ The module renders and the block acts. Every package but `controlplane` takes
 its inputs as values and returns bytes, or runs one local command, and calls
 neither Hetzner, GitHub nor the platform. `controlplane` is the one package
 that calls Hetzner: it creates and deletes a Cloud control plane through
-Hetzner's Cloud API, with the token the block hands it. It imports neither
-block-kit nor operator-kit, so any block framework can drive it. Keeping the
+Hetzner's Cloud API. The block hands it the token, the HTTP client that sends
+every call, and the poll schedule, which says how long to wait before each ask
+whether Hetzner has finished a change it started. It imports neither block-kit
+nor operator-kit, so any block framework can drive it. Keeping the
 install in one module means a fix to the boot, to etcd recovery or to the
 Cloud control plane lands once and reaches every block.
 
@@ -58,7 +60,7 @@ the order a block uses them.
 | `topology` | Renders the topology labeller, a CronJob that labels each Cloud node with its zone and region, labels each burst member of a Cloud pool, a member above the pool's minimum, `mitstack.dev/burst=true`, and holds the zone and region label names | `Manifests`, `Labels`, `ZoneLabel`, `RegionLabel`, `FieldManager` |
 | `openbaoinit` | Renders OpenBao's init Job, which the hosting set carries. On a hosting cluster, a cluster that runs mitstack's own control plane, it initialises OpenBao once, commits the root token and recovery key to the cluster repository as PGP messages, then writes the policy that External Secrets reads with in each slice, the namespace a block gives one app | `Manifests`, `Inputs`, `InitFile` |
 | `rollout` | Gives a running cluster a release's component set, the manifests one kit release carries; [How a running cluster takes a release's components](#how-a-running-cluster-takes-a-releases-components) defines each term. A block commits the set's files to the cluster repository, where Argo CD applies each component through an Application of its own, which is Argo CD's record of one repository directory it keeps applied to the cluster. Files that an earlier release committed and this release no longer states are retired, which means deleted. Each component's sync runs a handover Job, which has Talos give up the fields it set when it created the component's objects, so they hold only what the release states. After OpenBao's sync, OpenBao's rollout Job moves each member onto the StatefulSet's new revision, as [How OpenBao's members take a new revision](#how-openbaos-members-take-a-new-revision) explains, which also says what a member, a StatefulSet and a revision are. Every Application reads the cluster repository at `Release.RepoURL`, the one address the cluster holds a credential for. The read-back then checks from the node report that the cluster runs each component as the release states it | `Release.Files`, `Release.Retired`, `Release.ReadBack`, `Release.ToolsImage`, `Release.RepoURL`, `LegacyFiles` |
-| `controlplane` | Builds and deletes a Talos control plane on Hetzner Cloud: a network, a firewall, a builder that makes the cluster's own snapshot, one or three nodes with a gateway beside each, and an API and an ingress load balancer. Three nodes run in `fsn1`, `nbg1` and `hel1`, and one node runs in `fsn1`. Each call reads the resources by their labels and takes the one change still missing, and [How a request reads the Cloud once](#how-a-request-reads-the-cloud-once) says how one request lists each kind once. A refusal is a `*Refusal` with a `Class` and a `Message`, which the block answers as its own framework's refusal | `Plane`, `Plane.NodeLocations`, `DefaultSize`, `KeySize`, `Plane.Read`, `ReadOncePerRequest`, `RequestReads`, `NewRequestReads`, `WithoutRequestReads`, `Plane.EnsureNetwork`, `Plane.SizeRefusal`, `Plane.NextStep`, `Plane.Problems`, `Plane.Unhealthy`, `Plane.Outputs`, `State.IngressAddresses`, `Plane.Release`, `ErrNoIngressAddress`, `Plane.GatewaysAwaitRelease`, `Plane.GatewaysServeRelease`, `Plane.Delete`, `NewAPI`, `Refusal`, `TopologyLabels`, `GatewayUpgradeBound`, `GatewayCertRenewBefore`, `KeyGatewayCertExpires` |
+| `controlplane` | Builds and deletes a Talos control plane on Hetzner Cloud: a network, a firewall, a builder that makes the cluster's own snapshot, one or three nodes with a gateway beside each, and an API and an ingress load balancer. Three nodes run in `fsn1`, `nbg1` and `hel1`, and one node runs in `fsn1`. Each call reads the resources by their labels and takes the one change still missing, and [How a request reads the Cloud once](#how-a-request-reads-the-cloud-once) says how one request lists each kind once. A refusal is a `*Refusal` with a `Class` and a `Message`, which the block answers as its own framework's refusal | `Plane`, `Plane.NodeLocations`, `DefaultSize`, `KeySize`, `Plane.Read`, `ReadOncePerRequest`, `RequestReads`, `NewRequestReads`, `WithoutRequestReads`, `Plane.EnsureNetwork`, `Plane.SizeRefusal`, `Plane.NextStep`, `Plane.Problems`, `Plane.Unhealthy`, `Plane.Outputs`, `State.IngressAddresses`, `Plane.Release`, `ErrNoIngressAddress`, `Plane.GatewaysAwaitRelease`, `Plane.GatewaysServeRelease`, `Plane.Delete`, `NewAPI`, `Calls`, `Refusal`, `TopologyLabels`, `GatewayUpgradeBound`, `GatewayCertRenewBefore`, `KeyGatewayCertExpires` |
 | `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image carries and the gateway copies out of it, `tools/jq.env`, which pins the tools image's jq, and `tools/kube-bench-talos.yaml`, the settings kube-bench reads over its own on Talos. Its Dockerfile builds `cmd/machine-config` into the tools image. It names the tools image a release published and the directory in that image that holds the node report's, its outside probe's, the labeller's, the cluster tokens', the handover's and OpenBao's rollout's scripts, and where in that image each served manifest sits | `Env`, `Pin`, `Image`, `ScriptDir`, `ManifestPath` |
 | `redundant` | Carries a removal's redundant set, each member with its reading, to the guard the block passes, block-kit's `redundancy.Set.AllowRemoval`, which this module does not import | `Set`, `Guard`, `Held` |
 | `scaling` | Decides from the node reports alone how a Cloud pool whose minimum is below its maximum follows its cluster's load, so only the block's operator, which holds the Hetzner token, changes the pool. [How a Cloud pool scales with the load](#how-a-cloud-pool-scales-with-the-load) gives the rules | `Decide`, `Decision`, `CauseAtMaximum` |
@@ -302,11 +304,14 @@ the snapshot, `worker-builder`, `worker-image`, `serving`, `api` and
 `ingress`. Each call reads the labels back and takes
 the one change still missing, such as creating the firewall once the network
 exists. A block names its plane once per call, from its own id and the
-subscription:
+subscription. `calls` is a `controlplane.Calls` holding the block's HTTP
+client and its poll schedule. A block on block-kit takes both from that kit's
+`capabilities/hetzner/cloud` package:
 
 ```go
+calls := controlplane.Calls{HTTP: cloud.HTTPClient(), PollBackoff: cloud.PollBackoff}
 plane := controlplane.Plane{
-	API:               controlplane.NewAPI(token, "hcloud-hrobot-talos-cluster"), // token: the app's Hetzner Cloud API token
+	API:               controlplane.NewAPI(token, "hcloud-hrobot-talos-cluster", calls), // token: the app's Hetzner Cloud API token
 	Block:             "hcloud-hrobot-talos-cluster",
 	Subscription:      "sub_0123456789ab",
 	AppName:           "shop",
@@ -399,9 +404,9 @@ call to call. The block makes the `RequestReads` with
 `controlplane.NewRequestReads` when the request starts. It keeps one state for
 each plane selector, so one `RequestReads` serves the planes of one Hetzner
 project. In this example
-`plane` is the block's `controlplane.Plane`, `token` its Hetzner API token, and
+`plane` is the block's `controlplane.Plane`, `token` its Hetzner API token,
 the second argument of `controlplane.NewAPI` the name each call to Hetzner
-carries in its user agent:
+carries in its user agent, and `calls` the block's client and poll schedule:
 
 ```go
 type requestReadsKey struct{}
@@ -410,7 +415,7 @@ readsOf := func(ctx context.Context) *controlplane.RequestReads {
 	reads, _ := ctx.Value(requestReadsKey{}).(*controlplane.RequestReads)
 	return reads
 }
-plane.API = controlplane.ReadOncePerRequest(controlplane.NewAPI(token, "hcloud-hrobot-talos-cluster"), readsOf)
+plane.API = controlplane.ReadOncePerRequest(controlplane.NewAPI(token, "hcloud-hrobot-talos-cluster", calls), readsOf)
 ctx = context.WithValue(ctx, requestReadsKey{}, controlplane.NewRequestReads())
 ```
 

@@ -424,10 +424,11 @@ wrapper around the plane's API. `Plane.Read` finds it by checking whether
 `Plane.API` is that wrapper itself, so a plane whose API is some other wrapper
 around it lists on every read.
 
-Work that outlives its request, such as a background job that a subscribe
-starts and leaves running after it answers, reads with
-`controlplane.WithoutRequestReads(ctx)`. That call hides the request's
-`RequestReads` from the job's reads only, so each of them lists afresh. A write
+A subscribe, the call from mitstack that builds or changes a cluster, can start
+a background job and leave it running after it answers. Such work outlives its
+request, so it reads with `controlplane.WithoutRequestReads(ctx)`. That call
+hides the request's `RequestReads` from the job's reads only, so each of them
+lists afresh. A write
 in the job still finds the `RequestReads` and drops what the request kept, so
 the request's next read lists afresh too. A block's loop that waits for the
 Cloud to change, such as a wait for a server to take its address, reads what it
@@ -4677,10 +4678,14 @@ Cloud resource once, as
 [How a request reads the Cloud once](#how-a-request-reads-the-cloud-once)
 describes. The module keeps the call's `RequestReads` in block-kit's `reqcache`
 package, the store the block's handler opens for each call it serves, and a
-context without that store lists on every read. The worker install's job reads
-with `controlplane.WithoutRequestReads`. The image server's wait for the
-gateway lists the firewalls until it finds the subscription's, then lists only
-the gateways on each check. Neither answers from a list the call made earlier.
+context without that store lists on every read. The worker install, the
+background job that writes the worker's disk image onto the Robot server, reads
+with `controlplane.WithoutRequestReads`. Before the install creates its image
+server, the short-lived Cloud server that builds and serves the worker's image,
+it waits for the gateway to take its address on the cluster's network. That
+wait lists the firewalls until it finds the subscription's, then lists only the
+gateways on each check. Neither the install nor the wait answers from a list
+the call made earlier.
 
 | Part | What it does | Main entry points |
 |---|---|---|

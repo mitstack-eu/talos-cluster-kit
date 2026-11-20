@@ -289,6 +289,23 @@ func TestPlane_AGatewayWhosePowerBackOutlivesItsCallIsReadStartingNotDownAndRuns
 	assert.Equal(t, starts+1, h.sent(gw.ID, cloudtest.StartServerCommand), "the starts sent at the gateway: %v", h.cloud.ActionsSent(gw.ID))
 }
 
+func TestPlane_AGatewayWhosePowerBackStillRunsPastTheGatewaysDeadlineIsReadDown(t *testing.T) {
+	h := newHarness(t, withReports)
+	h.built()
+	gw := h.gatewayIn(controlplane.GatewayLocation)
+	h.cloud.StopServer(gw.ID)
+	h.cloud.HoldNext[controlplane.RoleGateway] = cloudtest.StartServerCommand
+	poweredOn := h.now
+	require.ErrorIs(t, h.converge(), context.DeadlineExceeded, "the call whose power-back outlived it")
+	h.now = poweredOn.Add(gateway.Deadline)
+
+	cause, detail, err := h.plane.Unhealthy(context.Background(), h.read())
+
+	require.NoError(t, err)
+	assert.Equal(t, controlplane.CauseGatewayDown, cause, "the cause read once the gateway's power-back ran for %s", gateway.Deadline)
+	assert.Contains(t, detail, fmt.Sprintf("gateway %d in fsn1 was powered back on at %s and is off", gw.ID, poweredOn.Format(time.RFC3339)))
+}
+
 // drive calls the plane, running check after each call and letting a minute pass after one that changed nothing, until
 // done reads true after such a call.
 func (h *harness) drive(what string, done func() bool, check func()) {

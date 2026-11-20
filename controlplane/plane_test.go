@@ -891,6 +891,104 @@ func TestPlane_AServerWhoseAttachOutlivesItsCallIsSentNoSecondAttach(t *testing.
 	}
 }
 
+func TestPlane_AServerWhoseAttachEndsBetweenTheListAndTheStepIsSentNoSecondAttachAndBuildsOn(t *testing.T) {
+	for _, tc := range []struct {
+		role controlplane.Role
+		opts []func(*harness)
+	}{
+		{role: controlplane.RoleGateway},
+		{role: controlplane.RoleBuilder},
+		{role: controlplane.RoleWorkerBuilder},
+		{role: controlplane.RoleServing, opts: []func(*harness){hosting}},
+	} {
+		t.Run(string(tc.role), func(t *testing.T) {
+			h := newHarness(t, tc.opts...)
+			h.cloud.HoldNext[tc.role] = cloudtest.AttachToNetworkCommand
+			require.ErrorIs(t, h.converge(), context.DeadlineExceeded, "the call whose attach of the %s outlived it", tc.role)
+			server := h.held(tc.role)
+			h.cloud.EndAfterList[server.ID] = true
+
+			err := h.ensure()
+
+			require.NoError(t, err, "the call that listed the %s off its network before its attach ended", tc.role)
+			h.built()
+			assert.Equal(t, 1, h.sent(server.ID, cloudtest.AttachToNetworkCommand), "the attaches sent at the %s: %v", tc.role, h.cloud.ActionsSent(server.ID))
+		})
+	}
+}
+
+func TestPlane_AGatewayIsPoweredOnOnlyOnceItIsOnTheNetworkWhileAnotherGatewaysAttachRuns(t *testing.T) {
+	h := newHarness(t)
+	attached := func() bool {
+		gateways := controlplane.ServersIn(h.byRole(controlplane.RoleGateway), controlplane.GatewayLocation)
+		return len(gateways) == 1 && len(h.cloud.ActionsSent(gateways[0].ID)) > 0
+	}
+	for calls := 0; !attached(); calls++ {
+		require.Less(t, calls, 50, "the gateway in %s was not attached within 50 calls", controlplane.GatewayLocation)
+		require.NoError(t, h.ensure())
+	}
+	h.cloud.HoldNext[controlplane.RoleGateway] = cloudtest.AttachToNetworkCommand
+	require.ErrorIs(t, h.converge(), context.DeadlineExceeded, "the call whose attach of a second gateway outlived it")
+	held := h.held(controlplane.RoleGateway)
+	require.NotEqual(t, controlplane.GatewayLocation, held.Location, "the location of the gateway whose attach outlived its call")
+	for range 5 {
+		require.NoError(t, h.converge(), "a call while the attach of gateway %d runs", held.ID)
+	}
+
+	h.cloud.FinishAction(held.ID)
+	h.built()
+
+	require.Len(t, h.byRole(controlplane.RoleGateway), len(controlplane.Locations), "the gateways built")
+	for _, gw := range h.byRole(controlplane.RoleGateway) {
+		sent := h.cloud.ActionsSent(gw.ID)
+		require.NotEmpty(t, sent, "the actions sent at the gateway in %s", gw.Location)
+		assert.Equal(t, cloudtest.AttachToNetworkCommand, sent[0], "the first action sent at the gateway in %s: %v", gw.Location, sent)
+	}
+}
+
+func TestPlane_AFinishedBuilderIsKeptWhileTheGatewaysPowerOnRunsPastTheBuildersDeadline(t *testing.T) {
+	h := newHarness(t)
+	h.buildingBuilder()
+	builder, gw := h.byRole(controlplane.RoleBuilder)[0], h.gatewayIn(controlplane.GatewayLocation)
+	h.cloud.PowerOff(builder.ID)
+	h.cloud.StopServer(gw.ID)
+	h.now = builder.Created.Add(controlplane.BuildDeadline - time.Minute)
+	h.cloud.HoldNext[controlplane.RoleGateway] = cloudtest.StartServerCommand
+	require.ErrorIs(t, h.converge(), context.DeadlineExceeded, "the call whose power-on of the gateway beside the finished builder outlived it")
+	h.now = builder.Created.Add(controlplane.BuildDeadline + 5*time.Minute)
+
+	err := h.converge()
+
+	require.NoError(t, err, "a call past the builder's deadline while the gateway's power-on runs")
+	assert.Len(t, h.byRole(controlplane.RoleBuilder), 1, "the finished builder while the gateway's power-on runs")
+	h.cloud.FinishAction(gw.ID)
+	h.built()
+}
+
+func TestPlane_ACallThatCannotReadAServersActionOrTheServerReturnsThatFailure(t *testing.T) {
+	for _, tc := range []struct {
+		read string
+		fail func(*cloudtest.Fake, error)
+	}{
+		{read: "RunningAction", fail: func(f *cloudtest.Fake, err error) { f.FailRunningAction = err }},
+		{read: "GetServer", fail: func(f *cloudtest.Fake, err error) { f.FailGetServer = err }},
+	} {
+		t.Run(tc.read, func(t *testing.T) {
+			h := newHarness(t)
+			failure := errors.New("hcloud: the " + tc.read + " read failed")
+			tc.fail(h.cloud, failure)
+
+			var err error
+			for calls := 0; err == nil; calls++ {
+				require.Less(t, calls, 50, "no call read %s within 50 calls", tc.read)
+				err = h.ensure()
+			}
+
+			assert.ErrorIs(t, err, failure, "the call whose %s read failed", tc.read)
+		})
+	}
+}
+
 func TestPlane_RefusesTheBuildNamingTheGatewaysImageMirrorOnceTheGatewayPowersItselfOff(t *testing.T) {
 	h := newHarness(t)
 	h.buildingBuilder()

@@ -49,6 +49,9 @@ type Fake struct {
 	FailNext error
 	// FailDelete, when set, fails the next server delete with it.
 	FailDelete error
+	// FailRunningAction and FailGetServer, when set, fail the next read of a server's running action, or of one server,
+	// with it.
+	FailRunningAction, FailGetServer error
 	// FailCreate, when set, fails the next server create of that role with it.
 	FailCreate map[controlplane.Role]error
 	// FailLBStep, when set, fails the next load balancer call of that name with it.
@@ -239,6 +242,9 @@ func (f *Fake) ListServers(_ context.Context, sel string) ([]controlplane.Server
 		return nil, err
 	}
 	servers := selected(f.Servers, func(s *controlplane.Server) map[string]string { return s.Labels }, sel)
+	for i := range servers {
+		servers[i] = copied(servers[i])
+	}
 	for id := range f.EndAfterList {
 		f.finish(id)
 	}
@@ -251,11 +257,22 @@ func (f *Fake) GetServer(_ context.Context, id int64) (controlplane.Server, bool
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.read("GetServer")
+	if err := f.FailGetServer; err != nil {
+		f.FailGetServer = nil
+		return controlplane.Server{}, false, err
+	}
 	s, ok := f.Servers[id]
 	if !ok {
 		return controlplane.Server{}, false, nil
 	}
-	return *s, true, nil
+	return copied(*s), true, nil
+}
+
+// copied is the server with maps of its own, as each Hetzner answer is, so an action that ends later changes no copy read
+// before.
+func copied(s controlplane.Server) controlplane.Server {
+	s.Labels, s.PrivateIPs = maps.Clone(s.Labels), maps.Clone(s.PrivateIPs)
+	return s
 }
 
 func (f *Fake) CreateServers(_ context.Context, specs ...controlplane.ServerSpec) ([]controlplane.Server, error) {
@@ -349,6 +366,10 @@ func (f *Fake) RunningAction(_ context.Context, id int64) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.read("RunningAction")
+	if err := f.FailRunningAction; err != nil {
+		f.FailRunningAction = nil
+		return "", err
+	}
 	return f.running[id].command, nil
 }
 

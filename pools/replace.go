@@ -365,22 +365,15 @@ func (x replacer) next(ctx context.Context) (progress, error) {
 	case worker.ID != x.r.old:
 		return x.endStep(ctx, worker)
 	}
-	busy, err := x.plane.Busy(ctx, worker)
-	if err != nil {
-		return progress{}, err
-	}
-	if busy != "" {
-		return waitsOn("Cloud worker %d is %s", worker.ID, busy)
-	}
 	g, err := x.byStatus(ctx, worker, held)
 	if err != nil || g.step.Run == nil {
 		return g, err
 	}
-	changed, err := x.plane.Changed(ctx, worker)
-	if err != nil || changed == "" {
+	why, err := x.plane.Unsettled(ctx, worker)
+	if err != nil || why == "" {
 		return g, err
 	}
-	return waitsOn("Cloud worker %d is %s", worker.ID, changed)
+	return waitsOn("Cloud worker %d is %s", worker.ID, why)
 }
 
 // byStatus is the replacement's next step or wait, judged by the worker's listed status.

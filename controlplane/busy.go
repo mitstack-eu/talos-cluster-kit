@@ -32,9 +32,9 @@ func doing(command string) string {
 	return "busy"
 }
 
-// Changed says how the server Hetzner holds now differs from its listed copy, as "running, though it was listed off", since
-// an action that ends after the list changes the server the plane chose its step by.
-func (p Plane) Changed(ctx context.Context, listed Server) (string, error) {
+// changedSince says how the server Hetzner holds now differs from its listed copy, as "running, though it was listed
+// off", since an action that ends after the list changes the server the plane chose its step by.
+func (p Plane) changedSince(ctx context.Context, listed Server) (string, error) {
 	now, found, err := p.API.GetServer(ctx, listed.ID)
 	switch {
 	case err != nil:
@@ -54,8 +54,15 @@ func (p Plane) waitOn(ctx context.Context, listed Server) (busy, changed string,
 	if busy, err = p.Busy(ctx, listed); err != nil || busy != "" {
 		return busy, "", err
 	}
-	changed, err = p.Changed(ctx, listed)
+	changed, err = p.changedSince(ctx, listed)
 	return "", changed, err
+}
+
+// Unsettled names why a step chosen by the listed server must wait: what Hetzner still runs on it, or how it changed
+// since the list, and is empty when neither holds.
+func (p Plane) Unsettled(ctx context.Context, listed Server) (string, error) {
+	busy, changed, err := p.waitOn(ctx, listed)
+	return busy + changed, err
 }
 
 // onceIdle takes step only once Hetzner runs no action on server and holds it as listed, since it refuses a second

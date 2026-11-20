@@ -373,22 +373,15 @@ func (p Plane) lacks() (class, what string) {
 // replaceNode carries the node's replacement on, and waits while Hetzner runs an action on the node or holds it otherwise
 // than listed.
 func (p Plane) replaceNode(ctx context.Context, st State, network Network, r nodeReplacement, node Server) (progress, error) {
-	busy, err := p.Busy(ctx, node)
-	if err != nil {
-		return progress{}, err
-	}
-	if busy != "" {
-		return waitsOn("it is %s", busy)
-	}
 	g, err := p.nodeProgress(ctx, st, network, r, node)
 	if err != nil || g.step.Run == nil {
 		return g, err
 	}
-	changed, err := p.Changed(ctx, node)
-	if err != nil || changed == "" {
+	why, err := p.Unsettled(ctx, node)
+	if err != nil || why == "" {
 		return g, err
 	}
-	return waitsOn("it is %s", changed)
+	return waitsOn("it is %s", why)
 }
 
 // nodeProgress is the replacement's next step or wait, judged by the node's listed status.

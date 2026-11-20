@@ -311,7 +311,7 @@ plane := controlplane.Plane{
 	Subscription:      "sub_0123456789ab",
 	AppName:           "shop",
 	Size:              3,                         // 1 or 3 control-plane nodes; 0 builds 3
-	ServerTypes:       []string{"cx23", "cpx22"}, // by preference, each node's disk holding the cluster's snapshot
+	ServerTypes:       []string{"cx23", "cpx22"}, // in order of preference; each node takes the first whose disk holds the cluster's snapshot
 	Boundary:          "mitstack-hcloud-hrobot-talos-cluster", // separates the parts of the gateway's user data
 	PlatformURL:       "https://api.mitstack.dev",             // where every node registers and reports
 	ReportProofScript: reportproof.TokenRequestScript,         // block-kit's script that signs each node report
@@ -350,7 +350,8 @@ snapshot, through `OrderableTypes.FirstHolding`. With `ServerTypes` set to
 `cx33, cx43` and `cx33` sold out in `fsn1` while the builder is created, the
 builder runs on `cx43` and its snapshot holds 160 GB. Every node, in each
 location, then takes `cx43`, since a `cx33` disk holds 80 GB. Where a node
-skips a type of the list for its disk, an event names the snapshot's disk. When
+takes a type later in the list, an event names the types it skipped and the
+snapshot's disk. When
 no type of the list fits in a location, the call refuses with
 `server-unavailable` before it creates that node. The refusal names the
 location, the snapshot's disk, and each type's disk or that it is not on sale.

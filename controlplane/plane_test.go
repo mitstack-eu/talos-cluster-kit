@@ -950,11 +950,14 @@ func TestPlane_AFinishedBuilderIsKeptWhileTheGatewaysPowerOnRunsPastTheBuildersD
 	h := newHarness(t)
 	h.buildingBuilder()
 	builder, gw := h.byRole(controlplane.RoleBuilder)[0], h.gatewayIn(controlplane.GatewayLocation)
-	h.cloud.PowerOff(builder.ID)
+	for _, finished := range append(h.byRole(controlplane.RoleWorkerBuilder), builder) {
+		h.cloud.PowerOff(finished.ID)
+	}
 	h.cloud.StopServer(gw.ID)
 	h.now = builder.Created.Add(controlplane.BuildDeadline - time.Minute)
 	h.cloud.HoldNext[controlplane.RoleGateway] = cloudtest.StartServerCommand
 	require.ErrorIs(t, h.converge(), context.DeadlineExceeded, "the call whose power-on of the gateway beside the finished builder outlived it")
+	starts := h.sent(gw.ID, cloudtest.StartServerCommand)
 	h.now = builder.Created.Add(controlplane.BuildDeadline + 5*time.Minute)
 
 	err := h.converge()
@@ -962,7 +965,8 @@ func TestPlane_AFinishedBuilderIsKeptWhileTheGatewaysPowerOnRunsPastTheBuildersD
 	require.NoError(t, err, "a call past the builder's deadline while the gateway's power-on runs")
 	assert.Len(t, h.byRole(controlplane.RoleBuilder), 1, "the finished builder while the gateway's power-on runs")
 	h.cloud.FinishAction(gw.ID)
-	h.built()
+	require.NoError(t, h.settle(func() bool { _, ok := h.read().Snapshot(); return ok }), "the calls once the gateway's power-on finished")
+	assert.Equal(t, starts, h.sent(gw.ID, cloudtest.StartServerCommand), "the starts sent at the gateway: %v", h.cloud.ActionsSent(gw.ID))
 }
 
 func TestPlane_ACallThatCannotReadAServersActionOrTheServerReturnsThatFailure(t *testing.T) {

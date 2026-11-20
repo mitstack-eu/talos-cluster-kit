@@ -123,9 +123,9 @@ func (p Plane) zoneStep(ctx context.Context, st State, s site) (Step, bool, erro
 	for _, loc := range p.NodeLocations() {
 		gw, _ := st.GatewayIn(loc)
 		if gw.PrivateIPs[s.network.ID] == "" {
-			return Step{"attach the gateway in " + loc + " to the network at its fixed address before its first boot", func(ctx context.Context) error {
+			return p.onceIdle(ctx, gw, Step{"attach the gateway in " + loc + " to the network at its fixed address before its first boot", func(ctx context.Context) error {
 				return p.API.AttachServerToNetwork(ctx, gw.ID, s.network.ID, GatewayAddresses[loc])
-			}}, true, nil
+			}})
 		}
 	}
 	for _, loc := range p.NodeLocations() {
@@ -147,8 +147,12 @@ func (p Plane) neverStartedStep(ctx context.Context, st State) (Step, bool, erro
 		if err != nil {
 			return Step{}, false, err
 		}
-		if !started {
-			return Step{"power on the gateway in " + loc, func(ctx context.Context) error { return p.API.PowerOnServer(ctx, gw.ID) }}, true, nil
+		if started {
+			continue
+		}
+		step, ok, err := p.onceIdle(ctx, gw, Step{"power on the gateway in " + loc, func(ctx context.Context) error { return p.API.PowerOnServer(ctx, gw.ID) }})
+		if err != nil || ok {
+			return step, ok, err
 		}
 	}
 	return Step{}, false, nil
@@ -304,7 +308,7 @@ func poweredOnAt(gw Server) (time.Time, bool) {
 }
 
 // downAfterPowerOn reports a gateway powered back on that has not served since: it is off again, or a report since
-// reads its mirror failing. Its reading says why.
+// reads its mirror failing. Its reading says why. A gateway Hetzner still powers on is not down.
 func (p Plane) downAfterPowerOn(ctx context.Context, gw Server) (bool, GatewayReading, error) {
 	at, ok := poweredOnAt(gw)
 	if !ok {
@@ -314,7 +318,11 @@ func (p Plane) downAfterPowerOn(ctx context.Context, gw Server) (bool, GatewayRe
 	if err != nil || r.Serving {
 		return false, r, err
 	}
-	return gw.Status != ServerRunning || r.Read, r, nil
+	if gw.Status == ServerRunning {
+		return r.Read, r, nil
+	}
+	busy, err := p.Busy(ctx, gw)
+	return busy == "" && err == nil, r, err
 }
 
 // powerBackStep powers on a gateway that ran and is off, once an outage: a gateway already powered back on is powered
@@ -332,7 +340,10 @@ func (p Plane) powerBackStep(ctx context.Context, st State, _ site) (Step, bool,
 		if down {
 			continue
 		}
-		return Step{"power the gateway in " + loc + " back on", func(ctx context.Context) error { return p.powerBack(ctx, gw) }}, true, nil
+		step, ok, err := p.onceIdle(ctx, gw, Step{"power the gateway in " + loc + " back on", func(ctx context.Context) error { return p.powerBack(ctx, gw) }})
+		if err != nil || ok {
+			return step, ok, err
+		}
 	}
 	return Step{}, false, nil
 }

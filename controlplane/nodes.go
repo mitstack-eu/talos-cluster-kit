@@ -371,6 +371,13 @@ func (p Plane) lacks() (class, what string) {
 }
 
 func (p Plane) replaceNode(ctx context.Context, st State, network Network, r nodeReplacement, node Server) (progress, error) {
+	busy, err := p.Busy(ctx, node)
+	if err != nil {
+		return progress{}, err
+	}
+	if busy != "" {
+		return waitsOn("it is %s", busy)
+	}
 	switch node.Status {
 	case ServerRunning:
 		return p.powerOffNode(ctx, st, network, r, node)

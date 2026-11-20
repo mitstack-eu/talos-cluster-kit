@@ -180,13 +180,13 @@ func (p Plane) controlPlaneStep(ctx context.Context, st State, s site) (Step, bo
 	}
 	switch {
 	case hasBuilder && builder.PrivateIPs[s.network.ID] == "":
-		return Step{"attach the builder to the network at its fixed address", func(ctx context.Context) error {
+		return p.onceIdleWithin(ctx, build{builder, clusterImage}, builder, Step{"attach the builder to the network at its fixed address", func(ctx context.Context) error {
 			return p.API.AttachServerToNetwork(ctx, builder.ID, s.network.ID, BuilderAddress)
-		}}, true, nil
+		}})
 	case hasServing && serving.PrivateIPs[s.network.ID] == "":
-		return Step{"attach the serving server to the network at its fixed address", func(ctx context.Context) error {
+		return p.onceIdleWithin(ctx, build{builder, clusterImage}, serving, Step{"attach the serving server to the network at its fixed address", func(ctx context.Context) error {
 			return p.API.AttachServerToNetwork(ctx, serving.ID, s.network.ID, ServingAddress)
-		}}, true, nil
+		}})
 	case gw.Status == ServerOff && !hasSnapshot:
 		return p.gatewayOffStep(ctx, gw, builder, hasBuilder)
 	}
@@ -195,15 +195,15 @@ func (p Plane) controlPlaneStep(ctx context.Context, st State, s site) (Step, bo
 	}
 	switch {
 	case gw.Status == ServerOff:
-		return p.powerOnGateway(gw), true, nil
+		return p.onceIdle(ctx, gw, p.powerOnGateway(gw))
 	case imaged:
 		return p.missingNodeStep(st, s, snap)
 	case hasSnapshot:
 		return Step{}, false, nil
 	case hasServing && serving.Status == ServerOff:
-		return Step{"power on the serving server before the builder fetches from it", func(ctx context.Context) error {
+		return p.onceIdleWithin(ctx, build{builder, clusterImage}, serving, Step{"power on the serving server before the builder fetches from it", func(ctx context.Context) error {
 			return p.API.PowerOnServer(ctx, serving.ID)
-		}}, true, nil
+		}})
 	case hasBuilder:
 		return p.builderStep(ctx, builder, clusterImage)
 	default:
@@ -219,6 +219,15 @@ func (p Plane) powerOnGateway(gw Server) Step {
 // gatewayOffStep powers on a gateway that never ran or whose builder finished, and refuses the build of one that ran and
 // is off before then, since its build powers it off only when a stage of it fails or overruns its bound.
 func (p Plane) gatewayOffStep(ctx context.Context, gw, builder Server, hasBuilder bool) (Step, bool, error) {
+	busy, err := p.Busy(ctx, gw)
+	switch {
+	case err != nil:
+		return Step{}, false, err
+	case busy != "" && hasBuilder:
+		return p.waitStep(build{builder, clusterImage}, gw, busy)
+	case busy != "":
+		return Step{}, false, nil
+	}
 	started, err := p.API.ServerStarted(ctx, gw.ID)
 	if err != nil {
 		return Step{}, false, err
@@ -264,9 +273,9 @@ func (p Plane) workerImageStep(ctx context.Context, st State, s site) (Step, boo
 	case hasSnapshot:
 		return Step{}, false, nil
 	case builder.PrivateIPs[s.network.ID] == "":
-		return Step{"attach the worker builder to the network at its fixed address", func(ctx context.Context) error {
+		return p.onceIdleWithin(ctx, build{builder, workerImage}, builder, Step{"attach the worker builder to the network at its fixed address", func(ctx context.Context) error {
 			return p.API.AttachServerToNetwork(ctx, builder.ID, s.network.ID, WorkerBuilderAddress)
-		}}, true, nil
+		}})
 	case !hasGateway || gw.Status != ServerRunning:
 		return Step{}, false, nil
 	default:
@@ -316,11 +325,52 @@ var (
 )
 
 func (p Plane) overdue(builder Server) bool {
-	return builder.Status == ServerRunning && p.now().Sub(builder.Created) >= BuildDeadline
+	return builder.Status == ServerRunning && p.pastBuildDeadline(builder)
+}
+
+func (p Plane) pastBuildDeadline(builder Server) bool {
+	return p.now().Sub(builder.Created) >= BuildDeadline
+}
+
+// build is a builder and what it builds, whose deadline bounds each wait of the build on a server Hetzner still runs an
+// action on.
+type build struct {
+	builder Server
+	img     imageBuild
+}
+
+// onceIdleWithin takes step once Hetzner runs no action on server, and while it still runs one waits until b's deadline.
+func (p Plane) onceIdleWithin(ctx context.Context, b build, server Server, step Step) (Step, bool, error) {
+	busy, err := p.Busy(ctx, server)
+	switch {
+	case err != nil:
+		return Step{}, false, err
+	case busy == "":
+		return step, true, nil
+	}
+	return p.waitStep(b, server, busy)
+}
+
+// waitStep waits on a server Hetzner still runs an action on until b's deadline, then deletes the builder and refuses the
+// build, naming what it waited on, so a build never waits on Hetzner without end.
+func (p Plane) waitStep(b build, server Server, busy string) (Step, bool, error) {
+	if !p.pastBuildDeadline(b.builder) {
+		return Step{}, false, nil
+	}
+	role := server.Labels[KeyRole]
+	return Step{"delete the " + b.img.builder + " whose build waited on the " + role + " past its deadline", func(ctx context.Context) error {
+		if err := p.API.DeleteServer(ctx, b.builder.ID); err != nil {
+			return fmt.Errorf("deleting the %s %d whose build waited on the %s past its deadline: %w", b.img.builder, b.builder.ID, role, err)
+		}
+		return refuse(b.img.failure,
+			"%s was not built within %s of the %s's creation, as %s %d is %s, so the %s is deleted; unsubscribe and subscribe again to rebuild the cluster",
+			b.img.what, BuildDeadline, b.img.builder, role, server.ID, busy, b.img.builder)
+	}}, true, nil
 }
 
 // builderStep powers on a builder that has never run, snapshots one that ran and powered itself off, and deletes one
-// still running past BuildDeadline, since its script leaves a failed build running and only the deadline tells.
+// still running past BuildDeadline, since its script leaves a failed build running and only the deadline tells. It
+// waits on a builder Hetzner still runs an action on, until the same deadline.
 func (p Plane) builderStep(ctx context.Context, builder Server, img imageBuild) (Step, bool, error) {
 	switch builder.Status {
 	case ServerRunning:
@@ -337,6 +387,13 @@ func (p Plane) builderStep(ctx context.Context, builder Server, img imageBuild) 
 				img.builder, BuildDeadline, img.what, img.builder, metrics.stall())
 		}}, true, nil
 	case ServerOff:
+		busy, err := p.Busy(ctx, builder)
+		if err != nil {
+			return Step{}, false, err
+		}
+		if busy != "" {
+			return p.waitStep(build{builder, img}, builder, busy)
+		}
 		started, err := p.API.ServerStarted(ctx, builder.ID)
 		if err != nil {
 			return Step{}, false, err

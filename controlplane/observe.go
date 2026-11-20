@@ -79,7 +79,7 @@ func (p Plane) problems(ctx context.Context, st State, replacements func(context
 func (p Plane) buildDetail(ctx context.Context, b Server, img imageBuild) string {
 	created := b.Created.UTC().Format(time.RFC3339)
 	if b.Status != ServerRunning {
-		return fmt.Sprintf("%s %d, created at %s, is %s", img.builder, b.ID, created, b.Status)
+		return fmt.Sprintf("%s %d, created at %s, is %s", img.builder, b.ID, created, p.stateOf(ctx, b))
 	}
 	state := "is building " + img.what + " or waiting for the gateway's mirror to complete"
 	if p.overdue(b) {
@@ -113,7 +113,7 @@ func (p Plane) gatewayProblems(ctx context.Context, st State, network Network, f
 			return nil, err
 		}
 		if gw.Status != ServerRunning && !down {
-			missing = append(missing, fmt.Sprintf("gateway %d in %s is %s", gw.ID, loc, gw.Status))
+			missing = append(missing, fmt.Sprintf("gateway %d in %s is %s", gw.ID, loc, p.stateOf(ctx, gw)))
 		}
 		if gw.PrivateIPs[network.ID] != GatewayAddresses[loc] {
 			missing = append(missing, fmt.Sprintf("gateway %d is not on network %d at %s", gw.ID, network.ID, GatewayAddresses[loc]))

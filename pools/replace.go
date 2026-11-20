@@ -362,6 +362,14 @@ func (x replacer) next(ctx context.Context) (progress, error) {
 		return x.createSuccessor(ctx, held)
 	case worker.ID != x.r.old:
 		return x.endStep(ctx, worker)
+	}
+	busy, err := x.plane.Busy(ctx, worker)
+	if err != nil {
+		return progress{}, err
+	}
+	switch {
+	case busy != "":
+		return waitsOn("Cloud worker %d is %s", worker.ID, busy)
 	case worker.Status == controlplane.ServerRunning && slices.Contains(held, jobPath(drainStep, x.r.key)):
 		return x.draining(ctx, worker)
 	case worker.Status == controlplane.ServerRunning:

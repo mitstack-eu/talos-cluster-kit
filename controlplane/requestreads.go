@@ -126,6 +126,10 @@ func (w *readOncePerRequest) ServerStarted(ctx context.Context, id int64) (bool,
 	return w.api.ServerStarted(ctx, id)
 }
 
+func (w *readOncePerRequest) RunningAction(ctx context.Context, id int64) (string, error) {
+	return w.api.RunningAction(ctx, id)
+}
+
 func (w *readOncePerRequest) AttachServerToNetwork(ctx context.Context, serverID, networkID int64, ip string) error {
 	defer w.writing(ctx)()
 	return w.api.AttachServerToNetwork(ctx, serverID, networkID, ip)

@@ -1,6 +1,6 @@
 package robotcluster_test
 
-// Once Hetzner refuses a Cloud call for its rate limit, the cluster sends no other call with that token until the reset Hetzner names.
+// Once Hetzner refuses a Cloud call for its rate limit, the cluster sends no other call with that token until block-kit's hold ends, at its own pause or at Hetzner's reset when that comes sooner.
 
 import (
 	"fmt"
@@ -20,6 +20,7 @@ func TestCluster_HoldsCloudCallsAfterARateLimitRefusal(t *testing.T) {
 	e := onDedicatedServer(t)
 	obs, err := e.Settle()
 	require.NoError(t, err, "the subscribe: %s", obs.StatusDetail)
+	// The reset comes sooner than block-kit's one-minute first pause, so the hold ends at the reset.
 	reset := time.Now().Add(30 * time.Second).Truncate(time.Second)
 	e.Cloud.FailNext = &cloudtest.Refused{Status: http.StatusTooManyRequests, Code: "rate_limit_exceeded",
 		Message: "limit of 3600 requests per hour reached", Reset: reset}
@@ -27,7 +28,7 @@ func TestCluster_HoldsCloudCallsAfterARateLimitRefusal(t *testing.T) {
 	cfg.CloudAPI = robotcluster.CloudAPIAt(e.Cloud.Serve(t), cfg.Block)
 	k := robotcluster.New(cfg)
 	d := e.Desired()
-	// block-kit keeps a refused token's hold for the whole process until the reset, so each run refuses a token of its own.
+	// block-kit keeps a refused token's hold for the whole process until the hold ends, so each run refuses a token of its own.
 	d.Secrets["hetzner"]["api_token"] = fmt.Sprintf("hetzner-token-refused-at-%d", time.Now().UnixNano())
 	before := e.Cloud.Reads()
 

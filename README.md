@@ -4734,14 +4734,18 @@ fake.
 
 `Config.CloudAPI` left empty is `CloudAPIAt` at `controlplane.Endpoint`,
 Hetzner's Cloud API. It hands the control plane block-kit's HTTP client and
-poll schedule, as
+poll schedule, the growing wait between two questions about whether a Hetzner
+action has finished, as
 [How a block drives the Cloud control plane](#how-a-block-drives-the-cloud-control-plane)
 asks of a block. Once Hetzner refuses a call for its rate limit, that client
-sends no other call with the same token until the reset Hetzner names. Each
-call it holds back returns block-kit's `handler.Waiting`, which names that
-time in UTC. So a validate reads each resource as unknown and a subscribe
-waits, and neither fails. A test that needs the hold passes `CloudAPIAt` the
-address that `cloudtest.Fake.Serve` returns.
+sends no other call with the same token until its hold ends. A hold lasts one
+minute after a first refusal and doubles with each refusal in a row, up to an
+hour. When the reset time Hetzner names comes sooner, the hold ends at the
+reset instead. Each call the client holds back returns block-kit's
+`handler.Waiting`, the error that asks the platform to call again at a given
+time, which names the hold's end in UTC. So a validate reads each resource as
+unknown and a subscribe waits, and neither fails. A test that needs the hold
+passes `CloudAPIAt` the address that `cloudtest.Fake.Serve` returns.
 
 `Config.DeclaredSize` is the one control-plane size the block's manifest lists
 servers for. The platform keeps a subscribe pending until every server the

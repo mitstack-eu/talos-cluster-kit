@@ -199,6 +199,23 @@ func (h *harness) network() controlplane.Network {
 	return h.cloud.OnlyNetwork(h.t, h.plane.Selector())
 }
 
+// held is the server of role r that Hetzner still runs an action on.
+func (h *harness) held(r controlplane.Role) controlplane.Server {
+	h.t.Helper()
+	for _, s := range h.byRole(r) {
+		if command, err := h.cloud.RunningAction(context.Background(), s.ID); err == nil && command != "" {
+			return s
+		}
+	}
+	h.t.Fatalf("no %s runs an action", r)
+	return controlplane.Server{}
+}
+
+// sent counts the actions of command the server was sent.
+func (h *harness) sent(id int64, command string) int {
+	return len(slices.DeleteFunc(h.cloud.ActionsSent(id), func(c string) bool { return c != command }))
+}
+
 func (h *harness) loadBalancer(r controlplane.Role) controlplane.LoadBalancer {
 	return h.cloud.OnlyLoadBalancer(h.t, h.plane.RoleSelector(r))
 }
@@ -665,6 +682,116 @@ func TestPlane_RefusesTheBuilderStillRunningPastItsDeadlineAsAFailedBuild(t *tes
 	assert.Less(t, h.now.Sub(created), controlplane.BuildDeadline+5*time.Minute, "how long the plane waited on a failed build")
 	assert.Empty(t, h.byRole(controlplane.RoleBuilder), "the builder past its deadline")
 	assert.Empty(t, h.byRole(controlplane.RoleNode), "a node with no image")
+}
+
+// heldStart is a server of the build whose first start Hetzner runs on past the call that sent it, and the problem
+// that names it starting.
+type heldStart struct {
+	name    string
+	role    controlplane.Role
+	server  func(h *harness) controlplane.Server
+	problem func(s controlplane.Server) string
+}
+
+var heldStarts = []heldStart{
+	{
+		name: "the builder", role: controlplane.RoleBuilder,
+		server: func(h *harness) controlplane.Server { return h.byRole(controlplane.RoleBuilder)[0] },
+		problem: func(s controlplane.Server) string {
+			return fmt.Sprintf("builder %d, created at %s, is starting, since Hetzner still runs its start_server action on it",
+				s.ID, s.Created.UTC().Format(time.RFC3339))
+		},
+	},
+	{
+		name: "the gateway", role: controlplane.RoleGateway,
+		server: func(h *harness) controlplane.Server { return h.gatewayIn(controlplane.GatewayLocation) },
+		problem: func(s controlplane.Server) string {
+			return fmt.Sprintf("gateway %d in %s is starting, since Hetzner still runs its start_server action on it", s.ID, s.Location)
+		},
+	},
+}
+
+// holdStart builds until the first start of held's server outlives its call, and returns that server.
+func (h *harness) holdStart(held heldStart) controlplane.Server {
+	h.t.Helper()
+	h.cloud.HoldNext[held.role] = cloudtest.StartServerCommand
+	require.ErrorIs(h.t, h.converge(), context.DeadlineExceeded, "the call whose start of %s outlived it", held.name)
+	return held.server(h)
+}
+
+func TestPlane_AServerOfTheBuildWhoseStartOutlivesItsCallIsReadStartingAndSentNoSecondStart(t *testing.T) {
+	for _, held := range heldStarts {
+		t.Run(held.name, func(t *testing.T) {
+			h := newHarness(t)
+			server := h.holdStart(held)
+
+			err := h.converge()
+
+			require.NoError(t, err, "a call while the start of %s runs", held.name)
+			assert.Equal(t, 1, h.sent(server.ID, cloudtest.StartServerCommand), "the starts sent at %s: %v", held.name, h.cloud.ActionsSent(server.ID))
+			assert.Contains(t, h.problems(), held.problem(server), "the problems while the start of %s runs", held.name)
+		})
+	}
+}
+
+func TestPlane_AServerOfTheBuildWhoseStartOutlivedItsCallBuildsOnOnceItFinishesAndIsStartedAgainOnlyOnceItFailed(t *testing.T) {
+	for _, held := range heldStarts {
+		for _, tc := range []struct {
+			outcome string
+			end     func(f *cloudtest.Fake, id int64)
+			starts  int
+		}{
+			{outcome: "finished", end: (*cloudtest.Fake).FinishAction, starts: 1},
+			{outcome: "failed", end: (*cloudtest.Fake).FailAction, starts: 2},
+		} {
+			t.Run(held.name+" whose start "+tc.outcome, func(t *testing.T) {
+				h := newHarness(t)
+				server := h.holdStart(held)
+				require.NoError(t, h.converge(), "a call while the start of %s runs", held.name)
+				tc.end(h.cloud, server.ID)
+
+				h.built()
+
+				assert.Equal(t, tc.starts, h.sent(server.ID, cloudtest.StartServerCommand), "the starts sent at %s once its start %s: %v",
+					held.name, tc.outcome, h.cloud.ActionsSent(server.ID))
+			})
+		}
+	}
+}
+
+func TestPlane_RefusesABuildWhoseServerStillStartsAtTheBuildersDeadlineAsAFailedBuildWithNoSecondStart(t *testing.T) {
+	for _, held := range heldStarts {
+		t.Run(held.name, func(t *testing.T) {
+			h := newHarness(t)
+			server := h.holdStart(held)
+			created := h.byRole(controlplane.RoleBuilder)[0].Created
+
+			err := h.settle(nil)
+
+			assert.Equal(t, "image-build-failed", refusalClass(t, err))
+			assert.ErrorContains(t, err, "Hetzner still runs its start_server action on it", "the refusal of a build whose start of %s never ended", held.name)
+			assert.Less(t, h.now.Sub(created), controlplane.BuildDeadline+5*time.Minute, "how long the plane waited on the start of %s", held.name)
+			assert.Empty(t, h.byRole(controlplane.RoleBuilder), "the builder past its deadline")
+			assert.Equal(t, 1, h.sent(server.ID, cloudtest.StartServerCommand), "the starts sent at %s: %v", held.name, h.cloud.ActionsSent(server.ID))
+		})
+	}
+}
+
+func TestPlane_AServerWhoseAttachOutlivesItsCallIsSentNoSecondAttach(t *testing.T) {
+	for _, r := range []controlplane.Role{controlplane.RoleGateway, controlplane.RoleBuilder, controlplane.RoleWorkerBuilder} {
+		t.Run(string(r), func(t *testing.T) {
+			h := newHarness(t)
+			h.cloud.HoldNext[r] = cloudtest.AttachToNetworkCommand
+			require.ErrorIs(t, h.converge(), context.DeadlineExceeded, "the call whose attach of the %s outlived it", r)
+			server := h.held(r)
+
+			err := h.converge()
+
+			require.NoError(t, err, "a call while the attach of the %s runs", r)
+			assert.Equal(t, 1, h.sent(server.ID, cloudtest.AttachToNetworkCommand), "the attaches sent at the %s: %v", r, h.cloud.ActionsSent(server.ID))
+			assert.Empty(t, h.cloud.Servers[server.ID].PrivateIPs, "the %s's addresses while its attach runs", r)
+		})
+	}
 }
 
 func TestPlane_RefusesTheBuildNamingTheGatewaysImageMirrorOnceTheGatewayPowersItselfOff(t *testing.T) {

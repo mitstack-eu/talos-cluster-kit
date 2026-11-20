@@ -760,7 +760,7 @@ func TestPlaneRead_KeepsEachPlaneApart(t *testing.T) {
 
 var planeReads = []string{
 	"ListServers", "AvailableServerTypes", "ServerStarted", "ListNetworks", "LastPowerAction", "ListFirewalls",
-	"ListLoadBalancers", "ListSnapshots", "ServerMetrics",
+	"ListLoadBalancers", "ListSnapshots", "ServerMetrics", "RunningAction",
 }
 
 func TestReadOncePerRequest_SortsEachAPIMethodIntoAReadOrAWrite(t *testing.T) {

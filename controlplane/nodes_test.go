@@ -288,6 +288,23 @@ func TestPlane_AConfirmedUpgradeReplacesTheNamedNodeFromTheKeptSnapshotOnceItsEt
 	assert.Len(t, h.eventsNaming("powered off node"), 1, "the events of a power-off: %v", h.events)
 }
 
+func TestPlane_ANodeWhosePowerOffOutlivesItsCallIsReadPoweringOffAndReplacedOnceItFinishes(t *testing.T) {
+	h, c := withCluster(t)
+	old := h.nodeIn("fsn1")
+	h.cloud.HoldNext[controlplane.RoleNode] = controlplane.StopServerCommand
+	require.ErrorIs(t, h.replace(c, nil, "fsn1"), context.DeadlineExceeded, "the call whose power-off of the node outlived it")
+
+	err := h.ensure()
+
+	require.NoError(t, err, "a call while the node's power-off runs")
+	assert.Equal(t, []string{controlplane.StopServerCommand}, h.cloud.ActionsSent(old.ID), "the actions sent at the node")
+	assert.Contains(t, h.problems(), "powering off, since Hetzner still runs its stop_server action on it", "the problems while the node's power-off runs")
+	h.cloud.FinishAction(old.ID)
+	require.NoError(t, h.replace(c, nil), "the replacement once the node's power-off finished")
+	assert.NotContains(t, h.cloud.Servers, old.ID, "the node whose power-off finished")
+	assert.NotEqual(t, old.ID, h.nodeIn("fsn1").ID, "the node in fsn1 after its replacement")
+}
+
 func TestPlane_RefusesANodeReplacementThroughTheRedundancyGuardNamingTheMemberThatDoesNotServe(t *testing.T) {
 	for _, tc := range []struct {
 		name string

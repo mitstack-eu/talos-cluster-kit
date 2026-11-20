@@ -62,6 +62,13 @@ type Fake struct {
 	SoldOutIn map[string][]string
 	// powerActions holds each server's power actions Hetzner finished, the newest last.
 	powerActions map[int64][]powerAction
+	// HoldNext, when set, keeps the next action of that command sent at a server of that role running past the caller's
+	// wait, as an action Hetzner takes longer over than a call's deadline, until FinishAction or FailAction ends it.
+	HoldNext map[controlplane.Role]string
+	// running holds the action Hetzner still runs on each server, which locks the server against another, and sent the
+	// command of every action each server was sent, the newest last.
+	running map[int64]heldAction
+	sent    map[int64][]string
 	// Metrics answers each server's metrics read; FailMetrics, when set, fails every read, and MetricsReads records each one.
 	Metrics      map[int64]controlplane.Metrics
 	FailMetrics  error
@@ -72,6 +79,19 @@ type powerAction struct {
 	command string
 	at      time.Time
 }
+
+// heldAction is an action still running, with the network and address an attach joins once it ends.
+type heldAction struct {
+	command   string
+	networkID int64
+	ip        string
+}
+
+// The commands Hetzner names the actions the fake runs by.
+const (
+	StartServerCommand     = "start_server"
+	AttachToNetworkCommand = "attach_to_network"
+)
 
 type MetricsRead struct {
 	ID         int64
@@ -86,6 +106,7 @@ func New(now func() time.Time) *Fake {
 		Snapshots: map[int64]*controlplane.Snapshot{}, started: map[int64]time.Time{}, imaging: map[int64]time.Time{},
 		FailCreate: map[controlplane.Role]error{}, FailLBStep: map[string]error{}, FailAttach: map[controlplane.Role]error{},
 		Metrics: map[int64]controlplane.Metrics{}, FailRoute: map[string]error{}, powerActions: map[int64][]powerAction{},
+		HoldNext: map[controlplane.Role]string{}, running: map[int64]heldAction{}, sent: map[int64][]string{},
 	}
 }
 
@@ -303,10 +324,75 @@ func (f *Fake) ServerStarted(_ context.Context, id int64) (bool, error) {
 	return ok, nil
 }
 
-// AttachServerToNetwork answers as Hetzner did live, refusing a server already on the network and an address held.
+// RunningAction names the command of the action Hetzner still runs on the server, empty when it runs none.
+func (f *Fake) RunningAction(_ context.Context, id int64) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.read("RunningAction")
+	return f.running[id].command, nil
+}
+
+// locked refuses an action at a server Hetzner still runs one on, as Hetzner answers, and counts no write.
+func (f *Fake) locked(doing string, id int64) error {
+	if _, ok := f.running[id]; !ok {
+		return nil
+	}
+	return fmt.Errorf("%s server %d: cannot perform operation because resource is locked (locked)", doing, id)
+}
+
+// send records an action sent at the server, and keeps it running past the caller's wait when HoldNext holds it,
+// answering as the adapter does once the caller's deadline passes.
+func (f *Fake) send(id int64, a heldAction) error {
+	f.write(true)
+	f.sent[id] = append(f.sent[id], a.command)
+	r := role(f.Servers[id].Labels)
+	if f.HoldNext[r] != a.command {
+		return nil
+	}
+	delete(f.HoldNext, r)
+	f.running[id] = a
+	return fmt.Errorf("waiting for the %s action on server %d: %w", a.command, id, context.DeadlineExceeded)
+}
+
+// ActionsSent names the command of every action the server was sent, the newest last; Hetzner refusing a locked
+// server records none.
+func (f *Fake) ActionsSent(id int64) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.sent[id])
+}
+
+// FinishAction ends the action the server still runs as Hetzner's success, which then takes its effect.
+func (f *Fake) FinishAction(id int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	a := f.running[id]
+	delete(f.running, id)
+	switch a.command {
+	case StartServerCommand:
+		f.start(id)
+	case controlplane.StopServerCommand:
+		f.stop(id)
+	case AttachToNetworkCommand:
+		f.Servers[id].PrivateIPs[a.networkID] = a.ip
+	}
+}
+
+// FailAction ends the action the server still runs as Hetzner's error, which leaves the server as it was.
+func (f *Fake) FailAction(id int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.running, id)
+}
+
+// AttachServerToNetwork answers as Hetzner did live, refusing a locked server, a server already on the network and an
+// address held.
 func (f *Fake) AttachServerToNetwork(_ context.Context, serverID, networkID int64, ip string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.locked("attaching", serverID); err != nil {
+		return err
+	}
 	s := f.Servers[serverID]
 	switch {
 	case s.PrivateIPs[networkID] != "":
@@ -316,7 +402,9 @@ func (f *Fake) AttachServerToNetwork(_ context.Context, serverID, networkID int6
 	case f.held(networkID, ip):
 		return fmt.Errorf("attaching server %d to network %d at %s: IP not available (ip_not_available)", serverID, networkID, ip)
 	}
-	f.write(true)
+	if err := f.send(serverID, heldAction{AttachToNetworkCommand, networkID, ip}); err != nil {
+		return err
+	}
 	s.PrivateIPs[networkID] = ip
 	if err := f.FailAttach[role(s.Labels)]; err != nil {
 		delete(f.FailAttach, role(s.Labels))
@@ -328,27 +416,46 @@ func (f *Fake) AttachServerToNetwork(_ context.Context, serverID, networkID int6
 func (f *Fake) PowerOnServer(_ context.Context, id int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.write(true)
+	if err := f.locked("powering on", id); err != nil {
+		return err
+	}
+	if err := f.send(id, heldAction{command: StartServerCommand}); err != nil {
+		return err
+	}
+	f.start(id)
+	return nil
+}
+
+// start is a finished start_server action's effect.
+func (f *Fake) start(id int64) {
 	s := f.Servers[id]
 	s.Status, f.started[id] = controlplane.ServerRunning, f.now()
-	f.powerActions[id] = append(f.powerActions[id], powerAction{"start_server", f.now()})
+	f.powerActions[id] = append(f.powerActions[id], powerAction{StartServerCommand, f.now()})
 	if f.InstantBuild && builds(s.Labels) {
 		s.Status = controlplane.ServerOff
 	}
-	return nil
 }
 
 func (f *Fake) PowerOffServer(_ context.Context, id int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	s, ok := f.Servers[id]
-	if !ok {
+	if _, ok := f.Servers[id]; !ok {
 		return fmt.Errorf("powering off server %d: server not found (not_found)", id)
 	}
-	f.write(true)
-	s.Status = controlplane.ServerOff
-	f.powerActions[id] = append(f.powerActions[id], powerAction{controlplane.StopServerCommand, f.now()})
+	if err := f.locked("powering off", id); err != nil {
+		return err
+	}
+	if err := f.send(id, heldAction{command: controlplane.StopServerCommand}); err != nil {
+		return err
+	}
+	f.stop(id)
 	return nil
+}
+
+// stop is a finished stop_server action's effect.
+func (f *Fake) stop(id int64) {
+	f.Servers[id].Status = controlplane.ServerOff
+	f.powerActions[id] = append(f.powerActions[id], powerAction{controlplane.StopServerCommand, f.now()})
 }
 
 func (f *Fake) SetServerLabels(_ context.Context, id int64, labels map[string]string) error {
@@ -379,8 +486,7 @@ func (f *Fake) LastPowerAction(_ context.Context, id int64) (string, time.Time, 
 func (f *Fake) StopServer(id int64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.Servers[id].Status = controlplane.ServerOff
-	f.powerActions[id] = append(f.powerActions[id], powerAction{controlplane.StopServerCommand, f.now()})
+	f.stop(id)
 }
 
 // AddRoute refuses a destination another route holds, and a gateway outside the network's range or at its first
@@ -446,6 +552,7 @@ func (f *Fake) DeleteServer(_ context.Context, id int64) error {
 	}
 	f.write(true)
 	delete(f.Servers, id)
+	delete(f.running, id)
 	return nil
 }
 
@@ -701,6 +808,9 @@ func (f *Fake) StartSnapshot(_ context.Context, serverID int64, spec controlplan
 	defer f.mu.Unlock()
 	if f.Servers[serverID] == nil || f.Servers[serverID].Status != controlplane.ServerOff {
 		return controlplane.Snapshot{}, fmt.Errorf("server %d is not powered off", serverID)
+	}
+	if err := f.locked("imaging", serverID); err != nil {
+		return controlplane.Snapshot{}, err
 	}
 	// A snapshot's disk is the disk of the server it images, which Hetzner reads back as the image's disk size.
 	disk, ok := diskOf(f.Servers[serverID].ServerType)

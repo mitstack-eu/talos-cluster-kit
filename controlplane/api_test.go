@@ -206,6 +206,40 @@ func TestHetznerAdapter_AServerHasStartedOnceItsStartActionSucceeded(t *testing.
 	}
 }
 
+func TestHetznerAdapter_NamesTheActionHetznerStillRunsOnAServerByItsRunningActionsAlone(t *testing.T) {
+	finished := `{"id": 3, "command": "stop_server", "status": "success", "progress": 100, "resources": []}`
+	for _, tc := range []struct {
+		name, running, want string
+	}{
+		{name: "a server Hetzner still starts", running: `{"id": 4, "command": "start_server", "status": "running", "progress": 40, "resources": []}`, want: "start_server"},
+		{name: "a server whose actions all finished", want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var path string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				path = r.URL.Path
+				actions := finished
+				if r.URL.Query().Get("status") == "running" {
+					actions = tc.running
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"actions": [` + actions + `], "meta": {"pagination": {"page": 1, "per_page": 50, "total_entries": 1}}}`))
+			}))
+			t.Cleanup(srv.Close)
+			api, ok := controlplane.NewAPIAt(srv.URL, "token", "mitstack-test", callsTo(srv)).(interface {
+				RunningAction(ctx context.Context, id int64) (string, error)
+			})
+			require.True(t, ok, "the Hetzner adapter reads no running action")
+
+			command, err := api.RunningAction(context.Background(), 7)
+
+			require.NoError(t, err)
+			assert.Equal(t, "/servers/7/actions", path, "the path read for %s", tc.name)
+			assert.Equal(t, tc.want, command, "the running action of %s", tc.name)
+		})
+	}
+}
+
 func TestHetznerAdapter_ReadsTheServersCPUAndDiskMetricsAMinuteAPoint(t *testing.T) {
 	var path string
 	var query url.Values

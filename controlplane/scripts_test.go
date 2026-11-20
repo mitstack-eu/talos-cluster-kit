@@ -717,6 +717,17 @@ func TestClusterTokens_EnrolSpendsTheEnrolmentTokenAndWritesEachSecret(t *testin
 		createdSecrets(t, run))
 }
 
+func TestClusterTokens_EnrolStoresTheRepositoryTokenForTheAddressItIsGiven(t *testing.T) {
+	srv, _ := platform(t, http.StatusOK)
+
+	run := runClusterTokens(t, srv, "enrol", "enrolment-token")
+
+	require.NoError(t, run.err, run.out)
+	keys := secretKeys(t, run)
+	assert.Contains(t, keys, "cluster-repository in argocd: url="+testRepoURL, "the address Argo CD opens the cluster repository at with the token")
+	assert.Contains(t, keys, "cluster-repository in argocd: password=repository-token", "the token the platform issued for the repository")
+}
+
 func TestClusterTokens_EnrolGivesArgoCDsWebhookThePlatformAndTheNotificationToken(t *testing.T) {
 	for _, credential := range []string{"platform-token", "deploy-key"} {
 		t.Run(credential, func(t *testing.T) {

@@ -13,6 +13,7 @@ import (
 	"github.com/mitstack-eu/block-kit/contract"
 	"github.com/mitstack-eu/block-kit/helpers/reqcache"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
+	"github.com/mitstack-eu/talos-cluster-kit/controlplane/cloudtest"
 	"github.com/mitstack-eu/talos-cluster-kit/operator/robotcluster"
 	"github.com/mitstack-eu/talos-cluster-kit/operator/robotcluster/robotclustertest"
 	"github.com/stretchr/testify/assert"
@@ -37,21 +38,47 @@ func TestValidate_ReadsEachCloudKindOnce(t *testing.T) {
 	e := onDedicatedServer(t)
 	obs, err := e.Settle()
 	require.NoError(t, err, "the subscribe: %s", obs.StatusDetail)
-	ctx := reqcache.With(context.Background())
-	before := e.Cloud.Reads()
 
+	t.Run("a validate", func(t *testing.T) {
+		made := listsOfOneRequest(e, func(ctx context.Context) { observeEach(t, ctx, e) })
+		assertEachKindListedOnce(t, "one validate", made)
+	})
+	t.Run("a subscribe that changes nothing", func(t *testing.T) {
+		writes := e.Cloud.Writes()
+		made := listsOfOneRequest(e, func(ctx context.Context) {
+			_, _, err := e.Cluster.EnsureResourcesOwning(ctx, e.Desired())
+			assert.NoError(t, err, "the subscribe of a cluster that is already present")
+			observeEach(t, ctx, e)
+		})
+		assert.Equal(t, writes, e.Cloud.Writes(), "the Cloud writes of a subscribe that changes nothing")
+		assertEachKindListedOnce(t, "one subscribe that changes nothing", made)
+	})
+}
+
+// listsOfOneRequest is the Cloud reads call makes within one request's reqcache scope, as the handler opens for each call.
+func listsOfOneRequest(e *robotclustertest.Env, call func(ctx context.Context)) cloudtest.Reads {
+	before := e.Cloud.Reads()
+	call(reqcache.With(context.Background()))
+	return e.Cloud.Reads().Since(before)
+}
+
+// observeEach reads every resource through its observer, as the handler does after a subscribe's ensure and in a validate.
+func observeEach(t *testing.T, ctx context.Context, e *robotclustertest.Env) {
+	t.Helper()
 	for name, o := range e.Cluster.Observers() {
 		_, err := o.ObserveResource(ctx, contract.ResourceRef{Name: name, Type: name, Desired: e.Desired()})
 		require.NoError(t, err, "the observe of %s", name)
 	}
+}
 
-	made := e.Cloud.Reads().Since(before)
+func assertEachKindListedOnce(t *testing.T, call string, made cloudtest.Reads) {
+	t.Helper()
 	for _, list := range []string{"ListServers", "ListLoadBalancers", "ListNetworks", "ListFirewalls", "ListSnapshots"} {
-		assert.Equal(t, 1, made[list], "the %s calls of one validate, among its reads %v", list, made)
+		assert.Equal(t, 1, made[list], "the %s calls of %s, among its reads %v", list, call, made)
 	}
 }
 
-func TestWorkerInstall_ReadsTheCloudAfreshThoughItsRequestKeptAList(t *testing.T) {
+func TestStartWorkerInstall_ReadsThePlaneAfterItsRequestEnded(t *testing.T) {
 	var probed, afresh bool
 	var probeErr error
 	e := onDedicatedServer(t, func(env *robotclustertest.Env) {

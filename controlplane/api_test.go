@@ -41,6 +41,7 @@ func recordHetzner(t *testing.T, answers map[string]string) (controlplane.API, m
 		bodies[r.Method+" "+r.URL.Path] = body
 		answer, ok := answers[r.Method+" "+r.URL.Path]
 		if !ok {
+			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"error": {"code": "not_found", "message": "not found"}}`))
 			return

@@ -4732,6 +4732,17 @@ client the cluster calls, such as the clock or the Hetzner Cloud API. A field
 left empty is the client a released operator uses, and a test fills it with a
 fake.
 
+`Config.CloudAPI` left empty is `CloudAPIAt` at `controlplane.Endpoint`,
+Hetzner's Cloud API. It hands the control plane block-kit's HTTP client and
+poll schedule, as
+[How a block drives the Cloud control plane](#how-a-block-drives-the-cloud-control-plane)
+asks of a block. Once Hetzner refuses a call for its rate limit, that client
+sends no other call with the same token until the reset Hetzner names. Each
+call it holds back returns block-kit's `handler.Waiting`, which names that
+time in UTC. So a validate reads each resource as unknown and a subscribe
+waits, and neither fails. A test that needs the hold passes `CloudAPIAt` the
+address that `cloudtest.Fake.Serve` returns.
+
 `Config.DeclaredSize` is the one control-plane size the block's manifest lists
 servers for. The platform keeps a subscribe pending until every server the
 manifest lists reads present, so the module refuses any other size before it
@@ -4781,7 +4792,7 @@ nor the wait answers from what the subscribe that started the install kept.
 | Part | What it does | Main entry points |
 |---|---|---|
 | Lifecycle | Answers each call mitstack makes to the operator. `Ensure` builds or upgrades the cluster one step per call. `EnsureOwning` does the same and also returns the block's own secrets the call minted, the values mitstack keeps for the block such as the gateway CA's key. `EnsureResourcesOwning` also lists the resources the call created. `Observe` reads the whole cluster, `Observers` and `TypeObservers` read one resource by its name or by its type, and `Delete` tears the cluster down | `New`, `Config`, `Cluster.Ensure`, `Cluster.EnsureOwning`, `Cluster.EnsureResourcesOwning`, `Cluster.Observe`, `Cluster.Observers`, `Cluster.TypeObservers`, `Cluster.Delete` |
-| Control plane and gateways | Builds the one or three Cloud nodes the request's size names and the gateways in front of them through the kit's `controlplane` package, and reads each gateway's newest report. A gateway is the Cloud server in each node's location that the nodes route out through and pull their images from | `Cluster.NewPlane`, `Cluster.PlaneFor`, `Cluster.WithGateways`, `GatewayReports`, `NewGatewayReports`, `GuardRemoval` |
+| Control plane and gateways | Builds the one or three Cloud nodes the request's size names and the gateways in front of them through the kit's `controlplane` package, on block-kit's Cloud client and poll schedule, and reads each gateway's newest report. A gateway is the Cloud server in each node's location that the nodes route out through and pull their images from | `CloudAPIAt`, `Cluster.NewPlane`, `Cluster.PlaneFor`, `Cluster.WithGateways`, `GatewayReports`, `NewGatewayReports`, `GuardRemoval` |
 | Robot worker | Refuses a Robot server that is missing, cancelled, outside the cluster's locations or named for another subscription, before anything is written. It then joins the server to the cluster's network over a vSwitch, Hetzner's private link between Robot and Cloud servers, sets its firewall, and runs the install `Config` names in the background | `RobotName`, `Worker`, `WorkerInstall`, `WorkerFirewall`, `WorkerFirewallFor`, `HoldsWorkerRules`, `WaitOutRobotLimit`, `Cluster.JobRunning`, `Cluster.StopJob` |
 | Cloud pool and node replace | Scales the pool of Cloud workers through the kit's `pools` package, and names the control-plane nodes and Cloud workers an upgrade's request asks to replace that the cluster runs. That dry run also refuses a control-plane size other than the one the running cluster was subscribed with, as the upgrade itself would. Before it scales, it relabels each member `pools.Reclassify` names, so the pool again holds its minimum of steady members, and the labeller carries the change to the nodes at the next release. It names in the cluster's health a hold for pods only a steady member takes, and a failed labeller run | `MemberName`, `Located`, `Cluster.PlanReplacements`, `CauseHeldForSteady`, `CauseLabellerFailed` |
 | Rollout | Writes a release's components to the cluster repository and reads them back from the cluster's node report. It then gives each node the release's machine configuration, as [How an Update reaches each node's configuration](#how-an-update-reaches-each-nodes-configuration) explains. It keeps the blob SHA of each file a release renders, the hash Git names a file's content by, so each release is rendered once. `Rendering.Blobs` gives those hashes | `ReleaseFor`, `Cluster.RenderingOf`, `Rendering.Blobs` |

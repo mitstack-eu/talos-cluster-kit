@@ -27,7 +27,7 @@ func TestCluster_HoldsCloudCallsAfterARateLimitRefusal(t *testing.T) {
 	cfg.CloudAPI = robotcluster.CloudAPIAt(e.Cloud.Serve(t), cfg.Block)
 	k := robotcluster.New(cfg)
 	d := e.Desired()
-	// block-kit holds a refused token for the rest of the process, so each run refuses a token of its own.
+	// block-kit keeps a refused token's hold for the whole process until the reset, so each run refuses a token of its own.
 	d.Secrets["hetzner"]["api_token"] = fmt.Sprintf("hetzner-token-refused-at-%d", time.Now().UnixNano())
 	before := e.Cloud.Reads()
 

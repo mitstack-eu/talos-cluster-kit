@@ -4679,8 +4679,8 @@ describes. The module keeps the call's `RequestReads` in block-kit's `reqcache`
 package, the store the block's handler opens for each call it serves, and a
 context without that store lists on every read. The worker install's job reads
 with `controlplane.WithoutRequestReads`. The image server's wait for the
-gateway lists the gateways and firewalls on each check. Neither answers from a
-list the call made earlier.
+gateway lists the firewalls until it finds the subscription's, then lists only
+the gateways on each check. Neither answers from a list the call made earlier.
 
 | Part | What it does | Main entry points |
 |---|---|---|

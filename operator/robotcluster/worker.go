@@ -418,25 +418,34 @@ func (c imageCloud) coupleSubnet(ctx context.Context) error {
 	return c.plane.API.AddVSwitchSubnet(ctx, c.network, all[i].ID, workerSubnet)
 }
 
-// awaitGateway lists the gateways and firewalls on each check, since a plane read could answer from its request's first read.
+// awaitGateway lists the firewalls until it finds the subscription's, then only the gateways on each check, since a plane
+// read could answer from its request's first read.
 func (c imageCloud) awaitGateway(ctx context.Context) (int64, error) {
+	var fw controlplane.Firewall
+	found := false
 	for {
-		gateways, err := c.plane.API.ListServers(ctx, c.plane.RoleSelector(controlplane.RoleGateway))
-		if err != nil {
-			return 0, fmt.Errorf("listing the subscription's gateways: %w", err)
+		if !found {
+			firewalls, err := c.plane.API.ListFirewalls(ctx, c.plane.Selector())
+			if err != nil {
+				return 0, fmt.Errorf("listing the subscription's firewalls: %w", err)
+			}
+			fw, found = controlplane.State{Firewalls: firewalls}.Firewall()
 		}
-		firewalls, err := c.plane.API.ListFirewalls(ctx, c.plane.Selector())
-		if err != nil {
-			return 0, fmt.Errorf("listing the subscription's firewalls: %w", err)
-		}
-		st := controlplane.State{Servers: map[controlplane.Role][]controlplane.Server{controlplane.RoleGateway: gateways}, Firewalls: firewalls}
-		gw, gwOK := st.GatewayIn(controlplane.GatewayLocation)
-		fw, fwOK := st.Firewall()
-		if gwOK && fwOK && gw.PrivateIPs[c.network] == controlplane.GatewayAddress {
-			return fw.ID, nil
+		if found {
+			gateways, err := c.plane.API.ListServers(ctx, c.plane.RoleSelector(controlplane.RoleGateway))
+			if err != nil {
+				return 0, fmt.Errorf("listing the subscription's gateways: %w", err)
+			}
+			gw, ok := controlplane.State{Servers: map[controlplane.Role][]controlplane.Server{controlplane.RoleGateway: gateways}}.GatewayIn(controlplane.GatewayLocation)
+			if ok && gw.PrivateIPs[c.network] == controlplane.GatewayAddress {
+				return fw.ID, nil
+			}
 		}
 		select {
 		case <-ctx.Done():
+			if !found {
+				return 0, fmt.Errorf("the subscription's firewall never appeared, so the image server was not created: %w", ctx.Err())
+			}
 			return 0, fmt.Errorf("the gateway never took %s on network %d, so the image server was not created: %w", controlplane.GatewayAddress, c.network, ctx.Err())
 		case <-time.After(c.poll):
 		}

@@ -402,9 +402,12 @@ ctx = context.WithValue(ctx, requestReadsKey{}, controlplane.NewRequestReads())
 
 From then on, the plane reads in three steps.
 
-1. The first `Plane.Read` in the request lists all five kinds. It keeps the
-   five lists only when every one answered, so a failed `Plane.Read` keeps
-   nothing.
+1. The first `Plane.Read` in a request lists the servers, load balancers,
+   networks, firewalls and snapshots. A request is one call from mitstack to
+   the block, such as a validate, which asks what the block would do before it
+   writes anything, or a subscribe, which builds or changes a cluster. That
+   first `Plane.Read` keeps the five lists only when every one answered, so a
+   failed `Plane.Read` keeps nothing.
 2. A later `Plane.Read` in the same request answers from what was kept. Each
    caller gets its own copy, so a caller that changes its copy changes no
    other caller's.
@@ -422,24 +425,31 @@ From then on, the plane reads in three steps.
 Two `Plane.Read` calls that run at the same time in one request may each list,
 because neither waits on the other's calls to Hetzner.
 
-A context without a `RequestReads`, or a plane whose API is not wrapped, lists
-all five kinds on every `Plane.Read`. `ReadOncePerRequest` must be the
-outermost wrapper around the plane's API. `Plane.Read` finds it by checking
-whether `Plane.API` is that wrapper itself, so a plane whose API is some other
+A context without a `RequestReads`, or a plane whose API is not wrapped, makes
+all five lists on every `Plane.Read`. `ReadOncePerRequest` must be the
+outermost wrapper around the plane's API, because the function that finds the
+request's `RequestReads` lives in that wrapper, and `Plane.Read` can reach the
+wrapper only through `Plane.API`. The `API` interface has no method that
+returns the API a wrapper holds, so `Plane.Read` finds the read-once wrapper
+only when `Plane.API` is that wrapper itself. A plane whose API is another
 wrapper around it lists on every `Plane.Read`.
 
-A subscribe, the call from mitstack that builds or changes a cluster, can start
-a background job and leave it running after it answers. Such work outlives its
-request, so it runs under `controlplane.WithoutRequestReads(ctx)`. That
-context hides the request's `RequestReads` from the job's `Plane.Read` calls
-only, so each of them lists afresh. A write in the job still finds the
-`RequestReads` and drops what the request kept, so the request's next
-`Plane.Read` lists afresh too. A block's loop that waits for the Cloud to
-change, such as a wait for a server to take its address, calls an API list
-method on each check, such as `ListServers`. The wrapper keeps nothing such a
-call returns, so each check sees the Cloud as it stands then. A `Plane.Read`
-in the loop could answer every check from the request's first list, so the
-loop would never see the change.
+A subscribe can start a background job and leave it running after the block
+has answered the request. Such work outlives its request, so it runs under
+`controlplane.WithoutRequestReads(ctx)`. That function adds a flag to the
+context and keeps everything else the context carries, the request's
+`RequestReads` included. When the wrapper serves a `Plane.Read`, it checks the
+flag first, and when the flag is set it lists afresh and keeps nothing. When
+the wrapper serves a write, it never checks the flag. It finds the
+`RequestReads` through the block's function, as it would in the request, and
+drops what the request kept, so the request's next `Plane.Read` lists afresh
+too.
+
+A block's loop that waits for the Cloud to change, such as a wait for a server
+to take its address, calls an API list method on each check, such as
+`ListServers`. The wrapper keeps nothing such a call returns, so each check
+sees the Cloud as it stands then. A `Plane.Read` in the loop could answer every
+check from the request's first list, so the loop would never see the change.
 
 ### How many control-plane nodes a plane runs
 
@@ -4685,20 +4695,26 @@ describes. The module keeps the call's `RequestReads` in block-kit's `reqcache`
 package, the store the block's handler opens for each call it serves, and a
 context without that store lists on every `Plane.Read`.
 
-A validate first runs `Cluster.PlanReplacements`, which names the nodes and
-Cloud workers an upgrade would replace, and then reads each resource. The plan
-takes the network it judges the control-plane size by, and the nodes and Cloud
-workers it names, from `Plane.Read`. So the plan shares the validate's one
-list.
+A validate is the request in which mitstack asks the block what it would do,
+and what stops it, before anything is written. It first runs
+`Cluster.PlanReplacements`, which names the nodes and Cloud workers an upgrade
+would replace, and then reads each resource. The plan reads the cluster's
+network because the network's `mitstack.dev/control-plane-size` label records
+the control-plane size the cluster was subscribed with, and the plan refuses
+any other size, as the upgrade itself would. It takes that network, and the
+nodes and Cloud workers it names, from `Plane.Read`, so the plan shares the
+five lists the validate makes.
 
 The worker install, the background job that writes the worker's disk image
 onto the Robot server, runs under `controlplane.WithoutRequestReads`. Before
 the install creates its image server, the short-lived Cloud server that builds
-and serves the worker's image, it waits for the gateway to take its address on
-the cluster's network. The image server is created behind the subscription's
-firewall, so the wait lists the firewalls until it finds that firewall. It
-then lists only the gateways on each check. Neither the install nor the wait
-answers from a list the call made earlier.
+and serves the worker's image, it waits for the gateway in `fsn1` to take its
+address on the cluster's network. The image server is created behind the
+subscription's firewall, and the create names that firewall by its ID, which
+the wait hands back. So each check of the wait lists the subscription's
+firewalls until it finds that firewall. From then on, each check lists only
+the gateways, until the one in `fsn1` holds its address. Neither the install
+nor the wait answers from what the subscribe that started the install kept.
 
 | Part | What it does | Main entry points |
 |---|---|---|

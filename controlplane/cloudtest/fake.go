@@ -374,8 +374,7 @@ func (f *Fake) send(id int64, a heldAction) error {
 	return fmt.Errorf("waiting for the %s action on server %d: %w", a.command, id, context.DeadlineExceeded)
 }
 
-// ActionsSent names the command of every action the server was sent, the newest last; Hetzner refusing a locked
-// server records none.
+// ActionsSent names the command of every action the server was sent and not refused as locked, the newest last.
 func (f *Fake) ActionsSent(id int64) []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()

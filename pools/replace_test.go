@@ -739,6 +739,21 @@ func TestReplaceStep_NamesADrainJobArgoCDHasNotAppliedYet(t *testing.T) {
 	assert.NotContains(t, w.problems(), "has not finished", "where the replacement stands")
 }
 
+func TestReplaceStep_ACallThatOnlyWaitsOnTheDrainReadsNoActionOfTheWorker(t *testing.T) {
+	s, w := withWorkers(t)
+	w.paused = true
+	require.NoError(t, w.upgrade(pool2, "fsn1-1"))
+	require.NoError(t, w.replace(pool2, func() bool { return len(w.commits) == 1 }))
+	before := s.cloud.Reads()
+
+	step, ok, err := pools.ReplaceStep(context.Background(), s.plane, pool2)
+
+	require.NoError(t, err, "a call while the drain Job is not applied")
+	require.False(t, ok, "a call while the drain Job is not applied took the step to %s", step.What)
+	reads := s.cloud.Reads().Since(before)
+	assert.Zero(t, reads["RunningAction"]+reads["GetServer"], "the reads of the worker by a call that sends it nothing: %v", reads)
+}
+
 func TestReplaceStep_AnIdleWorkersRemovalDrainsItRemovesItsNodeObjectAndDeletesItsServerWithNoSuccessor(t *testing.T) {
 	s, w := idleWorkers(t)
 	old, other := w.worker("fsn1-1"), w.worker("nbg1-1")

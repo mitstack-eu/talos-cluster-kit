@@ -342,6 +342,20 @@ func TestPlane_ANodeWhosePowerBackOnOutlivesItsCallIsReadStartingAndItsReplaceme
 	assert.False(t, h.replacing(), "the network still carries the refused replacement's mark: %v", h.network().Labels)
 }
 
+func TestPlane_ACallThatOnlyWaitsOnANodeReportReadsNoActionOfTheNode(t *testing.T) {
+	h, c := withCluster(t)
+	require.NoError(t, h.replace(c, func() bool { return len(h.eventsNaming("began replacing")) == 1 }, "fsn1"))
+	h.plane.ReadReport = func(context.Context, time.Time) (*report.Read, error) { return nil, nil }
+	before := h.cloud.Reads()
+
+	err := h.ensure()
+
+	require.NoError(t, err, "a call while no node report was received since the replacement began")
+	reads := h.cloud.Reads().Since(before)
+	assert.Zero(t, reads["RunningAction"]+reads["GetServer"], "the reads of the node by a call that sends it nothing: %v", reads)
+	assert.Contains(t, h.problems(), "no node report was received since its replacement began", "where the replacement stands")
+}
+
 func TestPlane_RefusesANodeReplacementThroughTheRedundancyGuardNamingTheMemberThatDoesNotServe(t *testing.T) {
 	for _, tc := range []struct {
 		name string

@@ -112,7 +112,8 @@ func New(now func() time.Time) *Fake {
 		Snapshots: map[int64]*controlplane.Snapshot{}, started: map[int64]time.Time{}, imaging: map[int64]time.Time{},
 		FailCreate: map[controlplane.Role]error{}, FailLBStep: map[string]error{}, FailAttach: map[controlplane.Role]error{},
 		Metrics: map[int64]controlplane.Metrics{}, FailRoute: map[string]error{}, powerActions: map[int64][]powerAction{},
-		HoldNext: map[controlplane.Role]string{}, running: map[int64]heldAction{}, sent: map[int64][]string{}, EndAfterList: map[int64]bool{},
+		HoldNext: map[controlplane.Role]string{}, running: map[int64]heldAction{}, sent: map[int64][]string{},
+		EndAfterList: map[int64]bool{},
 	}
 }
 

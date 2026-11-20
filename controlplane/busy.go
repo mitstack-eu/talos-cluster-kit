@@ -19,6 +19,7 @@ func (p Plane) Busy(ctx context.Context, server Server) (string, error) {
 	return fmt.Sprintf("%s, since Hetzner still runs its %s action on it", doing(command), command), nil
 }
 
+// doing names what a server does while Hetzner runs the action of command on it.
 func doing(command string) string {
 	switch command {
 	case startServerCommand:
@@ -31,8 +32,8 @@ func doing(command string) string {
 	return "busy"
 }
 
-// Changed says how the server Hetzner holds now differs from its listed copy, as "running, though it was listed off",
-// since an action that ends after the list changes the server the plane chose its step by; it is empty while the two agree.
+// Changed says how the server Hetzner holds now differs from its listed copy, as "running, though it was listed off", since
+// an action that ends after the list changes the server the plane chose its step by.
 func (p Plane) Changed(ctx context.Context, listed Server) (string, error) {
 	now, found, err := p.API.GetServer(ctx, listed.ID)
 	switch {
@@ -48,8 +49,7 @@ func (p Plane) Changed(ctx context.Context, listed Server) (string, error) {
 	return "", nil
 }
 
-// waitOn names why the plane does not act on the listed server this call: what Hetzner still runs on it, or how it
-// changed since the list. It reads the server again only once Hetzner runs nothing on it.
+// waitOn names what Hetzner still runs on the listed server or, once it runs nothing, how the server changed since the list.
 func (p Plane) waitOn(ctx context.Context, listed Server) (busy, changed string, err error) {
 	if busy, err = p.Busy(ctx, listed); err != nil || busy != "" {
 		return busy, "", err

@@ -60,7 +60,7 @@ the order a block uses them.
 | `topology` | Renders the topology labeller, a CronJob that labels each Cloud node with its zone and region, labels each burst member of a Cloud pool, a member above the pool's minimum, `mitstack.dev/burst=true`, and holds the zone and region label names | `Manifests`, `Labels`, `ZoneLabel`, `RegionLabel`, `FieldManager` |
 | `openbaoinit` | Renders OpenBao's init Job, which the hosting set carries. On a hosting cluster, a cluster that runs mitstack's own control plane, it initialises OpenBao once, commits the root token and recovery key to the cluster repository as PGP messages, then writes the policy that External Secrets reads with in each slice, the namespace a block gives one app | `Manifests`, `Inputs`, `InitFile` |
 | `rollout` | Gives a running cluster a release's component set, the manifests one kit release carries; [How a running cluster takes a release's components](#how-a-running-cluster-takes-a-releases-components) defines each term. A block commits the set's files to the cluster repository, where Argo CD applies each component through an Application of its own, which is Argo CD's record of one repository directory it keeps applied to the cluster. Files that an earlier release committed and this release no longer states are retired, which means deleted. Each component's sync runs a handover Job, which has Talos give up the fields it set when it created the component's objects, so they hold only what the release states. After OpenBao's sync, OpenBao's rollout Job moves each member onto the StatefulSet's new revision, as [How OpenBao's members take a new revision](#how-openbaos-members-take-a-new-revision) explains, which also says what a member, a StatefulSet and a revision are. Every Application reads the cluster repository at `Release.RepoURL`, the one address the cluster holds a credential for. The read-back then checks from the node report that the cluster runs each component as the release states it | `Release.Files`, `Release.Retired`, `Release.ReadBack`, `Release.ToolsImage`, `Release.RepoURL`, `LegacyFiles` |
-| `controlplane` | Builds and deletes a Talos control plane on Hetzner Cloud: a network, a firewall, a builder that makes the cluster's own snapshot, one or three nodes with a gateway beside each, and an API and an ingress load balancer. Three nodes run in `fsn1`, `nbg1` and `hel1`, and one node runs in `fsn1`. Each call reads the resources by their labels and takes the one change still missing, and [How a request reads the Cloud once](#how-a-request-reads-the-cloud-once) says how one request lists each kind once. A refusal is a `*Refusal` with a `Class` and a `Message`, which the block answers as its own framework's refusal | `Plane`, `Plane.NodeLocations`, `DefaultSize`, `KeySize`, `Plane.Read`, `ReadOncePerRequest`, `RequestReads`, `NewRequestReads`, `WithoutRequestReads`, `Plane.EnsureNetwork`, `Plane.SizeRefusal`, `Plane.NextStep`, `Plane.Problems`, `Plane.Unhealthy`, `Plane.Outputs`, `State.IngressAddresses`, `Plane.Release`, `ErrNoIngressAddress`, `Plane.GatewaysAwaitRelease`, `Plane.GatewaysServeRelease`, `Plane.Delete`, `NewAPI`, `Calls`, `Refusal`, `TopologyLabels`, `GatewayUpgradeBound`, `GatewayCertRenewBefore`, `KeyGatewayCertExpires` |
+| `controlplane` | Builds and deletes a Talos control plane on Hetzner Cloud: a network, a firewall, a builder that makes the cluster's own snapshot, one or three nodes with a gateway beside each, and an API and an ingress load balancer. Three nodes run in `fsn1`, `nbg1` and `hel1`, and one node runs in `fsn1`. Each call reads the resources by their labels and takes the one change still missing, and [How a request reads the Cloud once](#how-a-request-reads-the-cloud-once) says how one request lists each kind once. A refusal is a `*Refusal` with a `Class` and a `Message`, which the block answers as its own framework's refusal | `Plane`, `Plane.NodeLocations`, `DefaultSize`, `KeySize`, `Plane.Read`, `ReadOncePerRequest`, `RequestReads`, `NewRequestReads`, `WithoutRequestReads`, `Plane.EnsureNetwork`, `Plane.SizeRefusal`, `Plane.NextStep`, `Plane.Problems`, `Plane.Unhealthy`, `Plane.Outputs`, `State.IngressAddresses`, `Plane.Release`, `ErrNoIngressAddress`, `Plane.GatewaysAwaitRelease`, `Plane.GatewaysServeRelease`, `Plane.Delete`, `Plane.Busy`, `Plane.Changed`, `NewAPI`, `Calls`, `Refusal`, `TopologyLabels`, `GatewayUpgradeBound`, `GatewayCertRenewBefore`, `KeyGatewayCertExpires` |
 | `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image carries and the gateway copies out of it, `tools/jq.env`, which pins the tools image's jq, and `tools/kube-bench-talos.yaml`, the settings kube-bench reads over its own on Talos. Its Dockerfile builds `cmd/machine-config` into the tools image. It names the tools image a release published and the directory in that image that holds the node report's, its outside probe's, the labeller's, the cluster tokens', the handover's and OpenBao's rollout's scripts, and where in that image each served manifest sits | `Env`, `Pin`, `Image`, `ScriptDir`, `ManifestPath` |
 | `redundant` | Carries a removal's redundant set, each member with its reading, to the guard the block passes, block-kit's `redundancy.Set.AllowRemoval`, which this module does not import | `Set`, `Guard`, `Held` |
 | `scaling` | Decides from the node reports alone how a Cloud pool whose minimum is below its maximum follows its cluster's load, so only the block's operator, which holds the Hetzner token, changes the pool. [How a Cloud pool scales with the load](#how-a-cloud-pool-scales-with-the-load) gives the rules | `Decide`, `Decision`, `CauseAtMaximum` |
@@ -387,6 +387,38 @@ so a block that adds workers renders them there with
 `nodeconfig.RenderWorker`. When `Installed` returns an error, the plane
 deletes the gateways and builders it just created, and a later call starts the
 install again.
+
+### How the plane waits on a server Hetzner is still changing
+
+Hetzner changes a server through an action, such as `start_server` when it
+powers the server on. While an action runs, Hetzner locks the server and
+refuses any other action on it. The plane waits on an action only until its
+call's two-minute deadline, so an action can still run when the next call
+reads the plane.
+
+A server with a running Hetzner action therefore reads as busy, and the plane
+sends it no new action. Before the plane powers a server on or off, or
+attaches it to a network, it asks Hetzner through `API.RunningAction` which
+action still runs on that server. While one runs, `Problems` names the server
+and what it is doing, as in this line:
+
+```text
+builder 1008, created at 2026-10-21T12:00:00Z, is starting, since Hetzner still runs its start_server action on it
+```
+
+An action can also end after the call lists the servers and before it takes
+its step. So once Hetzner runs nothing on the server, `Plane.Changed` reads
+that one server again through `API.GetServer`. When its status or its
+networks differ from the list, the plane takes no step in this call, and the
+next call lists the server as it now stands.
+
+A build waits on a busy server only until the builder's deadline,
+`BuildDeadline` after the builder was created. Past it, the plane deletes the
+builder and refuses the build with the class `image-build-failed`, or
+`worker-image-build-failed` for the worker image, naming the server and the
+action Hetzner still runs. An action that finishes lets the build carry on. An
+action that fails leaves the server as it was, and a later call sends it once
+more.
 
 ### How a request reads the Cloud once
 

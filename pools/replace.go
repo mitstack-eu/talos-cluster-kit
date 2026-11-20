@@ -346,6 +346,8 @@ func waitsOn(format string, args ...any) (progress, error) {
 	return progress{waits: fmt.Sprintf(format, args...)}, nil
 }
 
+// next carries the worker's replacement on, and waits while Hetzner runs an action on the worker or holds it otherwise
+// than listed.
 func (x replacer) next(ctx context.Context) (progress, error) {
 	all, err := x.plane.Removals.Held(ctx)
 	if err != nil {
@@ -381,7 +383,7 @@ func (x replacer) next(ctx context.Context) (progress, error) {
 	return waitsOn("Cloud worker %d is %s", worker.ID, changed)
 }
 
-// byStatus is the replacement's next step or wait by the worker's listed status.
+// byStatus is the replacement's next step or wait, judged by the worker's listed status.
 func (x replacer) byStatus(ctx context.Context, worker controlplane.Server, held []string) (progress, error) {
 	switch {
 	case worker.Status == controlplane.ServerRunning && slices.Contains(held, jobPath(drainStep, x.r.key)):

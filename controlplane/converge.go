@@ -369,9 +369,9 @@ func (p Plane) waitStep(b build, server Server, busy string) (Step, bool, error)
 	}}, true, nil
 }
 
-// builderStep powers on a builder that has never run, snapshots one that ran and powered itself off, and deletes one
-// still running past BuildDeadline, since its script leaves a failed build running and only the deadline tells. It
-// waits on a builder Hetzner still runs an action on, until the same deadline.
+// builderStep powers on a builder that has never run, snapshots one that ran and powered itself off, waits on one Hetzner
+// still runs an action on, and deletes one still running past BuildDeadline, since its script leaves a failed build
+// running and only the deadline tells.
 func (p Plane) builderStep(ctx context.Context, builder Server, img imageBuild) (Step, bool, error) {
 	switch builder.Status {
 	case ServerRunning:

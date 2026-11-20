@@ -307,8 +307,8 @@ func poweredOnAt(gw Server) (time.Time, bool) {
 	return time.Unix(unix, 0).UTC(), true
 }
 
-// downAfterPowerOn reports a gateway powered back on that has not served since: it is off again, or a report since
-// reads its mirror failing. Its reading says why. A gateway Hetzner still powers on is not down.
+// downAfterPowerOn reports a gateway powered back on that has not served since: it is off again with no action Hetzner
+// still runs on it, or a report since reads its mirror failing. Its reading says why.
 func (p Plane) downAfterPowerOn(ctx context.Context, gw Server) (bool, GatewayReading, error) {
 	at, ok := poweredOnAt(gw)
 	if !ok {

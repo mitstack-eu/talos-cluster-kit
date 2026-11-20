@@ -9,8 +9,8 @@ import (
 // attachToNetworkCommand is the command of the action Hetzner runs to attach a server to a network.
 const attachToNetworkCommand = "attach_to_network"
 
-// Busy names what the server is doing while Hetzner still runs an action on it, which locks it against another action,
-// as "starting, since Hetzner still runs its start_server action on it"; it is empty once Hetzner runs none.
+// Busy names what the server does while Hetzner runs an action that locks it, as "starting, since Hetzner still runs its
+// start_server action on it", and is empty once Hetzner runs none.
 func (p Plane) Busy(ctx context.Context, server Server) (string, error) {
 	command, err := p.API.RunningAction(ctx, server.ID)
 	if err != nil || command == "" {
@@ -49,7 +49,8 @@ func (p Plane) changedSince(ctx context.Context, listed Server) (string, error) 
 	return "", nil
 }
 
-// waitOn names what Hetzner still runs on the listed server or, once it runs nothing, how the server changed since the list.
+// waitOn names what Hetzner still runs on the listed server or, once it runs nothing, how the server changed since
+// the list.
 func (p Plane) waitOn(ctx context.Context, listed Server) (busy, changed string, err error) {
 	if busy, err = p.Busy(ctx, listed); err != nil || busy != "" {
 		return busy, "", err

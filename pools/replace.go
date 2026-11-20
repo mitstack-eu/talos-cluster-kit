@@ -346,8 +346,8 @@ func waitsOn(format string, args ...any) (progress, error) {
 	return progress{waits: fmt.Sprintf(format, args...)}, nil
 }
 
-// next carries the worker's replacement on, and waits while Hetzner runs an action on the worker or holds it otherwise
-// than listed.
+// next carries the worker's replacement on, and holds back a step it chose while Hetzner runs an action on the
+// worker or holds it otherwise than listed.
 func (x replacer) next(ctx context.Context) (progress, error) {
 	all, err := x.plane.Removals.Held(ctx)
 	if err != nil {

@@ -126,9 +126,11 @@ func (p Plane) zoneStep(ctx context.Context, st State, s site) (Step, bool, erro
 		if gw.PrivateIPs[s.network.ID] != "" {
 			continue
 		}
-		step, ok, err := p.onceIdle(ctx, gw, Step{"attach the gateway in " + loc + " to the network at its fixed address before its first boot", func(ctx context.Context) error {
+		what := "attach the gateway in " + loc + " to the network at its fixed address before its first boot"
+		attach := Step{what, func(ctx context.Context) error {
 			return p.API.AttachServerToNetwork(ctx, gw.ID, s.network.ID, GatewayAddresses[loc])
-		}})
+		}}
+		step, ok, err := p.onceIdle(ctx, gw, attach)
 		if err != nil || ok {
 			return step, ok, err
 		}
@@ -159,7 +161,10 @@ func (p Plane) neverStartedStep(ctx context.Context, st State) (Step, bool, erro
 		if started {
 			continue
 		}
-		step, ok, err := p.onceIdle(ctx, gw, Step{"power on the gateway in " + loc, func(ctx context.Context) error { return p.API.PowerOnServer(ctx, gw.ID) }})
+		powerOn := Step{"power on the gateway in " + loc, func(ctx context.Context) error {
+			return p.API.PowerOnServer(ctx, gw.ID)
+		}}
+		step, ok, err := p.onceIdle(ctx, gw, powerOn)
 		if err != nil || ok {
 			return step, ok, err
 		}
@@ -353,7 +358,10 @@ func (p Plane) powerBackStep(ctx context.Context, st State, _ site) (Step, bool,
 		if down {
 			continue
 		}
-		step, ok, err := p.onceIdle(ctx, gw, Step{"power the gateway in " + loc + " back on", func(ctx context.Context) error { return p.powerBack(ctx, gw) }})
+		powerBack := Step{"power the gateway in " + loc + " back on", func(ctx context.Context) error {
+			return p.powerBack(ctx, gw)
+		}}
+		step, ok, err := p.onceIdle(ctx, gw, powerBack)
 		if err != nil || ok {
 			return step, ok, err
 		}

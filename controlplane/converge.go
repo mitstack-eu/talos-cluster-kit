@@ -180,13 +180,15 @@ func (p Plane) controlPlaneStep(ctx context.Context, st State, s site) (Step, bo
 	}
 	switch {
 	case hasBuilder && builder.PrivateIPs[s.network.ID] == "":
-		return p.onceIdleWithin(ctx, build{builder, clusterImage}, builder, Step{"attach the builder to the network at its fixed address", func(ctx context.Context) error {
+		attach := Step{"attach the builder to the network at its fixed address", func(ctx context.Context) error {
 			return p.API.AttachServerToNetwork(ctx, builder.ID, s.network.ID, BuilderAddress)
-		}})
+		}}
+		return p.onceIdleWithin(ctx, build{builder, clusterImage}, builder, attach)
 	case hasServing && serving.PrivateIPs[s.network.ID] == "":
-		return p.onceIdleWithin(ctx, build{builder, clusterImage}, serving, Step{"attach the serving server to the network at its fixed address", func(ctx context.Context) error {
+		attach := Step{"attach the serving server to the network at its fixed address", func(ctx context.Context) error {
 			return p.API.AttachServerToNetwork(ctx, serving.ID, s.network.ID, ServingAddress)
-		}})
+		}}
+		return p.onceIdleWithin(ctx, build{builder, clusterImage}, serving, attach)
 	case gw.Status == ServerOff && !hasSnapshot:
 		return p.gatewayOffStep(ctx, gw, builder, hasBuilder)
 	}
@@ -201,9 +203,10 @@ func (p Plane) controlPlaneStep(ctx context.Context, st State, s site) (Step, bo
 	case hasSnapshot:
 		return Step{}, false, nil
 	case hasServing && serving.Status == ServerOff:
-		return p.onceIdleWithin(ctx, build{builder, clusterImage}, serving, Step{"power on the serving server before the builder fetches from it", func(ctx context.Context) error {
+		powerOn := Step{"power on the serving server before the builder fetches from it", func(ctx context.Context) error {
 			return p.API.PowerOnServer(ctx, serving.ID)
-		}})
+		}}
+		return p.onceIdleWithin(ctx, build{builder, clusterImage}, serving, powerOn)
 	case hasBuilder:
 		return p.builderStep(ctx, builder, clusterImage)
 	default:
@@ -217,8 +220,8 @@ func (p Plane) powerOnGateway(gw Server) Step {
 }
 
 // gatewayOffStep powers on a gateway that never ran or whose builder finished, and refuses the build of one that ran and
-// is off before then, since its build powers it off only when a stage of it fails or overruns its bound; while Hetzner
-// still runs an action on the gateway, only an unfinished build waits on it until its deadline.
+// is off before then, since its build powers it off only when a stage of it fails or overruns its bound, and waits while
+// Hetzner still runs an action on it, until the deadline of a build still unfinished.
 func (p Plane) gatewayOffStep(ctx context.Context, gw, builder Server, hasBuilder bool) (Step, bool, error) {
 	busy, changed, err := p.waitOn(ctx, gw)
 	if err != nil || changed != "" {
@@ -282,9 +285,10 @@ func (p Plane) workerImageStep(ctx context.Context, st State, s site) (Step, boo
 	case hasSnapshot:
 		return Step{}, false, nil
 	case builder.PrivateIPs[s.network.ID] == "":
-		return p.onceIdleWithin(ctx, build{builder, workerImage}, builder, Step{"attach the worker builder to the network at its fixed address", func(ctx context.Context) error {
+		attach := Step{"attach the worker builder to the network at its fixed address", func(ctx context.Context) error {
 			return p.API.AttachServerToNetwork(ctx, builder.ID, s.network.ID, WorkerBuilderAddress)
-		}})
+		}}
+		return p.onceIdleWithin(ctx, build{builder, workerImage}, builder, attach)
 	case !hasGateway || gw.Status != ServerRunning:
 		return Step{}, false, nil
 	default:

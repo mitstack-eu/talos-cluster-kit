@@ -42,9 +42,8 @@ func (s *site) tick() time.Time {
 	return s.clock
 }
 
-// newSite is a cluster with a network, a firewall, a worker image and one control-plane node, which no pool plan may
-// touch, whose node report reads every member Ready when it is asked. The worker builder runs on cx33 unless an option
-// changes its spec.
+// newSite is a cluster with a network, a firewall, a worker image built on cx33 unless builder changes that spec, and
+// one control-plane node no pool plan may touch, whose node report reads every member Ready when it is asked.
 func newSite(t *testing.T, builder ...func(*controlplane.ServerSpec)) *site {
 	t.Helper()
 	ctx := context.Background()
@@ -457,6 +456,19 @@ func TestPlanCloud_RefusesAPoolNoListedLocationOfWhichSellsATypeWhoseDiskHoldsTh
 	for _, want := range []string{"nbg1", "hel1", "160 GB", "cx33 has 80 GB"} {
 		assert.Contains(t, err.Error(), want, "the refusal names every location, the worker image's disk and each type's disk")
 	}
+}
+
+func TestPlanCloud_APoolRefusalNamesItsLocationsInTheOrderThePoolListsThemWhicheverHoldsFewerMembers(t *testing.T) {
+	s := newSite(t, imagedOn("cx43"))
+	s.reach(cloudPool(1, "nbg1", "hel1"))
+	require.Equal(t, "nbg1", s.members()[0].Location, "precondition: the member the pool already holds")
+	s.cloud.SoldOutIn = map[string][]string{"nbg1": {"cx43"}, "hel1": {"cx43"}}
+
+	_, err := s.plan(cloudPool(2, "nbg1", "hel1"))
+
+	assert.Equal(t, "no-server-type-available", refusalClass(t, err))
+	assert.Contains(t, err.Error(), "in nbg1 or hel1 now", "the locations the refusal names, in the pool's order")
+	assert.Contains(t, err.Error(), "(nbg1: cx33 has 80 GB, cx43 is not on sale; hel1: ", "the details, in the same order")
 }
 
 func TestPlanCloud_AMemberCreateHetznerRefusesIsPlannedAgainFromTheTypesReadAgain(t *testing.T) {

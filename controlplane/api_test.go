@@ -233,15 +233,27 @@ func TestHetznerAdapter_ReadsTheServersCPUAndDiskMetricsAMinuteAPoint(t *testing
 func TestHetznerAdapter_ReadsWhichServerTypesTheLocationCanOrder(t *testing.T) {
 	api, _ := recordHetzner(t, map[string]string{
 		"GET /server_types": `{"server_types": [
-			{"id": 1, "name": "cx23", "locations": [{"id": 2, "name": "nbg1", "available": false}, {"id": 3, "name": "hel1", "available": true}]},
-			{"id": 4, "name": "cpx22", "locations": [{"id": 2, "name": "nbg1", "available": true}]},
-			{"id": 5, "name": "cpx52", "locations": [{"id": 3, "name": "hel1", "available": true}]}]}`,
+			{"id": 1, "name": "cx23", "disk": 40, "locations": [{"id": 2, "name": "nbg1", "available": false}, {"id": 3, "name": "hel1", "available": true}]},
+			{"id": 4, "name": "cpx22", "disk": 80, "locations": [{"id": 2, "name": "nbg1", "available": true}]},
+			{"id": 5, "name": "cpx52", "disk": 480, "locations": [{"id": 3, "name": "hel1", "available": true}]}]}`,
 	})
 
-	names, err := api.AvailableServerTypes(context.Background(), "nbg1")
+	types, err := api.AvailableServerTypes(context.Background(), "nbg1")
 
 	require.NoError(t, err)
-	assert.Equal(t, []string{"cpx22"}, names, "the types nbg1 can order")
+	assert.Equal(t, []controlplane.ServerType{{Name: "cpx22", DiskGB: 80}}, types, "the types nbg1 can order")
+}
+
+func TestHetznerAdapter_ReadsTheDiskOfEachSnapshot(t *testing.T) {
+	api, _ := recordHetzner(t, map[string]string{
+		"GET /images": `{"images": [{"id": 9, "type": "snapshot", "status": "available", "description": "talos", "disk_size": 160, "labels": {}}]}`,
+	})
+
+	snaps, err := api.ListSnapshots(context.Background(), "")
+
+	require.NoError(t, err)
+	require.Len(t, snaps, 1, "the snapshots listed")
+	assert.Equal(t, 160.0, snaps[0].DiskGB, "the snapshot's disk in GB")
 }
 
 func TestHetznerAdapter_CouplesTheVSwitchThroughItsSubnetAndExposesTheNetworksRoutesToIt(t *testing.T) {

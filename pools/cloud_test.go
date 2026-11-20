@@ -42,9 +42,9 @@ func (s *site) tick() time.Time {
 	return s.clock
 }
 
-// newSite is a cluster with a network, a firewall, a worker image and one control-plane node, which no pool plan may
-// touch, whose node report reads every member Ready when it is asked.
-func newSite(t *testing.T) *site {
+// newSite is a cluster with a network, a firewall, a worker image built on cx33 unless builder changes that spec, and
+// one control-plane node no pool plan may touch, whose node report reads every member Ready when it is asked.
+func newSite(t *testing.T, builder ...func(*controlplane.ServerSpec)) *site {
 	t.Helper()
 	ctx := context.Background()
 	s := &site{t: t, drained: map[int64]bool{}, clock: time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC),
@@ -57,13 +57,21 @@ func newSite(t *testing.T) *site {
 	require.NoError(t, err)
 	s.firewall, err = s.cloud.CreateFirewall(ctx, controlplane.FirewallSpec{Name: "fw", Labels: s.plane.Labels("firewall")})
 	require.NoError(t, err)
-	builders, err := s.cloud.CreateServers(ctx,
-		controlplane.ServerSpec{Name: "builder", ServerType: "cx33", Location: "fsn1", Labels: s.plane.Labels(controlplane.RoleWorkerBuilder), Stopped: true},
+	builderSpec := controlplane.ServerSpec{Name: "builder", ServerType: "cx33", Location: "fsn1", Labels: s.plane.Labels(controlplane.RoleWorkerBuilder), Stopped: true}
+	for _, opt := range builder {
+		opt(&builderSpec)
+	}
+	builders, err := s.cloud.CreateServers(ctx, builderSpec,
 		controlplane.ServerSpec{Name: "node", ServerType: "cx33", Location: "fsn1", Labels: s.plane.Labels(controlplane.RoleNode)})
 	require.NoError(t, err)
 	s.image, err = s.cloud.StartSnapshot(ctx, builders[0].ID, controlplane.SnapshotSpec{Labels: s.plane.Labels(controlplane.RoleWorkerImage)})
 	require.NoError(t, err)
 	return s
+}
+
+// imagedOn runs the worker builder on serverType, so the worker image holds that type's disk.
+func imagedOn(serverType string) func(*controlplane.ServerSpec) {
+	return func(builder *controlplane.ServerSpec) { builder.ServerType = serverType }
 }
 
 // newPlane is the plane a block builds afresh on each call, so a test that replaces it stands in for a restart.
@@ -402,6 +410,82 @@ func TestPlanCloud_RefusesALocationWhereNoListedTypeIsAvailable(t *testing.T) {
 	_, err := s.plan(cloudPool(1, "fsn1"))
 
 	assert.Equal(t, "no-server-type-available", refusalClass(t, err))
+}
+
+func TestPlanCloud_WithTheWorkerImageLargerThanThePoolsFirstTypeTheMemberTakesTheFirstTypeWhoseDiskHoldsIt(t *testing.T) {
+	s := newSite(t, imagedOn("cx43"))
+
+	plan, err := s.plan(cloudPool(1, "fsn1"))
+
+	require.NoError(t, err)
+	require.Len(t, plan.Create, 1, "the servers planned")
+	assert.Equal(t, "cx43", plan.Create[0].ServerType, "the member's type for the worker image's %g GB", s.image.DiskGB)
+}
+
+func TestPlanCloud_APoolOverNbg1AndHel1GrowsItsBurstMemberInHel1WhenNbg1SellsNoTypeWhoseDiskHoldsTheWorkerImage(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		nbg1 []string
+	}{
+		{"nbg1 sells none of the pool's types", []string{"cx33", "cx43"}},
+		{"nbg1 sells only cx33, whose disk is smaller than the worker image", []string{"cx43"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newSite(t, imagedOn("cx43"))
+			s.cloud.SoldOutIn = map[string][]string{"nbg1": tc.nbg1}
+			burst := pools.CloudPool{ServerTypes: []string{"cx33", "cx43"}, Locations: []string{"nbg1", "hel1"}, Min: 0, Max: 1, IdleWindow: 15 * time.Minute}
+
+			plan, err := s.plan(burst)
+
+			require.NoError(t, err)
+			require.Len(t, plan.Create, 1, "the servers planned")
+			assert.Equal(t, "hel1", plan.Create[0].Location, "the member's location")
+			assert.Equal(t, "cx43", plan.Create[0].ServerType, "the member's type")
+			assert.True(t, pools.IsBurst(controlplane.Server{Labels: plan.Create[0].Labels}), "the member above the pool's minimum is a burst member: %v", plan.Create[0].Labels)
+		})
+	}
+}
+
+func TestPlanCloud_RefusesAPoolNoListedLocationOfWhichSellsATypeWhoseDiskHoldsTheWorkerImageNamingEveryLocation(t *testing.T) {
+	s := newSite(t, imagedOn("cx43"))
+	s.cloud.SoldOutIn = map[string][]string{"nbg1": {"cx43"}, "hel1": {"cx33", "cx43"}}
+
+	_, err := s.plan(cloudPool(1, "nbg1", "hel1"))
+
+	assert.Equal(t, "no-server-type-available", refusalClass(t, err))
+	for _, want := range []string{"nbg1", "hel1", "160 GB", "cx33 has 80 GB"} {
+		assert.Contains(t, err.Error(), want, "the refusal names every location, the worker image's disk and each type's disk")
+	}
+}
+
+func TestPlanCloud_APoolRefusalNamesItsLocationsInTheOrderThePoolListsThemWhicheverHoldsFewerMembers(t *testing.T) {
+	s := newSite(t, imagedOn("cx43"))
+	s.reach(cloudPool(1, "nbg1", "hel1"))
+	require.Equal(t, "nbg1", s.members()[0].Location, "precondition: the member the pool already holds")
+	s.cloud.SoldOutIn = map[string][]string{"nbg1": {"cx43"}, "hel1": {"cx43"}}
+
+	_, err := s.plan(cloudPool(2, "nbg1", "hel1"))
+
+	assert.Equal(t, "no-server-type-available", refusalClass(t, err))
+	assert.Contains(t, err.Error(), "in nbg1 or hel1 now", "the locations the refusal names, in the pool's order")
+	assert.Contains(t, err.Error(), "(nbg1: cx33 has 80 GB, cx43 is not on sale; hel1: ", "the details, in the same order")
+}
+
+func TestPlanCloud_AMemberCreateHetznerRefusesIsPlannedAgainFromTheTypesReadAgain(t *testing.T) {
+	s := newSite(t, imagedOn("cx43"))
+	pool := cloudPool(1, "nbg1", "hel1")
+	hetzner := errors.New("creating server shop-nbg1-1: server type cx43 is unavailable (resource_unavailable)")
+	s.cloud.FailCreate[controlplane.RoleCloudWorker] = hetzner
+	refused, err := s.plan(pool)
+	require.NoError(t, err)
+	require.ErrorIs(t, refused.Apply(context.Background(), s.cloud), hetzner, "precondition: the create Hetzner refused")
+	s.cloud.SoldOutIn = map[string][]string{"nbg1": {"cx43"}}
+
+	s.reach(pool)
+
+	require.Len(t, s.members(), 1, "the pool's members")
+	assert.Equal(t, "hel1", s.members()[0].Location, "the member's location once nbg1 sells only cx33")
+	assert.Equal(t, "cx43", s.members()[0].ServerType, "the member's type")
 }
 
 func TestPlanCloud_RefusesAPoolBeforeTheWorkerImageExists(t *testing.T) {

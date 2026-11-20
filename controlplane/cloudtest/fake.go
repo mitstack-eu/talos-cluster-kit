@@ -237,6 +237,15 @@ func (f *Fake) CreateServers(_ context.Context, specs ...controlplane.ServerSpec
 		if len(spec.UserData) > UserDataLimit {
 			return created, fmt.Errorf("creating server %s: invalid input in field 'user_data' (invalid_input)", spec.Name)
 		}
+		if image := f.Snapshots[spec.ImageID]; image != nil {
+			disk, ok := diskOf(spec.ServerType)
+			if !ok {
+				return created, fmt.Errorf("creating server %s: the fake lists no disk for server type %q", spec.Name, spec.ServerType)
+			}
+			if image.DiskGB > disk {
+				return created, fmt.Errorf("creating server %s: image disk is bigger than server type disk (service_error)", spec.Name)
+			}
+		}
 		s := &controlplane.Server{
 			ID: f.id(), Name: spec.Name, Location: spec.Location, ServerType: spec.ServerType, Status: controlplane.ServerRunning,
 			Labels: maps.Clone(spec.Labels), PrivateIPs: map[int64]string{}, FirewallIDs: slices.Clone(spec.FirewallIDs),
@@ -261,14 +270,29 @@ func (f *Fake) CreateServers(_ context.Context, specs ...controlplane.ServerSpec
 	return created, nil
 }
 
-func (f *Fake) AvailableServerTypes(_ context.Context, location string) ([]string, error) {
+func (f *Fake) AvailableServerTypes(_ context.Context, location string) ([]controlplane.ServerType, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.read("AvailableServerTypes")
-	return slices.DeleteFunc([]string{"cx23", "cx33", "cx43", "cx53", "cpx22", "cpx32", "cpx52", "cpx62"},
-		func(name string) bool {
-			return slices.Contains(f.SoldOut, name) || slices.Contains(f.SoldOutIn[location], name)
-		}), nil
+	return slices.DeleteFunc(slices.Clone(serverTypes), func(t controlplane.ServerType) bool {
+		return slices.Contains(f.SoldOut, t.Name) || slices.Contains(f.SoldOutIn[location], t.Name)
+	}), nil
+}
+
+// serverTypes is each server type the project sells with its disk, as Hetzner's server types reference lists them.
+var serverTypes = []controlplane.ServerType{
+	{Name: "cx23", DiskGB: 40}, {Name: "cx33", DiskGB: 80}, {Name: "cx43", DiskGB: 160}, {Name: "cx53", DiskGB: 320},
+	{Name: "cpx22", DiskGB: 80}, {Name: "cpx32", DiskGB: 160}, {Name: "cpx52", DiskGB: 480}, {Name: "cpx62", DiskGB: 640},
+}
+
+// diskOf is the disk of the server type name in GB, and false for a type the project does not sell.
+func diskOf(name string) (float64, bool) {
+	for _, t := range serverTypes {
+		if t.Name == name {
+			return t.DiskGB, true
+		}
+	}
+	return 0, false
 }
 
 func (f *Fake) ServerStarted(_ context.Context, id int64) (bool, error) {
@@ -678,8 +702,14 @@ func (f *Fake) StartSnapshot(_ context.Context, serverID int64, spec controlplan
 	if f.Servers[serverID] == nil || f.Servers[serverID].Status != controlplane.ServerOff {
 		return controlplane.Snapshot{}, fmt.Errorf("server %d is not powered off", serverID)
 	}
+	// A snapshot's disk is the disk of the server it images, which Hetzner reads back as the image's disk size.
+	disk, ok := diskOf(f.Servers[serverID].ServerType)
+	if !ok {
+		return controlplane.Snapshot{}, fmt.Errorf("imaging server %d: the fake lists no disk for server type %q", serverID, f.Servers[serverID].ServerType)
+	}
 	f.write(false)
-	snap := &controlplane.Snapshot{ID: f.id(), Description: spec.Description, Status: "creating", Labels: maps.Clone(spec.Labels)}
+	snap := &controlplane.Snapshot{ID: f.id(), Description: spec.Description, Status: "creating", Labels: maps.Clone(spec.Labels),
+		DiskGB: disk}
 	if f.InstantBuild {
 		snap.Status = controlplane.SnapshotAvailable
 	}

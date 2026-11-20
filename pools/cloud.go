@@ -7,6 +7,7 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
@@ -121,20 +122,20 @@ func PlanCloud(ctx context.Context, plane controlplane.Plane, pool CloudPool, dr
 	if room <= 0 {
 		return plan, nil
 	}
-	site, err := newSite(st)
+	site, err := newSite(plane, st)
 	if err != nil {
 		return CloudPlan{}, err
 	}
 	taken := memberKeys(members)
 	steady := len(slices.DeleteFunc(slices.Clone(keep), IsBurst))
 	for range room {
-		loc := fewest(keep, pool.Locations)
-		key := nextKey(loc, taken)
-		taken[key] = true
-		spec, err := site.specAt(ctx, plane, pool, loc, key)
+		loc, serverType, err := site.place(ctx, pool, keep)
 		if err != nil {
 			return CloudPlan{}, err
 		}
+		key := nextKey(loc, taken)
+		taken[key] = true
+		spec := site.spec(plane, serverType, loc, key)
 		if steady < pool.Min {
 			steady++
 		} else {
@@ -215,17 +216,6 @@ func NewestOfFullest(members, candidates []controlplane.Server, locations []stri
 	})
 }
 
-// fewest is the location holding the fewest servers, the earlier one listed on a tie.
-func fewest(servers []controlplane.Server, locations []string) string {
-	best := locations[0]
-	for _, loc := range locations {
-		if count(servers, loc) < count(servers, best) {
-			best = loc
-		}
-	}
-	return best
-}
-
 func memberKeys(members []controlplane.Server) map[string]bool {
 	taken := map[string]bool{}
 	for _, srv := range members {
@@ -236,13 +226,13 @@ func memberKeys(members []controlplane.Server) map[string]bool {
 
 // creation holds what a new member needs from the cluster, and the server types each location offers.
 type creation struct {
-	network  controlplane.Network
-	firewall controlplane.Firewall
-	image    controlplane.Snapshot
-	offered  map[string][]string
+	network   controlplane.Network
+	firewall  controlplane.Firewall
+	image     controlplane.Snapshot
+	orderable *controlplane.OrderableTypes
 }
 
-func newSite(st controlplane.State) (*creation, error) {
+func newSite(plane controlplane.Plane, st controlplane.State) (*creation, error) {
 	network, hasNetwork := st.Network()
 	firewall, hasFirewall := st.Firewall()
 	image, hasImage := st.WorkerSnapshot()
@@ -252,37 +242,73 @@ func newSite(st controlplane.State) (*creation, error) {
 	case !hasImage || image.Status != controlplane.SnapshotAvailable:
 		return nil, &controlplane.Refusal{Class: "worker-image-missing", Message: "the cluster has no available worker image to boot a Cloud worker from"}
 	}
-	return &creation{network: network, firewall: firewall, image: image, offered: map[string][]string{}}, nil
+	return &creation{network: network, firewall: firewall, image: image, orderable: &controlplane.OrderableTypes{API: plane.API}}, nil
 }
 
-// serverType is the first type of the pool that loc offers now, which a member created there takes.
-func (c *creation) serverType(ctx context.Context, plane controlplane.Plane, pool CloudPool, loc string) (string, error) {
-	if _, ok := c.offered[loc]; !ok {
-		types, err := plane.API.AvailableServerTypes(ctx, loc)
+// place is the pool's location holding the fewest of members, the earlier one listed on a tie, among those offering a
+// pool type whose disk holds the worker image, together with the first such type.
+func (c *creation) place(ctx context.Context, pool CloudPool, members []controlplane.Server) (string, string, error) {
+	locations := slices.Clone(pool.Locations)
+	slices.SortStableFunc(locations, func(a, b string) int { return count(members, a) - count(members, b) })
+	return c.firstHolding(ctx, pool, locations)
+}
+
+// serverType is firstHolding for the one location a member already holds, so its successor takes the rule that placed it.
+func (c *creation) serverType(ctx context.Context, pool CloudPool, loc string) (string, error) {
+	_, serverType, err := c.firstHolding(ctx, pool, []string{loc})
+	return serverType, err
+}
+
+// firstHolding is the first of locations offering a pool type whose disk holds the worker image, with the first such
+// type, refusing with no-server-type-available, naming each type's disk in each location, when none does.
+func (c *creation) firstHolding(ctx context.Context, pool CloudPool, locations []string) (string, string, error) {
+	offers := map[string]string{}
+	for _, loc := range locations {
+		offered, err := c.orderable.Offered(ctx, loc)
 		if err != nil {
-			return "", fmt.Errorf("listing the server types %s offers: %w", loc, err)
+			return "", "", err
 		}
-		c.offered[loc] = types
+		if serverType := controlplane.FirstFitting(offered, pool.ServerTypes, c.image.DiskGB); serverType != "" {
+			return loc, serverType, nil
+		}
+		offers[loc] = loc + ": " + controlplane.DescribeOffer(offered, pool.ServerTypes)
 	}
-	i := slices.IndexFunc(pool.ServerTypes, func(t string) bool { return slices.Contains(c.offered[loc], t) })
-	if i < 0 {
-		return "", &controlplane.Refusal{Class: "no-server-type-available", Message: fmt.Sprintf("%s offers none of the Cloud pool's server types %v", loc, pool.ServerTypes)}
+	tried := slices.Clone(locations)
+	slices.SortStableFunc(tried, func(a, b string) int { return listedAt(pool.Locations, a) - listedAt(pool.Locations, b) })
+	described := make([]string, 0, len(tried))
+	for _, loc := range tried {
+		described = append(described, offers[loc])
 	}
-	return pool.ServerTypes[i], nil
+	return "", "", &controlplane.Refusal{Class: "no-server-type-available", Message: fmt.Sprintf(
+		"Hetzner can order none of the Cloud pool's server types in %s now whose disk holds the worker image's %g GB (%s); retry once it sells one there again",
+		strings.Join(tried, " or "), c.image.DiskGB, strings.Join(described, "; "))}
+}
+
+// listedAt is loc's place in locations, after every listed one when the list drops it.
+func listedAt(locations []string, loc string) int {
+	if i := slices.Index(locations, loc); i >= 0 {
+		return i
+	}
+	return len(locations)
 }
 
 // specAt boots the member of key in loc from the worker image, which embeds the node's configuration.
 func (c *creation) specAt(ctx context.Context, plane controlplane.Plane, pool CloudPool, loc, key string) (controlplane.ServerSpec, error) {
-	serverType, err := c.serverType(ctx, plane, pool, loc)
+	serverType, err := c.serverType(ctx, pool, loc)
 	if err != nil {
 		return controlplane.ServerSpec{}, err
 	}
+	return c.spec(plane, serverType, loc, key), nil
+}
+
+// spec boots the member of key in loc on serverType from the worker image.
+func (c *creation) spec(plane controlplane.Plane, serverType, loc, key string) controlplane.ServerSpec {
 	labels := plane.Labels(RoleCloudWorker)
 	labels[KeyMember] = key
 	return controlplane.ServerSpec{
 		Name: plane.LocatedName(RoleCloudWorker, key), ServerType: serverType, Location: loc, ImageID: c.image.ID,
 		Labels: labels, NetworkIDs: []int64{c.network.ID}, FirewallIDs: []int64{c.firewall.ID},
-	}, nil
+	}
 }
 
 // removalOrder puts a member whose removal began before one whose has not, so a removal under way finishes first.

@@ -21,8 +21,8 @@ type API interface {
 	ListServers(ctx context.Context, labelSelector string) ([]Server, error)
 	// CreateServers sends every create before it waits, and returns once Hetzner's actions for all of them have finished.
 	CreateServers(ctx context.Context, specs ...ServerSpec) ([]Server, error)
-	// AvailableServerTypes names the server types Hetzner reads as orderable in location now.
-	AvailableServerTypes(ctx context.Context, location string) ([]string, error)
+	// AvailableServerTypes lists the server types Hetzner reads as orderable in location now, each with its disk.
+	AvailableServerTypes(ctx context.Context, location string) ([]ServerType, error)
 	// ServerStarted reports whether Hetzner has finished powering the server on at least once.
 	ServerStarted(ctx context.Context, id int64) (bool, error)
 	// AttachServerToNetwork with an empty ip lets Hetzner give the server the network's first free address.
@@ -181,11 +181,20 @@ type LoadBalancerSpec struct {
 	TargetIPs            []string
 }
 
+// ServerType is a server type Hetzner can order in a location, with its disk in GB.
+type ServerType struct {
+	Name   string
+	DiskGB float64
+}
+
+// Snapshot is an image of a server, whose DiskGB is the disk of the server it imaged; Hetzner creates a server from it
+// only on a type whose disk is at least that large.
 type Snapshot struct {
 	ID          int64
 	Description string
 	Status      string
 	Labels      map[string]string
+	DiskGB      float64
 }
 
 type SnapshotSpec struct {
@@ -299,20 +308,20 @@ func serverCreateOpts(spec ServerSpec) hcloud.ServerCreateOpts {
 	return opts
 }
 
-func (a *hcloudAPI) AvailableServerTypes(ctx context.Context, location string) ([]string, error) {
+func (a *hcloudAPI) AvailableServerTypes(ctx context.Context, location string) ([]ServerType, error) {
 	types, err := a.client.ServerType.All(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing server types: %w", err)
 	}
-	var names []string
+	var orderable []ServerType
 	for _, t := range types {
 		if slices.ContainsFunc(t.Locations, func(l hcloud.ServerTypeLocation) bool {
 			return l.Available && l.Location != nil && l.Location.Name == location
 		}) {
-			names = append(names, t.Name)
+			orderable = append(orderable, ServerType{Name: t.Name, DiskGB: float64(t.Disk)})
 		}
 	}
-	return names, nil
+	return orderable, nil
 }
 
 func (a *hcloudAPI) ServerStarted(ctx context.Context, id int64) (bool, error) {
@@ -812,5 +821,6 @@ func loadBalancerFromHcloud(lb *hcloud.LoadBalancer) LoadBalancer {
 }
 
 func snapshotFromHcloud(img *hcloud.Image) Snapshot {
-	return Snapshot{ID: img.ID, Description: img.Description, Status: string(img.Status), Labels: img.Labels}
+	return Snapshot{ID: img.ID, Description: img.Description, Status: string(img.Status), Labels: img.Labels,
+		DiskGB: float64(img.DiskSize)}
 }

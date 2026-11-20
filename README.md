@@ -335,12 +335,24 @@ st, err := plane.Read(ctx)
 ```
 
 `ServerTypes` lists the server types of the control-plane nodes and the
-builders by preference, so one sold-out type does not stop a node. Each server
+builders by preference, so one sold-out type does not stop a node. Each builder
 takes the first type Hetzner can order in its location at the moment it is
 created, through `controlplane.OrderableTypes`, as each gateway does from
 `GatewayServerTypes`. A running server keeps its type. When Hetzner can order
 none of the list in a location, the call refuses with the class
 `server-unavailable`, naming the list and the location.
+
+A node boots from the cluster's snapshot, whose disk is the disk of the builder
+it images. Hetzner creates no server from a snapshot larger than the server
+type's disk. So each node takes the first type of the list that Hetzner can
+order in its location and whose disk holds the snapshot, through
+`OrderableTypes.FirstHolding`. With `ServerTypes` set to `cx33, cx43` and
+`cx33` sold out in `fsn1`, the builder runs on `cx43` and its snapshot holds
+160 GB. Every node then takes `cx43`, since a `cx33` disk holds 80 GB, and an
+event names the snapshot's disk wherever a node passed a type of the list. When
+no type of the list fits in a location, the call refuses with
+`server-unavailable` before it creates that node. The refusal names the
+location, the snapshot's disk, and each type's disk or that it is not on sale.
 
 A call then runs in this order:
 
@@ -3932,7 +3944,7 @@ step is due, each with its own class:
 | Class | What the upgrade named |
 |---|---|
 | `node-replacement-unknown` | A location where the cluster does not run exactly one node |
-| `server-unavailable` | A location where Hetzner can order none of `ServerTypes` now |
+| `server-unavailable` | A location where Hetzner can order none of `ServerTypes` now whose disk holds the cluster's snapshot |
 | `node-removal-unwritable` | A node, on a plane whose block passes no `Removals` |
 | `node-replacement-unjudged` | A node, on a plane whose block passes no `ReadReport` or no `Guard` |
 
@@ -3959,7 +3971,8 @@ changes:
    members serving without the node. Where the report lists OpenBao members,
    it asks the same for each member whose pod runs on the node, and a cluster
    whose report lists none is judged on etcd alone. It also reads again
-   whether Hetzner can order a successor. And it reads whether the report
+   whether Hetzner can order a successor of a type whose disk holds the
+   cluster's snapshot. And it reads whether the report
    carries Argo CD's health of what the Application named `cluster` applied,
    since the plane reads the removal Job's outcome from that health once step
    5 has written the removal. That
@@ -3982,8 +3995,9 @@ changes:
 7. It deletes the server. The next call finds the location without a node and
    creates one from the cluster's snapshot under the same name, as it does
    when a node's server has disappeared. The new node takes the first type of
-   `ServerTypes` its location can order, and an event names the type when it
-   is not the list's first.
+   `ServerTypes` its location can order whose disk holds the snapshot. When
+   that is not the list's first, an event names the type and the snapshot's
+   disk.
 8. Once a node report received since the new node's creation reads its etcd
    member healthy and its Node object Ready, it takes the label off the
    network. Only then does the next named node begin. With
@@ -3992,7 +4006,8 @@ changes:
 
 A refusal in step 2 carries one of three classes. The guard's class
 `redundancy-below-minimum` names each member with its reading, and
-`server-unavailable` names the location. The class
+`server-unavailable` names the location, the snapshot's disk and each type's
+disk. The class
 `node-replacement-unjudged` says that the report carries no health of what the
 Application named `cluster` applied, so no report could show a removal Job
 that failed. The node still runs then, so the plane takes the label off the
@@ -4117,10 +4132,17 @@ lists with the subscription's labels and the role `cloud-worker`, and answers a
 `CloudPlan` of what the pool lacks:
 
 - `Create` lists servers to create. They boot from the worker image the install
-  keeps, with no user data, on the cluster's network and firewall, each of the
-  first listed server type its location offers. A server is created only while
-  the pool, a member that is leaving included, holds fewer than its size, and it
-  goes to the listed location that holds the fewest members. A server created
+  keeps, with no user data, on the cluster's network and firewall. A server is
+  created only while the pool, a member that is leaving included, holds fewer
+  than its size. The worker image's disk is the disk of the worker builder it
+  images, and Hetzner creates no server from an image larger than its type's
+  disk. So a server goes to the listed location holding the fewest members
+  among those where Hetzner sells one of the pool's types whose disk holds the
+  worker image, and it takes the first such type. A pool over `nbg1` and
+  `hel1` whose worker image holds 160 GB grows in `hel1` on `cx43` while `nbg1`
+  sells only `cx33`, whose disk holds 80 GB. When no listed location sells such
+  a type, the plan refuses with the class `no-server-type-available`, naming
+  each location, the image's disk and each type's disk. A server created
   once the pool already holds its minimum of steady members carries the burst
   label, as [Steady and burst members](#steady-and-burst-members) describes.
 - `Mark` lists the member whose removal begins, labelled with the time it
@@ -4206,7 +4228,7 @@ class:
 | Class | What the upgrade named |
 |---|---|
 | `worker-replacement-unknown` | A key no member of the pool holds |
-| `no-server-type-available` | A worker whose location offers none of the pool's `ServerTypes` now |
+| `no-server-type-available` | A worker whose location offers none of the pool's `ServerTypes` now whose disk holds the worker image |
 | `worker-image-missing` | A worker, while the cluster has no available worker image to boot its successor from |
 | `worker-removal-unwritable` | A worker, on a plane whose block passes no `Removals` |
 | `worker-replacement-unjudged` | A worker, on a plane whose block passes no `ReadReport` or no `Guard` |
@@ -4248,8 +4270,9 @@ takes one of these changes:
 7. In one step it takes the removal file out and creates the successor in the
    same location, under the same key and name, from the worker image with no
    user data. The successor takes the first of the pool's `ServerTypes` its
-   location can order, and the event names the type and the ones Hetzner could
-   not order when it is not the list's first.
+   location can order whose disk holds the worker image. When that is not the
+   list's first, the event names the type, the ones it passed and the image's
+   disk.
 8. Once a node report received since the successor's creation reads its Node
    object Ready, it takes the label off the network, and the next named
    worker begins. With `RollsOutMachineConfig` set, that report must also read

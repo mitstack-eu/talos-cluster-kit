@@ -27,9 +27,8 @@ func (o *OrderableTypes) First(ctx context.Context, what string, types []string,
 		what, strings.Join(types, ", "), loc)
 }
 
-// FirstHolding is the first of types Hetzner reads as orderable in loc whose disk holds image, since Hetzner creates no
-// server from an image larger than its type's disk, refusing with server-unavailable, naming each type's disk, when
-// none does.
+// FirstHolding is the first of types Hetzner can order in loc now whose disk holds image, refusing with
+// server-unavailable, naming each type's disk, when none does.
 func (o *OrderableTypes) FirstHolding(ctx context.Context, what string, types []string, loc string, image Snapshot) (string, error) {
 	offered, err := o.listed(ctx, what, types, loc)
 	if err != nil {

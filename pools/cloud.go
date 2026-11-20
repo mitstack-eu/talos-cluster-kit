@@ -245,9 +245,8 @@ func newSite(plane controlplane.Plane, st controlplane.State) (*creation, error)
 	return &creation{network: network, firewall: firewall, image: image, orderable: &controlplane.OrderableTypes{API: plane.API}}, nil
 }
 
-// place is the location of the pool holding the fewest of members, the earlier one listed on a tie, among those that
-// offer one of the pool's types whose disk holds the worker image, and the first such type, which a member created
-// there takes.
+// place is the pool's location holding the fewest of members, the earlier one listed on a tie, among those offering a
+// pool type whose disk holds the worker image, together with the first such type.
 func (c *creation) place(ctx context.Context, pool CloudPool, members []controlplane.Server) (string, string, error) {
 	locations := slices.Clone(pool.Locations)
 	slices.SortStableFunc(locations, func(a, b string) int { return count(members, a) - count(members, b) })
@@ -260,9 +259,8 @@ func (c *creation) serverType(ctx context.Context, pool CloudPool, loc string) (
 	return serverType, err
 }
 
-// firstHolding is the first of locations that offers one of the pool's types whose disk holds the worker image, since
-// Hetzner creates no server from an image larger than its type's disk, and the first such type. It refuses, naming
-// each type's disk in each location, when none does.
+// firstHolding is the first of locations offering a pool type whose disk holds the worker image, with the first such
+// type, refusing with no-server-type-available, naming each type's disk in each location, when none does.
 func (c *creation) firstHolding(ctx context.Context, pool CloudPool, locations []string) (string, string, error) {
 	offers := map[string]string{}
 	for _, loc := range locations {

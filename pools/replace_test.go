@@ -384,6 +384,23 @@ func TestReplaceStep_AWorkerWhosePowerOffOutlivesItsCallIsReadPoweringOffAndRepl
 	assert.NotEqual(t, old.ID, w.worker("fsn1-1").ID, "the worker in fsn1 after its replacement")
 }
 
+func TestReplaceStep_AWorkerWhosePowerOffEndsBetweenTheListAndTheStepIsSentNoSecondPowerOffAndReplaced(t *testing.T) {
+	s, w := withWorkers(t)
+	old := w.worker("fsn1-1")
+	require.NoError(t, w.upgrade(pool2, "fsn1-1"))
+	s.cloud.HoldNext[controlplane.RoleCloudWorker] = controlplane.StopServerCommand
+	require.ErrorIs(t, w.replace(pool2, nil), context.DeadlineExceeded, "the call whose power-off of the worker outlived it")
+	s.cloud.EndAfterList[old.ID] = true
+
+	step, ok, err := pools.ReplaceStep(context.Background(), s.plane, pool2)
+
+	require.NoError(t, err, "the call that listed the worker running before its power-off ended")
+	assert.False(t, ok, "the call that listed the worker running before its power-off ended took the step to %s", step.What)
+	require.NoError(t, w.replace(pool2, nil), "the replacement once the worker's power-off finished")
+	assert.Equal(t, []string{controlplane.StopServerCommand}, s.cloud.ActionsSent(old.ID), "the actions sent at the worker")
+	assert.NotEqual(t, old.ID, w.worker("fsn1-1").ID, "the worker in fsn1 after its replacement")
+}
+
 func TestReplaceStep_RefusesToReplaceTheOnlyReadyWorkerThroughTheRedundancyGuardNamingIt(t *testing.T) {
 	s, w := withWorkers(t)
 	old := w.worker("fsn1-1")

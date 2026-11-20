@@ -240,6 +240,27 @@ func TestHetznerAdapter_NamesTheActionHetznerStillRunsOnAServerByItsRunningActio
 	}
 }
 
+func TestHetznerAdapter_ReadsOneServerAsHetznerHoldsItNowAndAServerGoneAsNotFound(t *testing.T) {
+	api, _ := recordHetzner(t, map[string]string{
+		"GET /servers/7": `{"server": {"id": 7, "name": "builder", "status": "running", "public_net": {},
+			"private_net": [{"network": 3, "ip": "10.0.0.9"}]}}`,
+	})
+	reader, ok := api.(interface {
+		GetServer(ctx context.Context, id int64) (controlplane.Server, bool, error)
+	})
+	require.True(t, ok, "the Hetzner adapter reads no single server")
+
+	server, found, err := reader.GetServer(context.Background(), 7)
+	_, gone, goneErr := reader.GetServer(context.Background(), 8)
+
+	require.NoError(t, err)
+	assert.True(t, found, "GetServer(7), a server Hetzner holds, found")
+	assert.Equal(t, controlplane.ServerRunning, server.Status, "GetServer(7)'s status")
+	assert.Equal(t, map[int64]string{3: "10.0.0.9"}, server.PrivateIPs, "GetServer(7)'s private addresses")
+	require.NoError(t, goneErr, "GetServer(8), a server Hetzner does not hold")
+	assert.False(t, gone, "GetServer(8), a server Hetzner does not hold, found")
+}
+
 func TestHetznerAdapter_ReadsTheServersCPUAndDiskMetricsAMinuteAPoint(t *testing.T) {
 	var path string
 	var query url.Values

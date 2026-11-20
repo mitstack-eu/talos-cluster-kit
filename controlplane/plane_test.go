@@ -684,29 +684,57 @@ func TestPlane_RefusesTheBuilderStillRunningPastItsDeadlineAsAFailedBuild(t *tes
 	assert.Empty(t, h.byRole(controlplane.RoleNode), "a node with no image")
 }
 
-// heldStart is a server of the build whose first start Hetzner runs on past the call that sent it, and the problem
-// that names it starting.
+// heldStart is a server of the build whose first start Hetzner runs on past the call that sent it, the builder whose
+// deadline bounds the wait on it with the class of that refusal, and the problem that names it starting.
 type heldStart struct {
 	name    string
 	role    controlplane.Role
+	opts    []func(*harness)
+	builder controlplane.Role
+	failure string
 	server  func(h *harness) controlplane.Server
 	problem func(s controlplane.Server) string
 }
 
+// starting is the problem that names server s starting while Hetzner still runs its start_server action on it.
+func starting(what string) func(s controlplane.Server) string {
+	return func(s controlplane.Server) string {
+		return fmt.Sprintf("%s %d, created at %s, is starting, since Hetzner still runs its start_server action on it",
+			what, s.ID, s.Created.UTC().Format(time.RFC3339))
+	}
+}
+
+// theOne is the one server of role r.
+func theOne(r controlplane.Role) func(h *harness) controlplane.Server {
+	return func(h *harness) controlplane.Server {
+		h.t.Helper()
+		servers := h.byRole(r)
+		require.Len(h.t, servers, 1, "servers of role %s", r)
+		return servers[0]
+	}
+}
+
 var heldStarts = []heldStart{
 	{
-		name: "the builder", role: controlplane.RoleBuilder,
-		server: func(h *harness) controlplane.Server { return h.byRole(controlplane.RoleBuilder)[0] },
-		problem: func(s controlplane.Server) string {
-			return fmt.Sprintf("builder %d, created at %s, is starting, since Hetzner still runs its start_server action on it",
-				s.ID, s.Created.UTC().Format(time.RFC3339))
-		},
+		name: "the builder", role: controlplane.RoleBuilder, builder: controlplane.RoleBuilder, failure: "image-build-failed",
+		server: theOne(controlplane.RoleBuilder), problem: starting("builder"),
 	},
 	{
-		name: "the gateway", role: controlplane.RoleGateway,
+		name: "the worker builder", role: controlplane.RoleWorkerBuilder, builder: controlplane.RoleWorkerBuilder, failure: "worker-image-build-failed",
+		server: theOne(controlplane.RoleWorkerBuilder), problem: starting("worker builder"),
+	},
+	{
+		name: "the gateway", role: controlplane.RoleGateway, builder: controlplane.RoleBuilder, failure: "image-build-failed",
 		server: func(h *harness) controlplane.Server { return h.gatewayIn(controlplane.GatewayLocation) },
 		problem: func(s controlplane.Server) string {
 			return fmt.Sprintf("gateway %d in %s is starting, since Hetzner still runs its start_server action on it", s.ID, s.Location)
+		},
+	},
+	{
+		name: "the serving server", role: controlplane.RoleServing, opts: []func(*harness){hosting}, builder: controlplane.RoleBuilder,
+		failure: "image-build-failed", server: theOne(controlplane.RoleServing),
+		problem: func(s controlplane.Server) string {
+			return fmt.Sprintf("serving server %d is starting, since Hetzner still runs its start_server action on it", s.ID)
 		},
 	},
 }
@@ -722,7 +750,7 @@ func (h *harness) holdStart(held heldStart) controlplane.Server {
 func TestPlane_AServerOfTheBuildWhoseStartOutlivesItsCallIsReadStartingAndSentNoSecondStart(t *testing.T) {
 	for _, held := range heldStarts {
 		t.Run(held.name, func(t *testing.T) {
-			h := newHarness(t)
+			h := newHarness(t, held.opts...)
 			server := h.holdStart(held)
 
 			err := h.converge()
@@ -745,7 +773,7 @@ func TestPlane_AServerOfTheBuildWhoseStartOutlivedItsCallBuildsOnOnceItFinishesA
 			{outcome: "failed", end: (*cloudtest.Fake).FailAction, starts: 2},
 		} {
 			t.Run(held.name+" whose start "+tc.outcome, func(t *testing.T) {
-				h := newHarness(t)
+				h := newHarness(t, held.opts...)
 				server := h.holdStart(held)
 				require.NoError(t, h.converge(), "a call while the start of %s runs", held.name)
 				tc.end(h.cloud, server.ID)
@@ -759,37 +787,106 @@ func TestPlane_AServerOfTheBuildWhoseStartOutlivedItsCallBuildsOnOnceItFinishesA
 	}
 }
 
-func TestPlane_RefusesABuildWhoseServerStillStartsAtTheBuildersDeadlineAsAFailedBuildWithNoSecondStart(t *testing.T) {
+func TestPlane_AServerOfTheBuildWhoseStartEndsBetweenTheListAndTheStepIsSentNoSecondStartAndBuildsOn(t *testing.T) {
 	for _, held := range heldStarts {
 		t.Run(held.name, func(t *testing.T) {
-			h := newHarness(t)
+			h := newHarness(t, held.opts...)
 			server := h.holdStart(held)
-			created := h.byRole(controlplane.RoleBuilder)[0].Created
+			require.NoError(t, h.converge(), "a call while the start of %s runs", held.name)
+			h.cloud.EndAfterList[server.ID] = true
 
-			err := h.settle(nil)
+			err := h.ensure()
 
-			assert.Equal(t, "image-build-failed", refusalClass(t, err))
-			assert.ErrorContains(t, err, "Hetzner still runs its start_server action on it", "the refusal of a build whose start of %s never ended", held.name)
-			assert.Less(t, h.now.Sub(created), controlplane.BuildDeadline+5*time.Minute, "how long the plane waited on the start of %s", held.name)
-			assert.Empty(t, h.byRole(controlplane.RoleBuilder), "the builder past its deadline")
+			require.NoError(t, err, "the call that listed %s off before its start ended", held.name)
+			h.built()
 			assert.Equal(t, 1, h.sent(server.ID, cloudtest.StartServerCommand), "the starts sent at %s: %v", held.name, h.cloud.ActionsSent(server.ID))
 		})
 	}
 }
 
+func TestPlane_RefusesABuildWhoseServerStillStartsAtTheBuildersDeadlineAsAFailedBuildWithNoSecondStart(t *testing.T) {
+	for _, held := range heldStarts {
+		t.Run(held.name, func(t *testing.T) {
+			h := newHarness(t, held.opts...)
+			server := h.holdStart(held)
+			created := theOne(held.builder)(h).Created
+
+			err := h.settle(nil)
+
+			assert.Equal(t, held.failure, refusalClass(t, err))
+			assert.ErrorContains(t, err, "Hetzner still runs its start_server action on it", "the refusal of a build whose start of %s never ended", held.name)
+			assert.Less(t, h.now.Sub(created), controlplane.BuildDeadline+5*time.Minute, "how long the plane waited on the start of %s", held.name)
+			assert.Empty(t, h.byRole(held.builder), "the %s past its deadline", held.builder)
+			assert.Equal(t, 1, h.sent(server.ID, cloudtest.StartServerCommand), "the starts sent at %s: %v", held.name, h.cloud.ActionsSent(server.ID))
+		})
+	}
+}
+
+func TestPlane_AGatewayWhosePowerOnBesideTheSnapshotOutlivesItsCallIsReadStartingAndSentNoSecondStart(t *testing.T) {
+	h := newHarness(t)
+	imaging := func() bool {
+		snap, ok := h.read().Snapshot()
+		return ok && snap.Status != controlplane.SnapshotAvailable
+	}
+	require.NoError(t, h.settle(imaging))
+	gw := h.gatewayIn(controlplane.GatewayLocation)
+	starts := h.sent(gw.ID, cloudtest.StartServerCommand)
+	h.cloud.StopServer(gw.ID)
+	h.cloud.HoldNext[controlplane.RoleGateway] = cloudtest.StartServerCommand
+	require.ErrorIs(t, h.converge(), context.DeadlineExceeded, "the call whose power-on of the gateway beside the snapshot outlived it")
+
+	err := h.converge()
+
+	require.NoError(t, err, "a call while the gateway's power-on beside the snapshot runs")
+	assert.Equal(t, starts+1, h.sent(gw.ID, cloudtest.StartServerCommand), "the starts sent at the gateway: %v", h.cloud.ActionsSent(gw.ID))
+	assert.Contains(t, h.problems(), fmt.Sprintf("gateway %d in %s is starting, since Hetzner still runs its start_server action on it", gw.ID, gw.Location))
+	h.cloud.FinishAction(gw.ID)
+	h.built()
+	assert.Equal(t, starts+1, h.sent(gw.ID, cloudtest.StartServerCommand), "the starts sent at the gateway once its power-on finished: %v", h.cloud.ActionsSent(gw.ID))
+}
+
+func TestPlane_AGatewayInAnotherLocationWhoseFirstStartOutlivesItsCallIsReadStartingAndSentNoSecondStart(t *testing.T) {
+	h := newHarness(t)
+	for calls := 0; !slices.ContainsFunc(h.byRole(controlplane.RoleGateway), func(s controlplane.Server) bool { return s.Status == controlplane.ServerRunning }); calls++ {
+		require.Less(t, calls, 50, "no gateway started within 50 calls")
+		require.NoError(t, h.ensure())
+	}
+	h.cloud.HoldNext[controlplane.RoleGateway] = cloudtest.StartServerCommand
+	require.ErrorIs(t, h.converge(), context.DeadlineExceeded, "the call whose first start of a second gateway outlived it")
+	gw := h.held(controlplane.RoleGateway)
+	require.NotEqual(t, controlplane.GatewayLocation, gw.Location, "the location of the gateway whose start outlived its call")
+
+	err := h.converge()
+
+	require.NoError(t, err, "a call while the first start of the gateway in %s runs", gw.Location)
+	assert.Equal(t, 1, h.sent(gw.ID, cloudtest.StartServerCommand), "the starts sent at the gateway in %s: %v", gw.Location, h.cloud.ActionsSent(gw.ID))
+	assert.Contains(t, h.problems(), fmt.Sprintf("gateway %d in %s is starting, since Hetzner still runs its start_server action on it", gw.ID, gw.Location))
+	h.cloud.FinishAction(gw.ID)
+	h.built()
+	assert.Equal(t, 1, h.sent(gw.ID, cloudtest.StartServerCommand), "the starts sent at the gateway in %s once its start finished: %v", gw.Location, h.cloud.ActionsSent(gw.ID))
+}
+
 func TestPlane_AServerWhoseAttachOutlivesItsCallIsSentNoSecondAttach(t *testing.T) {
-	for _, r := range []controlplane.Role{controlplane.RoleGateway, controlplane.RoleBuilder, controlplane.RoleWorkerBuilder} {
-		t.Run(string(r), func(t *testing.T) {
-			h := newHarness(t)
-			h.cloud.HoldNext[r] = cloudtest.AttachToNetworkCommand
-			require.ErrorIs(t, h.converge(), context.DeadlineExceeded, "the call whose attach of the %s outlived it", r)
-			server := h.held(r)
+	for _, tc := range []struct {
+		role controlplane.Role
+		opts []func(*harness)
+	}{
+		{role: controlplane.RoleGateway},
+		{role: controlplane.RoleBuilder},
+		{role: controlplane.RoleWorkerBuilder},
+		{role: controlplane.RoleServing, opts: []func(*harness){hosting}},
+	} {
+		t.Run(string(tc.role), func(t *testing.T) {
+			h := newHarness(t, tc.opts...)
+			h.cloud.HoldNext[tc.role] = cloudtest.AttachToNetworkCommand
+			require.ErrorIs(t, h.converge(), context.DeadlineExceeded, "the call whose attach of the %s outlived it", tc.role)
+			server := h.held(tc.role)
 
 			err := h.converge()
 
-			require.NoError(t, err, "a call while the attach of the %s runs", r)
-			assert.Equal(t, 1, h.sent(server.ID, cloudtest.AttachToNetworkCommand), "the attaches sent at the %s: %v", r, h.cloud.ActionsSent(server.ID))
-			assert.Empty(t, h.cloud.Servers[server.ID].PrivateIPs, "the %s's addresses while its attach runs", r)
+			require.NoError(t, err, "a call while the attach of the %s runs", tc.role)
+			assert.Equal(t, 1, h.sent(server.ID, cloudtest.AttachToNetworkCommand), "the attaches sent at the %s: %v", tc.role, h.cloud.ActionsSent(server.ID))
+			assert.Empty(t, h.cloud.Servers[server.ID].PrivateIPs, "the %s's addresses while its attach runs", tc.role)
 		})
 	}
 }

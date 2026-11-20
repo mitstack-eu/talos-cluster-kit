@@ -69,6 +69,9 @@ type Fake struct {
 	// command of every action each server was sent, the newest last.
 	running map[int64]heldAction
 	sent    map[int64][]string
+	// EndAfterList, when it names a server, ends the action Hetzner still runs on it as a success right after the next
+	// server list answers, as an action that ends between the plane's read and its step.
+	EndAfterList map[int64]bool
 	// Metrics answers each server's metrics read; FailMetrics, when set, fails every read, and MetricsReads records each one.
 	Metrics      map[int64]controlplane.Metrics
 	FailMetrics  error
@@ -106,7 +109,7 @@ func New(now func() time.Time) *Fake {
 		Snapshots: map[int64]*controlplane.Snapshot{}, started: map[int64]time.Time{}, imaging: map[int64]time.Time{},
 		FailCreate: map[controlplane.Role]error{}, FailLBStep: map[string]error{}, FailAttach: map[controlplane.Role]error{},
 		Metrics: map[int64]controlplane.Metrics{}, FailRoute: map[string]error{}, powerActions: map[int64][]powerAction{},
-		HoldNext: map[controlplane.Role]string{}, running: map[int64]heldAction{}, sent: map[int64][]string{},
+		HoldNext: map[controlplane.Role]string{}, running: map[int64]heldAction{}, sent: map[int64][]string{}, EndAfterList: map[int64]bool{},
 	}
 }
 
@@ -235,7 +238,24 @@ func (f *Fake) ListServers(_ context.Context, sel string) ([]controlplane.Server
 		f.FailNext = nil
 		return nil, err
 	}
-	return selected(f.Servers, func(s *controlplane.Server) map[string]string { return s.Labels }, sel), nil
+	servers := selected(f.Servers, func(s *controlplane.Server) map[string]string { return s.Labels }, sel)
+	for id := range f.EndAfterList {
+		f.finish(id)
+	}
+	clear(f.EndAfterList)
+	return servers, nil
+}
+
+// GetServer reads the server as Hetzner holds it now, found false once it is gone.
+func (f *Fake) GetServer(_ context.Context, id int64) (controlplane.Server, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.read("GetServer")
+	s, ok := f.Servers[id]
+	if !ok {
+		return controlplane.Server{}, false, nil
+	}
+	return *s, true, nil
 }
 
 func (f *Fake) CreateServers(_ context.Context, specs ...controlplane.ServerSpec) ([]controlplane.Server, error) {
@@ -366,6 +386,11 @@ func (f *Fake) ActionsSent(id int64) []string {
 func (f *Fake) FinishAction(id int64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.finish(id)
+}
+
+// finish is FinishAction with f.mu held.
+func (f *Fake) finish(id int64) {
 	a := f.running[id]
 	delete(f.running, id)
 	switch a.command {

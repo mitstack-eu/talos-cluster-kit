@@ -65,7 +65,7 @@ func renderedManifests(t *testing.T) map[string][]byte {
 	return out
 }
 
-// Each names one rendering of the control plane's own credentials, by the repository credential and telemetry it takes.
+// The shared set's two renderings of the control plane's credentials, named by the repository credential and telemetry each takes.
 const (
 	tokenAndLeaseCredentials = "control plane with the platform's token and a lease/mitstack-cluster-tokens"
 	deployKeyCredentials     = "control plane with a deploy key and no lease/mitstack-cluster-tokens"
@@ -86,7 +86,9 @@ func addControlPlane(t *testing.T, out map[string][]byte, now time.Time) {
 	out[tokenAndLeaseCredentials] = testutil.Manifest(t, "mitstack-cluster-tokens", release.Components).Bytes
 
 	hosting := unhosted
-	hosting.Hosting, hosting.Telemetry = &controlplane.Hosting{Repository: testutil.InitRepository}, components.TelemetryExport{}
+	hosting.Hosting = &controlplane.Hosting{Repository: testutil.InitRepository}
+	hosting.Telemetry = components.TelemetryExport{}
+	// A hosting plane's Traefik publishes the ingress load balancer's address, so its release needs one.
 	ingress := controlplane.State{LoadBalancers: map[controlplane.Role][]controlplane.LoadBalancer{
 		controlplane.RoleIngress: {{Location: controlplane.GatewayLocation, PublicIPv4: "203.0.113.10"}}}}
 	release, err = hosting.Release(ingress)

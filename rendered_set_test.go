@@ -211,6 +211,37 @@ func TestManifests_EveryPodButADaemonSetsStaysOffBurstMembersUnlessItRunsOnTheCo
 	assert.Empty(t, free, "a pod free to run on a burst member holds that member out of its idle window, and moves when it goes")
 }
 
+func TestManifests_TheControlPlanesCredentialsRenderThePodsTheirInputsCallForEachKeptOffBurstMembers(t *testing.T) {
+	bySource := map[string][]renderedPod{}
+	for _, pod := range renderedPods(t) {
+		bySource[pod.source] = append(bySource[pod.source], pod)
+	}
+
+	for _, tc := range []struct {
+		name, source string
+		want         []string
+	}{
+		{"a cluster reading its repository with the platform's token and leasing telemetry runs the enrolment, the token renewal and the lease",
+			tokenAndLeaseCredentials, []string{"mitstack-enrolment", "mitstack-repository-token", "mitstack-telemetry-lease"}},
+		{"a cluster reading its repository with a deploy key and naming no lease resource runs the enrolment alone",
+			deployKeyCredentials, []string{"mitstack-enrolment"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got, free []string
+			for _, pod := range bySource[tc.source] {
+				got = append(got, pod.workload)
+				if !refusesBurstNodes(pod.spec) {
+					free = append(free, pod.where)
+				}
+			}
+
+			slices.Sort(got)
+			assert.Equal(t, tc.want, got, "the pods %s renders", tc.source)
+			assert.Empty(t, free, "the pods of %s with no required node affinity %s DoesNotExist", tc.source, components.BurstLabel)
+		})
+	}
+}
+
 func TestFetch(t *testing.T) {
 	const archive = "the chart archive's bytes"
 	sum := sha256.Sum256([]byte(archive))

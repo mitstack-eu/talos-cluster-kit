@@ -5,6 +5,7 @@ package talosclusterkit
 
 import (
 	"fmt"
+	"net/netip"
 	"slices"
 	"testing"
 	"time"
@@ -13,7 +14,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
+	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
 	"github.com/mitstack-eu/talos-cluster-kit/etcd"
+	"github.com/mitstack-eu/talos-cluster-kit/gateway"
 	"github.com/mitstack-eu/talos-cluster-kit/internal/redundanttest"
 	"github.com/mitstack-eu/talos-cluster-kit/openbaoinit"
 	"github.com/mitstack-eu/talos-cluster-kit/report"
@@ -58,7 +61,37 @@ func renderedManifests(t *testing.T) map[string][]byte {
 	initJob, err := openbaoinit.Manifests(testutil.InitInputs(t))
 	require.NoError(t, err)
 	out["openbao init"] = initJob
+	addControlPlane(t, out, began)
 	return out
+}
+
+// Each names one rendering of the control plane's own credentials, by the repository credential and telemetry it takes.
+const (
+	tokenAndLeaseCredentials = "control plane with the platform's token and a lease/mitstack-cluster-tokens"
+	deployKeyCredentials     = "control plane with a deploy key and no lease/mitstack-cluster-tokens"
+)
+
+// addControlPlane adds what the control plane renders beside its node report: the topology labeller, and its
+// credentials twice, since the template renders the token renewal only for the platform's token and the lease only
+// for a lease resource.
+func addControlPlane(t *testing.T, out map[string][]byte, now time.Time) {
+	t.Helper()
+	ca, err := gateway.NewCA(now, time.Hour, []netip.Addr{netip.MustParseAddr("10.0.0.2")})
+	require.NoError(t, err)
+	unhosted := controlplane.Plane{Subscription: "sub_0123456789ab", PlatformURL: "https://api.mitstack.dev", RepoURL: "https://github.com/acme/cluster",
+		ReportProofScript: "echo report-proof\n", GatewayCA: &ca, Telemetry: testutil.TelemetryExport()}
+	release, err := unhosted.Release(controlplane.State{})
+	require.NoError(t, err)
+	out["control plane/mitstack-node-topology"] = testutil.Manifest(t, "mitstack-node-topology", release.Components).Bytes
+	out[tokenAndLeaseCredentials] = testutil.Manifest(t, "mitstack-cluster-tokens", release.Components).Bytes
+
+	hosting := unhosted
+	hosting.Hosting, hosting.Telemetry = &controlplane.Hosting{Repository: testutil.InitRepository}, components.TelemetryExport{}
+	ingress := controlplane.State{LoadBalancers: map[controlplane.Role][]controlplane.LoadBalancer{
+		controlplane.RoleIngress: {{Location: controlplane.GatewayLocation, PublicIPv4: "203.0.113.10"}}}}
+	release, err = hosting.Release(ingress)
+	require.NoError(t, err)
+	out[deployKeyCredentials] = testutil.Manifest(t, "mitstack-cluster-tokens", release.Components).Bytes
 }
 
 // podSpecs finds every pod spec in a document, as the map that holds its containers, by its path.

@@ -4542,9 +4542,8 @@ The decision cannot tell two things, so a builder plans for them:
 ### Steady and burst members
 
 A Cloud pool's first members, up to its minimum, are steady, and each member
-created above the minimum is a burst member. The kit's Deployments and
-StatefulSets stay off burst members, so the removal of an idle burst member
-moves none of them.
+created above the minimum is a burst member. The kit's own pods stay off
+burst members, so the removal of an idle burst member moves none of them.
 
 1. `PlanCloud` labels each server it creates above the minimum
    `mitstack.dev/burst=true`, the label `pools.KeyBurst` names and
@@ -4556,7 +4555,8 @@ moves none of them.
    or it is the local path provisioner's helper, which the provisioner binds to
    the node holding its volume. `scripts/render-components.sh` adds the
    affinity to the workloads of each Helm chart the kit renders through `keep_off_burst_nodes` in
-   `scripts/lib/burst-placement.sh`.
+   `scripts/lib/burst-placement.sh`. A template the kit writes itself, such as
+   `controlplane/manifests/cluster-tokens.yaml`, states it in place.
 4. A burst member can take such a pod in the minutes between joining and the
    labeller's next run. That run evicts the pod, and it lands again on a
    steady member.

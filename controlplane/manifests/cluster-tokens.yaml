@@ -90,6 +90,13 @@ spec:
   backoffLimit: 10
   template:
     spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: {{ .BurstLabel }}
+                    operator: DoesNotExist
       serviceAccountName: mitstack-repo-token
       restartPolicy: Never
       securityContext:
@@ -152,6 +159,13 @@ spec:
       backoffLimit: 2
       template:
         spec:
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: {{ .BurstLabel }}
+                        operator: DoesNotExist
           serviceAccountName: mitstack-repo-token
           restartPolicy: Never
           securityContext:
@@ -252,6 +266,13 @@ spec:
       backoffLimit: 0
       template:
         spec:
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: {{ .BurstLabel }}
+                        operator: DoesNotExist
           serviceAccountName: mitstack-telemetry-lease
           restartPolicy: Never
           securityContext:

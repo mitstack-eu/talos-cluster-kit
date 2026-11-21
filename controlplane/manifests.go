@@ -98,6 +98,7 @@ func (p Plane) ownComponents(enrolmentToken string, poolWorkers []Server) ([]com
 		"EnrolmentToken":       enrolmentToken,
 		"RepositoryCredential": credential,
 		"LeaseResource":        p.Telemetry.Resource,
+		"BurstLabel":           components.BurstLabel,
 	}
 	tokens, err := execute(clusterTokens, data)
 	if err != nil {

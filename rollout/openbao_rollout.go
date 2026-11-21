@@ -43,6 +43,7 @@ func renderOpenBaoRollout(heads []documentHead, toolsImage string) ([]byte, erro
 		"Name": openBaoRollout, "Namespace": members.Metadata.Namespace, "App": components.OpenBaoName, "Image": toolsImage,
 		"Script": openBaoRolloutScript, "StatefulSet": members.Metadata.Name, "DisruptionBudget": budget.Metadata.Name,
 		"MemberTimeout": strconv.Itoa(memberSeconds) + "s", "CallTimeout": strconv.Itoa(callSeconds) + "s",
+		"BurstLabel": components.BurstLabel,
 		// Each member's pass takes a read of the members, a read of the leader, a wait for the budget, a second read of
 		// the members, its eviction, its return and a read of its own. Up to one pass a member evicts nothing after its
 		// first four calls, and the run adds the StatefulSet's read and the members' read that ends it.

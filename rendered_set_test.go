@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
+	"github.com/mitstack-eu/talos-cluster-kit/rollout"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 	"github.com/mitstack-eu/talos-cluster-kit/tools"
 )
@@ -238,6 +239,53 @@ func TestManifests_TheControlPlanesCredentialsRenderThePodsTheirInputsCallForEac
 			slices.Sort(got)
 			assert.Equal(t, tc.want, got, "the pods %s renders", tc.source)
 			assert.Empty(t, free, "the pods of %s with no required node affinity %s DoesNotExist", tc.source, components.BurstLabel)
+		})
+	}
+}
+
+func TestManifests_TheRolloutRendersAHandoverPerComponentAndOpenBaosMemberMoveOnlyWhereItCarriesOpenBaoEachKeptOffBurstMembers(t *testing.T) {
+	manifests := renderedManifests(t)
+	pods := renderedPods(t)
+
+	for _, tc := range []struct {
+		name, plane string
+		// amongCarried are components the rollout must carry, each of which then gets a handover.
+		amongCarried []string
+		// besideHandovers are the Jobs the rollout renders that no carried component's handover accounts for.
+		besideHandovers []string
+	}{
+		{"an unhosted plane with no OpenBao renders a handover for each component it carries and no member move",
+			unhostedRollout, []string{"mitstack-node-topology"}, nil},
+		{"a hosting plane carrying OpenBao renders the member move beside OpenBao's handover",
+			hostingRollout, []string{"mitstack-node-topology", components.OpenBaoName}, []string{"mitstack-openbao-rollout"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var carried []string
+			for source := range manifests {
+				if dir, ok := strings.CutPrefix(source, tc.plane+"/"+rollout.ComponentsDir+"/"); ok {
+					carried = append(carried, strings.TrimSuffix(dir, "/"+componentFile))
+				}
+			}
+			want := slices.Clone(tc.besideHandovers)
+			for _, name := range carried {
+				want = append(want, rollout.ApplicationPrefix+name+"-handover")
+			}
+
+			var got, free []string
+			for _, pod := range pods {
+				if !strings.HasPrefix(pod.source, tc.plane+"/") {
+					continue
+				}
+				got = append(got, pod.workload)
+				if !refusesBurstNodes(pod.spec) {
+					free = append(free, pod.where)
+				}
+			}
+
+			assert.Subset(t, carried, tc.amongCarried, "the components %s carries", tc.plane)
+			assert.ElementsMatch(t, want, got, "the pods %s renders", tc.plane)
+			slices.Sort(free)
+			assert.Empty(t, free, "the pods of %s with no required node affinity %s DoesNotExist", tc.plane, components.BurstLabel)
 		})
 	}
 }

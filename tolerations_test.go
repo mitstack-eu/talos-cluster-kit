@@ -89,6 +89,8 @@ func tokenAndLeasePlane(t *testing.T, now time.Time) controlplane.Plane {
 const (
 	unhostedRollout = "rollout of the unhosted plane"
 	hostingRollout  = "rollout of the hosting plane"
+	// componentFile is the file the rollout commits in each component's directory.
+	componentFile = "manifest.yaml"
 )
 
 // addControlPlane adds what the control plane renders beside its node report: the topology labeller, its credentials
@@ -121,7 +123,7 @@ func addRollout(t *testing.T, out map[string][]byte, name string, release rollou
 	t.Helper()
 	stated := map[string][]map[string]any{}
 	for _, m := range release.Components {
-		stated[rollout.ComponentsDir+"/"+m.Name+"/manifest.yaml"] = testutil.Documents(t, m.Bytes)
+		stated[rollout.ComponentsDir+"/"+m.Name+"/"+componentFile] = testutil.Documents(t, m.Bytes)
 	}
 	files, err := release.Files(testutil.InitRepository)
 	require.NoError(t, err)

@@ -249,8 +249,10 @@ func TestManifests_TheRolloutRendersAHandoverPerComponentAndOpenBaosMemberMoveOn
 
 	for _, tc := range []struct {
 		name, rollout string
-		carries       []string
-		beside        []string
+		// amongCarried are components the rollout must carry, each of which then gets a handover.
+		amongCarried []string
+		// besideHandovers are the Jobs the rollout renders beside the handovers.
+		besideHandovers []string
 	}{
 		{"an unhosted plane with no OpenBao renders a handover for each component it carries and no member move",
 			unhostedRollout, []string{"mitstack-node-topology"}, nil},
@@ -261,10 +263,10 @@ func TestManifests_TheRolloutRendersAHandoverPerComponentAndOpenBaosMemberMoveOn
 			var carried []string
 			for source := range manifests {
 				if dir, ok := strings.CutPrefix(source, tc.rollout+"/"+rollout.ComponentsDir+"/"); ok {
-					carried = append(carried, strings.TrimSuffix(dir, "/manifest.yaml"))
+					carried = append(carried, strings.TrimSuffix(dir, "/"+componentFile))
 				}
 			}
-			want := slices.Clone(tc.beside)
+			want := slices.Clone(tc.besideHandovers)
 			for _, name := range carried {
 				want = append(want, rollout.ApplicationPrefix+name+"-handover")
 			}
@@ -280,7 +282,7 @@ func TestManifests_TheRolloutRendersAHandoverPerComponentAndOpenBaosMemberMoveOn
 				}
 			}
 
-			assert.Subset(t, carried, tc.carries, "the components %s carries", tc.rollout)
+			assert.Subset(t, carried, tc.amongCarried, "the components %s carries", tc.rollout)
 			assert.ElementsMatch(t, want, got, "the pods %s renders", tc.rollout)
 			slices.Sort(free)
 			assert.Empty(t, free, "the pods of %s with no required node affinity %s DoesNotExist", tc.rollout, components.BurstLabel)

@@ -22,6 +22,13 @@ spec:
         app.kubernetes.io/name: {{ .Name }}
         mitstack.dev/app: {{ .App }}
     spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: {{ .BurstLabel }}
+                    operator: DoesNotExist
       serviceAccountName: {{ .Name }}
       restartPolicy: Never
       securityContext:

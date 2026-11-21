@@ -4555,8 +4555,10 @@ burst members, so the removal of an idle burst member moves none of them.
    or it is the local path provisioner's helper, which the provisioner binds to
    the node holding its volume. `scripts/render-components.sh` adds the
    affinity to the workloads of each Helm chart the kit renders through `keep_off_burst_nodes` in
-   `scripts/lib/burst-placement.sh`. A template the kit writes itself, such as
-   `controlplane/manifests/cluster-tokens.yaml`, states it in place.
+   `scripts/lib/burst-placement.sh`. A template the kit writes itself states it
+   in place, such as `controlplane/manifests/cluster-tokens.yaml`, and the
+   handover Job and OpenBao's rollout Job that the component rollout adds in
+   `rollout/handover.yaml` and `rollout/openbao-rollout.yaml`.
 4. A burst member can take such a pod in the minutes between joining and the
    labeller's next run. That run evicts the pod, and it lands again on a
    steady member.

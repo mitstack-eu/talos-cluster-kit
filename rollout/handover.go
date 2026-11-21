@@ -8,6 +8,7 @@ import (
 
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 
+	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/internal/tmpl"
 	"github.com/mitstack-eu/talos-cluster-kit/tools"
 )
@@ -86,6 +87,6 @@ func (c carried) renderHandover(heads []documentHead, wave int, toolsImage strin
 		"Name": job.Name, "Namespace": job.Namespace, "Wave": strconv.Itoa(wave), "ServiceAccount": ArgoCDController,
 		"Image": toolsImage, "Script": handoverScript, "Objects": string(objects),
 		"TalosManager": constants.KubernetesFieldManagerName, "ArgoCDManager": ArgoCDManager,
-		"AdoptionTimeout": adoptionTimeout,
+		"AdoptionTimeout": adoptionTimeout, "BurstLabel": components.BurstLabel,
 	})
 }

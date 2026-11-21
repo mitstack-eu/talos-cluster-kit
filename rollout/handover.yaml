@@ -18,6 +18,13 @@ spec:
   activeDeadlineSeconds: 600
   template:
     spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: {{ .BurstLabel }}
+                    operator: DoesNotExist
       serviceAccountName: {{ .ServiceAccount }}
       restartPolicy: Never
       securityContext:

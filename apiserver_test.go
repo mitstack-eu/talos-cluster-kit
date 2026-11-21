@@ -124,10 +124,7 @@ func TestAPIServer_TheOutsideProbeAndTheSecurityScanWriteTheirOwnConfigMapAndNoO
 }
 
 func TestAPIServer_OnlyTheLeaseJobMayReadOrPatchThePushTokenSecretUnderTheRenderedRBAC(t *testing.T) {
-	ca, err := gateway.NewCA(time.Now(), time.Hour, []netip.Addr{netip.MustParseAddr("10.0.0.2")})
-	require.NoError(t, err)
-	release, err := controlplane.Plane{Subscription: "sub_0123456789ab", PlatformURL: "https://api.mitstack.dev", RepoURL: "https://github.com/acme/cluster",
-		ReportProofScript: "echo report-proof\n", GatewayCA: &ca, Telemetry: testutil.TelemetryExport()}.Release(controlplane.State{})
+	release, err := tokenAndLeasePlane(t, time.Now()).Release(controlplane.State{})
 	require.NoError(t, err)
 	var rendered []byte
 	for _, name := range []string{"mitstack-cluster-tokens", "mitstack-telemetry"} {

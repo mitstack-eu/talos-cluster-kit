@@ -71,15 +71,22 @@ const (
 	deployKeyCredentials     = "control plane with a deploy key and no lease/mitstack-cluster-tokens"
 )
 
+// tokenAndLeasePlane is a plane that reads its repository with the platform's token and leases telemetry, under a
+// gateway CA minted at now.
+func tokenAndLeasePlane(t *testing.T, now time.Time) controlplane.Plane {
+	t.Helper()
+	ca, err := gateway.NewCA(now, time.Hour, []netip.Addr{netip.MustParseAddr("10.0.0.2")})
+	require.NoError(t, err)
+	return controlplane.Plane{Subscription: "sub_0123456789ab", PlatformURL: "https://api.mitstack.dev", RepoURL: "https://github.com/acme/cluster",
+		ReportProofScript: "echo report-proof\n", GatewayCA: &ca, Telemetry: testutil.TelemetryExport()}
+}
+
 // addControlPlane adds what the control plane renders beside its node report: the topology labeller, and its
 // credentials twice, since the template renders the token renewal only for the platform's token and the lease only
 // for a lease resource.
 func addControlPlane(t *testing.T, out map[string][]byte, now time.Time) {
 	t.Helper()
-	ca, err := gateway.NewCA(now, time.Hour, []netip.Addr{netip.MustParseAddr("10.0.0.2")})
-	require.NoError(t, err)
-	unhosted := controlplane.Plane{Subscription: "sub_0123456789ab", PlatformURL: "https://api.mitstack.dev", RepoURL: "https://github.com/acme/cluster",
-		ReportProofScript: "echo report-proof\n", GatewayCA: &ca, Telemetry: testutil.TelemetryExport()}
+	unhosted := tokenAndLeasePlane(t, now)
 	release, err := unhosted.Release(controlplane.State{})
 	require.NoError(t, err)
 	out["control plane/mitstack-node-topology"] = testutil.Manifest(t, "mitstack-node-topology", release.Components).Bytes

@@ -4,14 +4,17 @@ package talosclusterkit
 // cluster runs its apps on workers alone.
 
 import (
+	"bytes"
 	"fmt"
 	"net/netip"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.yaml.in/yaml/v4"
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
@@ -20,6 +23,7 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/internal/redundanttest"
 	"github.com/mitstack-eu/talos-cluster-kit/openbaoinit"
 	"github.com/mitstack-eu/talos-cluster-kit/report"
+	"github.com/mitstack-eu/talos-cluster-kit/rollout"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 )
 
@@ -81,9 +85,15 @@ func tokenAndLeasePlane(t *testing.T, now time.Time) controlplane.Plane {
 		ReportProofScript: "echo report-proof\n", GatewayCA: &ca, Telemetry: testutil.TelemetryExport()}
 }
 
-// addControlPlane adds what the control plane renders beside its node report: the topology labeller, and its
-// credentials twice, since the template renders the token renewal only for the platform's token and the lease only
-// for a lease resource.
+// The shared set's two renderings of the component rollout, named by the plane whose release it carries.
+const (
+	unhostedRollout = "rollout of the unhosted plane"
+	hostingRollout  = "rollout of the hosting plane"
+)
+
+// addControlPlane adds what the control plane renders beside its node report: the topology labeller, its credentials
+// twice, since the template renders the token renewal only for the platform's token and the lease only for a lease
+// resource, and the rollout of both releases, since only the hosting plane's carries OpenBao.
 func addControlPlane(t *testing.T, out map[string][]byte, now time.Time) {
 	t.Helper()
 	unhosted := tokenAndLeasePlane(t, now)
@@ -91,6 +101,7 @@ func addControlPlane(t *testing.T, out map[string][]byte, now time.Time) {
 	require.NoError(t, err)
 	out["control plane/mitstack-node-topology"] = testutil.Manifest(t, "mitstack-node-topology", release.Components).Bytes
 	out[tokenAndLeaseCredentials] = testutil.Manifest(t, "mitstack-cluster-tokens", release.Components).Bytes
+	addRollout(t, out, unhostedRollout, release)
 
 	hosting := unhosted
 	hosting.Hosting = &controlplane.Hosting{Repository: testutil.InitRepository}
@@ -101,6 +112,33 @@ func addControlPlane(t *testing.T, out map[string][]byte, now time.Time) {
 	release, err = hosting.Release(ingress)
 	require.NoError(t, err)
 	out[deployKeyCredentials] = testutil.Manifest(t, "mitstack-cluster-tokens", release.Components).Bytes
+	addRollout(t, out, hostingRollout, release)
+}
+
+// addRollout adds each file the rollout of release commits to the cluster repository, by its path under name, holding
+// only the documents the rollout adds to those the release's components state, which the set holds already.
+func addRollout(t *testing.T, out map[string][]byte, name string, release rollout.Release) {
+	t.Helper()
+	stated := map[string][]map[string]any{}
+	for _, m := range release.Components {
+		stated[rollout.ComponentsDir+"/"+m.Name+"/manifest.yaml"] = testutil.Documents(t, m.Bytes)
+	}
+	files, err := release.Files(testutil.InitRepository)
+	require.NoError(t, err)
+
+	for _, f := range files {
+		var added bytes.Buffer
+		for _, doc := range testutil.Documents(t, f.Bytes) {
+			if slices.ContainsFunc(stated[f.Path], func(own map[string]any) bool { return reflect.DeepEqual(own, doc) }) {
+				continue
+			}
+			data, err := yaml.Marshal(doc)
+			require.NoError(t, err)
+			added.WriteString("---\n")
+			added.Write(data)
+		}
+		out[name+"/"+f.Path] = added.Bytes()
+	}
 }
 
 // podSpecs finds every pod spec in a document, as the map that holds its containers, by its path.

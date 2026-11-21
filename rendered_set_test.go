@@ -248,10 +248,10 @@ func TestManifests_TheRolloutRendersAHandoverPerComponentAndOpenBaosMemberMoveOn
 	pods := renderedPods(t)
 
 	for _, tc := range []struct {
-		name, rollout string
+		name, plane string
 		// amongCarried are components the rollout must carry, each of which then gets a handover.
 		amongCarried []string
-		// besideHandovers are the Jobs the rollout renders beside the handovers.
+		// besideHandovers are the Jobs the rollout renders that no carried component's handover accounts for.
 		besideHandovers []string
 	}{
 		{"an unhosted plane with no OpenBao renders a handover for each component it carries and no member move",
@@ -262,7 +262,7 @@ func TestManifests_TheRolloutRendersAHandoverPerComponentAndOpenBaosMemberMoveOn
 		t.Run(tc.name, func(t *testing.T) {
 			var carried []string
 			for source := range manifests {
-				if dir, ok := strings.CutPrefix(source, tc.rollout+"/"+rollout.ComponentsDir+"/"); ok {
+				if dir, ok := strings.CutPrefix(source, tc.plane+"/"+rollout.ComponentsDir+"/"); ok {
 					carried = append(carried, strings.TrimSuffix(dir, "/"+componentFile))
 				}
 			}
@@ -273,7 +273,7 @@ func TestManifests_TheRolloutRendersAHandoverPerComponentAndOpenBaosMemberMoveOn
 
 			var got, free []string
 			for _, pod := range pods {
-				if !strings.HasPrefix(pod.source, tc.rollout+"/") {
+				if !strings.HasPrefix(pod.source, tc.plane+"/") {
 					continue
 				}
 				got = append(got, pod.workload)
@@ -282,10 +282,10 @@ func TestManifests_TheRolloutRendersAHandoverPerComponentAndOpenBaosMemberMoveOn
 				}
 			}
 
-			assert.Subset(t, carried, tc.amongCarried, "the components %s carries", tc.rollout)
-			assert.ElementsMatch(t, want, got, "the pods %s renders", tc.rollout)
+			assert.Subset(t, carried, tc.amongCarried, "the components %s carries", tc.plane)
+			assert.ElementsMatch(t, want, got, "the pods %s renders", tc.plane)
 			slices.Sort(free)
-			assert.Empty(t, free, "the pods of %s with no required node affinity %s DoesNotExist", tc.rollout, components.BurstLabel)
+			assert.Empty(t, free, "the pods of %s with no required node affinity %s DoesNotExist", tc.plane, components.BurstLabel)
 		})
 	}
 }

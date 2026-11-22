@@ -110,14 +110,19 @@ A block switches the services on by setting `Plane.Runners` to a
 `components`. A plane whose `Runners` is nil runs no runner, and its cluster
 renders as it did before.
 
-A block built on the robot cluster module, `operator/robotcluster`, never sets
-the plane itself. It sets `Config.Runners` instead, a function that reads the
+A block built on the robot cluster module never sets the plane itself. That
+module lives under `operator/robotcluster` and holds what an operator of a
+cluster with a Robot worker shares, as the
+[README](../README.md#the-robot-cluster-module-for-a-cluster-with-a-robot-worker)
+describes. The block sets `Config.Runners` instead, a function that reads the
 request and returns its `RunnerInputs`, and the module puts the answer on every
-plane it renders. A nil `Config.Runners` runs no runner. When the function
-returns an error, a subscribe or upgrade refuses with it before any Hetzner
-change, and a validate reads the cluster as unknown and names the error. An
-unsubscribe never asks the function, so a request whose runners cannot be named
-still tears its cluster down to absent.
+plane it renders. A nil `Config.Runners` runs no runner.
+
+When the function returns an error, a subscribe or upgrade refuses with it
+before any Hetzner change. `Cluster.Observe`, which reads the whole cluster's
+state, then reads the cluster as unknown and names the error. An unsubscribe
+never asks the function, so a request whose runners cannot be named still tears
+its cluster down to absent.
 
 | Field | What it holds | What the kit refuses |
 |---|---|---|

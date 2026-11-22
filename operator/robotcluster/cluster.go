@@ -156,8 +156,8 @@ func (k *Cluster) PlaneFor(api controlplane.API, d contract.Desired) (controlpla
 	return p, nil
 }
 
-// readPlane is d's plane without its runner services, for a read of Hetzner that renders nothing, so a teardown never
-// waits on Config.Runners. It drops a size error, since Ensure and PlanReplacements refuse that size themselves.
+// readPlane is d's plane without its runner services or a size error, for a read that renders nothing, so a teardown
+// never waits on Config.Runners and Ensure and PlanReplacements refuse a bad size themselves.
 func (k *Cluster) readPlane(api controlplane.API, d contract.Desired) controlplane.Plane {
 	p := k.placeApps(k.NewPlane(api, d.SubscriptionID, d.Params["appName"]), d)
 	p.Size, _ = operator.ControlPlaneSize(d)

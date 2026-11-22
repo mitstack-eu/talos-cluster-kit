@@ -12,6 +12,7 @@ import (
 	"github.com/mitstack-eu/block-kit/capabilities/hetzner/robot"
 	"github.com/mitstack-eu/block-kit/contract"
 	"github.com/mitstack-eu/block-kit/handler"
+	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
 	"github.com/mitstack-eu/talos-cluster-kit/gateway"
 	"github.com/mitstack-eu/talos-cluster-kit/nodeconfig"
@@ -176,6 +177,7 @@ type ensureRequest struct {
 	minted *gateway.CA
 	// reports are the call's node reports, read once for the plane's removals and the Cloud pool's scaling.
 	reports *GatewayReports
+	runners *components.RunnerInputs
 }
 
 func (k *Cluster) readEnsureRequest(d contract.Desired) (ensureRequest, error) {
@@ -191,6 +193,9 @@ func (k *Cluster) readEnsureRequest(d contract.Desired) (ensureRequest, error) {
 		return req, err
 	}
 	if err = k.refuseUndeclaredSize(req.params.size); err != nil {
+		return req, err
+	}
+	if req.runners, err = k.runnersFor(d); err != nil {
 		return req, err
 	}
 	if err = operator.RefuseUnreleasedTools(k.cfg.ToolsImage()); err != nil {
@@ -214,6 +219,7 @@ func (req ensureRequest) plane(ctx context.Context, api controlplane.API) contro
 	p := req.k.placeApps(req.k.NewPlane(api, req.subID, req.params.appName), req.d)
 	p = withTelemetry(req.k.withReports(ctx, p, req.d, req.reports), req.d)
 	p.Size, p.ServerTypes, p.RepoURL, p.Removals = req.params.size, req.params.serverTypes, req.gh.Repo.URL(), req.gh.removals()
+	p.Runners = req.runners
 	if req.params.hosting {
 		p.Hosting = req.hosting()
 	}

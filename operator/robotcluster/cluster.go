@@ -16,6 +16,7 @@ import (
 	"github.com/mitstack-eu/block-kit/helpers/reportproof"
 	"github.com/mitstack-eu/block-kit/helpers/reqcache"
 	"github.com/mitstack-eu/block-kit/observe"
+	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
 	"github.com/mitstack-eu/talos-cluster-kit/operator"
 	"github.com/mitstack-eu/talos-cluster-kit/operator/clusterrepo"
@@ -37,6 +38,8 @@ type Config struct {
 	DedicatedServerOptional bool
 	// ClusterType is the name and type the manifest declares the cluster under; empty takes ResourceCluster.
 	ClusterType string
+	// Runners names the runner services a request's cluster runs, its error refusing the request; nil runs none.
+	Runners func(d contract.Desired) (*components.RunnerInputs, error)
 
 	Now             func() time.Time
 	CloudAPI        func(token string) controlplane.API
@@ -142,11 +145,30 @@ func requestReads(ctx context.Context) *controlplane.RequestReads {
 	return reads
 }
 
-// PlaneFor drops a size error, since Ensure and PlanReplacements refuse that size themselves.
-func (k *Cluster) PlaneFor(api controlplane.API, d contract.Desired) controlplane.Plane {
+// PlaneFor is d's plane with the runner services the Config names for it, answering the error that naming returns.
+func (k *Cluster) PlaneFor(api controlplane.API, d contract.Desired) (controlplane.Plane, error) {
+	p := k.readPlane(api, d)
+	runners, err := k.runnersFor(d)
+	if err != nil {
+		return controlplane.Plane{}, err
+	}
+	p.Runners = runners
+	return p, nil
+}
+
+// readPlane is d's plane without its runner services, for a read of Hetzner that renders nothing, so a teardown never
+// waits on them. It drops a size error, since Ensure and PlanReplacements refuse that size themselves.
+func (k *Cluster) readPlane(api controlplane.API, d contract.Desired) controlplane.Plane {
 	p := k.placeApps(k.NewPlane(api, d.SubscriptionID, d.Params["appName"]), d)
 	p.Size, _ = operator.ControlPlaneSize(d)
 	return p
+}
+
+func (k *Cluster) runnersFor(d contract.Desired) (*components.RunnerInputs, error) {
+	if k.cfg.Runners == nil {
+		return nil, nil
+	}
+	return k.cfg.Runners(d)
 }
 
 func (k *Cluster) cloudOnly(d contract.Desired) bool {

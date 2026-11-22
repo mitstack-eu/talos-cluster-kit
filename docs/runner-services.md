@@ -110,6 +110,15 @@ A block switches the services on by setting `Plane.Runners` to a
 `components`. A plane whose `Runners` is nil runs no runner, and its cluster
 renders as it did before.
 
+A block built on the robot cluster module, `operator/robotcluster`, never sets
+the plane itself. It sets `Config.Runners` instead, a function that reads the
+request and returns its `RunnerInputs`, and the module puts the answer on every
+plane it renders. A nil `Config.Runners` runs no runner. When the function
+returns an error, a subscribe or upgrade refuses with it before any Hetzner
+change, and a validate reads the cluster as unknown and names the error. An
+unsubscribe never asks the function, so a request whose runners cannot be named
+still tears its cluster down to absent.
+
 | Field | What it holds | What the kit refuses |
 |---|---|---|
 | `Organization` | The GitHub organisation login, which gives the scale set its URL `https://github.com/<Organization>` | A value that is no GitHub login |

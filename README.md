@@ -4843,6 +4843,11 @@ empty, it is `hetzner.kubernetes-cluster`, which hcloud-hrobot-talos-cluster
 provides. hcloud-talos-runner-cluster sets `github.runner-cluster`, so an app's
 runner block binds only to a runner cluster.
 
+`Config.Runners` names the GitHub runner services a request's cluster runs, as
+[the runner services page](docs/runner-services.md#how-an-operator-switches-the-services-on)
+describes. Left nil, the cluster runs none. `Cluster.PlaneFor` returns the
+request's plane with those services, or the error `Config.Runners` returned.
+
 Every plane `Cluster.NewPlane` builds wraps its API with
 `controlplane.ReadOncePerRequest`, so one call from mitstack lists each kind of
 Cloud resource once, as

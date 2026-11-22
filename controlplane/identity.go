@@ -148,8 +148,8 @@ func issuerURL(bucket, subscriptionID string) *url.URL {
 	return &url.URL{Scheme: "https", Host: bucket + ".s3." + issuerRegion + ".amazonaws.com", Path: "/" + subscriptionID}
 }
 
-// ClassGatewayLabelsLost refuses to rebuild the only gateway of a plane in one location whose network holds no
-// enrolment digest or issuer bucket, which a release before the network held them kept on the gateway alone.
+// ClassGatewayLabelsLost refuses to delete or rebuild the only gateway of a plane in one location while its network
+// lacks the enrolment digest or the issuer bucket, since no other gateway remains to copy them from.
 const ClassGatewayLabelsLost = "gateway-labels-lost"
 
 // identityKeys are the cluster's enrolment digest and issuer bucket, which its network holds for the cluster's whole
@@ -178,8 +178,8 @@ func (p Plane) setIdentity(ctx context.Context, network Network, values map[stri
 	return p.API.SetNetworkLabels(ctx, network.ID, labels)
 }
 
-// copyIdentityStep copies onto the network each identity label that only the gateways of a cluster an earlier release
-// built carry, since every reader reads them from the network.
+// copyIdentityStep copies onto the network each identity label only a gateway carries, since every reader reads them
+// from the network.
 func (p Plane) copyIdentityStep(st State, network Network) (Step, bool) {
 	gw, ok := st.SharedGateway()
 	if !ok || holdsIdentity(network) {

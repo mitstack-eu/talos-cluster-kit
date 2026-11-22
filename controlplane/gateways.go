@@ -742,8 +742,7 @@ func gatewayName(gw Server) string { return fmt.Sprintf("gateway %d in %s", gw.I
 
 // gatewaySet is every gateway with its newest reading since began, off its address as Hetzner reads it now, else as a
 // report since began reads its mirror, with each reading's detail naming that report. A plane in one location asks for
-// no redundancy, since no other gateway can serve while its only one is replaced, and the deletion's event names that
-// outage.
+// no redundancy, since no other gateway can serve while its only one is replaced.
 func (p Plane) gatewaySet(ctx context.Context, st State, network Network, began time.Time) (redundant.Set, map[string]string, error) {
 	minimum := redundant.AllButOne
 	if p.oneLocation() {

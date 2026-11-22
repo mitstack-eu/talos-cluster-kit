@@ -1208,7 +1208,7 @@ func TestPlane_ReadsACachedGatewayListWithoutCopyingTheComponentManifests(t *tes
 	for _, m := range slices.Concat(set.Served, set.Inline) {
 		manifestBytes += len(m.Bytes)
 	}
-	// A hit allocates its key and the parsed extra images, a few hundred bytes, far under a hundredth of one copy.
+	// A hit allocates its key and the parsed extra images, a few kilobytes at most, far under a hundredth of one copy.
 	bound := uint64(manifestBytes / 100)
 	cases := []struct {
 		name  string

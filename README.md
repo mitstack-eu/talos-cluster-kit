@@ -1510,8 +1510,8 @@ components the kit installs there run from upstream registries, set no limits
 or mount a host path. `traefik`, `cert-manager`, `openbao` and
 `external-secrets` exist only on a cluster that hosts the platform.
 `mitstack-runners` exists only on a cluster with
-[runner services](docs/runner-services.md), whose three pod policies skip it
-under the same names. No
+[runner services](docs/runner-services.md). Such a cluster runs a variant of
+each of the three policies that skips it too, under the policy's usual name. No
 namespace of an app, including the control plane's own app, is in this list.
 Neither is `mitstack-admission-probe`, where the node report tries its refused
 fixtures, as [the section on the report's admission rules](#how-the-report-tries-each-admission-rule)
@@ -1532,7 +1532,7 @@ explains. The policies judge each of them.
 | `openbao` | OpenBao's three members | Its image comes from `quay.io/openbao` and its values set no limits |
 | `external-secrets` | External Secrets | Its images come from `ghcr.io/external-secrets` and its values set no limits |
 | `local-path-storage` | The local path provisioner and its helper pods | The image comes from Docker Hub and a helper pod mounts the directory of a claim's volume on the node as a host path |
-| `mitstack-runners` | ARC's controller, the scale set's listener and each CI job's runner pod with its Docker daemon sidecar | Their images come from `ghcr.io/actions` and Docker Hub, and a job's pod sets no limits and runs its Docker daemon privileged |
+| `mitstack-runners` | The controller of ARC, GitHub's actions-runner-controller for self-hosted runners, the scale set's listener and each CI job's runner pod with its Docker daemon sidecar | The controller and the listener run images from `ghcr.io/actions`, and a job's pod runs the runner and Docker daemon images the block's operator names. A job's containers set no limits. No pod there mounts a host path, and the host-path policy skips the namespace because the kit writes its variant with the other two |
 
 The CloudNativePG operator in `cnpg-system` runs the Postgres clusters an app
 keeps its data in. A namespace labelled `mitstack.dev/database-slice=true` is

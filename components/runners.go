@@ -98,9 +98,8 @@ func (in RunnerInputs) Images() ([]Image, error) {
 	return images, nil
 }
 
-// WithRunnerServices adds ARC's controller and the runners' namespace to the served manifests and swaps each pod
-// policy that skips local-path-storage for its variant that skips RunnersNamespace too, under the same name. A set
-// that holds the services already is returned as it is.
+// WithRunnerServices adds ARC's controller and the runners' namespace to the served manifests and swaps in the pod
+// policies that skip RunnersNamespace, so a gateway can serve them without the scale set.
 func (s Set) WithRunnerServices() Set {
 	if slices.ContainsFunc(s.Served, func(m Manifest) bool { return m.Name == runnersName }) {
 		return s
@@ -133,7 +132,7 @@ func runnerPolicyVariants() []string {
 	return names
 }
 
-// WithRunners is the set with the runner services and the scale set in renders inline.
+// WithRunners is the set with the runner services and the scale set rendered inline from the inputs.
 func (s Set) WithRunners(in RunnerInputs) (Set, error) {
 	if err := in.Validate(); err != nil {
 		return Set{}, fmt.Errorf("the runner scale set: %w", err)

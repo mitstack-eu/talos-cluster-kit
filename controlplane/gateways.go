@@ -64,9 +64,7 @@ func (p Plane) reading(ctx context.Context, gw Server, since time.Time) (Gateway
 
 func gatewayAddressOf(gw Server) string { return GatewayAddresses[gw.Location] }
 
-// gatewayComponents is what every gateway mirrors and serves, which holds none of the cluster's keys, so a
-// replacement renders it without them.
-// A plane that asks for runners mirrors the images each job's pod starts beside them.
+// gatewayComponents is the keyless set every gateway mirrors and serves, with the extra images it mirrors beside it.
 func (p Plane) gatewayComponents() (components.Set, []components.Image, error) {
 	tools, err := components.ParseImage(toolsImage())
 	if err != nil {

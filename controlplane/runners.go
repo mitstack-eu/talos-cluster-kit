@@ -13,8 +13,8 @@ var runnerTokenTemplate string
 
 var runnerToken = template.Must(template.New("runner-token").Parse(runnerTokenTemplate))
 
-// withRunners is set with the runner services and the scale set of a plane that asks for runners, so the build, every
-// release and the gateways hold the same runner manifests and images.
+// withRunners adds the runner services and the scale set to the set of a plane that asks for runners, so the build and
+// every release render the same runner manifests.
 func (p Plane) withRunners(set components.Set) (components.Set, error) {
 	if p.Runners == nil {
 		return set, nil
@@ -35,7 +35,6 @@ func (p Plane) servedSet() components.Set {
 	return set
 }
 
-// runnerTokenManifests are the runner token's empty Secret and the CronJob that leases it, for a plane that asks for runners.
 func (p Plane) runnerTokenManifests() ([]components.Manifest, error) {
 	if p.Runners == nil {
 		return nil, nil

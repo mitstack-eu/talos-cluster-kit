@@ -54,8 +54,8 @@ type Cluster struct {
 	// AppsOnWorkers keeps Talos's NoSchedule taint on the control-plane nodes, so only a pod that tolerates it, such as
 	// Cilium's, ztunnel's, the CNI agent's and the log collector's, runs there.
 	AppsOnWorkers bool
-	// DiskEviction makes the kubelet collect unused images from 80% disk use and evict pods once less than 15% of a
-	// disk is free, which a node running CI jobs' images and caches needs before its disk fills.
+	// DiskEviction puts the kubelet on image collection and soft eviction, which a node running CI jobs' images and
+	// caches needs before its disk fills.
 	DiskEviction bool
 	// Release names the kit release the configuration is rendered from, which Talos sets as the node's
 	// MachineConfigAnnotation; with none the node carries no such annotation.

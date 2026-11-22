@@ -57,14 +57,19 @@ each chart with the sha256 its repository's `index.yaml` publishes.
 | `openbaoinit/openbao-init.yaml` | Written by hand, as a template `openbaoinit.Manifests` fills | OpenBao's init Job in `mitstack-node`, and the ConfigMap with the public key the Job encrypts the root token and recovery key to, `openbaoSealKeyRecipient` |
 
 `components.Set.WithRunners` adds these files for a cluster with runner
-services, which [the runner services page](runner-services.md) explains.
+services, which [the runner services page](runner-services.md) explains. ARC,
+GitHub's actions-runner-controller, starts a pod for each GitHub Actions job.
+Each job's pod runs in dind mode, Docker in Docker, with a Docker daemon in a
+sidecar container. A lease is a short-lived GitHub token the platform grants
+the cluster, which the CronJob `mitstack-runner-lease` writes into the
+scale set's Secret.
 
 | File | Source | What it runs |
 |---|---|---|
 | `components/gha-runner-scale-set-controller/gha-runner-scale-set-controller.yaml` | The gha-runner-scale-set-controller 0.15.1 chart from `ghcr.io/actions/actions-runner-controller-charts` with `components/render/gha-runner-scale-set-controller-values.yaml`, pinned by the sha256 of its OCI layer | ARC's controller and its CRDs in namespace `mitstack-runners`, watching that namespace alone |
 | `components/runners/policies/` | Written by `scripts/render-components.sh` from the three pod policies in `components/admission/policies/` | The same three policies with `mitstack-runners` added after `local-path-storage` to each list of skipped namespaces |
-| `components/runners/runners.yaml` | Written by hand | The namespace at the privileged Pod Security level, and the Cilium policy that lets its pods reach the API server, DNS and the internet |
-| `components/runners/scale-set.yaml` | Written by hand, as a template `components.Set.WithRunners` fills, following what the gha-runner-scale-set 0.15.1 chart renders in dind mode | The org's one AutoscalingRunnerSet, its listener off burst members, and each job's pod with a privileged Docker daemon sidecar on emptyDir volumes |
+| `components/runners/runners.yaml` | Written by hand | The namespace at the privileged Pod Security level, and the Cilium policy that lets its pods reach the API server, DNS and GitHub, and a job's pod the internet |
+| `components/runners/scale-set.yaml` | Written by hand, as a template `components.Set.WithRunners` fills, following what the gha-runner-scale-set 0.15.1 chart renders in dind mode | The org's one AutoscalingRunnerSet, the manager Role and RoleBinding ARC's controller needs in the namespace, its listener off burst members, and each job's pod with a privileged Docker daemon sidecar on emptyDir volumes |
 
 mitstack-eu/cluster-bases is the repository of pinned third-party manifests
 the k3s blocks copy from. It holds CloudNativePG, which the kit copies, and

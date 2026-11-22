@@ -73,7 +73,8 @@ func (c Cluster) adapt(generated []config.Document, n Node) []config.Document {
 	return docs
 }
 
-// The kubelet's image collection and soft eviction thresholds, in percent of a disk.
+// The kubelet's image collection and soft eviction thresholds, in percent of a disk, and how long a soft threshold holds
+// before the kubelet evicts.
 const (
 	imageCollectionStartPercent = 80
 	imageCollectionStopPercent  = 70

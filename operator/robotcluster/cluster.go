@@ -145,7 +145,7 @@ func requestReads(ctx context.Context) *controlplane.RequestReads {
 	return reads
 }
 
-// PlaneFor is d's plane with the runner services the Config names for it, answering the error that naming returns.
+// PlaneFor is d's plane with the runner services Config.Runners names for it, or the error Config.Runners returns.
 func (k *Cluster) PlaneFor(api controlplane.API, d contract.Desired) (controlplane.Plane, error) {
 	p := k.readPlane(api, d)
 	runners, err := k.runnersFor(d)
@@ -157,7 +157,7 @@ func (k *Cluster) PlaneFor(api controlplane.API, d contract.Desired) (controlpla
 }
 
 // readPlane is d's plane without its runner services, for a read of Hetzner that renders nothing, so a teardown never
-// waits on them. It drops a size error, since Ensure and PlanReplacements refuse that size themselves.
+// waits on Config.Runners. It drops a size error, since Ensure and PlanReplacements refuse that size themselves.
 func (k *Cluster) readPlane(api controlplane.API, d contract.Desired) controlplane.Plane {
 	p := k.placeApps(k.NewPlane(api, d.SubscriptionID, d.Params["appName"]), d)
 	p.Size, _ = operator.ControlPlaneSize(d)

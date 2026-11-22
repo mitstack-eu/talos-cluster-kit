@@ -4,6 +4,7 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"io/fs"
 	"regexp"
 	"slices"
 	"strings"
@@ -24,13 +25,9 @@ const (
 	runnerControllerName = "gha-runner-scale-set-controller"
 	runnerScaleSetName   = "mitstack-runner-scale-set"
 	runnerControllerPath = "gha-runner-scale-set-controller/gha-runner-scale-set-controller.yaml"
-	runnerPoliciesDir    = "runners/policies/"
+	runnerPoliciesDir    = "runners/policies"
 	githubURL            = "https://github.com/"
 )
-
-// runnerExemptPolicies are the pod policies a cluster with the runner services swaps for a variant that skips
-// RunnersNamespace, which scripts/render-components.sh generates from each base policy.
-var runnerExemptPolicies = []string{"mitstack-disallow-host-path", "mitstack-require-resource-limits", "mitstack-restrict-image-registries"}
 
 var (
 	//go:embed runners/runners.yaml runners/policies gha-runner-scale-set-controller
@@ -109,13 +106,28 @@ func (s Set) WithRunnerServices() Set {
 		runnerManifest(runnersName, "runners/runners.yaml"),
 		runnerManifest(runnerControllerName, runnerControllerPath),
 	)
+	variants := runnerPolicyVariants()
 	s.Inline = slices.Clone(s.Inline)
 	for i, m := range s.Inline {
-		if slices.Contains(runnerExemptPolicies, m.Name) {
-			s.Inline[i] = runnerManifest(m.Name, runnerPoliciesDir+m.Name+".yaml")
+		if slices.Contains(variants, m.Name) {
+			s.Inline[i] = runnerManifest(m.Name, runnerPoliciesDir+"/"+m.Name+".yaml")
 		}
 	}
 	return s
+}
+
+// runnerPolicyVariants names each pod policy whose variant skipping RunnersNamespace scripts/render-components.sh
+// writes, so the script's list is the one source.
+func runnerPolicyVariants() []string {
+	entries, err := fs.ReadDir(runnerFiles, runnerPoliciesDir)
+	if err != nil {
+		panic(err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, strings.TrimSuffix(entry.Name(), ".yaml"))
+	}
+	return names
 }
 
 // WithRunners is the set with the runner services and the scale set in renders inline.
@@ -156,7 +168,8 @@ func runnerControllerImage() (Image, error) {
 	if err != nil {
 		return Image{}, err
 	}
-	images = slices.CompactFunc(images, func(a, b Image) bool { return a == b })
+	slices.SortFunc(images, func(a, b Image) int { return strings.Compare(a.Ref(), b.Ref()) })
+	images = slices.Compact(images)
 	if len(images) != 1 {
 		refs := make([]string, len(images))
 		for i, image := range images {

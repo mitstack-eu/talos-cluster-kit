@@ -91,7 +91,11 @@ func merged(a, b map[string]string) map[string]string {
 type provider struct{ e *Env }
 
 func (p provider) ListTagged(ctx context.Context, _ string) ([]observe.Tagged, error) {
-	st, err := p.e.Cluster.PlaneFor(p.e.Cloud, p.e.Desired()).Read(ctx)
+	plane, err := p.e.Cluster.PlaneFor(p.e.Cloud, p.e.Desired())
+	if err != nil {
+		return nil, err
+	}
+	st, err := plane.Read(ctx)
 	if err != nil {
 		return nil, err
 	}

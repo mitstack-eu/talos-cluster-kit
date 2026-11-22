@@ -51,13 +51,15 @@ holds the following parts, beside every component a cluster runs anyway:
   mounts is an emptyDir, it mounts no service account token, and it may run on
   a burst member.
 - A fixed CPU and memory request on the runner pod's runner and Docker daemon
-  containers, the same for every block, which `components/runners/scale-set.yaml`
-  holds. One job then fits on a cx23, the smallest server a Cloud pool may
-  list, beside every DaemonSet the kit runs on each node. A job that finds no
-  room on any node waits, so a Cloud pool that scales adds a burst member for
-  it, as [the README](../README.md#how-a-cloud-pool-scales-with-the-load)
-  explains. A test in `rendered_set_test.go` sums those DaemonSets' requests
-  and fails once the job no longer fits.
+  containers, the same for every block. The figures live only in
+  `components/runners/scale-set.yaml`, so read them there. One job then fits on
+  a cx23, Hetzner's 2 vCPU and 4 GB server and the smallest a Cloud pool may
+  list. It fits beside every DaemonSet, the pods the kit runs once on each
+  node, such as the mesh and network agents. A job that finds no room on any
+  node waits, so a Cloud pool that scales adds a burst member for it, as
+  [the README](../README.md#how-a-cloud-pool-scales-with-the-load) explains. A
+  test in `rendered_set_test.go` at the kit's root sums those DaemonSets'
+  requests and fails once the job no longer fits.
 - The CronJob `mitstack-runner-lease` in `mitstack-node`, which keeps the
   GitHub token ARC reads from the Secret `mitstack-runner-token` fresh.
 

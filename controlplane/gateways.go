@@ -64,21 +64,21 @@ func (p Plane) reading(ctx context.Context, gw Server, since time.Time) (Gateway
 
 func gatewayAddressOf(gw Server) string { return GatewayAddresses[gw.Location] }
 
-// gatewayComponents is the keyless set every gateway mirrors and serves, with the extra images it mirrors beside it.
-func (p Plane) gatewayComponents() (components.Set, []components.Image, error) {
+// gatewayExtraImages are the images every gateway mirrors beside its keyless set.
+func (p Plane) gatewayExtraImages() ([]components.Image, error) {
 	tools, err := components.ParseImage(toolsImage())
 	if err != nil {
-		return components.Set{}, nil, fmt.Errorf("the tools image: %w", err)
+		return nil, fmt.Errorf("the tools image: %w", err)
 	}
 	extra := []components.Image{tools}
 	if p.Runners != nil {
 		runnerImages, err := p.Runners.Images()
 		if err != nil {
-			return components.Set{}, nil, err
+			return nil, err
 		}
 		extra = append(extra, runnerImages...)
 	}
-	return p.servedSet(), extra, nil
+	return extra, nil
 }
 
 // gatewayLists keeps each gateway list by its set and extra images, since reading the images out of every manifest takes
@@ -86,7 +86,7 @@ func (p Plane) gatewayComponents() (components.Set, []components.Image, error) {
 var gatewayLists sync.Map
 
 func (p Plane) gatewayList() (gateway.List, error) {
-	set, extra, err := p.gatewayComponents()
+	extra, err := p.gatewayExtraImages()
 	if err != nil {
 		return gateway.List{}, err
 	}
@@ -94,7 +94,7 @@ func (p Plane) gatewayList() (gateway.List, error) {
 	if list, ok := gatewayLists.Load(key); ok {
 		return list.(gateway.List), nil
 	}
-	list, err := gateway.NewList(set, extra...)
+	list, err := gateway.NewList(p.servedSet(), extra...)
 	if err != nil {
 		return gateway.List{}, err
 	}

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane/cloudtest"
 	"github.com/mitstack-eu/talos-cluster-kit/gateway"
@@ -1197,4 +1199,42 @@ func TestPlane_LeavesAGatewayOfAnEarlierListDownAfterItsPowerOnToAnUpgradeAndNam
 	require.NoError(t, err)
 	assert.Equal(t, controlplane.CauseEarlierGatewayDown, cause)
 	assert.True(t, strings.HasSuffix(cause, "replace it with an upgrade"), "the cause names its remedy: %s", cause)
+}
+
+func TestPlane_ReadsACachedGatewayListWithoutCopyingTheComponentManifests(t *testing.T) {
+	const calls = 5
+	set := components.Default()
+	manifestBytes := 0
+	for _, m := range slices.Concat(set.Served, set.Inline) {
+		manifestBytes += len(m.Bytes)
+	}
+	// A hit allocates its key and the parsed extra images, a few kilobytes at most, far under a hundredth of one copy.
+	bound := uint64(manifestBytes / 100)
+	cases := []struct {
+		name  string
+		plane controlplane.Plane
+	}{
+		{"a plane hosting nothing", controlplane.Plane{}},
+		{"a plane hosting the platform", controlplane.Plane{Hosting: &controlplane.Hosting{}}},
+		{"a plane with runners", controlplane.Plane{Runners: runnerInputs()}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := tc.plane.GatewayListDigest()
+			require.NoError(t, err, "the call that fills the cache")
+
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			for range calls {
+				_, err = tc.plane.GatewayListDigest()
+			}
+			runtime.ReadMemStats(&after)
+
+			require.NoError(t, err)
+			perCall := (after.TotalAlloc - before.TotalAlloc) / calls
+			assert.Less(t, perCall, bound,
+				"a cached GatewayListDigest() allocates %d bytes a call; want under %d, a hundredth of the default set's %d manifest bytes",
+				perCall, bound, manifestBytes)
+		})
+	}
 }

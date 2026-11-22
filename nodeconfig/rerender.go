@@ -168,6 +168,7 @@ func (r *reader) read(doc config.Document) error {
 			return fmt.Errorf("the kubelet image %s is no %s release", d.KubeletImage, constants.KubeletImage)
 		}
 		c.Components.Versions.Kubernetes = version
+		c.DiskEviction = d.KubeletConfig.Object["evictionSoft"] != nil
 	case *k8s.KubeServiceAccountConfigV1Alpha1:
 		c.ServiceAccountIssuer = d.ServiceIssuer.IssuerURL.URL
 	case *security.TrustedRootsConfigV1Alpha1:

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 	"time"
 
 	"github.com/mitstack-eu/talos-cluster-kit/redundant"
@@ -47,13 +48,28 @@ func GatewayReadAt(body []byte, address netip.Addr, received time.Time) time.Tim
 // openBaoNamespace is where the OpenBao members' pods run, each named for its member.
 const openBaoNamespace = "openbao"
 
+// diskPressureTaint is the taint the kubelet sets on a node whose disk crossed an eviction threshold.
+const diskPressureTaint = "node.kubernetes.io/disk-pressure"
+
+type node struct {
+	Name          string  `json:"name"`
+	Ready         bool    `json:"ready"`
+	MachineConfig string  `json:"machineConfig"`
+	Taints        []taint `json:"taints"`
+}
+
+type taint struct {
+	Key string `json:"key"`
+}
+
+// serving is a node Ready and free of disk pressure, since a node under it evicts the pods it runs.
+func (n node) serving() bool {
+	return n.Ready && !slices.ContainsFunc(n.Taints, func(t taint) bool { return t.Key == diskPressureTaint })
+}
+
 type members struct {
-	Nodes []struct {
-		Name          string `json:"name"`
-		Ready         bool   `json:"ready"`
-		MachineConfig string `json:"machineConfig"`
-	} `json:"nodes"`
-	Etcd struct {
+	Nodes []node `json:"nodes"`
+	Etcd  struct {
 		Members []struct {
 			Hostname string `json:"hostname"`
 			Healthy  bool   `json:"healthy"`
@@ -147,7 +163,8 @@ func (r Read) EtcdMembers() ([]Member, error) {
 	return out, nil
 }
 
-// Nodes reads each named node, serving when the report reads it Ready; a node the report does not list has no reading.
+// Nodes reads each named node, serving when the report reads it Ready and under no disk pressure; a node the report
+// does not list has no reading.
 func (r Read) Nodes(names []string) ([]Member, error) {
 	m, err := r.members()
 	if err != nil {
@@ -155,7 +172,7 @@ func (r Read) Nodes(names []string) ([]Member, error) {
 	}
 	ready := map[string]bool{}
 	for _, n := range m.Nodes {
-		ready[n.Name] = n.Ready
+		ready[n.Name] = n.serving()
 	}
 	out := make([]Member, 0, len(names))
 	for _, name := range names {

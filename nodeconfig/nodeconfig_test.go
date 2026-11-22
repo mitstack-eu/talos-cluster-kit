@@ -807,6 +807,16 @@ func renderedNodes(t *testing.T) []renderedNode {
 			return testutil.NewCluster(t, testutil.WithProfile(nodeconfig.Metal))
 		}},
 		{name: "a Cloud worker", cluster: cloud, render: worker(nodeconfig.Node{})},
+		{name: "a Cloud control-plane node that evicts at 85% disk", render: controlPlane(nodeconfig.Node{}), cluster: func() nodeconfig.Cluster {
+			c := testutil.NewCluster(t)
+			c.DiskEviction = true
+			return c
+		}},
+		{name: "a Cloud worker that evicts at 85% disk", render: worker(nodeconfig.Node{}), cluster: func() nodeconfig.Cluster {
+			c := testutil.NewCluster(t)
+			c.DiskEviction = true
+			return c
+		}},
 		{name: "a dedicated worker on a vSwitch with its own labels", render: worker(dedicated), cluster: func() nodeconfig.Cluster {
 			return testutil.NewCluster(t, testutil.WithProfile(nodeconfig.Metal), testutil.WithLocations(3))
 		}},
@@ -1019,4 +1029,75 @@ func editDocuments(t *testing.T, config []byte, edit func(map[string]any)) []byt
 	}
 	require.NoError(t, encoder.Close())
 	return out.Bytes()
+}
+
+func kubeletSettings(t *testing.T, config []byte) map[string]any {
+	t.Helper()
+	docs := testutil.Kind(testutil.Documents(t, config), "KubeletConfig")
+	require.Len(t, docs, 1, "the KubeletConfig documents of the node's configuration")
+	settings, _ := docs[0]["config"].(map[string]any)
+	return settings
+}
+
+var diskEvictionSettings = map[string]any{
+	"imageGCHighThresholdPercent": 80,
+	"imageGCLowThresholdPercent":  70,
+	"evictionSoft":                map[string]any{"imagefs.available": "15%", "nodefs.available": "15%"},
+	"evictionSoftGracePeriod":     map[string]any{"imagefs.available": "1m", "nodefs.available": "1m"},
+}
+
+func TestRender_DiskEvictionCollectsImagesFrom80PercentAndEvictsPodsWhenLessThan15PercentOfADiskIsFree(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		render func(nodeconfig.Cluster) ([]byte, error)
+	}{
+		{"a control-plane node", func(c nodeconfig.Cluster) ([]byte, error) { return nodeconfig.Render(c, nodeconfig.Node{}) }},
+		{"a worker", func(c nodeconfig.Cluster) ([]byte, error) { return nodeconfig.RenderWorker(c, nodeconfig.Node{}) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cluster := testutil.NewCluster(t)
+			cluster.DiskEviction = true
+
+			got, err := tc.render(cluster)
+
+			require.NoError(t, err)
+			assert.Equal(t, diskEvictionSettings, kubeletSettings(t, got), "the kubelet's settings")
+		})
+	}
+}
+
+func TestRender_WithoutDiskEvictionTheKubeletKeepsItsDefaultDiskSettings(t *testing.T) {
+	cluster := testutil.NewCluster(t)
+
+	got, err := nodeconfig.Render(cluster, nodeconfig.Node{})
+
+	require.NoError(t, err)
+	assert.Empty(t, kubeletSettings(t, got), "the kubelet's settings")
+}
+
+func TestRerender_KeepsTheDiskEvictionOfARunningNodeRenderedWithItAndAddsNoneToOneRenderedWithout(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		eviction bool
+		want     map[string]any
+	}{
+		{"a node rendered with disk eviction", true, diskEvictionSettings},
+		{"a node rendered without it", false, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cluster := testutil.NewCluster(t)
+			cluster.DiskEviction = tc.eviction
+			running, err := nodeconfig.Render(cluster, nodeconfig.Node{})
+			require.NoError(t, err)
+
+			got, err := nodeconfig.Rerender(running, release)
+
+			require.NoError(t, err)
+			if tc.want == nil {
+				assert.Empty(t, kubeletSettings(t, got), "the kubelet's settings after the rerender")
+				return
+			}
+			assert.Equal(t, tc.want, kubeletSettings(t, got), "the kubelet's settings after the rerender")
+		})
+	}
 }

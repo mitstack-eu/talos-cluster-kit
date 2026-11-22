@@ -1073,6 +1073,172 @@ func TestClusterTokens_LeaseFailsNamingTheStatusWhenTheSecretRefusesThePatch(t *
 	assert.Contains(t, run.out, "403")
 }
 
+const (
+	runnerTokenSecretPath = "/api/v1/namespaces/mitstack-runners/secrets/mitstack-runner-token"
+	runnerPodsPath        = "/api/v1/namespaces/mitstack-runners/pods"
+	listenerSelector      = "app.kubernetes.io/component=runner-scale-set-listener"
+	runnerLeaseResource   = "github-runner-token"
+)
+
+// runnerLeaseStandIn is the platform's lease route and the Kubernetes API's runner token Secret and pods, recording each ask, patch and deletion.
+type runnerLeaseStandIn struct {
+	srv         *httptest.Server
+	seen        *[]string
+	asks        []map[string]any
+	patches     []map[string]any
+	patchTypes  []string
+	deletions   []string
+	patchStatus int
+}
+
+func runnerLeasePlatform(t *testing.T, status int, answer map[string]any) *runnerLeaseStandIn {
+	t.Helper()
+	s := &runnerLeaseStandIn{patchStatus: http.StatusOK}
+	decode := func(r *http.Request) map[string]any {
+		var body map[string]any
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		return body
+	}
+	s.srv, s.seen = platformServing(t, http.StatusOK, enrolmentAnswer, map[string]http.HandlerFunc{
+		"POST /v1/cluster-leases": func(w http.ResponseWriter, r *http.Request) {
+			s.asks = append(s.asks, decode(r))
+			w.WriteHeader(status)
+			_ = json.NewEncoder(w).Encode(answer)
+		},
+		"PATCH " + runnerTokenSecretPath: func(w http.ResponseWriter, r *http.Request) {
+			s.patchTypes = append(s.patchTypes, r.Header.Get("Content-Type"))
+			s.patches = append(s.patches, decode(r))
+			w.WriteHeader(s.patchStatus)
+			_ = json.NewEncoder(w).Encode(map[string]any{"kind": "Secret"})
+		},
+		"DELETE " + runnerPodsPath: func(w http.ResponseWriter, r *http.Request) {
+			s.deletions = append(s.deletions, r.URL.Query().Get("labelSelector"))
+			_ = json.NewEncoder(w).Encode(map[string]any{"kind": "PodList"})
+		},
+	})
+	return s
+}
+
+func runRunnerLease(t *testing.T, s *runnerLeaseStandIn) scriptRun {
+	t.Helper()
+	account := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(account, "token"), []byte(accountBearer), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(account, "ca.crt"), certPEM(s.srv), 0o644))
+	return runClusterTokens(t, s.srv, "runner-lease", reportBearer, "LEASE_RESOURCE="+runnerLeaseResource,
+		"KUBE_ACCOUNT_DIR="+account, "SUBSCRIPTION_ID=", "REPO_URL=", "REPOSITORY_CREDENTIAL=", "CALL_ATTEMPTS=")
+}
+
+func TestClusterTokens_RunnerLeaseWritesTheTokenAndItsExpiryIntoTheRunnerSecretAndDeletesTheListenerPods(t *testing.T) {
+	s := runnerLeasePlatform(t, http.StatusOK, leaseAnswer("runner-token-value", leaseClock(time.Hour)))
+
+	run := runRunnerLease(t, s)
+
+	require.NoError(t, run.err, run.out)
+	assert.Equal(t, []string{
+		"POST /v1/cluster-leases Bearer " + reportBearer,
+		"PATCH " + runnerTokenSecretPath + " Bearer " + accountBearer,
+		"DELETE " + runnerPodsPath + " Bearer " + accountBearer,
+	}, *s.seen, "the report token goes to the platform alone, and the job's own account patches the Secret before it deletes the listener pods")
+	assert.Equal(t, []map[string]any{{"resource": runnerLeaseResource, "want": map[string]any{}}}, s.asks, "the one lease asked, whatever the Secret holds")
+	assert.Equal(t, []map[string]any{{
+		"metadata":   map[string]any{"annotations": map[string]any{"mitstack.dev/lease-expires-at": leaseClock(time.Hour)}},
+		"stringData": map[string]any{"github_token": "runner-token-value"},
+	}}, s.patches, "one merge patch carrying the token under the key ARC reads, and its expiry")
+	assert.Equal(t, []string{"application/merge-patch+json"}, s.patchTypes)
+	assert.Equal(t, []string{listenerSelector}, s.deletions, "the listener pods go, so ARC's controller rebuilds the listener with the new token")
+}
+
+func TestClusterTokens_RunnerLeaseFailsNamingTheStatusAndTheLeaseAndWritesNothingWhenThePlatformRefuses(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusNotFound, http.StatusConflict, http.StatusBadGateway, http.StatusServiceUnavailable} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			refusal := "the platform's fixed message for " + strconv.Itoa(status)
+			s := runnerLeasePlatform(t, status, map[string]any{"error": refusal})
+
+			run := runRunnerLease(t, s)
+
+			require.Error(t, run.err, "a refused lease passed: %s", run.out)
+			assert.Contains(t, run.out, strconv.Itoa(status))
+			assert.Contains(t, run.out, runnerLeaseResource, "the lease the failure names")
+			assert.Len(t, s.asks, 1, "a refused lease is asked once, and the next run is the retry")
+			assert.Empty(t, s.patches, "a refusal leaves the Secret as it was")
+			assert.Empty(t, s.deletions, "a refusal leaves the listener running")
+		})
+	}
+}
+
+func TestClusterTokens_RunnerLeaseRefusesAnAnswerWithoutATokenOrWithAnExpiryNotWithinSixtyFiveMinutesBeforeWriting(t *testing.T) {
+	noToken := leaseAnswer("", leaseClock(time.Hour))
+	delete(noToken["credential"].(map[string]any), "token")
+	noExpiry := leaseAnswer("runner-token-value", "")
+	delete(noExpiry, "expiresAt")
+	for _, tc := range []struct {
+		name   string
+		answer map[string]any
+		named  string
+	}{
+		{"no token", noToken, "token"},
+		{"an empty token", leaseAnswer("", leaseClock(time.Hour)), "token"},
+		{"an expiry 66 minutes ahead", leaseAnswer("runner-token-value", leaseClock(66*time.Minute)), "expiresAt"},
+		{"an expiry a day ahead", leaseAnswer("runner-token-value", leaseClock(24*time.Hour)), "expiresAt"},
+		{"an expiry exactly now", leaseAnswer("runner-token-value", leaseClock(0)), "expiresAt"},
+		{"an expiry already past", leaseAnswer("runner-token-value", leaseClock(-time.Minute)), "expiresAt"},
+		{"an expiry that is no time", leaseAnswer("runner-token-value", "tomorrow"), "expiresAt"},
+		{"no expiry", noExpiry, "expiresAt"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := runnerLeasePlatform(t, http.StatusOK, tc.answer)
+
+			run := runRunnerLease(t, s)
+
+			require.Error(t, run.err, "an answer with %s was written: %s", tc.name, run.out)
+			assert.Contains(t, run.out, tc.named, "the failure names what the answer lacks")
+			assert.Empty(t, s.patches, "the Secret was written from an answer with %s", tc.name)
+			assert.Empty(t, s.deletions, "the listener was deleted on an answer with %s", tc.name)
+		})
+	}
+}
+
+func TestClusterTokens_RunnerLeaseFailsNamingTheStatusAndKeepsTheListenerWhenTheSecretRefusesThePatch(t *testing.T) {
+	s := runnerLeasePlatform(t, http.StatusOK, leaseAnswer("runner-token-value", leaseClock(time.Hour)))
+	s.patchStatus = http.StatusForbidden
+
+	run := runRunnerLease(t, s)
+
+	require.Error(t, run.err, "a lease whose patch was refused passed: %s", run.out)
+	assert.Contains(t, run.out, "mitstack-runner-token")
+	assert.Contains(t, run.out, "403")
+	assert.Empty(t, s.deletions, "the listener restarts only once the new token is in the Secret")
+}
+
+func TestClusterTokens_RunnerLeaseNeverPrintsTheTokenOrPutsItOnACommandLine(t *testing.T) {
+	const runnerToken = "ghs-runner-5d1e8a3c7b9f2046"
+	for _, tc := range []struct {
+		name      string
+		expiresAt string
+		written   bool
+	}{
+		{"a lease written", leaseClock(time.Hour), true},
+		{"a lease refused for its expiry", leaseClock(2 * time.Hour), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := runnerLeasePlatform(t, http.StatusOK, leaseAnswer(runnerToken, tc.expiresAt))
+
+			run := runRunnerLease(t, s)
+
+			if tc.written {
+				require.NoError(t, run.err, run.out)
+				require.Len(t, s.patches, 1, "the token reached the Secret, so the run had it to print")
+			}
+			for _, secret := range []string{runnerToken, reportBearer, accountBearer} {
+				assert.NotContains(t, run.out, secret, "the run printed a token")
+				for _, call := range run.tools.Calls(t) {
+					assert.NotContains(t, call, secret, "a token on the command line of %s", strings.Fields(call)[0])
+				}
+			}
+		})
+	}
+}
+
 func certPEM(srv *httptest.Server) []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
 }

@@ -29,7 +29,7 @@ func (p Plane) Release(st State) (rollout.Release, error) {
 	if err != nil {
 		return rollout.Release{}, err
 	}
-	set, _, err := p.gatewayComponents()
+	set, err := p.withRunners(p.servedSet())
 	if err != nil {
 		return rollout.Release{}, err
 	}

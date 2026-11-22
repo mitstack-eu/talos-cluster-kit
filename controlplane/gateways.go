@@ -64,21 +64,24 @@ func (p Plane) reading(ctx context.Context, gw Server, since time.Time) (Gateway
 
 func gatewayAddressOf(gw Server) string { return GatewayAddresses[gw.Location] }
 
-// gatewayComponents is what every gateway mirrors and serves, which holds none of the cluster's keys, so a
-// replacement renders it without them.
+// gatewayComponents is the keyless set every gateway mirrors and serves, with the extra images it mirrors beside it.
 func (p Plane) gatewayComponents() (components.Set, []components.Image, error) {
-	set := components.Default()
-	if p.Hosting != nil {
-		set = components.HostingServed()
-	}
 	tools, err := components.ParseImage(toolsImage())
 	if err != nil {
 		return components.Set{}, nil, fmt.Errorf("the tools image: %w", err)
 	}
-	return set, []components.Image{tools}, nil
+	extra := []components.Image{tools}
+	if p.Runners != nil {
+		runnerImages, err := p.Runners.Images()
+		if err != nil {
+			return components.Set{}, nil, err
+		}
+		extra = append(extra, runnerImages...)
+	}
+	return p.servedSet(), extra, nil
 }
 
-// gatewayLists keeps each gateway list by its set and tools image, since reading the images out of every manifest takes
+// gatewayLists keeps each gateway list by its set and extra images, since reading the images out of every manifest takes
 // the better part of a second and one call reads the list at several steps.
 var gatewayLists sync.Map
 
@@ -87,7 +90,7 @@ func (p Plane) gatewayList() (gateway.List, error) {
 	if err != nil {
 		return gateway.List{}, err
 	}
-	key := fmt.Sprint(p.Hosting != nil, extra)
+	key := fmt.Sprint(p.Hosting != nil, p.Runners != nil, extra)
 	if list, ok := gatewayLists.Load(key); ok {
 		return list.(gateway.List), nil
 	}

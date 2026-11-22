@@ -63,10 +63,34 @@ func (c Cluster) adapt(generated []config.Document, n Node) []config.Document {
 			}
 		case *k8s.KubeServiceAccountConfigV1Alpha1:
 			d.ServiceIssuer.IssuerURL = meta.URL{URL: c.ServiceAccountIssuer}
+		case *k8s.KubeletConfigV1Alpha1:
+			if c.DiskEviction {
+				d.KubeletConfig = meta.Unstructured{Object: diskEvictionSettings()}
+			}
 		}
 		docs = append(docs, doc)
 	}
 	return docs
+}
+
+// The kubelet's image collection and soft eviction thresholds, in percent of a disk, and how long a soft threshold holds
+// before the kubelet evicts.
+const (
+	imageCollectionStartPercent = 80
+	imageCollectionStopPercent  = 70
+	evictionFreePercent         = "15%"
+	evictionGracePeriod         = "1m"
+)
+
+// diskEvictionSettings are the KubeletConfiguration keys a cluster with DiskEviction sets, a soft eviction so a pod
+// stops gracefully before the kubelet's hard thresholds are reached.
+func diskEvictionSettings() map[string]any {
+	return map[string]any{
+		"imageGCHighThresholdPercent": imageCollectionStartPercent,
+		"imageGCLowThresholdPercent":  imageCollectionStopPercent,
+		"evictionSoft":                map[string]any{"imagefs.available": evictionFreePercent, "nodefs.available": evictionFreePercent},
+		"evictionSoftGracePeriod":     map[string]any{"imagefs.available": evictionGracePeriod, "nodefs.available": evictionGracePeriod},
+	}
 }
 
 func (c Cluster) adaptV1Alpha1(d *v1alpha1.Config) {

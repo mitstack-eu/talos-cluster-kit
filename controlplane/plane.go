@@ -77,6 +77,9 @@ type Plane struct {
 	Records               []Record
 	Signers               []components.Signer
 	Telemetry             components.TelemetryExport
+	// Runners gives the cluster ARC's controller and the org's one runner scale set, and puts each node's kubelet on
+	// disk eviction; nil runs no runner.
+	Runners *components.RunnerInputs
 }
 
 // Record adds to the network's labels what an upgrade asks of a part beside the plane, inside the upgrade's one write.

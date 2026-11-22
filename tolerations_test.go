@@ -39,6 +39,9 @@ func renderedManifests(t *testing.T) map[string][]byte {
 		}
 	}
 	addSet("default", components.Default())
+	runnerSet, err := components.Default().WithRunners(runnerInputs())
+	require.NoError(t, err)
+	addChanged("runners", components.Default(), runnerSet, out)
 	hosting, err := components.Hosting(testutil.HostingInputs(t))
 	require.NoError(t, err)
 	addSet("hosting", hosting)
@@ -69,10 +72,31 @@ func renderedManifests(t *testing.T) map[string][]byte {
 	return out
 }
 
+func runnerInputs() components.RunnerInputs {
+	return components.RunnerInputs{Organization: "acme-org", Group: "mitstack-shared", ScaleSet: "mitstack-ci",
+		RunnerImage: "ghcr.io/actions/actions-runner:2.338.2@sha256:6d0b2d80d80f143f77dcb676e50920100bbb547e39e883454d57f45ab8c31300",
+		DindImage:   "docker.io/library/docker:29.10.0-dind@sha256:4bbc7223f81db790097c6dea42fb93e05b8fead4f0431fbe6ccaba6e8473201c",
+		MaxRunners:  4, LeaseResource: "github-runner-token"}
+}
+
+// addChanged adds each manifest of set that base does not hold byte for byte, which is what the runner services add or change.
+func addChanged(prefix string, base, set components.Set, out map[string][]byte) {
+	held := map[string]string{}
+	for _, m := range slices.Concat(base.Served, base.Inline) {
+		held[m.Name] = m.SHA256()
+	}
+	for _, m := range slices.Concat(set.Served, set.Inline) {
+		if held[m.Name] != m.SHA256() {
+			out[prefix+"/"+m.Name] = m.Bytes
+		}
+	}
+}
+
 // The shared set's two renderings of the control plane's credentials, named by the repository credential and telemetry each takes.
 const (
 	tokenAndLeaseCredentials = "control plane with the platform's token and a lease/mitstack-cluster-tokens"
 	deployKeyCredentials     = "control plane with a deploy key and no lease/mitstack-cluster-tokens"
+	runnerCredentials        = "control plane that runs runners/mitstack-runner-token"
 )
 
 // tokenAndLeasePlane is a plane that reads its repository with the platform's token and leases telemetry, under a
@@ -104,6 +128,12 @@ func addControlPlane(t *testing.T, out map[string][]byte, now time.Time) {
 	out["control plane/mitstack-node-topology"] = testutil.Manifest(t, "mitstack-node-topology", release.Components).Bytes
 	out[tokenAndLeaseCredentials] = testutil.Manifest(t, "mitstack-cluster-tokens", release.Components).Bytes
 	addRollout(t, out, unhostedRollout, release)
+	runners := unhosted
+	in := runnerInputs()
+	runners.Runners = &in
+	withRunners, err := runners.Release(controlplane.State{})
+	require.NoError(t, err)
+	out[runnerCredentials] = testutil.Manifest(t, "mitstack-runner-token", withRunners.Components).Bytes
 
 	hosting := unhosted
 	hosting.Hosting = &controlplane.Hosting{Repository: testutil.InitRepository}

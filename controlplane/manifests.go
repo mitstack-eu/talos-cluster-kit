@@ -71,9 +71,10 @@ func (p Plane) signaturePolicy() ([]components.Manifest, error) {
 // clusterApplicationManifest names the cluster's own Application, through which every later release reaches it.
 const clusterApplicationManifest = "mitstack-cluster-application"
 
-// ownComponents renders the node report, the topology labeller and the cluster's credentials, with the data the cluster's
-// own Application renders from. The report reads each gateway's mirror under p.GatewayCA, so the plane must hold one.
-// The labeller names poolWorkers beside the control-plane nodes, and a build has none to name.
+// ownComponents renders the node report, the topology labeller, the cluster's credentials and the runner token of a plane
+// that asks for runners, with the data the cluster's own Application renders from. The report reads each gateway's
+// mirror under p.GatewayCA, so the plane must hold one. The labeller names poolWorkers beside the control-plane nodes,
+// and a build has none to name.
 func (p Plane) ownComponents(enrolmentToken string, poolWorkers []Server) ([]components.Manifest, map[string]any, error) {
 	if p.GatewayCA == nil {
 		return nil, nil, errors.New("the node report reads each gateway's mirror under the gateway CA, and the plane holds none")
@@ -104,11 +105,15 @@ func (p Plane) ownComponents(enrolmentToken string, poolWorkers []Server) ([]com
 	if err != nil {
 		return nil, nil, err
 	}
-	return []components.Manifest{
+	runnerToken, err := p.runnerTokenManifests()
+	if err != nil {
+		return nil, nil, err
+	}
+	return append([]components.Manifest{
 		{Name: "mitstack-node-report", Path: "report/report.yaml", Bytes: reportManifests},
 		{Name: "mitstack-node-topology", Path: "topology/topology.yaml", Bytes: labeller},
 		{Name: "mitstack-cluster-tokens", Path: manifestDir + "cluster-tokens.yaml", Bytes: tokens},
-	}, data, nil
+	}, runnerToken...), data, nil
 }
 
 // repositoryAccess is the address Argo CD reads the cluster repository at, for the cluster's own Application and each

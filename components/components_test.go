@@ -192,3 +192,29 @@ func TestCoreDNS_RunsTalossDeploymentWithOneReplicaInEachLocationAndLeavesAClust
 		})
 	}
 }
+
+func manifestSums(set components.Set) []byte {
+	var out strings.Builder
+	for _, m := range set.Served {
+		fmt.Fprintf(&out, "served %s %s\n", m.Name, m.SHA256())
+	}
+	for _, m := range set.Inline {
+		fmt.Fprintf(&out, "inline %s %s\n", m.Name, m.SHA256())
+	}
+	return []byte(out.String())
+}
+
+func TestSets_RenderEveryManifestOfTheDefaultAndHostingServedSetsByteForByteAsBefore(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		set    components.Set
+		golden string
+	}{
+		{"the default set a cluster with no runner services runs", components.Default(), "default-manifests.txt"},
+		{"the served half of the hosting set the gateway of a hosting cluster serves", components.HostingServed(), "hosting-served-manifests.txt"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testutil.Golden(t, filepath.Join("testdata", "golden", tc.golden), manifestSums(tc.set))
+		})
+	}
+}

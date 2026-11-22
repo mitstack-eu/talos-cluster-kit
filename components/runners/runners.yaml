@@ -7,14 +7,15 @@ metadata:
   labels:
     pod-security.kubernetes.io/enforce: privileged
 ---
-# mitstack-runners starts from mitstack-default-deny. ARC's controller and listener reach the API server and GitHub, and
-# a job reaches whatever its workflow pulls or calls, so its pods reach the internet; nothing reaches them.
+# mitstack-runners starts from mitstack-default-deny. ARC's controller and listener reach the API server and GitHub
+# alone. A job reaches whatever its workflow pulls or calls, so only a job's pod, which ARC labels with the runner
+# component, reaches the internet. Nothing reaches the namespace's pods.
 apiVersion: cilium.io/v2
 kind: CiliumClusterwideNetworkPolicy
 metadata:
   name: mitstack-runners-flows
 specs:
-- description: "The runner services reach the API server, the cluster's DNS and the internet."
+- description: "The runner services reach the API server, the cluster's DNS and GitHub."
   endpointSelector:
     matchLabels:
       k8s:io.kubernetes.pod.namespace: mitstack-runners
@@ -29,4 +30,16 @@ specs:
       rules:
         dns:
         - matchPattern: "*"
+  - toFQDNs:
+    - matchName: github.com
+    - matchName: api.github.com
+    - matchPattern: "*.actions.githubusercontent.com"
+    toPorts:
+    - ports: [{port: "443", protocol: TCP}]
+- description: "A job's pod reaches the internet."
+  endpointSelector:
+    matchLabels:
+      k8s:io.kubernetes.pod.namespace: mitstack-runners
+      k8s:app.kubernetes.io/component: runner
+  egress:
   - toEntities: [world]

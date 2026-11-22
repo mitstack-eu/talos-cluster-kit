@@ -6,7 +6,70 @@ kind: ServiceAccount
 metadata:
   name: {{ .Name }}-runner
   namespace: {{ .Namespace }}
+  finalizers:
+    - actions.github.com/cleanup-protection
 automountServiceAccountToken: false
+---
+# ARC's controller creates each listener's Role and RoleBinding in this namespace, so it needs the chart's manager Role
+# here; the finalizers hold the Role, its binding and the job pods' account until ARC has cleaned up the scale set.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Name }}-gha-rs-manager
+  namespace: {{ .Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Name }}
+    app.kubernetes.io/instance: {{ .Name }}
+    app.kubernetes.io/version: {{ printf "%q" .ControllerVersion }}
+    app.kubernetes.io/part-of: gha-rs
+    app.kubernetes.io/component: manager-role
+    actions.github.com/scale-set-name: {{ .Name }}
+    actions.github.com/scale-set-namespace: {{ .Namespace }}
+  finalizers:
+    - actions.github.com/cleanup-protection
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [create, delete, get]
+  - apiGroups: [""]
+    resources: [pods/status]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create, delete, get, list, patch, update]
+  - apiGroups: [""]
+    resources: [serviceaccounts]
+    verbs: [create, delete, get, list, patch, update]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [rolebindings]
+    verbs: [create, delete, get, patch, update]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [roles]
+    verbs: [create, delete, get, patch, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Name }}-gha-rs-manager
+  namespace: {{ .Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Name }}
+    app.kubernetes.io/instance: {{ .Name }}
+    app.kubernetes.io/version: {{ printf "%q" .ControllerVersion }}
+    app.kubernetes.io/part-of: gha-rs
+    app.kubernetes.io/component: manager-role-binding
+    actions.github.com/scale-set-name: {{ .Name }}
+    actions.github.com/scale-set-namespace: {{ .Namespace }}
+  finalizers:
+    - actions.github.com/cleanup-protection
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Name }}-gha-rs-manager
+subjects:
+  - kind: ServiceAccount
+    name: {{ .ControllerAccount }}
+    namespace: {{ .Namespace }}
 ---
 apiVersion: actions.github.com/v1alpha1
 kind: AutoscalingRunnerSet
@@ -21,6 +84,10 @@ metadata:
     app.kubernetes.io/part-of: gha-rs
     actions.github.com/scale-set-name: {{ .Name }}
     actions.github.com/scale-set-namespace: {{ .Namespace }}
+  annotations:
+    actions.github.com/cleanup-manager-role-name: {{ .Name }}-gha-rs-manager
+    actions.github.com/cleanup-manager-role-binding: {{ .Name }}-gha-rs-manager
+    actions.github.com/cleanup-no-permission-service-account-name: {{ .Name }}-runner
 spec:
   githubConfigUrl: {{ printf "%q" .ConfigURL }}
   githubConfigSecret: {{ .TokenSecret }}

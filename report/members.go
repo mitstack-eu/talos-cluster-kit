@@ -52,9 +52,9 @@ const openBaoNamespace = "openbao"
 const diskPressureTaint = "node.kubernetes.io/disk-pressure"
 
 type node struct {
-	Name          string `json:"name"`
-	Ready         bool   `json:"ready"`
-	MachineConfig string `json:"machineConfig"`
+	Name          string  `json:"name"`
+	Ready         bool    `json:"ready"`
+	MachineConfig string  `json:"machineConfig"`
 	Taints        []taint `json:"taints"`
 }
 
@@ -69,7 +69,7 @@ func (n node) serving() bool {
 
 type members struct {
 	Nodes []node `json:"nodes"`
-	Etcd struct {
+	Etcd  struct {
 		Members []struct {
 			Hostname string `json:"hostname"`
 			Healthy  bool   `json:"healthy"`

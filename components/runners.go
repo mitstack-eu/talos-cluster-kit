@@ -38,6 +38,9 @@ var (
 
 var scaleSet = tmpl.Must("the runner scale set", scaleSetTemplate)
 
+// controllerAccountRe matches a pod's serviceAccountName with its value, which a CRD schema's bare key never has.
+var controllerAccountRe = regexp.MustCompile(`(?m)^[ \t]+serviceAccountName:[ \t]+(\S+)[ \t]*$`)
+
 // RunnerInputs are what the org's one runner scale set takes from the operator that runs it.
 type RunnerInputs struct {
 	// Organization is the GitHub organisation login whose repositories the runners serve.
@@ -139,6 +142,10 @@ func (s Set) WithRunners(in RunnerInputs) (Set, error) {
 	if err != nil {
 		return Set{}, err
 	}
+	account, err := runnerControllerAccount()
+	if err != nil {
+		return Set{}, err
+	}
 	out, err := tmpl.Execute(scaleSet, map[string]any{
 		"Name":              in.ScaleSet,
 		"Namespace":         RunnersNamespace,
@@ -150,6 +157,7 @@ func (s Set) WithRunners(in RunnerInputs) (Set, error) {
 		"DindImage":         in.DindImage,
 		"ControllerImage":   controller.Ref(),
 		"ControllerVersion": controller.Tag,
+		"ControllerAccount": account,
 		"BurstLabel":        BurstLabel,
 	})
 	if err != nil {
@@ -178,6 +186,17 @@ func runnerControllerImage() (Image, error) {
 		return Image{}, fmt.Errorf("ARC's controller manifest names %d images, want one: %s", len(images), strings.Join(refs, ", "))
 	}
 	return images[0], nil
+}
+
+// runnerControllerAccount is the ServiceAccount the rendered controller runs as, which the scale set's manager Role is
+// bound to.
+func runnerControllerAccount() (string, error) {
+	m := runnerManifest(runnerControllerName, runnerControllerPath)
+	matches := controllerAccountRe.FindAllSubmatch(m.Bytes, -1)
+	if len(matches) != 1 {
+		return "", fmt.Errorf("ARC's controller manifest %s names %d pod service accounts, want one", m.Path, len(matches))
+	}
+	return string(matches[0][1]), nil
 }
 
 // runnerManifest panics on a file the embed directive leaves out, which any test of the runner services reaches first.

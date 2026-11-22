@@ -1,7 +1,7 @@
 package controlplane_test
 
 // A gateway built once nodes run mirrors the release's list and each image the newest node report names, taken from a
-// report read after its location lost its gateway.
+// report read after its location lost its gateway, or from the newest of all in a plane in one location.
 
 import (
 	"context"
@@ -253,4 +253,79 @@ func TestPlane_AGatewayKeeping300ImagesStaysInsideHetznersUserDataLimit(t *testi
 			assert.Subset(t, h.mirrored(gw), want, "images.txt holds all 300 kept images")
 		})
 	}
+}
+
+func TestPlane_APlaneInOneLocationThatLostItsGatewayBuildsItsSuccessorKeepingTheImagesOfTheNewestNodeReportReceivedBeforeTheLossAndSettles(t *testing.T) {
+	h := newHarness(t, oneLocation)
+	h.built()
+	lost := h.gatewayIn(controlplane.GatewayLocation)
+	release := h.mirrored(lost)
+	h.images = []report.ImageRef{earlierTools, nightlyExport}
+	h.lose(controlplane.GatewayLocation)
+	lostAt, from := h.now, len(h.events)
+
+	require.NoError(t, h.advance(2*time.Hour, func() bool { return h.servesInPlaceOf(lost) }))
+
+	successor := h.gatewayIn(controlplane.GatewayLocation)
+	assert.Equal(t, lost.Labels[controlplane.KeyGatewayList], successor.Labels[controlplane.KeyGatewayList], "the successor's list")
+	assert.ElementsMatch(t, append(release, earlierTools.Image, nightlyExport.Image), h.mirrored(successor),
+		"the successor mirrors the release's list and both images the report names")
+	assert.Contains(t, strings.Join(h.events[from:], "\n"), fmt.Sprintf(
+		"the gateway in fsn1 keeps 2 images beyond this release's list, from the node report read at %s", lostAt.Truncate(reportEvery).Format(time.RFC3339)),
+		"the rebuild names the report from before the loss it kept from")
+	assert.NotContains(t, h.network().Labels, controlplane.KeyGatewayGone+controlplane.GatewayLocation, "the network's labels once the successor stands")
+	before := h.cloud.Writes()
+	require.NoError(t, h.converge())
+	assert.Equal(t, before, h.cloud.Writes(), "what a call changes once the plane settled")
+	assert.Empty(t, h.plane.Problems(context.Background(), h.read()), "problems")
+}
+
+func TestPlane_APlaneInOneLocationThatLostItsGatewayRefusesWithGatewayImagesUnreadWhileNoNodeReportListsItsImagesAndCreatesNoGateway(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		arrange func(h *harness)
+		names   string
+	}{
+		{"the newest node report lists no images", func(h *harness) { h.noImageList = true }, "the newest node report, read at "},
+		{"the cluster has sent no node report", func(h *harness) {
+			h.plane.ReadReport = func(context.Context, time.Time) (*report.Read, error) { return nil, nil }
+		}, "the cluster has sent no node report"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, oneLocation)
+			h.built()
+			tc.arrange(h)
+			h.lose(controlplane.GatewayLocation)
+			specs := len(h.cloud.ServerSpecs)
+
+			var err error
+			for range 10 {
+				if err = h.converge(); err != nil {
+					break
+				}
+				h.now = h.now.Add(time.Minute)
+				h.cloud.Advance(h.buildTakes, h.imageTakes)
+			}
+
+			assert.Equal(t, controlplane.ClassGatewayImagesUnread, refusalClass(t, err))
+			assert.ErrorContains(t, err, tc.names, "the refusal names the missing report")
+			assert.Empty(t, h.byRole(controlplane.RoleGateway), "the gateways")
+			assert.Len(t, h.cloud.ServerSpecs, specs, "servers created after the loss")
+		})
+	}
+}
+
+func TestPlane_APlaneInOneLocationThatLostItsGatewayBeforeItsNetworkHeldTheEnrolmentAndIssuerLabelsRefusesAndSaysToSubscribeAgain(t *testing.T) {
+	h := newHarness(t, oneLocation)
+	h.built()
+	h.builtByAnEarlierRelease()
+	h.lose(controlplane.GatewayLocation)
+	specs := len(h.cloud.ServerSpecs)
+
+	err := h.ensure()
+
+	assert.Equal(t, "gateway-labels-lost", refusalClass(t, err))
+	assert.ErrorContains(t, err, "subscribe again")
+	assert.Empty(t, h.byRole(controlplane.RoleGateway), "the gateways")
+	assert.Len(t, h.cloud.ServerSpecs, specs, "servers created after the loss")
 }

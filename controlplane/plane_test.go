@@ -66,6 +66,9 @@ type harness struct {
 	images        []report.ImageRef
 	reportsStopAt time.Time
 	noImageList   bool
+	// reportsNeedAGateway stops the node reports while no gateway runs at its address, as in one location, where a
+	// report reaches the platform only through the gateway.
+	reportsNeedAGateway bool
 	// hostingKeys holds the keys each call to a hosting plane's DeployKeys hook received, and deployKeysErr is what it answers.
 	hostingKeys   []controlplane.HostingKeys
 	deployKeysErr error
@@ -113,6 +116,7 @@ func (h *harness) read() controlplane.State {
 
 func (h *harness) ensure() error {
 	ctx := context.Background()
+	h.cutReportsWithoutAGateway()
 	before := h.cloud.Waits()
 	defer func() { h.waits = append(h.waits, h.cloud.Waits()-before) }()
 	st, err := h.plane.Read(ctx)
@@ -135,6 +139,45 @@ func (h *harness) ensure() error {
 	}
 	h.steps = append(h.steps, step.What)
 	return step.Take(ctx, testBlock, testSub)
+}
+
+func (h *harness) cutReportsWithoutAGateway() {
+	if !h.reportsNeedAGateway {
+		return
+	}
+	routed := slices.ContainsFunc(h.byRole(controlplane.RoleGateway), func(gw controlplane.Server) bool {
+		return gw.Status == controlplane.ServerRunning && slices.Contains(slices.Collect(maps.Values(gw.PrivateIPs)), controlplane.GatewayAddresses[gw.Location])
+	})
+	switch {
+	case !routed && h.reportsStopAt.IsZero():
+		h.reportsStopAt = h.now
+	case routed && !h.reportsStopAt.IsZero():
+		h.reportsStopAt = time.Time{}
+	}
+}
+
+// oneLocation is a plane of size 1 whose node reports reach the platform only through its one gateway.
+func oneLocation(h *harness) {
+	h.plane.Size, h.reportsNeedAGateway = 1, true
+	withReports(h)
+}
+
+// builtByAnEarlierRelease moves the enrolment and issuer labels off the network onto each gateway, as a release before
+// the network held them left a cluster, and gives the values it moved.
+func (h *harness) builtByAnEarlierRelease() (digest, bucket string) {
+	h.t.Helper()
+	digest, bucket = "earlier-enrolment-digest", "mitstack-oidc-earlierbucket"
+	network := h.network()
+	labels := maps.Clone(network.Labels)
+	delete(labels, controlplane.KeyEnrolmentSHA256)
+	delete(labels, controlplane.KeyIssuerBucket)
+	require.NoError(h.t, h.cloud.SetNetworkLabels(context.Background(), network.ID, labels))
+	for _, gw := range h.byRole(controlplane.RoleGateway) {
+		labels := maps.Clone(gw.Labels)
+		labels[controlplane.KeyEnrolmentSHA256], labels[controlplane.KeyIssuerBucket] = digest, bucket
+		require.NoError(h.t, h.cloud.SetServerLabels(context.Background(), gw.ID, labels))
+	}
+	return digest, bucket
 }
 
 func (h *harness) converge() error {
@@ -1433,15 +1476,16 @@ func TestPlane_OutputsTheIssuerItsNodesSignTokensForInAnIssuerBucketOfItsOwn(t *
 	assert.Equal(t, outputs["issuerUrl"], testutil.Field(t, accounts[0], "issuer", "issuerURL"), "the issuer every node signs service-account tokens for")
 }
 
-func TestPlane_AGatewayWithoutItsLabelsIsAProblemAndCarriesNoEnrolmentDigest(t *testing.T) {
+func TestPlane_ANetworkWithoutItsEnrolmentAndIssuerLabelsIsAProblemAndCarriesNoEnrolmentDigest(t *testing.T) {
 	h := newHarness(t)
 	h.built()
-	gw := h.byRole(controlplane.RoleGateway)[0]
+	network := h.network()
 	digest, gap := h.read().EnrolmentDigest()
 	require.Empty(t, gap)
-	assert.Equal(t, gw.Labels[controlplane.KeyEnrolmentSHA256], digest, "the enrolment digest")
-	delete(h.cloud.Servers[gw.ID].Labels, controlplane.KeyIssuerBucket)
-	delete(h.cloud.Servers[gw.ID].Labels, controlplane.KeyEnrolmentSHA256)
+	require.NotEmpty(t, network.Labels[controlplane.KeyEnrolmentSHA256], "the network's enrolment digest")
+	assert.Equal(t, network.Labels[controlplane.KeyEnrolmentSHA256], digest, "the enrolment digest")
+	delete(h.cloud.Networks[network.ID].Labels, controlplane.KeyIssuerBucket)
+	delete(h.cloud.Networks[network.ID].Labels, controlplane.KeyEnrolmentSHA256)
 
 	problems := h.plane.Problems(context.Background(), h.read())
 	digest, gap = h.read().EnrolmentDigest()
@@ -1481,6 +1525,11 @@ func TestPlane_AnInstalledHookThatFailsRollsTheInstallBack(t *testing.T) {
 	require.ErrorIs(t, err, h.installErr)
 	assert.Empty(t, h.byRole(controlplane.RoleGateway), "the gateway of a rolled-back install")
 	assert.Empty(t, h.byRole(controlplane.RoleBuilder), "the builder of a rolled-back install")
+	digest, gap := h.read().EnrolmentDigest()
+	assert.Empty(t, digest, "the enrolment digest of a rolled-back install")
+	assert.Empty(t, gap, "the enrolment gap of a rolled-back install")
+	assert.NotContains(t, h.network().Labels, controlplane.KeyEnrolmentSHA256, "the network's labels after a rolled-back install")
+	assert.NotContains(t, h.network().Labels, controlplane.KeyIssuerBucket, "the network's labels after a rolled-back install")
 }
 
 func TestPlane_AppsOnWorkersKeepsTheControlPlanesTaint(t *testing.T) {
@@ -1506,13 +1555,54 @@ func TestPlane_AppsOnWorkersKeepsTheControlPlanesTaint(t *testing.T) {
 }
 
 func TestPlane_DeleteRemovesEveryResourceItBuilt(t *testing.T) {
-	h := newHarness(t)
+	for _, tc := range []struct {
+		name    string
+		opts    []func(*harness)
+		arrange func(h *harness)
+	}{
+		{"a plane in three locations", nil, func(*harness) {}},
+		{"a plane in one location in the outage after it lost its gateway", []func(*harness){oneLocation}, func(h *harness) {
+			h.lose(controlplane.GatewayLocation)
+			require.NoError(h.t, h.ensure(), "the call that finds the gateway gone")
+			require.Contains(h.t, h.network().Labels, controlplane.KeyGatewayGone+controlplane.GatewayLocation, "the network's record of the loss")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, tc.opts...)
+			h.built()
+			tc.arrange(h)
+
+			require.NoError(t, h.plane.Delete(context.Background()))
+
+			assert.Zero(t, h.cloud.Count(), "resources after the delete")
+			assert.True(t, h.read().Empty(), "the plane after the delete")
+		})
+	}
+}
+
+func TestPlane_TheFirstCallOfThisReleaseCopiesTheEnrolmentAndIssuerLabelsOfAClusterBuiltEarlierOntoItsNetworkAndOutputsTheSameValues(t *testing.T) {
+	h := newHarness(t, withReports)
 	h.built()
+	digest, bucket := h.builtByAnEarlierRelease()
+	h.relabelGateways("an-earlier-list")
+	from := len(h.events)
 
-	require.NoError(t, h.plane.Delete(context.Background()))
+	h.upgrade(func() {
+		if len(h.deletedGateways(from)) > 0 {
+			require.Equal(t, digest, h.network().Labels[controlplane.KeyEnrolmentSHA256], "the network's enrolment digest once a gateway is deleted")
+		}
+	})
 
-	assert.Zero(t, h.cloud.Count(), "resources after the delete")
-	assert.True(t, h.read().Empty(), "the plane after the delete")
+	network := h.network()
+	assert.Equal(t, digest, network.Labels[controlplane.KeyEnrolmentSHA256], "the network's enrolment digest")
+	assert.Equal(t, bucket, network.Labels[controlplane.KeyIssuerBucket], "the network's issuer bucket")
+	outputs, _ := h.plane.Outputs(h.read())
+	assert.Equal(t, digest, outputs["enrolmentTokenSha256"], "the enrolment digest output once every gateway is replaced")
+	assert.Equal(t, bucket, outputs["issuerBucket"], "the issuer bucket output once every gateway is replaced")
+	assert.Equal(t, "https://"+bucket+".s3.eu-central-1.amazonaws.com/"+testSub, outputs["issuerUrl"], "issuerUrl")
+	read, gap := h.read().EnrolmentDigest()
+	assert.Empty(t, gap)
+	assert.Equal(t, digest, read, "the enrolment digest a node's enrolment is judged against")
 }
 
 // A module that requires neither framework cannot import either, so a block on any framework release can use the plane.

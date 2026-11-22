@@ -60,9 +60,9 @@ the order a block uses them.
 | `topology` | Renders the topology labeller, a CronJob that labels each Cloud node with its zone and region, labels each burst member of a Cloud pool, a member above the pool's minimum, `mitstack.dev/burst=true`, and holds the zone and region label names | `Manifests`, `Labels`, `ZoneLabel`, `RegionLabel`, `FieldManager` |
 | `openbaoinit` | Renders OpenBao's init Job, which the hosting set carries. On a hosting cluster, a cluster that runs mitstack's own control plane, it initialises OpenBao once, commits the root token and recovery key to the cluster repository as PGP messages, then writes the policy that External Secrets reads with in each slice, the namespace a block gives one app | `Manifests`, `Inputs`, `InitFile` |
 | `rollout` | Gives a running cluster a release's component set, the manifests one kit release carries; [How a running cluster takes a release's components](#how-a-running-cluster-takes-a-releases-components) defines each term. A block commits the set's files to the cluster repository, where Argo CD applies each component through an Application of its own, which is Argo CD's record of one repository directory it keeps applied to the cluster. Files that an earlier release committed and this release no longer states are retired, which means deleted. Each component's sync runs a handover Job, which has Talos give up the fields it set when it created the component's objects, so they hold only what the release states. After OpenBao's sync, OpenBao's rollout Job moves each member onto the StatefulSet's new revision, as [How OpenBao's members take a new revision](#how-openbaos-members-take-a-new-revision) explains, which also says what a member, a StatefulSet and a revision are. Every Application reads the cluster repository at `Release.RepoURL`, the one address the cluster holds a credential for. The read-back then checks from the node report that the cluster runs each component as the release states it | `Release.Files`, `Release.Retired`, `Release.ReadBack`, `Release.ToolsImage`, `Release.RepoURL`, `LegacyFiles` |
-| `controlplane` | Builds and deletes a Talos control plane on Hetzner Cloud: a network, a firewall, a builder that makes the cluster's own snapshot, one or three nodes with a gateway beside each, and an API and an ingress load balancer. Three nodes run in `fsn1`, `nbg1` and `hel1`, and one node runs in `fsn1`. Each call reads the resources by their labels and takes the one change still missing, and [How a request reads the Cloud once](#how-a-request-reads-the-cloud-once) says how one request lists each kind once. A refusal is a `*Refusal` with a `Class` and a `Message`, which the block answers as its own framework's refusal | `Plane`, `Plane.NodeLocations`, `DefaultSize`, `KeySize`, `Plane.Read`, `ReadOncePerRequest`, `RequestReads`, `NewRequestReads`, `WithoutRequestReads`, `Plane.EnsureNetwork`, `Plane.SizeRefusal`, `Plane.NextStep`, `Plane.Problems`, `Plane.Unhealthy`, `Plane.Outputs`, `State.IngressAddresses`, `Plane.Release`, `ErrNoIngressAddress`, `Plane.GatewaysAwaitRelease`, `Plane.GatewaysServeRelease`, `Plane.Delete`, `Plane.Busy`, `Plane.Unsettled`, `NewAPI`, `Calls`, `Refusal`, `TopologyLabels`, `GatewayUpgradeBound`, `GatewayCertRenewBefore`, `KeyGatewayCertExpires` |
+| `controlplane` | Builds and deletes a Talos control plane on Hetzner Cloud: a network, a firewall, a builder that makes the cluster's own snapshot, one or three nodes with a gateway beside each, and an API and an ingress load balancer. Three nodes run in `fsn1`, `nbg1` and `hel1`, and one node runs in `fsn1`. Each call reads the resources by their labels and takes the one change still missing, and [How a request reads the Cloud once](#how-a-request-reads-the-cloud-once) says how one request lists each kind once. A refusal is a `*Refusal` with a `Class` and a `Message`, which the block answers as its own framework's refusal | `Plane`, `Plane.NodeLocations`, `DefaultSize`, `KeySize`, `Plane.Read`, `ReadOncePerRequest`, `RequestReads`, `NewRequestReads`, `WithoutRequestReads`, `Plane.EnsureNetwork`, `Plane.SizeRefusal`, `Plane.NextStep`, `Plane.Problems`, `Plane.Unhealthy`, `Plane.Outputs`, `Plane.CopyIdentityStep`, `State.IngressAddresses`, `Plane.Release`, `ErrNoIngressAddress`, `Plane.GatewaysAwaitRelease`, `Plane.GatewaysServeRelease`, `Plane.Delete`, `Plane.Busy`, `Plane.Unsettled`, `NewAPI`, `Calls`, `Refusal`, `TopologyLabels`, `GatewayUpgradeBound`, `GatewayCertRenewBefore`, `KeyGatewayCertExpires` |
 | `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image carries and the gateway copies out of it, `tools/jq.env`, which pins the tools image's jq, and `tools/kube-bench-talos.yaml`, the settings kube-bench reads over its own on Talos. Its Dockerfile builds `cmd/machine-config` into the tools image. It names the tools image a release published and the directory in that image that holds the node report's, its outside probe's, the labeller's, the cluster tokens', the handover's and OpenBao's rollout's scripts, and where in that image each served manifest sits | `Env`, `Pin`, `Image`, `ScriptDir`, `ManifestPath` |
-| `redundant` | Carries a removal's redundant set, each member with its reading, to the guard the block passes, block-kit's `redundancy.Set.AllowRemoval`, which this module does not import | `Set`, `Guard`, `Held` |
+| `redundant` | Carries a removal's redundant set, each member with its reading, to the guard the block passes, block-kit's `redundancy.Set.AllowRemoval`, which this module does not import. A set's `Minimum` is how many members it keeps serving: `Majority`, `AllButOne`, or `NoRedundancy`, which lets the one member of a set of one go | `Set`, `Guard`, `Held`, `Minimum` |
 | `scaling` | Decides from the node reports alone how a Cloud pool whose minimum is below its maximum follows its cluster's load, so only the block's operator, which holds the Hetzner token, changes the pool. [How a Cloud pool scales with the load](#how-a-cloud-pool-scales-with-the-load) gives the rules | `Decide`, `Decision`, `CauseAtMaximum` |
 | `testutil` | Holds the fixtures, fakes and decoders this module's tests and a block's tests share | `NewCluster`, `NewTools`, `Golden` |
 
@@ -700,15 +700,22 @@ Before it deletes the only gateway, a plane in one location checks that it
 could build the successor. It refuses with class `gateway-images-unread`
 while no node report lists the cluster's images, and with class
 `gateway-labels-lost` while neither the network nor the gateway holds the
-cluster's enrolment digest and issuer bucket, the two labels the platform
-reads to trust the cluster's nodes, which a later section describes.
+cluster's identity. That is two labels: the enrolment digest, which the block
+outputs as `enrolmentTokenSha256`, and the issuer bucket, the S3 bucket behind
+the `issuerUrl` output. A later paragraph of this section says where they
+live.
 
 A plane in one location judges its only gateway failed past the deadline only
 on two node reports in a row that read it not serving, since its replacement
 is an outage. It records the first as the gateway's label
 `mitstack.dev/gateway-unserved`, and only a report received after that time
 can be the second. A report that reads the gateway serving takes the label off
-again. A plane in three locations replaces a gateway on the first such report.
+again. Until a report received after that time reads the gateway at all, the
+plane judges nothing and waits. The plane reads only the newest report on
+each call, so "in a row" counts the reports it read: a report that reads the
+gateway serving and arrives between two calls, followed by one that does not,
+goes unseen. A plane in three locations replaces a gateway on the first such
+report.
 
 The plane acts only when a block calls it, so a renewal begins on the block's
 first call at or after the renewal point.
@@ -759,9 +766,10 @@ gateway. Until such a report arrives, `NextStep` returns no change, and
 location has its gateway again. A plane given no `ReadReport` builds no
 gateway once nodes run.
 
-A plane in one location cannot wait for a report read after the loss. The
-kit's design assumes a node report reaches the platform only through the
-gateway, and its only gateway is gone. Its successor instead keeps the images
+A plane in one location cannot wait for a report read after the loss. This
+module assumes a node report reaches the platform only through the gateway,
+since the nodes reach nothing outside the network without one, and its only
+gateway is gone. Its successor instead keeps the images
 of the newest report received at any time, which necessarily came before the
 loss. The plane refuses with class `gateway-images-unread`, naming why, when
 the cluster has sent no report, when the newest report lists no images, or
@@ -778,8 +786,8 @@ gateway left standing to copy them from. On a cluster an earlier release
 built, which holds both only on its gateways, the plane's first call copies
 them onto the network. Only an upgrade's first write, which records the
 upgrade on the network, comes before that copy. A block takes the same copy
-through `Plane.CopyIdentityStep` as its first write, ahead of any refusal of
-its own, so a cluster it refuses still keeps its outputs. Until that call,
+through `Plane.CopyIdentityStep` as its first write, ahead of any refusal the
+block itself makes, so a cluster the block refuses still keeps its outputs. Until that call,
 `Outputs` gives neither value. A plane in one location that
 lost its gateway before the copy refuses with class `gateway-labels-lost`,
 since no successor can carry the cluster's identity, and its message says to

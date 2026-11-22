@@ -108,7 +108,6 @@ func (p Plane) zoneStep(ctx context.Context, st State, s site) (Step, bool, erro
 	if st.SingleGateway() {
 		return Step{}, false, nil
 	}
-	sibling, _ := st.SharedGateway()
 	for _, loc := range p.NodeLocations() {
 		if _, ok := st.GatewayIn(loc); !ok {
 			if p.GatewayCA == nil {
@@ -116,10 +115,10 @@ func (p Plane) zoneStep(ctx context.Context, st State, s site) (Step, bool, erro
 					"the gateway in %s is gone and the block holds no gateway CA to sign a new one's certificate with; unsubscribe and subscribe again to rebuild the cluster", loc)
 			}
 			if len(st.Servers[RoleNode]) > 0 {
-				return p.rebuildStep(ctx, st, s, loc, sibling)
+				return p.rebuildStep(ctx, st, s, loc)
 			}
 			return Step{"create the gateway in " + loc + " from this release's list", func(ctx context.Context) error {
-				return p.createGateway(ctx, st, s, loc, sibling, nil)
+				return p.createGateway(ctx, st, s, loc, nil)
 			}}, true, nil
 		}
 	}
@@ -705,18 +704,31 @@ func (p Plane) deletionStep(r removal, began time.Time, judged string) Step {
 		if err := p.API.DeleteServer(ctx, old.ID); err != nil {
 			return fmt.Errorf("deleting the gateway %d in %s: %w", old.ID, old.Location, err)
 		}
-		p.notify(ctx, "deleted gateway %d in %s, %s, so one built from this release's list takes %s, judged by readings since %s: %s",
+		event := fmt.Sprintf("deleted gateway %d in %s, %s, so one built from this release's list takes %s, judged by readings since %s: %s",
 			old.ID, old.Location, r.why, gatewayAddressOf(old), began.Format(time.RFC3339), judged)
+		if p.oneLocation() {
+			event += "; " + outage
+		}
+		p.notify(ctx, "%s", event)
 		return nil
 	}}
 }
 
+// outage is what the deletion of a plane in one location's only gateway takes from the cluster, and its bound.
+var outage = fmt.Sprintf("this begins an outage, since it is the plane's only gateway: the nodes pull no image and reach nothing outside the network until its successor serves, within %s of the successor's creation",
+	gateway.Deadline)
+
 func gatewayName(gw Server) string { return fmt.Sprintf("gateway %d in %s", gw.ID, gw.Location) }
 
 // gatewaySet is every gateway with its newest reading since began, off its address as Hetzner reads it now, else as a
-// report since began reads its mirror, with each reading's detail naming that report.
+// report since began reads its mirror, with each reading's detail naming that report. A plane in one location has no
+// other gateway to keep serving, so its one gateway goes with the outage its deletion names.
 func (p Plane) gatewaySet(ctx context.Context, st State, network Network, began time.Time) (redundant.Set, map[string]string, error) {
-	set, details := redundant.Set{Name: "gateways", Minimum: redundant.AllButOne}, map[string]string{}
+	minimum := redundant.AllButOne
+	if p.oneLocation() {
+		minimum = redundant.NoRedundancy
+	}
+	set, details := redundant.Set{Name: "gateways", Minimum: minimum}, map[string]string{}
 	for _, loc := range p.NodeLocations() {
 		gw, ok := st.GatewayIn(loc)
 		if !ok {
@@ -757,7 +769,7 @@ func (p Plane) unmarkStep(network Network) Step {
 // createGateway builds a location's gateway stopped and off the network, with a certificate the kept CA signs for its
 // address, mirroring what k keeps beside the release's list, and with no first-node bootstrap, since only the install's
 // first gateway bootstraps etcd.
-func (p Plane) createGateway(ctx context.Context, st State, s site, loc string, sibling Server, k *keeping) error {
+func (p Plane) createGateway(ctx context.Context, st State, s site, loc string, k *keeping) error {
 	ingress, _ := st.LoadBalancerIn(RoleIngress, GatewayLocation)
 	ingressAddr, err := netip.ParseAddr(ingress.PublicIPv4)
 	if err != nil {
@@ -774,7 +786,7 @@ func (p Plane) createGateway(ctx context.Context, st State, s site, loc string, 
 	if err != nil {
 		return err
 	}
-	spec, err := p.gatewaySpec(ctx, &OrderableTypes{API: p.API}, loc, rendered, s, sibling.Labels[KeyEnrolmentSHA256], sibling.Labels[KeyIssuerBucket], list.Digest())
+	spec, err := p.gatewaySpec(ctx, &OrderableTypes{API: p.API}, loc, rendered, s, list.Digest())
 	if err != nil {
 		return err
 	}
@@ -804,13 +816,13 @@ func (p Plane) deleteUnattachedGateway(ctx context.Context, loc string, s site) 
 	return nil
 }
 
-func (p Plane) gatewaySpec(ctx context.Context, orderable *OrderableTypes, loc string, rendered renderedGateway, s site, enrolment, bucket, digest string) (ServerSpec, error) {
+func (p Plane) gatewaySpec(ctx context.Context, orderable *OrderableTypes, loc string, rendered renderedGateway, s site, digest string) (ServerSpec, error) {
 	serverType, err := orderable.First(ctx, string(RoleGateway), GatewayServerTypes, loc)
 	if err != nil {
 		return ServerSpec{}, err
 	}
 	labels := p.Labels(RoleGateway)
-	labels[KeyEnrolmentSHA256], labels[KeyIssuerBucket], labels[KeyGatewayList] = enrolment, bucket, digest
+	labels[KeyGatewayList] = digest
 	labels[KeyGatewayCertExpires] = rendered.certificate.expiresLabel()
 	if replaced := s.network.Labels[KeyGatewayFailed+loc]; replaced != "" {
 		labels[KeyGatewayReplaces] = replaced

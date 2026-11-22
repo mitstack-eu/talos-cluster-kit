@@ -685,6 +685,16 @@ gateway type in that location, since the location would stay without a
 gateway. An upgrade's replacement and a failed gateway's refuse with class
 `server-unavailable`.
 
+A plane in one location has one gateway, so each of these replacements takes
+the cluster's only route out away until the successor serves. The plane asks
+the guard for no redundancy, `redundant.NoRedundancy`, which lets the one
+member of a set of one go, so the replacement waits on no other gateway. The
+deletion's event names the outage and its bound. The nodes pull no image and
+reach nothing outside the network until the successor serves, which its
+deadline, `gateway.Deadline`, bounds from the successor's creation. A plane in
+three locations asks for all but the one removed, so it never deletes the last
+gateway that serves.
+
 The plane acts only when a block calls it, so a renewal begins on the block's
 first call at or after the renewal point.
 
@@ -733,6 +743,28 @@ gateway. Until such a report arrives, `NextStep` returns no change, and
 `Problems` names the newest report's time. The plane clears the label once the
 location has its gateway again. A plane given no `ReadReport` builds no
 gateway once nodes run.
+
+A plane in one location cannot wait for such a report, since a node report
+reaches the platform only through the gateway. Its successor keeps the images
+of the newest report of all, which was received before the loss. When the
+cluster has sent no report, or the newest one lists no images or names a read
+that failed, the plane refuses with class `gateway-images-unread`, naming why.
+It then builds no gateway, since one that mirrors none of the cluster's images
+would leave the pods that run them unable to start again.
+
+The network holds the cluster's enrolment digest,
+`mitstack.dev/enrolment-sha256`, and its issuer bucket,
+`mitstack.dev/issuer-bucket`, for the cluster's whole life. The install writes
+both before it creates a server, and `Outputs`, `State.EnrolmentDigest` and
+`Problems` read them only from the network. A successor therefore needs no
+gateway left standing to copy them from. On a cluster an earlier release
+built, which holds both only on its gateways, the plane's first call copies
+them onto the network, ahead of any other step but an upgrade's own record.
+Until that call, `Outputs` gives neither value. A plane in one location that
+lost its gateway before the copy refuses with class `gateway-labels-lost`,
+since no successor can carry the cluster's identity, and its message says to
+unsubscribe and subscribe again. A plane in three locations that lost every
+gateway at once refuses with class `gateway-lost`.
 
 An upgrade's replacement reads the same list. When the cluster has sent no
 report, or the newest one lists no images or names a read that failed, the

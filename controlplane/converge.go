@@ -51,11 +51,15 @@ func (p Plane) EnsureNetwork(ctx context.Context, st State) (Network, error) {
 	return n, nil
 }
 
-// NextStep is the first step the plane lacks: on an upgrade's own call what the upgrade records, then each step in the
-// order it depends on the one before, and none while only Hetzner or the nodes can finish the work in flight.
+// NextStep is the first step the plane lacks: on an upgrade's own call what the upgrade records, then the copy of a
+// cluster's identity labels onto its network, then each step in the order it depends on the one before, and none while
+// only Hetzner or the nodes can finish the work in flight.
 func (p Plane) NextStep(ctx context.Context, st State, network Network) (Step, bool, error) {
 	if step, ok, err := p.recordUpgradeStep(ctx, st, network); err != nil || ok {
 		return step, ok, err
+	}
+	if step, ok := p.copyIdentityStep(st, network); ok {
+		return step, true, nil
 	}
 	firewall, ok := st.Firewall()
 	if !ok {
@@ -156,9 +160,13 @@ func (p Plane) controlPlaneStep(ctx context.Context, st State, s site) (Step, bo
 	snap, hasSnapshot := st.Snapshot()
 	imaged := hasSnapshot && snap.Status == SnapshotAvailable
 	switch {
-	case hasNode && len(st.Servers[RoleGateway]) == 0:
+	case hasNode && len(st.Servers[RoleGateway]) == 0 && !p.oneLocation():
 		return Step{}, false, refuse("gateway-lost",
-			"the cluster's nodes are running, but no gateway carries this subscription's labels, so no node can pull an image and nothing was changed; the enrolment and issuer labels are gone with them, so unsubscribe and subscribe again to rebuild the cluster")
+			"the cluster's nodes are running, but no gateway in any location carries this subscription's labels, so no node can pull an image and nothing was changed; with every gateway gone no node report reaches the platform to name the images a new one keeps, so unsubscribe and subscribe again to rebuild the cluster")
+	case hasNode && len(st.Servers[RoleGateway]) == 0 && !holdsIdentity(s.network):
+		return Step{}, false, refuse(ClassGatewayLabelsLost,
+			"the cluster's only gateway is gone, and network %d holds no %s or %s label, since the release that built the cluster kept them on the gateway alone, so no new gateway can carry the cluster's identity and nothing was changed; unsubscribe and subscribe again to rebuild the cluster",
+			s.network.ID, KeyEnrolmentSHA256, KeyIssuerBucket)
 	case hasServing && (!hasBuilder || hasSnapshot || p.overdue(builder)):
 		return Step{"delete the serving server, whose file may hold a hosting set's keys, once the builder is done with it", func(ctx context.Context) error {
 			return p.API.DeleteServer(ctx, serving.ID)

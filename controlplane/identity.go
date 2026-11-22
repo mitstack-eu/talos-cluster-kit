@@ -3,13 +3,16 @@ package controlplane
 // Every call finds a subscription's resources by their labels alone, since a name is only a readable handle.
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base32"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -143,4 +146,54 @@ func mintIssuerBucket() (string, error) {
 // issuerURL is where the platform publishes the cluster's discovery document and key set, in the bucket's own host.
 func issuerURL(bucket, subscriptionID string) *url.URL {
 	return &url.URL{Scheme: "https", Host: bucket + ".s3." + issuerRegion + ".amazonaws.com", Path: "/" + subscriptionID}
+}
+
+// ClassGatewayLabelsLost refuses to rebuild the only gateway of a plane in one location whose network holds no
+// enrolment digest or issuer bucket, which a release before the network held them kept on the gateway alone.
+const ClassGatewayLabelsLost = "gateway-labels-lost"
+
+// identityKeys are the cluster's enrolment digest and issuer bucket, which its network holds for the cluster's whole
+// life, so a gateway built while no other stands has nothing to copy.
+var identityKeys = []string{KeyEnrolmentSHA256, KeyIssuerBucket}
+
+func holdsIdentity(network Network) bool {
+	return !slices.ContainsFunc(identityKeys, func(key string) bool { return network.Labels[key] == "" })
+}
+
+// setIdentity writes values to the network under identityKeys, and takes each key with no value off.
+func (p Plane) setIdentity(ctx context.Context, network Network, values map[string]string) error {
+	labels := maps.Clone(network.Labels)
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	for _, key := range identityKeys {
+		delete(labels, key)
+		if values[key] != "" {
+			labels[key] = values[key]
+		}
+	}
+	return p.API.SetNetworkLabels(ctx, network.ID, labels)
+}
+
+// copyIdentityStep copies each identity label that a cluster an earlier release built holds only on its gateways onto
+// its network, the one place every reader reads them.
+func (p Plane) copyIdentityStep(st State, network Network) (Step, bool) {
+	gw, ok := st.SharedGateway()
+	if !ok || holdsIdentity(network) {
+		return Step{}, false
+	}
+	values := map[string]string{}
+	var copied []string
+	for _, key := range identityKeys {
+		values[key] = network.Labels[key]
+		if values[key] == "" && gw.Labels[key] != "" {
+			values[key] = gw.Labels[key]
+			copied = append(copied, key)
+		}
+	}
+	if len(copied) == 0 {
+		return Step{}, false
+	}
+	return Step{fmt.Sprintf("copy %s from gateway %d onto the network, which holds them for the cluster's whole life", strings.Join(copied, " and "), gw.ID),
+		func(ctx context.Context) error { return p.setIdentity(ctx, network, values) }}, true
 }

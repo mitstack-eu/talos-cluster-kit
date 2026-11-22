@@ -58,7 +58,7 @@ func (p Plane) install(ctx context.Context, s site) error {
 	orderable := &OrderableTypes{API: p.API}
 	var specs []ServerSpec
 	for _, loc := range p.NodeLocations() {
-		spec, err := p.gatewaySpec(ctx, orderable, loc, inst.gateways[loc], s, inst.enrolmentDigest, inst.issuerBucket, inst.listDigest)
+		spec, err := p.gatewaySpec(ctx, orderable, loc, inst.gateways[loc], s, inst.listDigest)
 		if err != nil {
 			return err
 		}
@@ -86,12 +86,16 @@ func (p Plane) install(ctx context.Context, s site) error {
 			Stopped:     true,
 		})
 	}
+	identity := map[string]string{KeyEnrolmentSHA256: inst.enrolmentDigest, KeyIssuerBucket: inst.issuerBucket}
+	if err := p.setIdentity(ctx, s.network, identity); err != nil {
+		return fmt.Errorf("labelling network %d with the cluster's enrolment digest and issuer bucket: %w", s.network.ID, err)
+	}
 	if _, err := p.API.CreateServers(ctx, specs...); err != nil {
-		return p.rollBackInstall(ctx, fmt.Errorf("creating the gateways and the builders: %w", err))
+		return p.rollBackInstall(ctx, s.network, fmt.Errorf("creating the gateways and the builders: %w", err))
 	}
 	if p.Installed != nil {
 		if err := p.Installed(ctx, s.network, inst.cluster, inst.gatewayCA); err != nil {
-			return p.rollBackInstall(ctx, err)
+			return p.rollBackInstall(ctx, s.network, err)
 		}
 	}
 	for _, loc := range p.NodeLocations() {
@@ -117,10 +121,13 @@ func (p Plane) builderSpec(ctx context.Context, orderable *OrderableTypes, r Rol
 	}, nil
 }
 
-// rollBackInstall deletes whatever servers a failed install made, since the keys they were made with are gone with
-// this call, so the next call installs anew.
-func (p Plane) rollBackInstall(ctx context.Context, cause error) error {
+// rollBackInstall deletes whatever servers a failed install made, and takes the identity labels it wrote off the
+// network, since the keys they were made with are gone with this call, so the next call installs anew.
+func (p Plane) rollBackInstall(ctx context.Context, network Network, cause error) error {
 	errs := []error{cause}
+	if err := p.setIdentity(ctx, network, nil); err != nil {
+		errs = append(errs, fmt.Errorf("taking the failed install's enrolment digest and issuer bucket off network %d: %w", network.ID, err))
+	}
 	for _, r := range []Role{RoleGateway, RoleBuilder, RoleServing, RoleWorkerBuilder} {
 		servers, err := p.API.ListServers(ctx, p.RoleSelector(r))
 		if err != nil {

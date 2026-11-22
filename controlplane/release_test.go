@@ -479,9 +479,9 @@ func TestRelease_APlaneWithRunnersCarriesTheRunnerTokenSecretTheLeaseCronJobOffB
 	role := testutil.Named(t, docs, "Role", "mitstack-runner-lease")
 	assert.Equal(t, "mitstack-runners", testutil.Field(t, role, "metadata", "namespace"))
 	assert.Equal(t, []any{
-		map[string]any{"apiGroups": []any{""}, "resources": []any{"secrets"}, "resourceNames": []any{"mitstack-runner-token"}, "verbs": []any{"get", "patch"}},
-		map[string]any{"apiGroups": []any{""}, "resources": []any{"pods"}, "verbs": []any{"list", "deletecollection"}},
-	}, role["rules"], "the job may read and patch the one Secret and delete pods, and create none")
+		map[string]any{"apiGroups": []any{""}, "resources": []any{"secrets"}, "resourceNames": []any{"mitstack-runner-token"}, "verbs": []any{"patch"}},
+		map[string]any{"apiGroups": []any{""}, "resources": []any{"pods"}, "verbs": []any{"deletecollection"}},
+	}, role["rules"], "the job may patch the one Secret and delete pods by collection, and read, list or create none")
 	binding := testutil.Named(t, docs, "RoleBinding", "mitstack-runner-lease")
 	assert.Equal(t, []any{map[string]any{"kind": "ServiceAccount", "name": "mitstack-runner-lease", "namespace": "mitstack-node"}}, binding["subjects"])
 	lease := testutil.Named(t, docs, "CronJob", "mitstack-runner-lease")

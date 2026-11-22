@@ -131,6 +131,31 @@ func TestWithRunners_KeepsTheListenerOffBurstMembersAndLabelsIt(t *testing.T) {
 	assert.NotEmpty(t, testutil.Field(t, listener, "metadata", "labels", "mitstack.dev/app"), "the app-label policy refuses an unlabelled listener")
 }
 
+func TestWithRunners_GrantsTheControllerARoleToCreateTheListenersRoleAndBindingAndNamesThemForCleanup(t *testing.T) {
+	set := runnerSet(t)
+	docs := testutil.Documents(t, testutil.Manifest(t, "mitstack-runner-scale-set", set.Inline).Bytes)
+
+	role := testutil.Named(t, docs, "Role", "mitstack-ci-gha-rs-manager")
+	binding := testutil.Named(t, docs, "RoleBinding", "mitstack-ci-gha-rs-manager")
+	scaleSet := testutil.Named(t, docs, "AutoscalingRunnerSet", "mitstack-ci")
+
+	assert.Equal(t, components.RunnersNamespace, testutil.Field(t, role, "metadata", "namespace"), "the namespace the listener's Role is created in")
+	for _, resource := range []string{"roles", "rolebindings"} {
+		granted := false
+		for _, rule := range role["rules"].([]any) {
+			if slices.Contains(testutil.Field(t, rule, "resources").([]any), any(resource)) && slices.Contains(testutil.Field(t, rule, "verbs").([]any), any("create")) {
+				granted = true
+			}
+		}
+		assert.True(t, granted, "the manager Role rules %v grant create on %s", role["rules"], resource)
+	}
+	assert.Equal(t, components.RunnersNamespace, testutil.Field(t, binding, "metadata", "namespace"))
+	assert.Equal(t, map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": "mitstack-ci-gha-rs-manager"}, binding["roleRef"], "the Role the binding grants")
+	assert.Equal(t, []any{map[string]any{"kind": "ServiceAccount", "name": "arc-gha-rs-controller", "namespace": components.RunnersNamespace}}, binding["subjects"], "the controller's ServiceAccount is who holds it")
+	assert.Equal(t, "mitstack-ci-gha-rs-manager", testutil.Field(t, scaleSet, "metadata", "annotations", "actions.github.com/cleanup-manager-role-name"), "ARC removes the Role on deletion")
+	assert.Equal(t, "mitstack-ci-gha-rs-manager", testutil.Field(t, scaleSet, "metadata", "annotations", "actions.github.com/cleanup-manager-role-binding"), "ARC removes the binding on deletion")
+}
+
 func TestDefault_HoldsNoRunnerManifest(t *testing.T) {
 	names := manifestNames(components.Default())
 
@@ -224,26 +249,65 @@ func TestWithRunnerServices_RendersEveryOtherManifestOfTheDefaultSetByteForByte(
 		slices.DeleteFunc(manifestNames(set), func(name string) bool { return slices.Contains(manifestNames(base), name) }), "what the services add")
 }
 
-func TestWithRunnerServices_OpensTheAPIServerAndTheInternetToThePodsOfTheRunnersNamespaceAlone(t *testing.T) {
-	set := components.Default().WithRunnerServices()
-	var policy map[string]any
-	for _, doc := range testutil.Documents(t, inSet(t, set, "mitstack-runners").Bytes) {
+func runnersPolicy(t *testing.T) map[string]any {
+	t.Helper()
+	for _, doc := range testutil.Documents(t, inSet(t, components.Default().WithRunnerServices(), "mitstack-runners").Bytes) {
 		if strings.HasPrefix(doc["kind"].(string), "Cilium") {
-			policy = doc
+			return doc
 		}
 	}
-	require.NotNil(t, policy, "the runners' Cilium policy")
+	require.FailNow(t, "the runners' Cilium policy is missing")
+	return nil
+}
+
+func TestWithRunnerServices_OpensTheInternetToJobPodsAloneAndTheAPIServerAndGitHubToEveryPodOfTheRunnersNamespace(t *testing.T) {
+	policy := runnersPolicy(t)
 	pods := map[string]testutil.CiliumEndpoint{
-		"a runner pod": testutil.Endpoint(components.RunnersNamespace, nil, nil),
-		"an app pod":   testutil.Endpoint("app-shop", nil, nil),
+		"a job pod":      testutil.Endpoint(components.RunnersNamespace, nil, map[string]string{"app.kubernetes.io/component": "runner"}),
+		"a listener pod": testutil.Endpoint(components.RunnersNamespace, nil, map[string]string{"app.kubernetes.io/component": "runner-scale-set-listener"}),
+		"the controller": testutil.Endpoint(components.RunnersNamespace, nil, map[string]string{"app.kubernetes.io/name": "gha-rs-controller"}),
+		"an app pod":     testutil.Endpoint("app-shop", nil, nil),
+		"kube-dns":       testutil.Endpoint("kube-system", nil, map[string]string{"k8s-app": "kube-dns"}),
+	}
+	everyPod := []string{
+		"egress to entity kube-apiserver",
+		"egress with kube-dns on 53/UDP 53/TCP through the DNS proxy",
+		"egress to github.com on 443/TCP",
+		"egress to api.github.com on 443/TCP",
+		"egress to *.actions.githubusercontent.com on 443/TCP",
 	}
 
-	runner := testutil.Grants(t, policy, pods, "a runner pod")
+	job := testutil.Grants(t, policy, pods, "a job pod")
+	listener := testutil.Grants(t, policy, pods, "a listener pod")
+	controller := testutil.Grants(t, policy, pods, "the controller")
 	app := testutil.Grants(t, policy, pods, "an app pod")
 
-	assert.Contains(t, runner, "egress to entity kube-apiserver", "ARC's controller and listener reach the API server")
-	assert.Contains(t, runner, "egress to entity world", "a job reaches the internet and GitHub")
+	assert.ElementsMatch(t, append(slices.Clone(everyPod), "egress to entity world"), job, "what a job pod reaches")
+	assert.ElementsMatch(t, everyPod, listener, "what ARC's listener reaches: no world")
+	assert.ElementsMatch(t, everyPod, controller, "what ARC's controller reaches: no world")
 	assert.Empty(t, app, "the policy opens nothing beyond the runners' namespace")
+}
+
+func TestWithRunnerServices_GrantsTheWorldOnlyUnderAnEndpointSelectorForJobPodsAndSelectsOnlyPodsOfTheRunnersNamespace(t *testing.T) {
+	policy := runnersPolicy(t)
+
+	specs, _ := policy["specs"].([]any)
+	if spec, ok := policy["spec"]; ok {
+		specs = append(specs, spec)
+	}
+
+	require.NotEmpty(t, specs, "the policy's rules")
+	for i, spec := range specs {
+		selector := testutil.Field(t, spec, "endpointSelector")
+		assert.Equal(t, components.RunnersNamespace, testutil.Field(t, selector, "matchLabels", "k8s:io.kubernetes.pod.namespace"), "rule %d selects pods of the runners' namespace alone", i)
+		egress, _ := testutil.Field(t, spec, "egress").([]any)
+		for _, rule := range egress {
+			entities, _ := rule.(map[string]any)["toEntities"].([]any)
+			if slices.Contains(entities, any("world")) {
+				assert.Equal(t, "runner", testutil.Field(t, selector, "matchLabels", "k8s:app.kubernetes.io/component"), "rule %d grants world to pods %v, not job pods alone", i, selector)
+			}
+		}
+	}
 }
 
 func TestRunnerInputs_ValidateRefusesWhatTheScaleSetCannotRunWith(t *testing.T) {

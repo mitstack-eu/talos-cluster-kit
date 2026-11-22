@@ -1031,7 +1031,6 @@ func editDocuments(t *testing.T, config []byte, edit func(map[string]any)) []byt
 	return out.Bytes()
 }
 
-// kubeletSettings is the KubeletConfiguration keys a node's KubeletConfig document sets.
 func kubeletSettings(t *testing.T, config []byte) map[string]any {
 	t.Helper()
 	docs := testutil.Kind(testutil.Documents(t, config), "KubeletConfig")

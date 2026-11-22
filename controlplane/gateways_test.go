@@ -1408,3 +1408,43 @@ func TestPlane_ReplacesTheFailedOnlyGatewayOfAPlaneInOneLocationOnceNamingTheOut
 		})
 	}
 }
+
+func TestPlane_JudgesTheOnlyGatewayOfAPlaneInOneLocationFailedOnlyOnTwoConsecutiveReadingsNotServing(t *testing.T) {
+	h := newHarness(t, oneLocation)
+	h.built()
+	gw, from := h.gatewayIn(controlplane.GatewayLocation), len(h.events)
+
+	gatewayFailures[0].fail(h, gw)
+	require.NoError(t, h.converge())
+	assert.Empty(t, h.deletedGateways(from), "gateways deleted on the first reading not serving")
+	cause, _, err := h.plane.Unhealthy(context.Background(), h.read())
+	require.NoError(t, err)
+	assert.Empty(t, cause, "the cause after one reading not serving")
+
+	h.failing = nil
+	h.now = h.now.Add(reportEvery)
+	require.NoError(t, h.converge())
+	h.failing = []string{controlplane.GatewayAddress}
+	h.now = h.now.Add(reportEvery)
+	require.NoError(t, h.converge())
+	assert.Empty(t, h.deletedGateways(from), "gateways deleted on a reading not serving that follows one serving")
+
+	h.now = h.now.Add(reportEvery)
+	require.NoError(t, h.converge())
+	deleted := h.deletedGateways(from)
+	require.Len(t, deleted, 1, "gateways deleted on the second consecutive reading not serving")
+	assert.True(t, strings.HasPrefix(deleted[0], fmt.Sprintf("deleted gateway %d in fsn1, which ", gw.ID)), "the deletion: %s", deleted[0])
+}
+
+func TestPlane_APlaneInThreeLocationsBeginsReplacingAFailedGatewayOnItsFirstReadingNotServing(t *testing.T) {
+	h := newHarness(t, withReports)
+	h.built()
+	failed, from := h.gatewayIn(controlplane.GatewayLocation), len(h.events)
+
+	gatewayFailures[0].fail(h, failed)
+	require.NoError(t, h.converge())
+
+	assert.True(t, slices.ContainsFunc(h.events[from:], func(e string) bool {
+		return strings.HasPrefix(e, "routed the network's default route via gateway ")
+	}), "the route moved off the failed gateway on the call that read it not serving once: %q", h.events[from:])
+}

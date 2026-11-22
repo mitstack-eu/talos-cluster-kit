@@ -1455,6 +1455,63 @@ func TestPlane_APlaneInOneLocationKeepsItsOnlyGatewayWhenTheOnlyReportNotServing
 	assert.Empty(t, h.deletedGateways(from), "gateways deleted on one report not serving, received in the second it was first read")
 }
 
+// unhealthyDetailsUntilDeleted steps the plane one call at a time until it deletes a gateway and gives each detail
+// Unhealthy names in between.
+func (h *harness) unhealthyDetailsUntilDeleted(from int) []string {
+	h.t.Helper()
+	var details []string
+	for range 50 {
+		_, detail, err := h.plane.Unhealthy(context.Background(), h.read())
+		require.NoError(h.t, err)
+		if detail != "" {
+			details = append(details, detail)
+		}
+		require.NoError(h.t, h.ensure())
+		if len(h.deletedGateways(from)) > 0 {
+			return details
+		}
+	}
+	h.t.Fatalf("no gateway deleted after 50 calls; details named: %q", details)
+	return nil
+}
+
+func TestPlane_UnhealthyNamesTheReplacementOfTheOnlyGatewayOfAPlaneInOneLocationAsAShortOutageAndNoOtherGateway(t *testing.T) {
+	h := newHarness(t, oneLocation)
+	h.built()
+	gw, from := h.gatewayIn(controlplane.GatewayLocation), len(h.events)
+	gatewayFailures[0].fail(h, gw)
+	require.NoError(t, h.converge())
+	h.now = h.now.Add(reportEvery)
+
+	details := h.unhealthyDetailsUntilDeleted(from)
+
+	require.NotEmpty(t, details, "the details Unhealthy names before the deletion")
+	for _, detail := range details {
+		assert.Contains(t, detail, "short outage", "the detail of a plane in one location")
+		assert.NotContains(t, detail, "other gateways", "the detail of a plane in one location")
+	}
+	assert.True(t, slices.ContainsFunc(details, func(d string) bool { return strings.Contains(d, "began replacing it at") }), "a detail once the replacement began: %q", details)
+}
+
+func TestPlane_UnhealthySaysAPlaneInThreeLocationsReplacesAFailedGatewayOnceTheOtherGatewaysServe(t *testing.T) {
+	h := newHarness(t, withReports)
+	h.built()
+	failed, from := h.gatewayIn(controlplane.GatewayLocation), len(h.events)
+	gatewayFailures[0].fail(h, failed)
+	_, before, err := h.plane.Unhealthy(context.Background(), h.read())
+	require.NoError(t, err)
+	require.NoError(t, h.converge())
+	h.now = h.now.Add(reportEvery)
+
+	details := append([]string{before}, h.unhealthyDetailsUntilDeleted(from)...)
+
+	require.NotEmpty(t, details, "the details Unhealthy names before the deletion")
+	for _, detail := range details {
+		assert.Contains(t, detail, "reads the other gateways serving", "the detail of a plane in three locations")
+		assert.NotContains(t, detail, "outage", "the detail of a plane in three locations")
+	}
+}
+
 func TestPlane_APlaneInThreeLocationsDeletesAFailedGatewayOnTheReportAfterItsFirstReadingNotServing(t *testing.T) {
 	h := newHarness(t, withReports)
 	h.built()

@@ -159,7 +159,7 @@ spec:
           env:
             - name: DOCKER_GROUP_GID
               value: "123"
-          # This request and the runner's fit one job on a cx23 beside every DaemonSet, so a queued job grows a Cloud pool.
+          # Requests make a queued job grow a Cloud pool, and with the runner's they fit one job on a cx23 beside every DaemonSet.
           resources:
             requests:
               cpu: 250m

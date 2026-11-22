@@ -77,7 +77,9 @@ evict_refusing() {
   fi
   pods=$(refusing_pods <<<"$pods")
   while read -r namespace name; do
-    [ -n "$namespace" ] && evict "$node" "$namespace" "$name"
+    if [ -n "$namespace" ]; then
+      evict "$node" "$namespace" "$name"
+    fi
   done <<<"$pods"
 }
 

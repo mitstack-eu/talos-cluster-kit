@@ -714,15 +714,16 @@ func (p Plane) deletionStep(r removal, began time.Time, judged string) Step {
 	}}
 }
 
-// outage is what the deletion of a plane in one location's only gateway takes from the cluster, and its bound.
+// outage names what the cluster loses while a plane in one location replaces its only gateway, and for how long at most.
 var outage = fmt.Sprintf("this begins an outage, since it is the plane's only gateway: the nodes pull no image and reach nothing outside the network until its successor serves, within %s of the successor's creation",
 	gateway.Deadline)
 
 func gatewayName(gw Server) string { return fmt.Sprintf("gateway %d in %s", gw.ID, gw.Location) }
 
 // gatewaySet is every gateway with its newest reading since began, off its address as Hetzner reads it now, else as a
-// report since began reads its mirror, with each reading's detail naming that report. A plane in one location has no
-// other gateway to keep serving, so its one gateway goes with the outage its deletion names.
+// report since began reads its mirror, with each reading's detail naming that report. A plane in one location asks for
+// no redundancy, since no other gateway can serve while its only one is replaced, and the deletion's event names that
+// outage.
 func (p Plane) gatewaySet(ctx context.Context, st State, network Network, began time.Time) (redundant.Set, map[string]string, error) {
 	minimum := redundant.AllButOne
 	if p.oneLocation() {

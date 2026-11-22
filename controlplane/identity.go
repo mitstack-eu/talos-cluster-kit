@@ -153,7 +153,7 @@ func issuerURL(bucket, subscriptionID string) *url.URL {
 const ClassGatewayLabelsLost = "gateway-labels-lost"
 
 // identityKeys are the cluster's enrolment digest and issuer bucket, which its network holds for the cluster's whole
-// life, so a gateway built while no other stands has nothing to copy.
+// life, since a gateway rebuilt while no other stands has no sibling to copy them from.
 var identityKeys = []string{KeyEnrolmentSHA256, KeyIssuerBucket}
 
 func holdsIdentity(network Network) bool {
@@ -175,8 +175,8 @@ func (p Plane) setIdentity(ctx context.Context, network Network, values map[stri
 	return p.API.SetNetworkLabels(ctx, network.ID, labels)
 }
 
-// copyIdentityStep copies each identity label that a cluster an earlier release built holds only on its gateways onto
-// its network, the one place every reader reads them.
+// copyIdentityStep copies onto the network each identity label that only the gateways of a cluster an earlier release
+// built carry, since every reader reads them from the network.
 func (p Plane) copyIdentityStep(st State, network Network) (Step, bool) {
 	gw, ok := st.SharedGateway()
 	if !ok || holdsIdentity(network) {

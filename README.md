@@ -1431,7 +1431,7 @@ the API server is asked to create. Eight of its policies apply to every
 namespace outside the system namespaces, which are `kube-system`,
 `kube-public`, `kube-node-lease`, `argocd`, `kyverno`, `cnpg-system`,
 `mitstack-node` and `istio-system`. The three policies that judge a pod's
-volumes, limits and registry skip five more namespaces, which
+volumes, limits and registry skip up to six more namespaces, which
 [the table of skipped namespaces](#which-namespaces-the-pod-policies-skip)
 explains. A cluster that is given a signer list runs a ninth policy, which
 [the section on signatures](#how-a-cluster-checks-who-signed-an-image)
@@ -1505,10 +1505,13 @@ holds the signature policy to the same.
 
 `mitstack-disallow-host-path`, `mitstack-require-resource-limits` and
 `mitstack-restrict-image-registries` skip every namespace the other policies
-skip. They also skip the last five namespaces of the table below, because the
+skip. They also skip the last six namespaces of the table below, because the
 components the kit installs there run from upstream registries, set no limits
 or mount a host path. `traefik`, `cert-manager`, `openbao` and
-`external-secrets` exist only on a cluster that hosts the platform. No
+`external-secrets` exist only on a cluster that hosts the platform.
+`mitstack-runners` exists only on a cluster with
+[runner services](docs/runner-services.md), whose three pod policies skip it
+under the same names. No
 namespace of an app, including the control plane's own app, is in this list.
 Neither is `mitstack-admission-probe`, where the node report tries its refused
 fixtures, as [the section on the report's admission rules](#how-the-report-tries-each-admission-rule)
@@ -1529,6 +1532,7 @@ explains. The policies judge each of them.
 | `openbao` | OpenBao's three members | Its image comes from `quay.io/openbao` and its values set no limits |
 | `external-secrets` | External Secrets | Its images come from `ghcr.io/external-secrets` and its values set no limits |
 | `local-path-storage` | The local path provisioner and its helper pods | The image comes from Docker Hub and a helper pod mounts the directory of a claim's volume on the node as a host path |
+| `mitstack-runners` | ARC's controller, the scale set's listener and each CI job's runner pod with its Docker daemon sidecar | Their images come from `ghcr.io/actions` and Docker Hub, and a job's pod sets no limits and runs its Docker daemon privileged |
 
 The CloudNativePG operator in `cnpg-system` runs the Postgres clusters an app
 keeps its data in. A namespace labelled `mitstack.dev/database-slice=true` is
@@ -2535,6 +2539,10 @@ Collector's account holds no right on Secrets, and each copy reads the token
 from the Secret mounted as a file and sends it under the export's header.
 Kubernetes starts no pod whose Secret lacks a key the pod names, so the
 Collector starts once the lease job's first run writes the token.
+
+A cluster with runner services leases its runner GitHub token the same
+way, through `cluster-tokens.sh runner-lease` every 30 minutes, as
+[the runner services page](docs/runner-services.md) explains.
 
 ## Where a claim keeps its data
 

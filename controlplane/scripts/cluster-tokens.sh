@@ -5,11 +5,11 @@
 # tokens for the cluster repository and each app slice's repository; lease
 # trades it, in one call, for the telemetry Collector's push token whenever
 # the one its Secret holds has 11 hours or fewer left; runner-lease trades it
-# for the runner scale set's registration token on every run, since each
-# lives an hour, and restarts the scale set's listener so it registers with
-# the new one. Each token goes into the Secret that uses it. A cluster whose REPOSITORY_CREDENTIAL is deploy-key
-# reads its repository with a sealed deploy key, so enrol writes no
-# repository token.
+# for the runner scale set's GitHub token on every run, since each lives an
+# hour, and restarts the scale set's listener so it registers with the new
+# one. Each token goes into the Secret that uses it. A cluster whose
+# REPOSITORY_CREDENTIAL is deploy-key reads its repository with a sealed
+# deploy key, so enrol writes no repository token.
 # Usage: PLATFORM_URL=<https origin> SUBSCRIPTION_ID=<id> REPO_URL=<url>
 #   REPOSITORY_CREDENTIAL=platform-token|deploy-key cluster-tokens.sh enrol|renew
 #   PLATFORM_URL=<https origin> LEASE_RESOURCE=<resource type> cluster-tokens.sh lease|runner-lease
@@ -235,7 +235,7 @@ lease() {
   echo "cluster-tokens: leased a push token for $LEASE_RESOURCE until $(jq -r .expiresAt "$work/answer")"
 }
 
-# runner_lease writes a new registration token into the scale set's Secret and deletes the listener's pods, which ARC's
+# runner_lease writes a new GitHub token into the scale set's Secret and deletes the listener's pods, which ARC's
 # controller rebuilds reading the new token, since a running listener keeps the token it started with.
 runner_lease() {
   local status now
@@ -244,8 +244,8 @@ runner_lease() {
   require_lease "$now" "$longest_runner_lease" "65 minutes"
   write_leased_token "$runners_namespace" "$runner_secret" github_token
   status=$(kube_call DELETE "/api/v1/namespaces/$runners_namespace/pods?labelSelector=$listener_selector")
-  [ "$status" = 200 ] || fail "wrote the registration token but could not restart the listener in $runners_namespace: HTTP $status"
-  echo "cluster-tokens: leased a registration token for $LEASE_RESOURCE until $(jq -r .expiresAt "$work/answer")"
+  [ "$status" = 200 ] || fail "wrote the GitHub token but could not restart the listener in $runners_namespace: HTTP $status"
+  echo "cluster-tokens: leased a GitHub token for $LEASE_RESOURCE until $(jq -r .expiresAt "$work/answer")"
 }
 
 main() {

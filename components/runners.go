@@ -15,7 +15,7 @@ import (
 const (
 	// RunnersNamespace holds ARC's controller, the scale set's listener and every job's pod.
 	RunnersNamespace = "mitstack-runners"
-	// RunnerTokenSecret is the Secret the lease job fills with a registration token, which ARC reads as github_token.
+	// RunnerTokenSecret is the Secret the lease job fills with a GitHub token, which ARC reads as github_token.
 	RunnerTokenSecret = "mitstack-runner-token"
 	// RunnerTokenName names the control plane's manifest of the runner token's Secret and the CronJob that leases it.
 	RunnerTokenName = "mitstack-runner-token"
@@ -53,7 +53,7 @@ type RunnerInputs struct {
 	RunnerImage, DindImage string
 	// MaxRunners is the most jobs that run at once, at least one.
 	MaxRunners int
-	// LeaseResource is the resource type whose registration token the lease job asks the platform for.
+	// LeaseResource is the resource type whose GitHub token the lease job asks the platform for.
 	LeaseResource string
 }
 
@@ -80,7 +80,7 @@ func (in RunnerInputs) Validate() error {
 		errs = append(errs, fmt.Errorf("the runner inputs' MaxRunners is %d, want at least 1", in.MaxRunners))
 	}
 	if in.LeaseResource == "" {
-		errs = append(errs, errors.New("the runner inputs' LeaseResource names no resource to lease the registration token of"))
+		errs = append(errs, errors.New("the runner inputs' LeaseResource names no resource to lease the GitHub token of"))
 	}
 	return errors.Join(errs...)
 }

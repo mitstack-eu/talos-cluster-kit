@@ -1,4 +1,4 @@
-# The runner scale set's registration token: an empty Secret ARC reads, and a CronJob that leases a token from the
+# The runner scale set's GitHub token: an empty Secret ARC reads, and a CronJob that leases a token from the
 # platform under the report token, writes it to the Secret and restarts the listener so it registers with the new one.
 apiVersion: v1
 kind: Secret
@@ -46,7 +46,7 @@ metadata:
   name: mitstack-runner-lease
   namespace: {{ .Namespace }}
 spec:
-  # A registration token lives an hour, so a lease each half hour keeps one valid through a failed run.
+  # The GitHub token lives an hour, so a lease each half hour keeps one valid through a failed run.
   schedule: "*/30 * * * *"
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 1

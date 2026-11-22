@@ -1,0 +1,28 @@
+# ARC's controller watches mitstack-runners alone, so the chart grants it Roles in that namespace and no ClusterRole.
+replicaCount: 1
+image:
+  tag: 0.15.1@sha256:4b51a20db717b194e2f3fa96cfe2ddcb21602811f79053c75fd1a383517b9f90
+podLabels:
+  mitstack.dev/app: mitstack-runners
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
+  readOnlyRootFilesystem: true
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+flags:
+  logLevel: info
+  logFormat: json
+  watchSingleNamespace: mitstack-runners

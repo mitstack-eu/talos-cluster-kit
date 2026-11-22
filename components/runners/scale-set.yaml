@@ -1,0 +1,134 @@
+# The org's one runner scale set in ARC's dind mode, as the gha-runner-scale-set chart renders it for containerMode
+# dind. Each job's pod mounts emptyDir volumes alone and reaches no cluster token. ARC's controller refuses a scale set
+# whose version label differs from its own release.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Name }}-runner
+  namespace: {{ .Namespace }}
+automountServiceAccountToken: false
+---
+apiVersion: actions.github.com/v1alpha1
+kind: AutoscalingRunnerSet
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+  labels:
+    app.kubernetes.io/component: autoscaling-runner-set
+    app.kubernetes.io/name: {{ .Name }}
+    app.kubernetes.io/instance: {{ .Name }}
+    app.kubernetes.io/version: {{ printf "%q" .ControllerVersion }}
+    app.kubernetes.io/part-of: gha-rs
+    actions.github.com/scale-set-name: {{ .Name }}
+    actions.github.com/scale-set-namespace: {{ .Namespace }}
+spec:
+  githubConfigUrl: {{ printf "%q" .ConfigURL }}
+  githubConfigSecret: {{ .TokenSecret }}
+  runnerGroup: {{ .Group }}
+  runnerScaleSetName: {{ .Name }}
+  minRunners: 0
+  maxRunners: {{ .MaxRunners }}
+  listenerTemplate:
+    metadata:
+      labels:
+        mitstack.dev/app: {{ .Namespace }}
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: {{ .BurstLabel }}
+                    operator: DoesNotExist
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: listener
+          image: {{ .ControllerImage }}
+          resources:
+            requests:
+              cpu: 20m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+  template:
+    metadata:
+      labels:
+        mitstack.dev/app: {{ .Namespace }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ .Name }}-runner
+      automountServiceAccountToken: false
+      initContainers:
+        - name: init-dind-externals
+          image: {{ .RunnerImage }}
+          command: ["cp"]
+          args: ["-r", "/home/runner/externals/.", "/home/runner/tmpDir/"]
+          volumeMounts:
+            - name: dind-externals
+              mountPath: /home/runner/tmpDir
+        - name: dind
+          image: {{ .DindImage }}
+          args:
+            - dockerd
+            - --host=unix:///var/run/docker.sock
+            - --group=$(DOCKER_GROUP_GID)
+          env:
+            - name: DOCKER_GROUP_GID
+              value: "123"
+          securityContext:
+            privileged: true
+          restartPolicy: Always
+          startupProbe:
+            exec:
+              command:
+                - docker
+                - info
+            initialDelaySeconds: 0
+            failureThreshold: 24
+            periodSeconds: 5
+          volumeMounts:
+            - name: work
+              mountPath: /home/runner/_work
+            - name: dind-sock
+              mountPath: /var/run
+            - name: dind-externals
+              mountPath: /home/runner/externals
+      containers:
+        - name: runner
+          image: {{ .RunnerImage }}
+          command:
+            - /home/runner/run.sh
+          env:
+            - name: DOCKER_HOST
+              value: unix:///var/run/docker.sock
+            - name: RUNNER_WAIT_FOR_DOCKER_IN_SECONDS
+              value: "120"
+          volumeMounts:
+            - name: work
+              mountPath: /home/runner/_work
+            - name: dind-sock
+              mountPath: /var/run
+      volumes:
+        - name: dind-sock
+          emptyDir: {}
+        - name: dind-externals
+          emptyDir: {}
+        - name: work
+          emptyDir: {}

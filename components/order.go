@@ -20,7 +20,8 @@ var (
 	}
 	webhookValidated = []string{"external-secrets", "trust-manager", "mitstack-hosting-tls", "plugin-barman-cloud"}
 	// appended holds each later manifest at the end, where it changes no other manifest's TalosName and no gateway's list.
-	appended = []string{"mitstack-node-topology", "mitstack-require-image-digest", SignaturePolicyName, TelemetryName}
+	appended = []string{"mitstack-node-topology", "mitstack-require-image-digest", SignaturePolicyName, TelemetryName,
+		runnersName, runnerControllerName, runnerScaleSetName, RunnerTokenName}
 )
 
 // applyOrder puts each webhook's pod and the mesh it runs in before what it validates, since Talos abandons a pass there.

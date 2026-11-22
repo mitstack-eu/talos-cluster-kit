@@ -5,7 +5,9 @@
 # their charts, and Istio's ambient mesh from its base, istiod, cni and
 # ztunnel charts. It renders the hosting set's seven charts too: OpenBao,
 # cert-manager, trust-manager, External Secrets, Sealed Secrets, Traefik and
-# CloudNativePG's Barman Cloud plugin.
+# CloudNativePG's Barman Cloud plugin. It renders the runner services' ARC
+# controller from its chart, and the runner variant of each pod policy that
+# skips local-path-storage, which skips mitstack-runners beside it.
 # It ends each document whose last value is a block scalar with a comment line,
 # since Talos trims every document before it decodes it and would otherwise cut
 # that value's final line break. It drops an empty labels or annotations map
@@ -42,7 +44,7 @@ readonly local_path_archive_sha256=2b95efae90cd01de97dd9809739d24b0ad2ccaded6e86
 readonly local_path_archive_url="https://github.com/rancher/local-path-provisioner/archive/${local_path_commit}.tar.gz"
 
 readonly istio_version=1.30.7
-# Istio publishes its charts on GitHub's registry, where each chart's layer digest is the sha256 its pin names.
+# Istio and ARC publish their charts on GitHub's registry, where each chart's layer digest is the sha256 its pin names.
 readonly istio_chart_registry=oci://ghcr.io/istio/release/charts
 # Each Istio chart is chart, file and the sha256 Istio publishes for its archive, in the order a node applies them.
 readonly istio_charts=(
@@ -63,6 +65,13 @@ readonly hosting_charts=(
   "traefik 41.6.1 1e65d46bae0ba0baef460a1d82686b50f156372865a3d7d8a85b51c3855b2ef9 https://traefik.github.io/charts/traefik/traefik-41.6.1.tgz traefik create"
   "plugin-barman-cloud 0.9.0 7fb78e89f25c18737e5649ae3c5e840065052f89757d541eaf310a1706ebd7dd https://github.com/cloudnative-pg/charts/releases/download/plugin-barman-cloud-v0.9.0/plugin-barman-cloud-0.9.0.tgz cnpg-system -"
 )
+
+readonly arc_chart_version=0.15.1
+readonly arc_chart_sha256=248807b8ff55fd1a5cc7bb5250558092a162637cfb875ba041eddeeaa51cd747
+readonly arc_chart=oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set-controller
+readonly runners_namespace=mitstack-runners
+# The pod policies that skip local-path-storage, whose runner variants skip the runners' namespace too.
+readonly runner_policies=(mitstack-disallow-host-path mitstack-require-resource-limits mitstack-restrict-image-registries)
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 readonly root
@@ -153,19 +162,20 @@ render_local_path() {
   } > "$work/local-path-provisioner.yaml"
 }
 
-# pull_istio_chart <chart> <sha256> <dest> pulls one pinned Istio chart; helm's error names its reference on failure.
-pull_istio_chart() {
-  local dir="$work/pull-$1"
+# pull_oci_chart <reference> <version> <sha256> <dest> pulls one pinned chart from a registry; helm's error names its
+# reference on failure.
+pull_oci_chart() {
+  local dir="$work/pull-${1##*/}"
   mkdir "$dir"
-  "$helm" pull "$istio_chart_registry/$1" --version "$istio_version" --destination "$dir"
-  mv "$dir/$1-${istio_version}.tgz" "$3"
-  check_pin "$2" "$3"
+  "$helm" pull "$1" --version "$2" --destination "$dir"
+  mv "$dir/${1##*/}-$2.tgz" "$4"
+  check_pin "$3" "$4"
 }
 
 # render_istio_chart <chart> <file> <sha256> renders one Istio chart into istio-system. The base chart comes first and
 # creates the namespace at the privileged Pod Security level, since ztunnel and the CNI agent change each pod's network.
 render_istio_chart() {
-  pull_istio_chart "$1" "$3" "$work/$2.tgz"
+  pull_oci_chart "$istio_chart_registry/$1" "$istio_version" "$3" "$work/$2.tgz"
   {
     header "the istio $1 ${istio_version} chart"
     if [ "$1" = base ]; then
@@ -195,6 +205,37 @@ render_hosting_chart() {
       --skip-tests \
       --values "$root/components/render/$1-values.yaml"
   } > "$work/$1.yaml"
+}
+
+# render_arc_controller renders ARC's controller with the resource definitions in its crds/ folder into the runners'
+# namespace, which components/runners/runners.yaml creates.
+render_arc_controller() {
+  pull_oci_chart "$arc_chart" "$arc_chart_version" "$arc_chart_sha256" "$work/arc.tgz"
+  {
+    header "the gha-runner-scale-set-controller ${arc_chart_version} chart"
+    "$helm" template arc "$work/arc.tgz" \
+      --include-crds \
+      --namespace "$runners_namespace" \
+      --kube-version "$kube_version" \
+      --skip-tests \
+      --values "$root/components/render/gha-runner-scale-set-controller-values.yaml"
+  } > "$work/gha-runner-scale-set-controller.yaml"
+}
+
+# render_runner_policy <policy> writes the policy with the runners' namespace after local-path-storage in each list of
+# namespaces it skips, and fails when the policy holds no such list, so the base policy stays the one source.
+render_runner_policy() {
+  local base="$root/components/admission/policies/$1.yaml" lists
+  lists=$(grep -c -E '^ *values: \[.*, local-path-storage\]$' "$base" || true)
+  if [ "$lists" -eq 0 ]; then
+    echo "render-components: $base skips no local-path-storage, so its runner variant has no list to add $runners_namespace to" >&2
+    return 1
+  fi
+  {
+    printf '# Generated by scripts/render-components.sh from components/admission/policies/%s.yaml, skipping %s too.\n' "$1" "$runners_namespace"
+    printf '# Edit that policy or the script and render again, never this file.\n'
+    sed -E "s/^( *values: \[.*, local-path-storage)\]$/\1, $runners_namespace]/" "$base"
+  } > "$work/runner-$1.yaml"
 }
 
 readonly block_scalar_end='# Talos trims each document before it decodes it, so this line keeps the value above whole.'
@@ -238,12 +279,14 @@ main() {
   render_argocd
   render_kyverno
   render_local_path
+  render_arc_controller
   refuse_undigested "$work/cilium.yaml" render-components
   refuse_undigested "$work/argocd.yaml" render-components
   refuse_undigested "$work/kyverno.yaml" render-components
   refuse_undigested "$work/local-path-provisioner.yaml" render-components
+  refuse_undigested "$work/gha-runner-scale-set-controller.yaml" render-components
 
-  local pairs=("cilium.yaml:components/cilium/cilium.yaml" "policy-crd.yaml:components/cilium/policy-crd.yaml" "argocd.yaml:components/argocd/argocd.yaml" "kyverno.yaml:components/kyverno/kyverno.yaml" "local-path-provisioner.yaml:components/local-path-provisioner/local-path-provisioner.yaml")
+  local pairs=("cilium.yaml:components/cilium/cilium.yaml" "policy-crd.yaml:components/cilium/policy-crd.yaml" "argocd.yaml:components/argocd/argocd.yaml" "kyverno.yaml:components/kyverno/kyverno.yaml" "local-path-provisioner.yaml:components/local-path-provisioner/local-path-provisioner.yaml" "gha-runner-scale-set-controller.yaml:components/gha-runner-scale-set-controller/gha-runner-scale-set-controller.yaml")
   local chart name file version sha256 url namespace create
   for chart in "${istio_charts[@]}"; do
     read -r name file sha256 <<< "$chart"
@@ -262,9 +305,17 @@ main() {
     drop_empty_metadata_maps "$work/${pair%%:*}"
     end_block_scalars "$work/${pair%%:*}"
     keep_off_burst_nodes "$work/${pair%%:*}"
+  done
+  local policy
+  for policy in "${runner_policies[@]}"; do
+    render_runner_policy "$policy"
+    pairs+=("runner-$policy.yaml:components/runners/policies/$policy.yaml")
+  done
+  for pair in "${pairs[@]}"; do
     if $check; then
       compare "$work/${pair%%:*}" "$root/${pair#*:}" || failed=1
     else
+      mkdir -p "$(dirname "$root/${pair#*:}")"
       cp "$work/${pair%%:*}" "$root/${pair#*:}"
       echo "render-components: wrote ${pair#*:}"
     fi

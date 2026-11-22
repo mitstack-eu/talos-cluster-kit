@@ -1,0 +1,32 @@
+# The runner services' namespace. Each job runs a Docker daemon in a privileged sidecar, and only the privileged Pod
+# Security Standard admits a privileged container.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mitstack-runners
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+---
+# mitstack-runners starts from mitstack-default-deny. ARC's controller and listener reach the API server and GitHub, and
+# a job reaches whatever its workflow pulls or calls, so its pods reach the internet; nothing reaches them.
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: mitstack-runners-flows
+specs:
+- description: "The runner services reach the API server, the cluster's DNS and the internet."
+  endpointSelector:
+    matchLabels:
+      k8s:io.kubernetes.pod.namespace: mitstack-runners
+  egress:
+  - toEntities: [kube-apiserver]
+  - toEndpoints:
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: kube-system
+        k8s:k8s-app: kube-dns
+    toPorts:
+    - ports: [{port: "53", protocol: UDP}, {port: "53", protocol: TCP}]
+      rules:
+        dns:
+        - matchPattern: "*"
+  - toEntities: [world]

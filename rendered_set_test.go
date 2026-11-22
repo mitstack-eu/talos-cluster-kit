@@ -295,7 +295,6 @@ func quantity(t *testing.T, value any) resource.Quantity {
 	return q
 }
 
-// containerRequest is what container requests, zero for a resource it names no request for.
 func containerRequest(t *testing.T, container any) podRequest {
 	t.Helper()
 	resources, _ := container.(map[string]any)["resources"].(map[string]any)
@@ -328,7 +327,7 @@ var smallestPoolServer = podRequest{milliCPU: 2000, memory: 4 << 30}
 // kubeletHardEvictionMemory is the kubelet's default memory.available hard eviction threshold, which allocatable leaves out.
 const kubeletHardEvictionMemory = 100 << 20
 
-// workerAllocatable is what a Talos worker of size server offers its pods, after the kubelet's reservation.
+// workerAllocatable is what a Talos worker of size server offers its pods, after the system reservation and the hard eviction threshold.
 func workerAllocatable(server podRequest) podRequest {
 	cpu, memory := resource.MustParse(constants.KubeletSystemReservedCPU), resource.MustParse(constants.KubeletSystemReservedMemoryWorker)
 	return podRequest{milliCPU: server.milliCPU - cpu.MilliValue(), memory: server.memory - memory.Value() - kubeletHardEvictionMemory}

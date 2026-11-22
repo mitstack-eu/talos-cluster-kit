@@ -6,6 +6,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"maps"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,10 +16,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
+	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
 	"github.com/mitstack-eu/talos-cluster-kit/rollout"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 	"github.com/mitstack-eu/talos-cluster-kit/tools"
@@ -268,6 +272,137 @@ func TestManifests_TheRunnerServicesKeepARCsControllerAndTheListenerOffBurstMemb
 	for _, pod := range append(controller, listeners...) {
 		assert.True(t, refusesBurstNodes(pod.spec), "%s has no required node affinity %s DoesNotExist, and a burst member goes with the idle window", pod.where, components.BurstLabel)
 	}
+}
+
+// podRequest is the CPU in millicores and the memory in bytes a pod or a container asks the scheduler for.
+type podRequest struct{ milliCPU, memory int64 }
+
+func (r podRequest) plus(o podRequest) podRequest {
+	return podRequest{r.milliCPU + o.milliCPU, r.memory + o.memory}
+}
+
+func (r podRequest) atLeast(o podRequest) podRequest {
+	return podRequest{max(r.milliCPU, o.milliCPU), max(r.memory, o.memory)}
+}
+
+func (r podRequest) String() string { return fmt.Sprintf("%dm CPU and %dMi", r.milliCPU, r.memory>>20) }
+
+func quantity(t *testing.T, value any) resource.Quantity {
+	t.Helper()
+	if value == nil {
+		return resource.Quantity{}
+	}
+	q, err := resource.ParseQuantity(fmt.Sprint(value))
+	require.NoError(t, err, "the quantity %v", value)
+	return q
+}
+
+func containerRequest(t *testing.T, container any) podRequest {
+	t.Helper()
+	resources, _ := container.(map[string]any)["resources"].(map[string]any)
+	requests, _ := resources["requests"].(map[string]any)
+	cpu, memory := quantity(t, requests["cpu"]), quantity(t, requests["memory"])
+	return podRequest{cpu.MilliValue(), memory.Value()}
+}
+
+// scheduledRequest is what the scheduler reserves for spec: its containers with its sidecars, or its costliest init
+// container with the sidecars started before it, whichever is larger.
+func scheduledRequest(t *testing.T, spec map[string]any) podRequest {
+	t.Helper()
+	var sidecars, initPeak, running podRequest
+	for _, container := range listOf(spec["initContainers"]) {
+		if container.(map[string]any)["restartPolicy"] == "Always" {
+			sidecars = sidecars.plus(containerRequest(t, container))
+			continue
+		}
+		initPeak = initPeak.atLeast(sidecars.plus(containerRequest(t, container)))
+	}
+	for _, container := range listOf(spec["containers"]) {
+		running = running.plus(containerRequest(t, container))
+	}
+	return running.plus(sidecars).atLeast(initPeak)
+}
+
+// serverSizes are the sizes Hetzner publishes for the types a pool may list, which its API reports only at run time.
+var serverSizes = map[string]podRequest{
+	"cx23": {2000, 4 << 30}, "cpx22": {2000, 4 << 30}, "cx33": {4000, 8 << 30}, "cpx32": {4000, 8 << 30},
+	"cx43": {8000, 16 << 30}, "cpx52": {12000, 24 << 30}, "cx53": {16000, 32 << 30}, "cpx62": {16000, 32 << 30},
+}
+
+// smallestPoolServer is the smallest size among controlplane.ServerTypes, failing on a type serverSizes does not hold.
+func smallestPoolServer(t *testing.T) podRequest {
+	t.Helper()
+	require.NotEmpty(t, controlplane.ServerTypes)
+	smallest := podRequest{milliCPU: math.MaxInt64, memory: math.MaxInt64}
+	for _, name := range controlplane.ServerTypes {
+		size, ok := serverSizes[name]
+		require.True(t, ok, "controlplane.ServerTypes lists %s, whose size the fit test does not know", name)
+		smallest = podRequest{min(size.milliCPU, smallest.milliCPU), min(size.memory, smallest.memory)}
+	}
+	return smallest
+}
+
+// kubeletHardEvictionMemory is the kubelet's default memory.available hard eviction threshold, which allocatable leaves out.
+const kubeletHardEvictionMemory = 100 << 20
+
+// workerAllocatable is what a Talos worker of size server offers its pods, after the system reservation and the hard eviction threshold.
+func workerAllocatable(server podRequest) podRequest {
+	cpu, memory := resource.MustParse(constants.KubeletSystemReservedCPU), resource.MustParse(constants.KubeletSystemReservedMemoryWorker)
+	return podRequest{milliCPU: server.milliCPU - cpu.MilliValue(), memory: server.memory - memory.Value() - kubeletHardEvictionMemory}
+}
+
+func runnerPod(t *testing.T) renderedPod {
+	t.Helper()
+	var runners []renderedPod
+	for _, pod := range renderedPods(t) {
+		if runsAJob(pod) {
+			runners = append(runners, pod)
+		}
+	}
+	require.Len(t, runners, 1, "the runner's pod template")
+	return runners[0]
+}
+
+func TestManifests_TheRunnerPodRequestsCPUAndMemoryOnItsRunnerAndItsDockerDaemonSoAQueuedJobWaitsForRoom(t *testing.T) {
+	pod := runnerPod(t)
+
+	containers := podContainers(t, pod)
+
+	for _, name := range []string{"runner", "dind"} {
+		container, ok := containers[pod.workload+"/"+name]
+		require.True(t, ok, "the runner pod's container %s, of %v", name, slices.Sorted(maps.Keys(containers)))
+		got := containerRequest(t, container)
+		assert.Positive(t, got.milliCPU, "%s requests %s; a container that reserves no CPU always fits, so a queued job never grows the pool", name, got)
+		assert.Positive(t, got.memory, "%s requests %s; a container that reserves no memory always fits, so a queued job never grows the pool", name, got)
+	}
+}
+
+func TestManifests_OneRunnerJobFitsOnTheSmallestPoolServerBesideEveryDaemonSetThatRunsOnABurstMember(t *testing.T) {
+	daemons := map[string]podRequest{}
+	for _, pod := range renderedPods(t) {
+		selector, _ := pod.spec["nodeSelector"].(map[string]any)
+		_, onControlPlane := selector[controlPlaneRole]
+		if pod.kind == "DaemonSet" && !onControlPlane && !refusesBurstNodes(pod.spec) {
+			// The default and hosting sets each render some DaemonSets, and a cluster runs one of them.
+			key := pod.namespace + "/" + pod.workload
+			daemons[key] = daemons[key].atLeast(scheduledRequest(t, pod.spec))
+		}
+	}
+	require.Contains(t, daemons, "istio-system/ztunnel", "the per-node pods the fit sums, %v", slices.Sorted(maps.Keys(daemons)))
+	job := scheduledRequest(t, runnerPod(t).spec)
+	require.Positive(t, job.milliCPU, "the runner pod requests %s, and a pod that reserves nothing fits anywhere", job)
+	require.Positive(t, job.memory, "the runner pod requests %s, and a pod that reserves nothing fits anywhere", job)
+
+	need := job
+	var each []string
+	for _, key := range slices.Sorted(maps.Keys(daemons)) {
+		need = need.plus(daemons[key])
+		each = append(each, fmt.Sprintf("%s %s", key, daemons[key]))
+	}
+	room := workerAllocatable(smallestPoolServer(t))
+
+	assert.LessOrEqual(t, need.milliCPU, room.milliCPU, "the runner pod's %s with the DaemonSets' %v needs %s, and the smallest pool server offers %s", job, each, need, room)
+	assert.LessOrEqual(t, need.memory, room.memory, "the runner pod's %s with the DaemonSets' %v needs %s, and the smallest pool server offers %s", job, each, need, room)
 }
 
 func TestManifests_TheRolloutRendersAHandoverPerComponentAndOpenBaosMemberMoveOnlyWhereItCarriesOpenBaoEachKeptOffBurstMembers(t *testing.T) {

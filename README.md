@@ -1532,7 +1532,7 @@ explains. The policies judge each of them.
 | `openbao` | OpenBao's three members | Its image comes from `quay.io/openbao` and its values set no limits |
 | `external-secrets` | External Secrets | Its images come from `ghcr.io/external-secrets` and its values set no limits |
 | `local-path-storage` | The local path provisioner and its helper pods | The image comes from Docker Hub and a helper pod mounts the directory of a claim's volume on the node as a host path |
-| `mitstack-runners` | The controller of ARC, GitHub's actions-runner-controller for self-hosted runners, the scale set's listener and each CI job's runner pod with its Docker daemon sidecar | The controller and the listener run images from `ghcr.io/actions`, and a job's pod runs the runner and Docker daemon images the block's operator names. A job's containers set no limits. No pod there mounts a host path, and the host-path policy skips the namespace because the kit writes its variant with the other two |
+| `mitstack-runners` | The controller of ARC, GitHub's actions-runner-controller for self-hosted runners, the scale set's listener and each CI job's runner pod with its Docker daemon sidecar | The controller and the listener run images from `ghcr.io/actions`, and a job's pod runs the runner and Docker daemon images the block's operator names. A job's containers set a fixed CPU and memory request and no limits, so the scheduler reserves room for each job without capping it. No pod there mounts a host path, and the host-path policy skips the namespace because the kit writes its variant with the other two |
 
 The CloudNativePG operator in `cnpg-system` runs the Postgres clusters an app
 keeps its data in. A namespace labelled `mitstack.dev/database-slice=true` is

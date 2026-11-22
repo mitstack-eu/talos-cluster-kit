@@ -1436,6 +1436,25 @@ func TestPlane_JudgesTheOnlyGatewayOfAPlaneInOneLocationFailedOnlyOnTwoConsecuti
 	assert.True(t, strings.HasPrefix(deleted[0], fmt.Sprintf("deleted gateway %d in fsn1, which ", gw.ID)), "the deletion: %s", deleted[0])
 }
 
+func TestPlane_APlaneInOneLocationKeepsItsOnlyGatewayWhenTheOnlyReportNotServingWasReceivedInTheSecondItWasFirstRead(t *testing.T) {
+	h := newHarness(t, oneLocation)
+	h.built()
+	gw, from := h.gatewayIn(controlplane.GatewayLocation), len(h.events)
+	gatewayFailures[0].fail(h, gw)
+	h.now = h.now.Truncate(time.Second).Add(700 * time.Millisecond)
+	received := h.now.Truncate(time.Second).Add(400 * time.Millisecond)
+	h.plane.ReadGateway = func(_ context.Context, _ string, since time.Time) (controlplane.GatewayReading, error) {
+		if !received.After(since) {
+			return controlplane.GatewayReading{Detail: "no node report was received since " + since.Format(time.RFC3339)}, nil
+		}
+		return controlplane.GatewayReading{Read: true, At: received, Detail: "the node report received at " + received.Format(time.RFC3339Nano) + " reads its mirror not answering"}, nil
+	}
+
+	require.NoError(t, h.converge())
+
+	assert.Empty(t, h.deletedGateways(from), "gateways deleted on one report not serving, received in the second it was first read")
+}
+
 func TestPlane_APlaneInThreeLocationsDeletesAFailedGatewayOnTheReportAfterItsFirstReadingNotServing(t *testing.T) {
 	h := newHarness(t, withReports)
 	h.built()

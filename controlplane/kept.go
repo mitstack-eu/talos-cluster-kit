@@ -169,9 +169,8 @@ func (p Plane) setGatewayGone(network Network, loc string, at *time.Time) Step {
 	}}
 }
 
-// rebuildStep builds the gateway of a location that lost it once nodes run, from the node report rebuildWait reads; it
-// takes no step while it waits on one, and rebuildWait names why. A plane in one location refuses where another would
-// wait, since no node report reaches the platform while its only gateway is gone, so the wait would never end.
+// rebuildStep builds the gateway a location lost from the node report rebuildWait reads, and a plane in one location
+// refuses where another would wait, since no report reaches the platform while its only gateway is gone.
 func (p Plane) rebuildStep(ctx context.Context, st State, s site, loc string) (Step, bool, error) {
 	if _, recorded := gatewayGoneAt(s.network, loc); !recorded {
 		now := p.now()

@@ -121,9 +121,8 @@ func (p Plane) builderSpec(ctx context.Context, orderable *OrderableTypes, r Rol
 	}, nil
 }
 
-// rollBackInstall deletes whatever servers a failed install made, since the keys they were made with are gone with
-// this call, so the next call installs anew. It takes the identity labels off the network only once every server is
-// gone, so a server it could not delete still reads with them.
+// rollBackInstall deletes whatever servers a failed install made, whose keys are gone with this call, and takes the
+// identity labels off the network only once none is left, so a server it could not delete still reads with them.
 func (p Plane) rollBackInstall(ctx context.Context, network Network, cause error) error {
 	errs := []error{cause}
 	for _, r := range []Role{RoleGateway, RoleBuilder, RoleServing, RoleWorkerBuilder} {

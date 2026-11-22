@@ -692,7 +692,7 @@ redundancy, `redundant.NoRedundancy`, which lets it delete the only gateway
 without waiting on another to serve. The deletion's event says an outage
 begins and names how long it lasts at most. The nodes pull no image and reach
 nothing outside the network until the successor serves, within its deadline,
-`gateway.Deadline`, from the successor's creation. A plane in three locations
+`gateway.Deadline`, of 77 minutes from the successor's creation. A plane in three locations
 asks the guard to keep every gateway but the one removed serving, so it never
 deletes the last gateway that serves.
 
@@ -700,7 +700,8 @@ Before it deletes the only gateway, a plane in one location checks that it
 could build the successor. It refuses with class `gateway-images-unread`
 while no node report lists the cluster's images, and with class
 `gateway-labels-lost` while neither the network nor the gateway holds the
-cluster's enrolment digest and issuer bucket.
+cluster's enrolment digest and issuer bucket, the two labels the platform
+reads to trust the cluster's nodes, which a later section describes.
 
 The plane acts only when a block calls it, so a renewal begins on the block's
 first call at or after the renewal point.
@@ -751,12 +752,13 @@ gateway. Until such a report arrives, `NextStep` returns no change, and
 location has its gateway again. A plane given no `ReadReport` builds no
 gateway once nodes run.
 
-A plane in one location cannot wait for such a report, since a node report
-reaches the platform only through the gateway. Its successor keeps the images
-of the newest report of all, which was received before the loss, since no
-later one can arrive. When the
-cluster has sent no report, or the newest one lists no images or names a read
-that failed, the plane refuses with class `gateway-images-unread`, naming why.
+A plane in one location cannot wait for a report read after the loss. The
+kit's design assumes a node report reaches the platform only through the
+gateway, and its only gateway is gone. Its successor instead keeps the images
+of the newest report received at any time, which necessarily came before the
+loss. The plane refuses with class `gateway-images-unread`, naming why, when
+the cluster has sent no report, when the newest report lists no images, or
+when reading it failed.
 It then builds no gateway, since one that mirrors none of the cluster's images
 would leave the pods that run them unable to start again.
 
@@ -767,7 +769,8 @@ both before it creates a server, and `Outputs`, `State.EnrolmentDigest` and
 `Problems` read them only from the network. A successor therefore needs no
 gateway left standing to copy them from. On a cluster an earlier release
 built, which holds both only on its gateways, the plane's first call copies
-them onto the network, ahead of any other step but an upgrade's own record.
+them onto the network. Only an upgrade's first write, which records the
+upgrade on the network, comes before that copy.
 Until that call, `Outputs` gives neither value. A plane in one location that
 lost its gateway before the copy refuses with class `gateway-labels-lost`,
 since no successor can carry the cluster's identity, and its message says to

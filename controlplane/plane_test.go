@@ -1623,6 +1623,22 @@ func TestPlane_TheFirstCallOfThisReleaseCopiesTheEnrolmentAndIssuerLabelsOfAClus
 	assert.Equal(t, digest, read, "the enrolment digest a node's enrolment is judged against")
 }
 
+func TestPlane_CopyIdentityStepCopiesTheEnrolmentAndIssuerLabelsOfAClusterBuiltEarlierOntoItsNetworkAndThenTakesNoStep(t *testing.T) {
+	h := newHarness(t)
+	h.built()
+	digest, bucket := h.builtByAnEarlierRelease()
+
+	step, ok := h.plane.CopyIdentityStep(h.read(), h.network())
+	require.True(t, ok, "a step for a network without the labels its gateways carry")
+	require.NoError(t, step.Run(context.Background()))
+
+	network := h.network()
+	assert.Equal(t, digest, network.Labels[controlplane.KeyEnrolmentSHA256], "the network's enrolment digest")
+	assert.Equal(t, bucket, network.Labels[controlplane.KeyIssuerBucket], "the network's issuer bucket")
+	_, again := h.plane.CopyIdentityStep(h.read(), network)
+	assert.False(t, again, "a second step once the network holds both labels")
+}
+
 // A module that requires neither framework cannot import either, so a block on any framework release can use the plane.
 func TestPlane_TheKitRequiresNeitherBlockKitNorOperatorKit(t *testing.T) {
 	mod, err := os.ReadFile("../go.mod")

@@ -513,7 +513,7 @@ func (p Plane) failedStep(ctx context.Context, st State, s site) (Step, bool, er
 // replacedAsFailed reports whether failedStep replaces gw, which Unhealthy then names with the failure's own cause.
 func (p Plane) replacedAsFailed(ctx context.Context, gw Server, network Network, digest string) (bool, error) {
 	f, err := p.failure(ctx, gw, network)
-	cause, _ := f.unhealthy(gw, digest)
+	cause, _ := f.unhealthy(gw, digest, p.oneLocation())
 	return cause != "" && cause == f.cause, err
 }
 
@@ -939,7 +939,7 @@ func (p Plane) Unhealthy(ctx context.Context, st State) (cause, detail string, e
 		if err != nil {
 			return "", "", err
 		}
-		if cause, detail := f.unhealthy(gw, list.Digest()); cause != "" {
+		if cause, detail := f.unhealthy(gw, list.Digest(), p.oneLocation()); cause != "" {
 			return cause, detail, nil
 		}
 	}
@@ -947,7 +947,7 @@ func (p Plane) Unhealthy(ctx context.Context, st State) (cause, detail string, e
 }
 
 // unhealthy names a failed gateway's cause, with how its replacement stands or why the plane leaves it.
-func (f gatewayFailure) unhealthy(gw Server, digest string) (cause, detail string) {
+func (f gatewayFailure) unhealthy(gw Server, digest string, oneLocation bool) (cause, detail string) {
 	detail = fmt.Sprintf("%s %s; %s", gatewayName(gw), f.what, f.reading)
 	switch {
 	case f.cause == "":
@@ -960,9 +960,17 @@ func (f gatewayFailure) unhealthy(gw Server, digest string) (cause, detail strin
 		return CauseGatewayFailedAgain, fmt.Sprintf("%s; it replaced gateway %s, which failed from the same list, so the block leaves it in place",
 			detail, gw.Labels[KeyGatewayReplaces])
 	}
-	if began, ok := RemovalBegan(gw, digest); ok {
+	began, ok := RemovalBegan(gw, digest)
+	switch {
+	case ok && oneLocation:
+		return f.cause, fmt.Sprintf("%s; the block began replacing it at %s, %s", detail, began.Format(time.RFC3339), shortOutage)
+	case ok:
 		return f.cause, fmt.Sprintf("%s; the block began replacing it at %s and deletes it once a node report received after then reads the other gateways serving",
 			detail, began.Format(time.RFC3339))
+	case oneLocation:
+		return f.cause, detail + "; the block replaces it, " + shortOutage
 	}
 	return f.cause, detail + "; the block replaces it once a node report reads the other gateways serving"
 }
+
+var shortOutage = fmt.Sprintf("a short outage, since it is the plane's only gateway, that ends once its successor serves, within %s of the successor's creation", gateway.Deadline)

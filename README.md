@@ -446,7 +446,9 @@ powered back on have a deadline of their own:
   deadline counts afresh: once `gateway.Deadline`, the 77 minutes a new
   gateway has from its creation, has passed since that power-on, the plane
   judges the gateway down whatever Hetzner still runs. It then replaces the
-  gateway once a node report reads the other gateways serving.
+  gateway once a node report reads the other gateways serving. A plane in one
+  location has no other gateway, so it replaces its only one at once, and
+  `Unhealthy` names that replacement as a short outage.
 - **An action that ends.** An action that finishes lets the work carry on. An
   action that fails leaves the server as it was, and a later call sends the
   action once more. No other wait on a busy server has a deadline, such as

@@ -170,7 +170,7 @@ func (p Plane) render(ctx context.Context, apiAddr, ingressAddr netip.Addr, now 
 }
 
 // buildSet is the component set an install applies, and the base set it renders it from: the default set, or a hosting
-// cluster's with its keys.
+// cluster's with its keys, with the runner services and scale set of a plane that asks for runners.
 func (p Plane) buildSet(ctx context.Context, now time.Time, token string) (set, base components.Set, err error) {
 	base = components.Default()
 	if p.Hosting != nil {
@@ -178,7 +178,10 @@ func (p Plane) buildSet(ctx context.Context, now time.Time, token string) (set, 
 			return components.Set{}, components.Set{}, err
 		}
 	}
-	set, err = p.clusterComponents(base, token)
+	if set, err = p.clusterComponents(base, token); err != nil {
+		return components.Set{}, components.Set{}, err
+	}
+	set, err = p.withRunners(set)
 	return set, base, err
 }
 
@@ -205,6 +208,7 @@ func (p Plane) renderNodes(ctx context.Context, apiAddr netip.Addr, now time.Tim
 		ServiceAccountIssuer: issuerURL(bucket, p.Subscription),
 		AppsOnWorkers:        p.AppsOnWorkers,
 		Release:              release,
+		DiskEviction:         p.Runners != nil,
 	}
 	inst := installation{
 		cluster: cluster, enrolmentDigest: enrolmentTokenDigest(token), issuerBucket: bucket, gatewayCA: *p.GatewayCA,

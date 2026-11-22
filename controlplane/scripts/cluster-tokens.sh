@@ -4,13 +4,15 @@
 # and the cluster repository's token; renew trades the report token for fresh
 # tokens for the cluster repository and each app slice's repository; lease
 # trades it, in one call, for the telemetry Collector's push token whenever
-# the one its Secret holds has 11 hours or fewer left. Each token goes into
-# the Secret that uses it. A cluster whose REPOSITORY_CREDENTIAL is deploy-key
+# the one its Secret holds has 11 hours or fewer left; runner-lease trades it
+# for the runner scale set's registration token on every run, since each
+# lives an hour, and restarts the scale set's listener so it registers with
+# the new one. Each token goes into the Secret that uses it. A cluster whose REPOSITORY_CREDENTIAL is deploy-key
 # reads its repository with a sealed deploy key, so enrol writes no
 # repository token.
 # Usage: PLATFORM_URL=<https origin> SUBSCRIPTION_ID=<id> REPO_URL=<url>
 #   REPOSITORY_CREDENTIAL=platform-token|deploy-key cluster-tokens.sh enrol|renew
-#   PLATFORM_URL=<https origin> LEASE_RESOURCE=<resource type> cluster-tokens.sh lease
+#   PLATFORM_URL=<https origin> LEASE_RESOURCE=<resource type> cluster-tokens.sh lease|runner-lease
 #   TOKEN_FILE names the bearer token's file, /var/run/mitstack/token by
 #   default, and CALL_ATTEMPTS how often enrol and renew retry a 429, a 503 or
 #   no answer, 20.
@@ -26,6 +28,8 @@ readonly kube_api=${KUBE_API:-https://kubernetes.default.svc}
 readonly kube_account=${KUBE_ACCOUNT_DIR:-/var/run/secrets/kubernetes.io/serviceaccount}
 readonly push_namespace=kube-system push_secret=mitstack-telemetry-token lease_expiry=mitstack.dev/lease-expires-at
 readonly renew_within=$((11 * 3600)) longest_lease=$((24 * 3600))
+readonly runners_namespace=mitstack-runners runner_secret=mitstack-runner-token longest_runner_lease=$((65 * 60))
+readonly listener_selector=app.kubernetes.io%2Fcomponent%3Drunner-scale-set-listener
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -58,14 +62,18 @@ post_once() {
     -o "$work/answer" -w '%{http_code}' "$PLATFORM_URL$1" || true
 }
 
-# kube_secret <method> [patch file] prints the Kubernetes API's status for one call on the push token's Secret under
-# the job's own account, and writes its answer to $work/secret.
-kube_secret() {
+# kube_call <method> <API path> [patch file] prints the Kubernetes API's status for one call under the job's own
+# account, and writes its answer to $work/kube-answer.
+kube_call() {
   local body=()
-  [ -z "${2:-}" ] || body=(-H 'Content-Type: application/merge-patch+json' --data-binary @"$2")
+  [ -z "${3:-}" ] || body=(-H 'Content-Type: application/merge-patch+json' --data-binary @"$3")
   printf 'Authorization: Bearer %s\n' "$(cat "$kube_account/token")" > "$work/kube-headers"
   curl -sS --proto '=https' --cacert "$kube_account/ca.crt" --max-time 10 -X "$1" -H @"$work/kube-headers" "${body[@]}" \
-    -o "$work/secret" -w '%{http_code}' "$kube_api/api/v1/namespaces/$push_namespace/secrets/$push_secret" || true
+    -o "$work/kube-answer" -w '%{http_code}' "$kube_api$2" || true
+}
+
+secret_path() {
+  echo "/api/v1/namespaces/$1/secrets/$2"
 }
 
 write_report_token() {
@@ -178,38 +186,66 @@ renew() {
 token_lasts() {
   jq -e --argjson now "$1" --argjson within "$renew_within" --arg key "$lease_expiry" \
     '(.data.token // "") != "" and ((.metadata.annotations[$key] // "") | try fromdateiso8601 catch 0) > $now + $within' \
-    "$work/secret" > /dev/null
+    "$work/kube-answer" > /dev/null
 }
 
-# require_lease <now> fails before the Secret is written unless the answer holds a token and an expiry within 24 hours of now.
+# require_lease <now> <longest seconds> <longest in words> fails before the Secret is written unless the answer holds a
+# token and an expiry after now and within the longest a lease of the resource lives.
 require_lease() {
   jq -e '.credential.token | type == "string" and length > 0' "$work/answer" > /dev/null ||
     fail "the platform answered the lease of $LEASE_RESOURCE without a credential.token"
-  jq -e --argjson now "$1" --argjson longest "$longest_lease" \
+  jq -e --argjson now "$1" --argjson longest "$2" \
     '.expiresAt | type == "string" and ((try fromdateiso8601 catch null) as $at | $at != null and $at > $now and $at < $now + $longest)' \
     "$work/answer" > /dev/null ||
-    fail "the platform answered the lease of $LEASE_RESOURCE with an expiresAt not within the next 24 hours: $(jq -c .expiresAt "$work/answer")"
+    fail "the platform answered the lease of $LEASE_RESOURCE with an expiresAt not within the next $3: $(jq -c .expiresAt "$work/answer")"
+}
+
+# ask_lease <want JSON> asks the platform once for a lease of $LEASE_RESOURCE, failing on any refusal, since the next
+# run is the retry.
+ask_lease() {
+  local status
+  jq -n --arg resource "$LEASE_RESOURCE" --argjson want "$1" '{resource: $resource, want: $want}' > "$work/body"
+  status=$(post_once /v1/cluster-leases "$work/body")
+  [ "$status" = 200 ] ||
+    fail "the platform answered $status to the lease of $LEASE_RESOURCE: $(jq -r '.error // empty' "$work/answer" 2> /dev/null)"
+}
+
+# write_leased_token <namespace> <Secret> <key> merge-patches the answer's token under key into the Secret, with its expiry.
+write_leased_token() {
+  local status
+  jq --arg key "$lease_expiry" --arg field "$3" \
+    '{metadata: {annotations: {($key): .expiresAt}}, stringData: {($field): .credential.token}}' \
+    "$work/answer" > "$work/patch"
+  status=$(kube_call PATCH "$(secret_path "$1" "$2")" "$work/patch")
+  [ "$status" = 200 ] || fail "could not write the leased token into the Secret $2 in $1: HTTP $status"
 }
 
 lease() {
   local status now
-  status=$(kube_secret GET)
+  status=$(kube_call GET "$(secret_path "$push_namespace" "$push_secret")")
   [ "$status" = 200 ] || fail "could not read the Secret $push_secret in $push_namespace: HTTP $status"
   now=$(date -u +%s)
   if token_lasts "$now"; then
     echo "cluster-tokens: the push token for $LEASE_RESOURCE has more than 11 hours left"
     return 0
   fi
-  jq -n --arg resource "$LEASE_RESOURCE" '{resource: $resource, want: {signals: "metrics,logs"}}' > "$work/body"
-  status=$(post_once /v1/cluster-leases "$work/body")
-  [ "$status" = 200 ] ||
-    fail "the platform answered $status to the lease of $LEASE_RESOURCE: $(jq -r '.error // empty' "$work/answer" 2> /dev/null)"
-  require_lease "$now"
-  jq --arg key "$lease_expiry" '{metadata: {annotations: {($key): .expiresAt}}, stringData: {token: .credential.token}}' \
-    "$work/answer" > "$work/patch"
-  status=$(kube_secret PATCH "$work/patch")
-  [ "$status" = 200 ] || fail "could not write the push token into the Secret $push_secret in $push_namespace: HTTP $status"
+  ask_lease '{"signals": "metrics,logs"}'
+  require_lease "$now" "$longest_lease" "24 hours"
+  write_leased_token "$push_namespace" "$push_secret" token
   echo "cluster-tokens: leased a push token for $LEASE_RESOURCE until $(jq -r .expiresAt "$work/answer")"
+}
+
+# runner_lease writes a new registration token into the scale set's Secret and deletes the listener's pods, which ARC's
+# controller rebuilds reading the new token, since a running listener keeps the token it started with.
+runner_lease() {
+  local status now
+  now=$(date -u +%s)
+  ask_lease '{}'
+  require_lease "$now" "$longest_runner_lease" "65 minutes"
+  write_leased_token "$runners_namespace" "$runner_secret" github_token
+  status=$(kube_call DELETE "/api/v1/namespaces/$runners_namespace/pods?labelSelector=$listener_selector")
+  [ "$status" = 200 ] || fail "wrote the registration token but could not restart the listener in $runners_namespace: HTTP $status"
+  echo "cluster-tokens: leased a registration token for $LEASE_RESOURCE until $(jq -r .expiresAt "$work/answer")"
 }
 
 main() {
@@ -227,7 +263,11 @@ main() {
       : "${LEASE_RESOURCE:?}"
       lease
       ;;
-    *) fail "usage: cluster-tokens.sh enrol|renew|lease" ;;
+    runner-lease)
+      : "${LEASE_RESOURCE:?}"
+      runner_lease
+      ;;
+    *) fail "usage: cluster-tokens.sh enrol|renew|lease|runner-lease" ;;
   esac
 }
 

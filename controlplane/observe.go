@@ -133,6 +133,9 @@ func (p Plane) gatewayProblems(ctx context.Context, st State, network Network, f
 	if st.HasServers() && network.Labels[KeyIssuerBucket] == "" {
 		missing = append(missing, fmt.Sprintf("network %d has no %s label, so the block cannot read the issuer its nodes sign for", network.ID, KeyIssuerBucket))
 	}
+	if st.HasServers() && network.Labels[KeyEnrolmentSHA256] == "" {
+		missing = append(missing, fmt.Sprintf("network %d has no %s label, so the cluster carries no enrolment outputs", network.ID, KeyEnrolmentSHA256))
+	}
 	route, err := p.routeProblem(ctx, st, network)
 	if err != nil || route != "" {
 		return append(missing, route), err

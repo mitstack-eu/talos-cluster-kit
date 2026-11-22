@@ -663,6 +663,11 @@ func (p Plane) replaceGateway(ctx context.Context, st State, s site, r removal) 
 	if _, err := (&OrderableTypes{API: p.API}).First(ctx, string(RoleGateway), GatewayServerTypes, old.Location); err != nil {
 		return Step{}, false, err
 	}
+	if p.oneLocation() {
+		if err := p.successorRefusal(ctx, s.network, r); err != nil {
+			return Step{}, false, err
+		}
+	}
 	if route, ok := defaultRouteOf(s.network); ok && route.Gateway == gatewayAddressOf(old) {
 		target, ok, err := p.routeTarget(ctx, st, s.network, route.Gateway)
 		if err != nil {
@@ -691,6 +696,21 @@ func (p Plane) replaceGateway(ctx context.Context, st State, s site, r removal) 
 		return Step{}, false, nil
 	}
 	return p.deletionStep(r, began, describeServing(set, details, gatewayName(old))), true, nil
+}
+
+// successorRefusal refuses to delete the only gateway of a plane in one location while no successor could be built in
+// its place, since its rebuild would refuse once the gateway is gone.
+func (p Plane) successorRefusal(ctx context.Context, network Network, r removal) error {
+	if !holdsIdentity(network) {
+		return refuse(ClassGatewayLabelsLost,
+			"%s keeps gateway %d in %s, the plane's only one, since neither network %d nor the gateway holds %s, so no successor could carry the cluster's identity; unsubscribe and subscribe again to rebuild the cluster",
+			r.keeper, r.gw.ID, r.gw.Location, network.ID, strings.Join(missingIdentity(network), " or "))
+	}
+	unread, err := p.keptImagesUnread(ctx)
+	if err != nil || unread == "" {
+		return err
+	}
+	return refuse(ClassGatewayImagesUnread, "%s keeps gateway %d in %s, the plane's only one, since %s", r.keeper, r.gw.ID, r.gw.Location, unread)
 }
 
 func (p Plane) deletionStep(r removal, began time.Time, judged string) Step {

@@ -121,13 +121,11 @@ func (p Plane) builderSpec(ctx context.Context, orderable *OrderableTypes, r Rol
 	}, nil
 }
 
-// rollBackInstall deletes whatever servers a failed install made, and takes the identity labels it wrote off the
-// network, since the keys they were made with are gone with this call, so the next call installs anew.
+// rollBackInstall deletes whatever servers a failed install made, since the keys they were made with are gone with
+// this call, so the next call installs anew. It takes the identity labels off the network only once every server is
+// gone, so a server it could not delete still reads with them.
 func (p Plane) rollBackInstall(ctx context.Context, network Network, cause error) error {
 	errs := []error{cause}
-	if err := p.setIdentity(ctx, network, nil); err != nil {
-		errs = append(errs, fmt.Errorf("taking the failed install's enrolment digest and issuer bucket off network %d: %w", network.ID, err))
-	}
 	for _, r := range []Role{RoleGateway, RoleBuilder, RoleServing, RoleWorkerBuilder} {
 		servers, err := p.API.ListServers(ctx, p.RoleSelector(r))
 		if err != nil {
@@ -139,6 +137,12 @@ func (p Plane) rollBackInstall(ctx context.Context, network Network, cause error
 				errs = append(errs, fmt.Errorf("deleting the %s %d of the failed install: %w", r, s.ID, err))
 			}
 		}
+	}
+	if len(errs) > 1 {
+		return errors.Join(errs...)
+	}
+	if err := p.setIdentity(ctx, network, nil); err != nil {
+		errs = append(errs, fmt.Errorf("taking the failed install's enrolment digest and issuer bucket off network %d: %w", network.ID, err))
 	}
 	return errors.Join(errs...)
 }

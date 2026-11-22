@@ -165,8 +165,8 @@ func (p Plane) controlPlaneStep(ctx context.Context, st State, s site) (Step, bo
 			"the cluster's nodes are running, but no gateway in any location carries this subscription's labels, so no node can pull an image and nothing was changed; with every gateway gone no node report reaches the platform to name the images a new one keeps, so unsubscribe and subscribe again to rebuild the cluster")
 	case hasNode && len(st.Servers[RoleGateway]) == 0 && !holdsIdentity(s.network):
 		return Step{}, false, refuse(ClassGatewayLabelsLost,
-			"the cluster's only gateway is gone, and network %d holds no %s or %s label, since the release that built the cluster kept them on the gateway alone, so no new gateway can carry the cluster's identity and nothing was changed; unsubscribe and subscribe again to rebuild the cluster",
-			s.network.ID, KeyEnrolmentSHA256, KeyIssuerBucket)
+			"the cluster's only gateway is gone, and network %d holds no %s label, so no new gateway can carry the cluster's identity and nothing was changed; unsubscribe and subscribe again to rebuild the cluster",
+			s.network.ID, strings.Join(missingIdentity(s.network), " or "))
 	case hasServing && (!hasBuilder || hasSnapshot || p.overdue(builder)):
 		return Step{"delete the serving server, whose file may hold a hosting set's keys, once the builder is done with it", func(ctx context.Context) error {
 			return p.API.DeleteServer(ctx, serving.ID)

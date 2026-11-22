@@ -156,8 +156,11 @@ const ClassGatewayLabelsLost = "gateway-labels-lost"
 // life, since a gateway rebuilt while no other stands has no sibling to copy them from.
 var identityKeys = []string{KeyEnrolmentSHA256, KeyIssuerBucket}
 
-func holdsIdentity(network Network) bool {
-	return !slices.ContainsFunc(identityKeys, func(key string) bool { return network.Labels[key] == "" })
+func holdsIdentity(network Network) bool { return len(missingIdentity(network)) == 0 }
+
+// missingIdentity names each identity label the network lacks, joined for a message.
+func missingIdentity(network Network) []string {
+	return slices.DeleteFunc(slices.Clone(identityKeys), func(key string) bool { return network.Labels[key] != "" })
 }
 
 // setIdentity writes values to the network under identityKeys, and takes each key with no value off.

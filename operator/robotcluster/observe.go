@@ -213,7 +213,7 @@ func (k *Cluster) robotReader(ctx context.Context, d contract.Desired) (robotTar
 	if !controlplane.ValidLabelValue(d.SubscriptionID) {
 		return robotTarget{}, operator.Unknown("the subscription id is not a valid label value, so the worker's Robot names cannot be formed"), false
 	}
-	p := k.PlaneFor(nil, d)
+	p := k.readPlane(nil, d)
 	return robotTarget{robot: rb, server: number, name: RobotName(d.SubscriptionID), plane: p}, contract.Observation{}, true
 }
 
@@ -254,7 +254,7 @@ func (k *Cluster) hetznerReader(d contract.Desired) (controlplane.Plane, contrac
 	if !controlplane.ValidLabelValue(d.SubscriptionID) {
 		return controlplane.Plane{}, operator.Unknown("the subscription id is not a valid Hetzner label value, so the cluster's resources cannot be found by it"), false
 	}
-	return k.PlaneFor(k.cfg.CloudAPI(token), d), contract.Observation{}, true
+	return k.readPlane(k.cfg.CloudAPI(token), d), contract.Observation{}, true
 }
 
 // Observe reads the whole cluster: present once it stands as the block makes it and every node runs the release's
@@ -296,6 +296,9 @@ func (k *Cluster) observeCluster(ctx context.Context, d contract.Desired) (contr
 	}
 	if typesErr != nil {
 		return operator.Unknown("the request's server types cannot be read: " + operator.RefusalDetail(typesErr)), nil
+	}
+	if p.Runners, err = k.runnersFor(d); err != nil {
+		return operator.Unknown("the cluster's runner services cannot be named: " + operator.RefusalDetail(err)), nil
 	}
 	problems := p.Problems(ctx, st)
 	if pools.ChangeUnderWay(st) {

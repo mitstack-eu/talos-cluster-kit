@@ -1,21 +1,27 @@
 package robotcluster_test
 
 // A cluster needs its operator's id, boundary and worker install, names to replace only the nodes and Cloud workers a
-// request names that the cluster runs, and refuses a control-plane size its block declares no servers for or the
-// running cluster was not subscribed with.
+// request names that the cluster runs, refuses a control-plane size its block declares no servers for or the running
+// cluster was not subscribed with, and rolls out the runner services its operator's Config asks for.
 
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/mitstack-eu/block-kit/contract"
 	"github.com/mitstack-eu/block-kit/handler"
+	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane/cloudtest"
 	"github.com/mitstack-eu/talos-cluster-kit/operator/robotcluster"
+	"github.com/mitstack-eu/talos-cluster-kit/operator/robotcluster/robotclustertest"
 	"github.com/mitstack-eu/talos-cluster-kit/pools"
+	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -150,9 +156,11 @@ func TestPlanReplacements_RefusesAControlPlaneSizeOtherThanTheOneTheRunningClust
 		Block: testBlock, Boundary: "test-boundary", InstallWorker: installNothing,
 		CloudAPI: func(string) controlplane.API { return cloud },
 	})
-	labels := k.PlaneFor(cloud, sizeRequest(map[string]string{})).Labels("network")
+	plane, err := k.PlaneFor(cloud, sizeRequest(map[string]string{}))
+	require.NoError(t, err)
+	labels := plane.Labels("network")
 	labels[controlplane.KeySize] = "3"
-	_, err := cloud.CreateNetwork(ctx, controlplane.NetworkSpec{Name: "subscribed", IPRange: controlplane.NetworkIPRange, Labels: labels})
+	_, err = cloud.CreateNetwork(ctx, controlplane.NetworkSpec{Name: "subscribed", IPRange: controlplane.NetworkIPRange, Labels: labels})
 	require.NoError(t, err)
 	writes := cloud.Writes()
 
@@ -191,10 +199,110 @@ func TestPlanReplacements_ReturnsAFailedNetworkReadRatherThanPassingTheSize(t *t
 func TestPlaneFor_RunsTheSizeTheRequestNamesAndThreeForARequestThatNamesNone(t *testing.T) {
 	k := sizedCluster(0)
 
-	one := k.PlaneFor(nil, sizeRequest(map[string]string{"controlPlaneSize": "1"}))
-	unnamed := k.PlaneFor(nil, sizeRequest(map[string]string{}))
+	one, oneErr := k.PlaneFor(nil, sizeRequest(map[string]string{"controlPlaneSize": "1"}))
+	unnamed, unnamedErr := k.PlaneFor(nil, sizeRequest(map[string]string{}))
 
+	require.NoError(t, oneErr)
+	require.NoError(t, unnamedErr)
 	assert.Equal(t, []string{"fsn1"}, one.NodeLocations(), "the locations of a cluster asked for one server")
 	assert.Equal(t, controlplane.Locations, unnamed.NodeLocations(), "the locations of a cluster that names no size")
 	assert.Equal(t, "shop", one.AppName)
+}
+
+const (
+	runnerImage = "ghcr.io/actions/actions-runner:2.338.2@sha256:6d0b2d80d80f143f77dcb676e50920100bbb547e39e883454d57f45ab8c31300"
+	dindImage   = "docker.io/library/docker:29.10.0-dind@sha256:4bbc7223f81db790097c6dea42fb93e05b8fead4f0431fbe6ccaba6e8473201c"
+)
+
+func sharedPool(contract.Desired) (*components.RunnerInputs, error) {
+	return &components.RunnerInputs{Organization: robotclustertest.Owner, Group: "mitstack-shared", ScaleSet: "mitstack-ci",
+		RunnerImage: runnerImage, DindImage: dindImage, MaxRunners: 4, LeaseResource: "github.runner-cluster"}, nil
+}
+
+func withRunners(runners func(contract.Desired) (*components.RunnerInputs, error)) robotclustertest.Option {
+	return func(e *robotclustertest.Env) { e.Config.Runners = runners }
+}
+
+// rolledOutObjects is the kind and name of each object the cluster repository holds for Argo CD to apply.
+func rolledOutObjects(t *testing.T, e *robotclustertest.Env) []string {
+	t.Helper()
+	var objects []string
+	for file, content := range e.GitHub.RepoFiles(e.Repo()) {
+		if !strings.HasSuffix(file, ".yaml") {
+			continue
+		}
+		for _, doc := range testutil.Documents(t, []byte(content)) {
+			objects = append(objects, fmt.Sprintf("%v %v", doc["kind"], testutil.Field(t, doc, "metadata", "name")))
+		}
+	}
+	require.NotEmpty(t, objects, "the objects the cluster repository holds")
+	return objects
+}
+
+func TestConfig_RunnersPutsTheRunnerServicesInTheReleaseTheClusterRollsOutAndAConfigWithoutRunnersPutsNone(t *testing.T) {
+	runnerObjects := []string{"AutoscalingRunnerSet mitstack-ci", "CronJob mitstack-runner-lease", "Secret mitstack-runner-token"}
+	for _, tc := range []struct {
+		name    string
+		runners func(contract.Desired) (*components.RunnerInputs, error)
+		carried bool
+	}{
+		{"a Config with Runners rolls out the scale set and its lease job", sharedPool, true},
+		{"a Config without Runners rolls out no runner object", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := robotclustertest.New(t, cloudOnlySub, cloudOnly, withRunners(tc.runners))
+
+			obs, err := e.Settle()
+			require.NoError(t, err, "the subscribe: %s", obs.StatusDetail)
+			e.EnsureOrWait("the subscribe that carries the release")
+
+			rolledOut := rolledOutObjects(t, e)
+			for _, object := range runnerObjects {
+				assert.Equal(t, tc.carried, slices.Contains(rolledOut, object), "whether the cluster repository holds %s", object)
+			}
+		})
+	}
+}
+
+var errRunnersUnnamed = handler.Refuse("runner-organization-unset", "the request names no GitHub organisation for the runners to register in")
+
+// settledThenRunnersUnnamed is a cluster settled with the shared pool whose Config's Runners then refuses every request.
+func settledThenRunnersUnnamed(t *testing.T) *robotclustertest.Env {
+	t.Helper()
+	unnamed := false
+	e := robotclustertest.New(t, cloudOnlySub, cloudOnly, withRunners(func(d contract.Desired) (*components.RunnerInputs, error) {
+		if unnamed {
+			return nil, errRunnersUnnamed
+		}
+		return sharedPool(d)
+	}))
+	obs, err := e.Settle()
+	require.NoError(t, err, "the subscribe: %s", obs.StatusDetail)
+	e.EnsureOrWait("the subscribe that carries the release")
+	unnamed = true
+	return e
+}
+
+func TestConfig_RunnersThatFailsRefusesTheUpgradeBeforeAnyChangeAndTheObserveReadsUnknownNamingWhy(t *testing.T) {
+	e := settledThenRunnersUnnamed(t)
+	writes := e.Cloud.Writes()
+
+	err := e.Ensure()
+	obs := e.Observe()
+
+	assert.ErrorIs(t, err, errRunnersUnnamed, "the upgrade answers the Config's refusal")
+	assert.Equal(t, writes, e.Cloud.Writes(), "a refused upgrade changes nothing in Hetzner Cloud")
+	assert.Equal(t, contract.Unknown, obs.State, "the observe of a cluster whose runners cannot be named: %s", obs.StatusDetail)
+	assert.Contains(t, obs.StatusDetail, "names no GitHub organisation for the runners to register in")
+}
+
+func TestDelete_ACloudOnlyClusterWhoseRunnersCannotBeNamedIsDeletedAndReadsAbsent(t *testing.T) {
+	e := settledThenRunnersUnnamed(t)
+
+	err := e.Delete()
+
+	require.NoError(t, err, "the unsubscribe, which needs no runner to delete the cluster")
+	assert.Zero(t, e.Cloud.Count(), "the Cloud resources left after the unsubscribe")
+	obs := e.Observe()
+	assert.Equal(t, contract.Absent, obs.State, "the observe after the unsubscribe: %s", obs.StatusDetail)
 }

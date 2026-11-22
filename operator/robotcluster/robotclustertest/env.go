@@ -170,7 +170,12 @@ func (e *Env) Desired() contract.Desired {
 }
 
 // Plane is the control plane of the subscription, read through no API.
-func (e *Env) Plane() controlplane.Plane { return e.Cluster.PlaneFor(nil, e.Desired()) }
+func (e *Env) Plane() controlplane.Plane {
+	e.T.Helper()
+	p, err := e.Cluster.PlaneFor(nil, e.Desired())
+	require.NoError(e.T, err, "the subscription's plane")
+	return p
+}
 
 // ByRole is the servers of the subscription in role r that the Cloud fake holds.
 func (e *Env) ByRole(r controlplane.Role) []controlplane.Server {

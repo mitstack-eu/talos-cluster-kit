@@ -386,6 +386,7 @@ func TestPlane_UpgradeReplacesOneLocationsGatewayAtATimeAtItsAddressAndNoNodeAnd
 	require.Len(t, deleted, len(controlplane.Locations), "gateways deleted")
 	for i, loc := range controlplane.Locations {
 		assert.Contains(t, deleted[i], fmt.Sprintf("deleted gateway %d in %s, built from an earlier list", old[i], loc), "the replacement order")
+		assert.NotContains(t, deleted[i], "outage", "the deletion event of a plane in three locations")
 		gw := h.gatewayIn(loc)
 		assert.NotContains(t, old, gw.ID, "the gateway in %s was not replaced", loc)
 		assert.Equal(t, current, gw.Labels[controlplane.KeyGatewayList], "the replacement in %s's list", loc)

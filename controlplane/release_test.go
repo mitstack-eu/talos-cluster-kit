@@ -440,3 +440,164 @@ func TestRelease_AClusterInFsn1Nbg1AndHel1RunsThreeCoreDNSReplicasWithASpreadTha
 	require.NoError(t, err)
 	assert.Equal(t, want, []components.Manifest{testutil.Manifest(t, "coredns", release.Components)}, "the Deployment the golden coredns-3-locations.yaml pins")
 }
+
+const (
+	runnerImage = "ghcr.io/actions/actions-runner:2.338.2@sha256:6d0b2d80d80f143f77dcb676e50920100bbb547e39e883454d57f45ab8c31300"
+	dindImage   = "docker.io/library/docker:29.10.0-dind@sha256:4bbc7223f81db790097c6dea42fb93e05b8fead4f0431fbe6ccaba6e8473201c"
+	// otherRunnerImage is a later actions-runner release, which is another image to mirror.
+	otherRunnerImage = "ghcr.io/actions/actions-runner:2.339.0@sha256:0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0"
+)
+
+func runnerInputs(options ...func(*components.RunnerInputs)) *components.RunnerInputs {
+	in := components.RunnerInputs{Organization: "acme-org", Group: "mitstack-shared", ScaleSet: "mitstack-ci",
+		RunnerImage: runnerImage, DindImage: dindImage, MaxRunners: 4, LeaseResource: "github-runner-token"}
+	for _, option := range options {
+		option(&in)
+	}
+	return &in
+}
+
+func runners(h *harness) { h.plane.Runners = runnerInputs() }
+
+func TestRelease_APlaneWithRunnersCarriesTheRunnerTokenSecretTheLeaseCronJobOffBurstMembersAndTheScaleSet(t *testing.T) {
+	h := newHarness(t, runners)
+	plane, err := h.plane.WithGatewayCA()
+	require.NoError(t, err)
+
+	release, err := plane.Release(h.read())
+
+	require.NoError(t, err)
+	assert.Contains(t, manifestNames(release.Components), "mitstack-runner-scale-set", "the scale set")
+	assert.Contains(t, manifestNames(release.Components), "gha-runner-scale-set-controller", "ARC's controller")
+	docs := testutil.Documents(t, testutil.Manifest(t, "mitstack-runner-token", release.Components).Bytes)
+	secret := testutil.Named(t, docs, "Secret", "mitstack-runner-token")
+	assert.Equal(t, "mitstack-runners", testutil.Field(t, secret, "metadata", "namespace"), "the namespace ARC reads the Secret from")
+	assert.Nil(t, secret["data"], "the kit commits the token's Secret empty, for the lease job to fill")
+	assert.Nil(t, secret["stringData"])
+	account := testutil.Named(t, docs, "ServiceAccount", "mitstack-runner-lease")
+	assert.Equal(t, "mitstack-node", testutil.Field(t, account, "metadata", "namespace"), "the namespace that holds the report token")
+	role := testutil.Named(t, docs, "Role", "mitstack-runner-lease")
+	assert.Equal(t, "mitstack-runners", testutil.Field(t, role, "metadata", "namespace"))
+	assert.Equal(t, []any{
+		map[string]any{"apiGroups": []any{""}, "resources": []any{"secrets"}, "resourceNames": []any{"mitstack-runner-token"}, "verbs": []any{"get", "patch"}},
+		map[string]any{"apiGroups": []any{""}, "resources": []any{"pods"}, "verbs": []any{"list", "deletecollection"}},
+	}, role["rules"], "the job may read and patch the one Secret and delete pods, and create none")
+	binding := testutil.Named(t, docs, "RoleBinding", "mitstack-runner-lease")
+	assert.Equal(t, []any{map[string]any{"kind": "ServiceAccount", "name": "mitstack-runner-lease", "namespace": "mitstack-node"}}, binding["subjects"])
+	lease := testutil.Named(t, docs, "CronJob", "mitstack-runner-lease")
+	assert.Equal(t, "mitstack-node", testutil.Field(t, lease, "metadata", "namespace"))
+	assert.Equal(t, "*/30 * * * *", testutil.Field(t, lease, "spec", "schedule"), "twice in the hour a token lives")
+	assert.Equal(t, "Forbid", testutil.Field(t, lease, "spec", "concurrencyPolicy"))
+	pod := testutil.Field(t, lease, "spec", "jobTemplate", "spec", "template", "spec")
+	assert.Equal(t, "mitstack-runner-lease", testutil.Field(t, pod, "serviceAccountName"))
+	container := testutil.Field(t, pod, "containers", "0")
+	assert.Equal(t, []any{"bash", tools.ScriptDir + "/cluster-tokens.sh", "runner-lease"}, testutil.Field(t, container, "command"))
+	env := testutil.ContainerEnv(t, container)
+	assert.Equal(t, platformURL, env["PLATFORM_URL"])
+	assert.Equal(t, "github-runner-token", env["LEASE_RESOURCE"], "the resource the block requires, whose token the job leases")
+	assert.Equal(t, "mitstack-report-token", testutil.Field(t, pod, "volumes", "0", "secret", "secretName"), "the job's bearer, the report token")
+	assert.Contains(t, testutil.Field(t, container, "volumeMounts"), map[string]any{"name": "token", "mountPath": "/var/run/mitstack", "readOnly": true})
+	assert.Equal(t, true, testutil.Field(t, container, "securityContext", "readOnlyRootFilesystem"), "the job's root filesystem")
+	assert.Equal(t, true, testutil.Field(t, pod, "securityContext", "runAsNonRoot"), "the job runs as a non-root user")
+	terms := testutil.Field(t, pod, "affinity", "nodeAffinity", "requiredDuringSchedulingIgnoredDuringExecution", "nodeSelectorTerms").([]any)
+	require.NotEmpty(t, terms, "the job's node selector terms")
+	for _, term := range terms {
+		assert.True(t, slices.ContainsFunc(testutil.Field(t, term, "matchExpressions").([]any), func(e any) bool {
+			m, _ := e.(map[string]any)
+			return m["key"] == components.BurstLabel && m["operator"] == "DoesNotExist"
+		}), "term %v keeps the job off a burst member", term)
+	}
+	files, err := release.Files(testutil.InitRepository)
+	require.NoError(t, err)
+	var carried []string
+	for _, f := range files {
+		for _, doc := range testutil.Documents(t, f.Bytes) {
+			carried = append(carried, fmt.Sprintf("%v %v", doc["kind"], testutil.Field(t, doc, "metadata", "name")))
+		}
+	}
+	assert.Subset(t, carried, []string{"Secret mitstack-runner-token", "CronJob mitstack-runner-lease", "AutoscalingRunnerSet mitstack-ci"},
+		"what Argo CD applies from the cluster repository")
+}
+
+func TestRelease_APlaneWithoutRunnersCarriesNoRunnerManifestAndTheSameClusterTokensAsWithThem(t *testing.T) {
+	h := newHarness(t)
+	without, err := h.plane.WithGatewayCA()
+	require.NoError(t, err)
+	with := without
+	with.Runners = runnerInputs()
+
+	bare, err := without.Release(h.read())
+	require.NoError(t, err)
+	equipped, err := with.Release(h.read())
+	require.NoError(t, err)
+
+	for _, name := range []string{"mitstack-runner-token", "mitstack-runner-scale-set", "gha-runner-scale-set-controller", "mitstack-runners"} {
+		assert.NotContains(t, manifestNames(bare.Components), name, "a plane that asks for no runners")
+	}
+	assert.Equal(t, string(testutil.Manifest(t, "mitstack-cluster-tokens", bare.Components).Bytes),
+		string(testutil.Manifest(t, "mitstack-cluster-tokens", equipped.Components).Bytes), "the telemetry and repository credentials render as they do without runners")
+}
+
+func TestPlane_TheGatewayListChangesWithTheRunnerImagesAndNotWithoutRunners(t *testing.T) {
+	h := newHarness(t)
+	plain, err := h.plane.WithGatewayCA()
+	require.NoError(t, err)
+	digest := func(p controlplane.Plane) string {
+		t.Helper()
+		d, err := p.GatewayListDigest()
+		require.NoError(t, err)
+		return d
+	}
+	with := func(options ...func(*components.RunnerInputs)) controlplane.Plane {
+		p := plain
+		p.Runners = runnerInputs(options...)
+		return p
+	}
+	later := func(in *components.RunnerInputs) { in.RunnerImage = otherRunnerImage }
+
+	assert.Equal(t, digest(plain), digest(plain), "a plane without runners lists the same images every time")
+	assert.NotEqual(t, digest(plain), digest(with()), "the runner services add images to mirror")
+	assert.Equal(t, digest(with()), digest(with()), "the same runner images list the same")
+	assert.NotEqual(t, digest(with()), digest(with(later)), "a new runner image replaces the gateway")
+	assert.Equal(t, digest(with()), digest(with(func(in *components.RunnerInputs) { in.MaxRunners = 9 })), "a setting no image names leaves the list alone")
+}
+
+func TestPlane_AnUpgradeThatAddsRunnerServicesReplacesEachGatewayAndTheReplacementsMirrorTheControllerRunnerAndDindImages(t *testing.T) {
+	h := newHarness(t, withReports)
+	h.built()
+	old := controlplane.IDs(h.byRole(controlplane.RoleGateway), controlplane.ServerID)
+	before := h.gatewayIn(controlplane.GatewayLocation).Labels[controlplane.KeyGatewayList]
+	h.plane.Runners = runnerInputs()
+
+	h.upgrade(func() {})
+
+	for _, loc := range controlplane.Locations {
+		gw := h.gatewayIn(loc)
+		assert.NotContains(t, old, gw.ID, "the gateway in %s was not replaced", loc)
+		assert.NotEqual(t, before, gw.Labels[controlplane.KeyGatewayList], "the replacement in %s's list label", loc)
+		assert.Subset(t, h.mirrored(gw), []string{runnerImage, dindImage}, "the replacement in %s mirrors the runner and dind images", loc)
+		assert.True(t, slices.ContainsFunc(h.mirrored(gw), func(ref string) bool {
+			return strings.HasPrefix(ref, "ghcr.io/actions/gha-runner-scale-set-controller:")
+		}), "the replacement in %s mirrors the controller image", loc)
+	}
+}
+
+func TestPlane_AnInstallRendersTheNodesWithDiskEvictionOnlyForAPlaneWithRunners(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts []func(*harness)
+		want bool
+	}{
+		{"a plane with runners puts the kubelet on eviction at 85% disk", []func(*harness){runners}, true},
+		{"a plane without runners leaves the kubelet's disk settings alone", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, tc.opts...)
+
+			require.NoError(t, h.converge())
+
+			require.NotEmpty(t, h.installed, "the clusters the plane installed")
+			assert.Equal(t, tc.want, h.installed[0].DiskEviction, "the cluster the install rendered")
+		})
+	}
+}

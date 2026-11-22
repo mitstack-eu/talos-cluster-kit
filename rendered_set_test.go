@@ -196,13 +196,18 @@ func refusesBurstNodes(spec map[string]any) bool {
 	return len(terms) > 0
 }
 
+// runsAJob is whether pod is the runner pod of a scale set, which runs a job and may run on a burst member.
+func runsAJob(pod renderedPod) bool {
+	return pod.kind == "AutoscalingRunnerSet" && strings.HasSuffix(pod.where, ".spec.template.spec")
+}
+
 func TestManifests_EveryPodButADaemonSetsStaysOffBurstMembersUnlessItRunsOnTheControlPlane(t *testing.T) {
 	var free []string
 
 	for _, pod := range renderedPods(t) {
 		selector, _ := pod.spec["nodeSelector"].(map[string]any)
 		_, onControlPlane := selector[controlPlaneRole]
-		if pod.kind != "DaemonSet" && !onControlPlane && !boundToItsVolumesNode(pod) && !refusesBurstNodes(pod.spec) {
+		if pod.kind != "DaemonSet" && !onControlPlane && !boundToItsVolumesNode(pod) && !runsAJob(pod) && !refusesBurstNodes(pod.spec) {
 			free = append(free, pod.where)
 		}
 	}
@@ -226,6 +231,7 @@ func TestManifests_TheControlPlanesCredentialsRenderThePodsTheirInputsCallForEac
 			tokenAndLeaseCredentials, []string{"mitstack-enrolment", "mitstack-repository-token", "mitstack-telemetry-lease"}},
 		{"a cluster reading its repository with a deploy key and naming no lease resource runs the enrolment alone",
 			deployKeyCredentials, []string{"mitstack-enrolment"}},
+		{"a cluster that runs runners runs the runner token's lease alone", runnerCredentials, []string{"mitstack-runner-lease"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var got, free []string
@@ -240,6 +246,27 @@ func TestManifests_TheControlPlanesCredentialsRenderThePodsTheirInputsCallForEac
 			assert.Equal(t, tc.want, got, "the pods %s renders", tc.source)
 			assert.Empty(t, free, "the pods of %s with no required node affinity %s DoesNotExist", tc.source, components.BurstLabel)
 		})
+	}
+}
+
+func TestManifests_TheRunnerServicesKeepARCsControllerAndTheListenerOffBurstMembersWhileOnlyTheRunnerPodMayRunOnOne(t *testing.T) {
+	var controller, listeners, runners []renderedPod
+	for _, pod := range renderedPods(t) {
+		switch {
+		case pod.source == "runners/gha-runner-scale-set-controller":
+			controller = append(controller, pod)
+		case pod.source == "runners/mitstack-runner-scale-set" && strings.HasSuffix(pod.where, ".spec.listenerTemplate.spec"):
+			listeners = append(listeners, pod)
+		case pod.source == "runners/mitstack-runner-scale-set" && runsAJob(pod):
+			runners = append(runners, pod)
+		}
+	}
+
+	require.NotEmpty(t, controller, "the controller's pods")
+	require.Len(t, listeners, 1, "the listener's pod template")
+	require.Len(t, runners, 1, "the runner's pod template")
+	for _, pod := range append(controller, listeners...) {
+		assert.True(t, refusesBurstNodes(pod.spec), "%s has no required node affinity %s DoesNotExist, and a burst member goes with the idle window", pod.where, components.BurstLabel)
 	}
 }
 
@@ -374,6 +401,13 @@ func podPolicy(t *testing.T, name string) map[string]any {
 	return testutil.Documents(t, testutil.Manifest(t, name, components.Default().Inline).Bytes)[0]
 }
 
+// runnerPodPolicy is a pod policy as a cluster that runs runners holds it, which also skips the runners' namespace.
+func runnerPodPolicy(t *testing.T, name string) map[string]any {
+	t.Helper()
+	set := components.Default().WithRunnerServices()
+	return testutil.Documents(t, testutil.Manifest(t, name, set.Served, set.Inline).Bytes)[0]
+}
+
 func policySkips(t *testing.T, policy map[string]any) []string {
 	t.Helper()
 	var skipped []string
@@ -395,7 +429,7 @@ func refusals(t *testing.T, pod renderedPod) []string {
 }
 
 func TestManifests_NoPodOutsideTheSkippedNamespacesIsRefusedByTheHostPathLimitsOrRegistryPolicies(t *testing.T) {
-	skipped := policySkips(t, podPolicy(t, podRefusingPolicies[0]))
+	skipped := policySkips(t, runnerPodPolicy(t, podRefusingPolicies[0]))
 	var refused []string
 
 	for _, pod := range renderedPods(t) {
@@ -441,7 +475,7 @@ func TestManifests_EveryNamespaceTheNewPolicySkipsBeyondTheLabelPolicysHoldsAPod
 		}
 	}
 
-	for _, namespace := range policySkips(t, podPolicy(t, podRefusingPolicies[0])) {
+	for _, namespace := range policySkips(t, runnerPodPolicy(t, podRefusingPolicies[0])) {
 		if slices.Contains(label, namespace) {
 			continue
 		}
@@ -482,20 +516,30 @@ func quoted(t *testing.T, policy map[string]any, variable string) []string {
 }
 
 func TestManifests_ThePodPoliciesSkipTheSameNamespacesAndNoneThatHoldsAnApp(t *testing.T) {
-	label := policySkips(t, podPolicy(t, "mitstack-require-app-label"))
-	var first []string
-	for _, name := range podRefusingPolicies {
-		skipped := policySkips(t, podPolicy(t, name))
-		if first == nil {
-			first = skipped
-		}
+	for _, tc := range []struct {
+		name   string
+		policy func(*testing.T, string) map[string]any
+	}{
+		{"a cluster that runs no runners", podPolicy},
+		{"a cluster that runs runners", runnerPodPolicy},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			label := policySkips(t, tc.policy(t, "mitstack-require-app-label"))
+			var first []string
+			for _, name := range podRefusingPolicies {
+				skipped := policySkips(t, tc.policy(t, name))
+				if first == nil {
+					first = skipped
+				}
 
-		assert.Equal(t, first, skipped, "%s skips other namespaces than %s", name, podRefusingPolicies[0])
-		assert.Subset(t, skipped, label, "%s must leave alone every namespace the label policy does", name)
-		for _, namespace := range skipped {
-			assert.False(t, strings.HasPrefix(namespace, "app-"), "%s skips %s, which holds an app", name, namespace)
-			assert.NotEqual(t, "mitstack-admission-probe", namespace, "%s skips the namespace its own fixtures are tried in", name)
-		}
+				assert.Equal(t, first, skipped, "%s skips other namespaces than %s", name, podRefusingPolicies[0])
+				assert.Subset(t, skipped, label, "%s must leave alone every namespace the label policy does", name)
+				for _, namespace := range skipped {
+					assert.False(t, strings.HasPrefix(namespace, "app-"), "%s skips %s, which holds an app", name, namespace)
+					assert.NotEqual(t, "mitstack-admission-probe", namespace, "%s skips the namespace its own fixtures are tried in", name)
+				}
+			}
+		})
 	}
 }
 
@@ -524,7 +568,7 @@ func TestManifests_TheReadmeNamesEachSkippedNamespaceWithWhatRunsThereAndWhy(t *
 		rows[strings.Trim(cells[0], "`")] = cells[1:]
 	}
 
-	skipped := policySkips(t, podPolicy(t, podRefusingPolicies[0]))
+	skipped := policySkips(t, runnerPodPolicy(t, podRefusingPolicies[0]))
 
 	var documented []string
 	for namespace, cells := range rows {
@@ -801,4 +845,32 @@ func TestManifests_PodPoliciesJudgeWhatAPodMountsSetsAndPulls(t *testing.T) {
 			assert.Equal(t, tc.want, testutil.Admits(t, podPolicy(t, tc.policy), tc.pod, namespace))
 		})
 	}
+}
+
+func TestManifests_TheRunnerServicesRenderNoGitHubAppKeyAndNoTokenValueAndTheTokenSecretEmpty(t *testing.T) {
+	key := regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----`)
+	token := regexp.MustCompile(`\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})`)
+	manifests := renderedManifests(t)
+	require.Contains(t, manifests, "runners/mitstack-runner-scale-set", "the scale set")
+	require.Contains(t, manifests, runnerCredentials, "the runner token's manifest")
+	var credentialed []string
+
+	for source, manifest := range manifests {
+		if !strings.HasPrefix(source, "runners/") && source != runnerCredentials {
+			continue
+		}
+		if key.Match(manifest) {
+			credentialed = append(credentialed, source+" holds a private key")
+		}
+		if token.Match(manifest) {
+			credentialed = append(credentialed, source+" holds a GitHub token")
+		}
+	}
+	for _, doc := range testutil.Kind(testutil.Documents(t, manifests[runnerCredentials]), "Secret") {
+		assert.Nil(t, doc["data"], "the Secret %v holds a value", testutil.Field(t, doc, "metadata", "name"))
+		assert.Nil(t, doc["stringData"], "the Secret %v holds a value", testutil.Field(t, doc, "metadata", "name"))
+	}
+
+	slices.Sort(credentialed)
+	assert.Empty(t, credentialed, "the lease Job fills the token at run time, and nothing the kit commits holds a credential")
 }

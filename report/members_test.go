@@ -63,6 +63,23 @@ func TestRead_NodesServeWhenReadyAndAreUnreadWhenTheReportNamesNone(t *testing.T
 		serving(t, read, names, members))
 }
 
+func TestRead_AReadyNodeCarryingTheDiskPressureTaintIsNotServingAndOneWithoutItIs(t *testing.T) {
+	read := report.Read{At: time.Date(2026, 11, 22, 9, 0, 0, 0, time.UTC), Body: []byte(`{"nodes":[
+		{"name":"shop-node-full","ready":true,"taints":[{"key":"node.kubernetes.io/disk-pressure","value":null,"effect":"NoSchedule"}]},
+		{"name":"shop-node-control-plane","ready":true,"taints":[{"key":"node-role.kubernetes.io/control-plane","value":null,"effect":"NoSchedule"}]},
+		{"name":"shop-node-clear","ready":true,"taints":[]},
+		{"name":"shop-node-no-taints-listed","ready":true},
+		{"name":"shop-node-down","ready":false,"taints":[]}]}`)}
+	names := []string{"shop-node-full", "shop-node-control-plane", "shop-node-clear", "shop-node-no-taints-listed", "shop-node-down"}
+
+	members, err := read.Nodes(names)
+
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"shop-node-full": "not serving", "shop-node-control-plane": "serving", "shop-node-clear": "serving",
+		"shop-node-no-taints-listed": "serving", "shop-node-down": "not serving"}, serving(t, read, names, members),
+		"a node the kubelet reports Ready and has tainted for disk pressure is full, and a removal must not count it as a member that serves")
+}
+
 func TestRead_NodesBehindNamesEachNodeWhoseMachineConfigurationIsNotTheRelease(t *testing.T) {
 	behind, err := healthyRead(t).NodesBehind("sha256:5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c")
 

@@ -97,3 +97,12 @@ func ShareMintedSecrets() {
 		return s, err
 	}
 }
+
+// GatewayListDigest is the digest of the list every gateway of the plane mirrors, which a gateway carries as its label.
+func (p Plane) GatewayListDigest() (string, error) {
+	list, err := p.gatewayList()
+	if err != nil {
+		return "", err
+	}
+	return list.Digest(), nil
+}

@@ -1436,15 +1436,17 @@ func TestPlane_JudgesTheOnlyGatewayOfAPlaneInOneLocationFailedOnlyOnTwoConsecuti
 	assert.True(t, strings.HasPrefix(deleted[0], fmt.Sprintf("deleted gateway %d in fsn1, which ", gw.ID)), "the deletion: %s", deleted[0])
 }
 
-func TestPlane_APlaneInThreeLocationsBeginsReplacingAFailedGatewayOnItsFirstReadingNotServing(t *testing.T) {
+func TestPlane_APlaneInThreeLocationsDeletesAFailedGatewayOnTheReportAfterItsFirstReadingNotServing(t *testing.T) {
 	h := newHarness(t, withReports)
 	h.built()
 	failed, from := h.gatewayIn(controlplane.GatewayLocation), len(h.events)
 
 	gatewayFailures[0].fail(h, failed)
 	require.NoError(t, h.converge())
+	h.now = h.now.Add(reportEvery)
+	require.NoError(t, h.converge())
 
-	assert.True(t, slices.ContainsFunc(h.events[from:], func(e string) bool {
-		return strings.HasPrefix(e, "routed the network's default route via gateway ")
-	}), "the route moved off the failed gateway on the call that read it not serving once: %q", h.events[from:])
+	deleted := h.deletedGateways(from)
+	require.Len(t, deleted, 1, "gateways deleted by the report after the first one not serving, which the guard reads the others by")
+	assert.True(t, strings.HasPrefix(deleted[0], fmt.Sprintf("deleted gateway %d in fsn1, which ", failed.ID)), "the deletion: %s", deleted[0])
 }

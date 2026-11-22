@@ -135,6 +135,14 @@ func TestManifests_LabelsABurstNodeBurstThenEvictsEachPodOnItWhosePlacementRefus
 	}, tools.Calls(t), "no pod already leaving, finished, or free to run on a burst node is evicted")
 }
 
+func TestManifests_ARunOverABurstNodeHoldingNoPodThatRefusesItLabelsItEvictsNothingAndSucceeds(t *testing.T) {
+	tools, out, err := runLabeller(t, withBurst, "FAKE_JOINED=shop-sub-0123-node-nbg1", "FAKE_PODS="+filepath.Join("testdata", "burst-node-free-pods.json"))
+
+	require.NoError(t, err, out)
+	assert.Contains(t, tools.Calls(t), burstCall("shop-sub-0123-node-nbg1", "nbg1"))
+	assert.NotContains(t, strings.Join(tools.Calls(t), "\n"), "create --raw", "a pod free to run on a burst node is left on it")
+}
+
 func TestManifests_ARefusedEvictionFailsTheRun(t *testing.T) {
 	cases := []struct {
 		name, refusal, answer, says string

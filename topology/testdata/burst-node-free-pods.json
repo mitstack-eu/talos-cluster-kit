@@ -1,0 +1,44 @@
+{
+  "items": [
+    {
+      "metadata": {
+        "namespace": "ci",
+        "name": "runner-1"
+      },
+      "spec": {},
+      "status": {
+        "phase": "Running"
+      }
+    },
+    {
+      "metadata": {
+        "namespace": "kube-system",
+        "name": "cilium-x"
+      },
+      "spec": {
+        "affinity": {
+          "nodeAffinity": {
+            "requiredDuringSchedulingIgnoredDuringExecution": {
+              "nodeSelectorTerms": [
+                {
+                  "matchFields": [
+                    {
+                      "key": "metadata.name",
+                      "operator": "In",
+                      "values": [
+                        "shop-sub-0123-node-nbg1"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      },
+      "status": {
+        "phase": "Running"
+      }
+    }
+  ]
+}

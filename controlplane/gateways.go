@@ -40,6 +40,10 @@ const (
 	KeyGatewayReplaces = "mitstack.dev/gateway-replaces"
 )
 
+// KeyGatewayUnserved on the only gateway of a plane in one location holds when the plane first read it not serving past
+// its deadline, so only a report received after it can judge it failed, since its replacement is an outage.
+const KeyGatewayUnserved = "mitstack.dev/gateway-unserved"
+
 // GatewayUpgradeBound is the longest an upgrade takes to replace every gateway in turn when none fails, which a block's
 // settle budget must cover: per location, two report intervals for the others' reading, one for a report since the
 // loss, and the replacement's deadline, by which a report reads it serving.
@@ -398,26 +402,79 @@ func (p Plane) powerBack(ctx context.Context, gw Server) error {
 
 type gatewayFailure struct {
 	cause, what, reading string
+	// firstUnserved and servedAgain ask failedStep to record or end a plane in one location's first reading not serving.
+	firstUnserved, servedAgain bool
 }
 
 // failure judges a gateway failed once it is down after the plane's one power-on, or, never powered back on, once it
-// runs past its deadline and the newest report since its creation does not read it serving; else its cause is empty.
+// runs past its deadline and the newest report since its creation does not read it serving, in one location two such
+// reports in a row; else its cause is empty.
 func (p Plane) failure(ctx context.Context, gw Server, network Network) (gatewayFailure, error) {
 	if at, powered := poweredOnAt(gw); powered {
 		down, r, err := p.downAfterPowerOn(ctx, gw)
 		if err != nil || !down {
 			return gatewayFailure{}, err
 		}
-		return gatewayFailure{CauseGatewayDown, fmt.Sprintf("was powered back on at %s and is %s", at.Format(time.RFC3339), gw.Status), r.Detail}, nil
+		return gatewayFailure{cause: CauseGatewayDown, what: fmt.Sprintf("was powered back on at %s and is %s", at.Format(time.RFC3339), gw.Status), reading: r.Detail}, nil
 	}
 	if gw.Status != ServerRunning || !p.pastDeadline(gw) {
 		return gatewayFailure{}, nil
 	}
 	r, err := p.reading(ctx, gw, gw.Created)
-	if err != nil || r.Read && r.Serving && runsAtItsAddress(gw, network) {
+	if err != nil {
 		return gatewayFailure{}, err
 	}
-	return gatewayFailure{CauseGatewayOverdue, missedDeadline(gw), r.Detail}, nil
+	serving := r.Read && r.Serving && runsAtItsAddress(gw, network)
+	if p.oneLocation() {
+		return p.secondUnserved(ctx, gw, serving, r)
+	}
+	if serving {
+		return gatewayFailure{}, nil
+	}
+	return gatewayFailure{cause: CauseGatewayOverdue, what: missedDeadline(gw), reading: r.Detail}, nil
+}
+
+// secondUnserved judges the only gateway of a plane in one location failed only once a report received after its first
+// reading not serving reads it not serving too.
+func (p Plane) secondUnserved(ctx context.Context, gw Server, serving bool, r GatewayReading) (gatewayFailure, error) {
+	mark, marked := unservedAt(gw)
+	switch {
+	case serving:
+		return gatewayFailure{servedAgain: marked}, nil
+	case !marked:
+		return gatewayFailure{firstUnserved: true, reading: r.Detail}, nil
+	}
+	again, err := p.reading(ctx, gw, mark)
+	if err != nil || !again.Read {
+		return gatewayFailure{}, err
+	}
+	what := fmt.Sprintf("%s, nor the one after it was first read not serving at %s", missedDeadline(gw), mark.Format(time.RFC3339))
+	return gatewayFailure{cause: CauseGatewayOverdue, what: what, reading: again.Detail}, nil
+}
+
+func unservedAt(gw Server) (time.Time, bool) {
+	unix, err := strconv.ParseInt(gw.Labels[KeyGatewayUnserved], 10, 64)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return time.Unix(unix, 0).UTC(), true
+}
+
+func (p Plane) unservedStep(gw Server, f gatewayFailure) Step {
+	labels := maps.Clone(gw.Labels)
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	what := fmt.Sprintf("take the record of %s not serving off it, since a node report reads it serving again", gatewayName(gw))
+	delete(labels, KeyGatewayUnserved)
+	if f.firstUnserved {
+		at := p.now()
+		what = fmt.Sprintf("record that %s, the plane's only one, %s, so a report received after %s that reads it not serving too replaces it; %s",
+			gatewayName(gw), missedDeadline(gw), at.Format(time.RFC3339), f.reading)
+		// Rounded up, so a report from earlier in the second it was read never reads as after it.
+		labels[KeyGatewayUnserved] = strconv.FormatInt(at.Add(time.Second-1).Unix(), 10)
+	}
+	return Step{what, func(ctx context.Context) error { return p.API.SetServerLabels(ctx, gw.ID, labels) }}
 }
 
 // failedStep replaces the first gateway of this release's list that failed, from the same list at its address, unless
@@ -439,6 +496,8 @@ func (p Plane) failedStep(ctx context.Context, st State, s site) (Step, bool, er
 		switch {
 		case err != nil:
 			return Step{}, false, err
+		case f.firstUnserved || f.servedAgain:
+			return p.unservedStep(gw, f), true, nil
 		case f.cause == "":
 			if step, ok, err := p.endReplacementStep(ctx, gw, s.network, list.Digest()); err != nil || ok {
 				return step, ok, err

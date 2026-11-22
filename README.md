@@ -703,6 +703,13 @@ while no node report lists the cluster's images, and with class
 cluster's enrolment digest and issuer bucket, the two labels the platform
 reads to trust the cluster's nodes, which a later section describes.
 
+A plane in one location judges its only gateway failed past the deadline only
+on two node reports in a row that read it not serving, since its replacement
+is an outage. It records the first as the gateway's label
+`mitstack.dev/gateway-unserved`, and only a report received after that time
+can be the second. A report that reads the gateway serving takes the label off
+again. A plane in three locations replaces a gateway on the first such report.
+
 The plane acts only when a block calls it, so a renewal begins on the block's
 first call at or after the renewal point.
 

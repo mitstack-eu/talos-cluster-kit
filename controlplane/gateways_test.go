@@ -641,18 +641,31 @@ func TestPlane_MovesTheDefaultRouteOnlyToAGatewayAReportReadsServing(t *testing.
 }
 
 func TestPlane_APinBumpReplacesNoGatewayWithoutAnUpgrade(t *testing.T) {
-	h := newHarness(t, withReports)
-	h.built()
-	gateways := controlplane.IDs(h.byRole(controlplane.RoleGateway), controlplane.ServerID)
-	h.relabelGateways("an-earlier-list")
+	for _, plane := range planesInOneAndThreeLocations {
+		t.Run(plane.name, func(t *testing.T) {
+			h := newHarness(t, plane.option)
+			h.built()
+			gateways := controlplane.IDs(h.byRole(controlplane.RoleGateway), controlplane.ServerID)
+			h.relabelGateways("an-earlier-list")
 
-	for range 20 {
-		require.NoError(t, h.converge())
-		h.now = h.now.Add(time.Minute)
+			for range 20 {
+				require.NoError(t, h.converge())
+				h.now = h.now.Add(time.Minute)
+			}
+
+			assert.Equal(t, gateways, controlplane.IDs(h.byRole(controlplane.RoleGateway), controlplane.ServerID), "the gateways")
+			assert.Empty(t, h.plane.Problems(context.Background(), h.read()), "problems")
+		})
 	}
+}
 
-	assert.Equal(t, gateways, controlplane.IDs(h.byRole(controlplane.RoleGateway), controlplane.ServerID), "the gateways")
-	assert.Empty(t, h.plane.Problems(context.Background(), h.read()), "problems")
+// planesInOneAndThreeLocations are a plane in three locations and one in one location, each sending node reports.
+var planesInOneAndThreeLocations = []struct {
+	name   string
+	option func(*harness)
+}{
+	{"a plane in three locations", withReports},
+	{"a plane in one location", oneLocation},
 }
 
 func TestPlane_AnUpgradeWithNoGatewayToReplaceChangesNothingThoughNoReportNamesAGateway(t *testing.T) {
@@ -1311,6 +1324,46 @@ func TestPlane_AnUpgradeOfAPlaneInOneLocationWhoseGatewayHetznerDeletedAfterItBe
 	assert.Empty(t, h.deletedGateways(from), "gateways the plane deleted")
 	assert.Equal(t, current, h.gatewayIn(controlplane.GatewayLocation).Labels[controlplane.KeyGatewayList], "the successor's list")
 	assert.NotContains(t, h.network().Labels, controlplane.KeyGatewayUpgrade, "the network's labels once the successor serves")
+}
+
+func TestPlane_KeepsTheFailedOnlyGatewayOfAPlaneInOneLocationAndRefusesBeforeAnyDeletionWhileItCouldBuildNoSuccessor(t *testing.T) {
+	for _, tc := range []struct {
+		name, class, names string
+		arrange            func(h *harness)
+	}{
+		{"no node report lists the images its successor keeps", controlplane.ClassGatewayImagesUnread, "the newest node report, read at ",
+			func(h *harness) { h.noImageList = true }},
+		{"neither the network nor the gateway holds the enrolment and issuer labels", controlplane.ClassGatewayLabelsLost, "subscribe again",
+			func(h *harness) {
+				h.builtByAnEarlierRelease()
+				gw := h.gatewayIn(controlplane.GatewayLocation)
+				labels := maps.Clone(gw.Labels)
+				delete(labels, controlplane.KeyEnrolmentSHA256)
+				delete(labels, controlplane.KeyIssuerBucket)
+				require.NoError(h.t, h.cloud.SetServerLabels(context.Background(), gw.ID, labels))
+			}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, oneLocation)
+			h.built()
+			tc.arrange(h)
+			failed, from := h.gatewayIn(controlplane.GatewayLocation), len(h.events)
+
+			gatewayFailures[0].fail(h, failed)
+			var err error
+			for range 10 {
+				if err = h.converge(); err != nil {
+					break
+				}
+				h.now = h.now.Add(reportEvery)
+			}
+
+			assert.Equal(t, tc.class, refusalClass(t, err), "the refusal of %v", err)
+			assert.ErrorContains(t, err, tc.names)
+			assert.Equal(t, []int64{failed.ID}, h.gatewayIDs(), "the gateways")
+			assert.Empty(t, h.deletedGateways(from), "gateways deleted")
+		})
+	}
 }
 
 func TestPlane_ReplacesTheFailedOnlyGatewayOfAPlaneInOneLocationOnceNamingTheOutageAndLeavesASuccessorThatFailsTooUnhealthy(t *testing.T) {

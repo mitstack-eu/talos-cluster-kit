@@ -1491,6 +1491,7 @@ func TestPlane_ANetworkWithoutItsEnrolmentAndIssuerLabelsIsAProblemAndCarriesNoE
 	digest, gap = h.read().EnrolmentDigest()
 
 	assert.Contains(t, strings.Join(problems, "; "), "no "+controlplane.KeyIssuerBucket+" label")
+	assert.Contains(t, strings.Join(problems, "; "), "no "+controlplane.KeyEnrolmentSHA256+" label")
 	assert.Empty(t, digest)
 	assert.Contains(t, gap, "no "+controlplane.KeyEnrolmentSHA256+" label")
 }
@@ -1530,6 +1531,23 @@ func TestPlane_AnInstalledHookThatFailsRollsTheInstallBack(t *testing.T) {
 	assert.Empty(t, gap, "the enrolment gap of a rolled-back install")
 	assert.NotContains(t, h.network().Labels, controlplane.KeyEnrolmentSHA256, "the network's labels after a rolled-back install")
 	assert.NotContains(t, h.network().Labels, controlplane.KeyIssuerBucket, "the network's labels after a rolled-back install")
+}
+
+func TestPlane_ARollbackThatCannotDeleteEveryServerKeepsTheNetworksEnrolmentAndIssuerLabelsBesideTheServersLeft(t *testing.T) {
+	h := newHarness(t)
+	h.installErr = errors.New("the worker's install could not start")
+	refused := errors.New("Hetzner refused the delete")
+	h.cloud.FailDelete = refused
+
+	err := h.converge()
+
+	require.ErrorIs(t, err, h.installErr)
+	require.ErrorIs(t, err, refused)
+	require.True(t, h.read().HasServers(), "servers left by the rollback")
+	digest, gap := h.read().EnrolmentDigest()
+	assert.NotEmpty(t, digest, "the enrolment digest beside the servers left")
+	assert.Empty(t, gap, "the enrolment gap beside the servers left")
+	assert.NotEmpty(t, h.network().Labels[controlplane.KeyIssuerBucket], "the issuer bucket beside the servers left")
 }
 
 func TestPlane_AppsOnWorkersKeepsTheControlPlanesTaint(t *testing.T) {

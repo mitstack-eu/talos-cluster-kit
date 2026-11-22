@@ -206,18 +206,22 @@ func TestPlane_LeavesOutAnUnresolvedTagAndAnImageOnARegistryTheNodesReachDirectl
 }
 
 func TestPlane_AnUpgradeReplacesNoGatewayWhileTheNewestNodeReportListsNoImages(t *testing.T) {
-	h := newHarness(t, withReports)
-	h.built()
-	h.relabelGateways("an-earlier-list")
-	h.noImageList = true
-	writes := h.cloud.Writes()
+	for _, plane := range planesInOneAndThreeLocations {
+		t.Run(plane.name, func(t *testing.T) {
+			h := newHarness(t, plane.option)
+			h.built()
+			h.relabelGateways("an-earlier-list")
+			h.noImageList = true
+			writes := h.cloud.Writes()
 
-	h.plane.Upgrading = true
-	err := h.ensure()
+			h.plane.Upgrading = true
+			err := h.ensure()
 
-	assert.Equal(t, controlplane.ClassGatewayImagesUnread, refusalClass(t, err))
-	assert.Contains(t, err.Error(), "the report lists no images")
-	assert.Equal(t, writes, h.cloud.Writes(), "writes on a refused upgrade")
+			assert.Equal(t, controlplane.ClassGatewayImagesUnread, refusalClass(t, err))
+			assert.Contains(t, err.Error(), "the report lists no images")
+			assert.Equal(t, writes, h.cloud.Writes(), "writes on a refused upgrade")
+		})
+	}
 }
 
 // threeHundredImages are 300 distinct images on a mirrored registry, each named by tag and resolved by a pod's status.

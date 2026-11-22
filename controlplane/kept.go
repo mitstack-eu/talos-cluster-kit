@@ -21,8 +21,8 @@ import (
 // gateway, as Unix seconds.
 const KeyGatewayGone = "mitstack.dev/gateway-gone-"
 
-// ClassGatewayImagesUnread refuses an upgrade's replacement of a gateway while no node report lists the images the
-// cluster runs.
+// ClassGatewayImagesUnread refuses an upgrade's replacement of a gateway, and the rebuild of the only gateway of a plane
+// in one location, while no node report lists the images the cluster runs.
 const ClassGatewayImagesUnread = "gateway-images-unread"
 
 // keeping is what a node report lets a new gateway keep beyond the release's list, and each reference it leaves out
@@ -169,28 +169,42 @@ func (p Plane) setGatewayGone(network Network, loc string, at *time.Time) Step {
 	}}
 }
 
-// rebuildStep builds the gateway of a location that lost it once nodes run, from a node report read after the loss;
-// it takes no step while it waits on one, and rebuildWait names why.
-func (p Plane) rebuildStep(ctx context.Context, st State, s site, loc string, sibling Server) (Step, bool, error) {
+// rebuildStep builds the gateway a location lost from the node report rebuildWait reads, and a plane in one location
+// refuses where another would wait, since no report reaches the platform while its only gateway is gone.
+func (p Plane) rebuildStep(ctx context.Context, st State, s site, loc string) (Step, bool, error) {
 	if _, recorded := gatewayGoneAt(s.network, loc); !recorded {
 		now := p.now()
 		return p.setGatewayGone(s.network, loc, &now), true, nil
 	}
 	k, why, err := p.rebuildWait(ctx, s.network, loc)
-	if err != nil || why != "" {
+	switch {
+	case err != nil:
 		return Step{}, false, err
+	case why != "" && p.oneLocation():
+		return Step{}, false, refuse(ClassGatewayImagesUnread, "%s, so the plane builds no gateway that would leave those images unmirrored", why)
+	case why != "":
+		return Step{}, false, nil
 	}
 	return Step{"create the gateway in " + loc + " from this release's list and the images the node report read at " +
 		stampOf(k.report.At) + " names", func(ctx context.Context) error {
-		return p.createGateway(ctx, st, s, loc, sibling, &k)
+		return p.createGateway(ctx, st, s, loc, &k)
 	}}, true, nil
 }
 
-// rebuildWait reads what a location's next gateway keeps; why names the node report it waits on, "" when it waits on none.
+// rebuildWait reads what a location's next gateway keeps, from a node report read after the loss, or from the newest of
+// all in a plane in one location; why names the node report it waits on, "" when it waits on none.
 func (p Plane) rebuildWait(ctx context.Context, network Network, loc string) (keeping, string, error) {
 	since, recorded := gatewayGoneAt(network, loc)
 	if !recorded {
 		return keeping{}, "", nil
+	}
+	if p.oneLocation() {
+		k, why, err := p.newestImages(ctx, time.Time{})
+		if err != nil || why == "" {
+			return k, "", err
+		}
+		return keeping{}, fmt.Sprintf("the gateway in %s, the plane's only one, keeps each image the cluster still runs from the newest node report, and %s",
+			loc, why), nil
 	}
 	k, why, err := p.newestImages(ctx, since)
 	if err != nil || why == "" {

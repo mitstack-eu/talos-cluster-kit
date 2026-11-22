@@ -3,13 +3,16 @@ package controlplane
 // Every call finds a subscription's resources by their labels alone, since a name is only a readable handle.
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base32"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -143,4 +146,57 @@ func mintIssuerBucket() (string, error) {
 // issuerURL is where the platform publishes the cluster's discovery document and key set, in the bucket's own host.
 func issuerURL(bucket, subscriptionID string) *url.URL {
 	return &url.URL{Scheme: "https", Host: bucket + ".s3." + issuerRegion + ".amazonaws.com", Path: "/" + subscriptionID}
+}
+
+// ClassGatewayLabelsLost refuses to delete or rebuild the only gateway of a plane in one location while its network
+// lacks the enrolment digest or the issuer bucket, since no other gateway remains to copy them from.
+const ClassGatewayLabelsLost = "gateway-labels-lost"
+
+// identityKeys are the cluster's enrolment digest and issuer bucket, which its network holds for the cluster's whole
+// life, since a gateway rebuilt while no other stands has no sibling to copy them from.
+var identityKeys = []string{KeyEnrolmentSHA256, KeyIssuerBucket}
+
+func holdsIdentity(network Network) bool { return len(missingIdentity(network)) == 0 }
+
+// missingIdentity names each identity label the network lacks, joined for a message.
+func missingIdentity(network Network) []string {
+	return slices.DeleteFunc(slices.Clone(identityKeys), func(key string) bool { return network.Labels[key] != "" })
+}
+
+// setIdentity writes values to the network under identityKeys, and takes each key with no value off.
+func (p Plane) setIdentity(ctx context.Context, network Network, values map[string]string) error {
+	labels := maps.Clone(network.Labels)
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	for _, key := range identityKeys {
+		delete(labels, key)
+		if values[key] != "" {
+			labels[key] = values[key]
+		}
+	}
+	return p.API.SetNetworkLabels(ctx, network.ID, labels)
+}
+
+// CopyIdentityStep copies onto the network each identity label only a gateway carries, since every reader reads them
+// from the network, and a block takes it ahead of any refusal so a refused cluster still keeps its outputs.
+func (p Plane) CopyIdentityStep(st State, network Network) (Step, bool) {
+	gw, ok := st.SharedGateway()
+	if !ok || holdsIdentity(network) {
+		return Step{}, false
+	}
+	values := map[string]string{}
+	var copied []string
+	for _, key := range identityKeys {
+		values[key] = network.Labels[key]
+		if values[key] == "" && gw.Labels[key] != "" {
+			values[key] = gw.Labels[key]
+			copied = append(copied, key)
+		}
+	}
+	if len(copied) == 0 {
+		return Step{}, false
+	}
+	return Step{fmt.Sprintf("copy %s from gateway %d onto the network, which holds them for the cluster's whole life", strings.Join(copied, " and "), gw.ID),
+		func(ctx context.Context) error { return p.setIdentity(ctx, network, values) }}, true
 }

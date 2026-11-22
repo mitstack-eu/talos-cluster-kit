@@ -80,7 +80,7 @@ func (st State) GatewayIn(loc string) (Server, bool) {
 	return onlyOne(ServersIn(st.Servers[RoleGateway], loc))
 }
 
-// SharedGateway is the first location's gateway that exists, which carries the labels every gateway shares.
+// SharedGateway is the first location's gateway that exists, whose labels stand for every gateway's.
 func (st State) SharedGateway() (Server, bool) {
 	for _, loc := range Locations {
 		if gw, ok := st.GatewayIn(loc); ok {

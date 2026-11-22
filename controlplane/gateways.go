@@ -40,6 +40,10 @@ const (
 	KeyGatewayReplaces = "mitstack.dev/gateway-replaces"
 )
 
+// KeyGatewayUnserved on the only gateway of a plane in one location holds when the plane first read it not serving past
+// its deadline, so only a report received after it can judge it failed, since its replacement is an outage.
+const KeyGatewayUnserved = "mitstack.dev/gateway-unserved"
+
 // GatewayUpgradeBound is the longest an upgrade takes to replace every gateway in turn when none fails, which a block's
 // settle budget must cover: per location, two report intervals for the others' reading, one for a report since the
 // loss, and the replacement's deadline, by which a report reads it serving.
@@ -108,7 +112,6 @@ func (p Plane) zoneStep(ctx context.Context, st State, s site) (Step, bool, erro
 	if st.SingleGateway() {
 		return Step{}, false, nil
 	}
-	sibling, _ := st.SharedGateway()
 	for _, loc := range p.NodeLocations() {
 		if _, ok := st.GatewayIn(loc); !ok {
 			if p.GatewayCA == nil {
@@ -116,10 +119,10 @@ func (p Plane) zoneStep(ctx context.Context, st State, s site) (Step, bool, erro
 					"the gateway in %s is gone and the block holds no gateway CA to sign a new one's certificate with; unsubscribe and subscribe again to rebuild the cluster", loc)
 			}
 			if len(st.Servers[RoleNode]) > 0 {
-				return p.rebuildStep(ctx, st, s, loc, sibling)
+				return p.rebuildStep(ctx, st, s, loc)
 			}
 			return Step{"create the gateway in " + loc + " from this release's list", func(ctx context.Context) error {
-				return p.createGateway(ctx, st, s, loc, sibling, nil)
+				return p.createGateway(ctx, st, s, loc, nil)
 			}}, true, nil
 		}
 	}
@@ -399,26 +402,79 @@ func (p Plane) powerBack(ctx context.Context, gw Server) error {
 
 type gatewayFailure struct {
 	cause, what, reading string
+	// firstUnserved and servedAgain ask failedStep to record or end a plane in one location's first reading not serving.
+	firstUnserved, servedAgain bool
 }
 
 // failure judges a gateway failed once it is down after the plane's one power-on, or, never powered back on, once it
-// runs past its deadline and the newest report since its creation does not read it serving; else its cause is empty.
+// runs past its deadline and the newest report since its creation does not read it serving, in one location two such
+// reports in a row; else its cause is empty.
 func (p Plane) failure(ctx context.Context, gw Server, network Network) (gatewayFailure, error) {
 	if at, powered := poweredOnAt(gw); powered {
 		down, r, err := p.downAfterPowerOn(ctx, gw)
 		if err != nil || !down {
 			return gatewayFailure{}, err
 		}
-		return gatewayFailure{CauseGatewayDown, fmt.Sprintf("was powered back on at %s and is %s", at.Format(time.RFC3339), gw.Status), r.Detail}, nil
+		return gatewayFailure{cause: CauseGatewayDown, what: fmt.Sprintf("was powered back on at %s and is %s", at.Format(time.RFC3339), gw.Status), reading: r.Detail}, nil
 	}
 	if gw.Status != ServerRunning || !p.pastDeadline(gw) {
 		return gatewayFailure{}, nil
 	}
 	r, err := p.reading(ctx, gw, gw.Created)
-	if err != nil || r.Read && r.Serving && runsAtItsAddress(gw, network) {
+	if err != nil {
 		return gatewayFailure{}, err
 	}
-	return gatewayFailure{CauseGatewayOverdue, missedDeadline(gw), r.Detail}, nil
+	serving := r.Read && r.Serving && runsAtItsAddress(gw, network)
+	if p.oneLocation() {
+		return p.secondUnserved(ctx, gw, serving, r)
+	}
+	if serving {
+		return gatewayFailure{}, nil
+	}
+	return gatewayFailure{cause: CauseGatewayOverdue, what: missedDeadline(gw), reading: r.Detail}, nil
+}
+
+// secondUnserved judges the only gateway of a plane in one location failed only once a report received after its first
+// reading not serving reads it not serving too.
+func (p Plane) secondUnserved(ctx context.Context, gw Server, serving bool, r GatewayReading) (gatewayFailure, error) {
+	mark, marked := unservedAt(gw)
+	switch {
+	case serving:
+		return gatewayFailure{servedAgain: marked}, nil
+	case !marked:
+		return gatewayFailure{firstUnserved: true, reading: r.Detail}, nil
+	}
+	again, err := p.reading(ctx, gw, mark)
+	if err != nil || !again.Read {
+		return gatewayFailure{}, err
+	}
+	what := fmt.Sprintf("%s, nor the one after it was first read not serving at %s", missedDeadline(gw), mark.Format(time.RFC3339))
+	return gatewayFailure{cause: CauseGatewayOverdue, what: what, reading: again.Detail}, nil
+}
+
+func unservedAt(gw Server) (time.Time, bool) {
+	unix, err := strconv.ParseInt(gw.Labels[KeyGatewayUnserved], 10, 64)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return time.Unix(unix, 0).UTC(), true
+}
+
+func (p Plane) unservedStep(gw Server, f gatewayFailure) Step {
+	labels := maps.Clone(gw.Labels)
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	what := fmt.Sprintf("take the record of %s not serving off it, since a node report reads it serving again", gatewayName(gw))
+	delete(labels, KeyGatewayUnserved)
+	if f.firstUnserved {
+		at := p.now()
+		what = fmt.Sprintf("record that %s, the plane's only one, %s, so a report received after %s that reads it not serving too replaces it; %s",
+			gatewayName(gw), missedDeadline(gw), at.Format(time.RFC3339), f.reading)
+		// Rounded up, so a report from earlier in the second it was read never reads as after it.
+		labels[KeyGatewayUnserved] = strconv.FormatInt(at.Add(time.Second-1).Unix(), 10)
+	}
+	return Step{what, func(ctx context.Context) error { return p.API.SetServerLabels(ctx, gw.ID, labels) }}
 }
 
 // failedStep replaces the first gateway of this release's list that failed, from the same list at its address, unless
@@ -440,6 +496,8 @@ func (p Plane) failedStep(ctx context.Context, st State, s site) (Step, bool, er
 		switch {
 		case err != nil:
 			return Step{}, false, err
+		case f.firstUnserved || f.servedAgain:
+			return p.unservedStep(gw, f), true, nil
 		case f.cause == "":
 			if step, ok, err := p.endReplacementStep(ctx, gw, s.network, list.Digest()); err != nil || ok {
 				return step, ok, err
@@ -455,7 +513,7 @@ func (p Plane) failedStep(ctx context.Context, st State, s site) (Step, bool, er
 // replacedAsFailed reports whether failedStep replaces gw, which Unhealthy then names with the failure's own cause.
 func (p Plane) replacedAsFailed(ctx context.Context, gw Server, network Network, digest string) (bool, error) {
 	f, err := p.failure(ctx, gw, network)
-	cause, _ := f.unhealthy(gw, digest)
+	cause, _ := f.unhealthy(gw, digest, p.oneLocation())
 	return cause != "" && cause == f.cause, err
 }
 
@@ -664,6 +722,11 @@ func (p Plane) replaceGateway(ctx context.Context, st State, s site, r removal) 
 	if _, err := (&OrderableTypes{API: p.API}).First(ctx, string(RoleGateway), GatewayServerTypes, old.Location); err != nil {
 		return Step{}, false, err
 	}
+	if p.oneLocation() {
+		if err := p.successorRefusal(ctx, s.network, r); err != nil {
+			return Step{}, false, err
+		}
+	}
 	if route, ok := defaultRouteOf(s.network); ok && route.Gateway == gatewayAddressOf(old) {
 		target, ok, err := p.routeTarget(ctx, st, s.network, route.Gateway)
 		if err != nil {
@@ -694,6 +757,21 @@ func (p Plane) replaceGateway(ctx context.Context, st State, s site, r removal) 
 	return p.deletionStep(r, began, describeServing(set, details, gatewayName(old))), true, nil
 }
 
+// successorRefusal refuses to delete the only gateway of a plane in one location while no successor could be built in
+// its place, since its rebuild would refuse once the gateway is gone.
+func (p Plane) successorRefusal(ctx context.Context, network Network, r removal) error {
+	if !holdsIdentity(network) {
+		return refuse(ClassGatewayLabelsLost,
+			"%s keeps gateway %d in %s, the plane's only one, since neither network %d nor the gateway holds %s, so no successor could carry the cluster's identity; unsubscribe and subscribe again to rebuild the cluster",
+			r.keeper, r.gw.ID, r.gw.Location, network.ID, strings.Join(missingIdentity(network), " or "))
+	}
+	unread, err := p.keptImagesUnread(ctx)
+	if err != nil || unread == "" {
+		return err
+	}
+	return refuse(ClassGatewayImagesUnread, "%s keeps gateway %d in %s, the plane's only one, since %s", r.keeper, r.gw.ID, r.gw.Location, unread)
+}
+
 func (p Plane) deletionStep(r removal, began time.Time, judged string) Step {
 	old := r.gw
 	return Step{"delete the gateway in " + old.Location + ", " + r.why, func(ctx context.Context) error {
@@ -705,18 +783,30 @@ func (p Plane) deletionStep(r removal, began time.Time, judged string) Step {
 		if err := p.API.DeleteServer(ctx, old.ID); err != nil {
 			return fmt.Errorf("deleting the gateway %d in %s: %w", old.ID, old.Location, err)
 		}
-		p.notify(ctx, "deleted gateway %d in %s, %s, so one built from this release's list takes %s, judged by readings since %s: %s",
+		event := fmt.Sprintf("deleted gateway %d in %s, %s, so one built from this release's list takes %s, judged by readings since %s: %s",
 			old.ID, old.Location, r.why, gatewayAddressOf(old), began.Format(time.RFC3339), judged)
+		if p.oneLocation() {
+			event += "; " + outage
+		}
+		p.notify(ctx, "%s", event)
 		return nil
 	}}
 }
 
+// outage names what the cluster loses while a plane in one location replaces its only gateway, and for how long at most.
+var outage = fmt.Sprintf("this begins an outage, since it is the plane's only gateway: the nodes pull no image and reach nothing outside the network until its successor serves, within %s of the successor's creation",
+	gateway.Deadline)
+
 func gatewayName(gw Server) string { return fmt.Sprintf("gateway %d in %s", gw.ID, gw.Location) }
 
-// gatewaySet is every gateway with its newest reading since began, off its address as Hetzner reads it now, else as a
-// report since began reads its mirror, with each reading's detail naming that report.
+// gatewaySet is every gateway with its newest reading since began, and a plane in one location asks for no redundancy,
+// since no other gateway can serve while its only one is replaced.
 func (p Plane) gatewaySet(ctx context.Context, st State, network Network, began time.Time) (redundant.Set, map[string]string, error) {
-	set, details := redundant.Set{Name: "gateways", Minimum: redundant.AllButOne}, map[string]string{}
+	minimum := redundant.AllButOne
+	if p.oneLocation() {
+		minimum = redundant.NoRedundancy
+	}
+	set, details := redundant.Set{Name: "gateways", Minimum: minimum}, map[string]string{}
 	for _, loc := range p.NodeLocations() {
 		gw, ok := st.GatewayIn(loc)
 		if !ok {
@@ -757,7 +847,7 @@ func (p Plane) unmarkStep(network Network) Step {
 // createGateway builds a location's gateway stopped and off the network, with a certificate the kept CA signs for its
 // address, mirroring what k keeps beside the release's list, and with no first-node bootstrap, since only the install's
 // first gateway bootstraps etcd.
-func (p Plane) createGateway(ctx context.Context, st State, s site, loc string, sibling Server, k *keeping) error {
+func (p Plane) createGateway(ctx context.Context, st State, s site, loc string, k *keeping) error {
 	ingress, _ := st.LoadBalancerIn(RoleIngress, GatewayLocation)
 	ingressAddr, err := netip.ParseAddr(ingress.PublicIPv4)
 	if err != nil {
@@ -774,7 +864,7 @@ func (p Plane) createGateway(ctx context.Context, st State, s site, loc string, 
 	if err != nil {
 		return err
 	}
-	spec, err := p.gatewaySpec(ctx, &OrderableTypes{API: p.API}, loc, rendered, s, sibling.Labels[KeyEnrolmentSHA256], sibling.Labels[KeyIssuerBucket], list.Digest())
+	spec, err := p.gatewaySpec(ctx, &OrderableTypes{API: p.API}, loc, rendered, s, list.Digest())
 	if err != nil {
 		return err
 	}
@@ -804,13 +894,13 @@ func (p Plane) deleteUnattachedGateway(ctx context.Context, loc string, s site) 
 	return nil
 }
 
-func (p Plane) gatewaySpec(ctx context.Context, orderable *OrderableTypes, loc string, rendered renderedGateway, s site, enrolment, bucket, digest string) (ServerSpec, error) {
+func (p Plane) gatewaySpec(ctx context.Context, orderable *OrderableTypes, loc string, rendered renderedGateway, s site, digest string) (ServerSpec, error) {
 	serverType, err := orderable.First(ctx, string(RoleGateway), GatewayServerTypes, loc)
 	if err != nil {
 		return ServerSpec{}, err
 	}
 	labels := p.Labels(RoleGateway)
-	labels[KeyEnrolmentSHA256], labels[KeyIssuerBucket], labels[KeyGatewayList] = enrolment, bucket, digest
+	labels[KeyGatewayList] = digest
 	labels[KeyGatewayCertExpires] = rendered.certificate.expiresLabel()
 	if replaced := s.network.Labels[KeyGatewayFailed+loc]; replaced != "" {
 		labels[KeyGatewayReplaces] = replaced
@@ -849,7 +939,7 @@ func (p Plane) Unhealthy(ctx context.Context, st State) (cause, detail string, e
 		if err != nil {
 			return "", "", err
 		}
-		if cause, detail := f.unhealthy(gw, list.Digest()); cause != "" {
+		if cause, detail := f.unhealthy(gw, list.Digest(), p.oneLocation()); cause != "" {
 			return cause, detail, nil
 		}
 	}
@@ -857,7 +947,7 @@ func (p Plane) Unhealthy(ctx context.Context, st State) (cause, detail string, e
 }
 
 // unhealthy names a failed gateway's cause, with how its replacement stands or why the plane leaves it.
-func (f gatewayFailure) unhealthy(gw Server, digest string) (cause, detail string) {
+func (f gatewayFailure) unhealthy(gw Server, digest string, oneLocation bool) (cause, detail string) {
 	detail = fmt.Sprintf("%s %s; %s", gatewayName(gw), f.what, f.reading)
 	switch {
 	case f.cause == "":
@@ -870,9 +960,17 @@ func (f gatewayFailure) unhealthy(gw Server, digest string) (cause, detail strin
 		return CauseGatewayFailedAgain, fmt.Sprintf("%s; it replaced gateway %s, which failed from the same list, so the block leaves it in place",
 			detail, gw.Labels[KeyGatewayReplaces])
 	}
-	if began, ok := RemovalBegan(gw, digest); ok {
+	began, ok := RemovalBegan(gw, digest)
+	switch {
+	case ok && oneLocation:
+		return f.cause, fmt.Sprintf("%s; the block began replacing it at %s, %s", detail, began.Format(time.RFC3339), shortOutage)
+	case ok:
 		return f.cause, fmt.Sprintf("%s; the block began replacing it at %s and deletes it once a node report received after then reads the other gateways serving",
 			detail, began.Format(time.RFC3339))
+	case oneLocation:
+		return f.cause, detail + "; the block replaces it, " + shortOutage
 	}
 	return f.cause, detail + "; the block replaces it once a node report reads the other gateways serving"
 }
+
+var shortOutage = fmt.Sprintf("a short outage, since it is the plane's only gateway, that ends once its successor serves, within %s of the successor's creation", gateway.Deadline)

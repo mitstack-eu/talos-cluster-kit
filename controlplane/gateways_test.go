@@ -386,6 +386,7 @@ func TestPlane_UpgradeReplacesOneLocationsGatewayAtATimeAtItsAddressAndNoNodeAnd
 	require.Len(t, deleted, len(controlplane.Locations), "gateways deleted")
 	for i, loc := range controlplane.Locations {
 		assert.Contains(t, deleted[i], fmt.Sprintf("deleted gateway %d in %s, built from an earlier list", old[i], loc), "the replacement order")
+		assert.NotContains(t, deleted[i], "outage", "the deletion event of a plane in three locations")
 		gw := h.gatewayIn(loc)
 		assert.NotContains(t, old, gw.ID, "the gateway in %s was not replaced", loc)
 		assert.Equal(t, current, gw.Labels[controlplane.KeyGatewayList], "the replacement in %s's list", loc)
@@ -641,18 +642,31 @@ func TestPlane_MovesTheDefaultRouteOnlyToAGatewayAReportReadsServing(t *testing.
 }
 
 func TestPlane_APinBumpReplacesNoGatewayWithoutAnUpgrade(t *testing.T) {
-	h := newHarness(t, withReports)
-	h.built()
-	gateways := controlplane.IDs(h.byRole(controlplane.RoleGateway), controlplane.ServerID)
-	h.relabelGateways("an-earlier-list")
+	for _, plane := range planesInOneAndThreeLocations {
+		t.Run(plane.name, func(t *testing.T) {
+			h := newHarness(t, plane.option)
+			h.built()
+			gateways := controlplane.IDs(h.byRole(controlplane.RoleGateway), controlplane.ServerID)
+			h.relabelGateways("an-earlier-list")
 
-	for range 20 {
-		require.NoError(t, h.converge())
-		h.now = h.now.Add(time.Minute)
+			for range 20 {
+				require.NoError(t, h.converge())
+				h.now = h.now.Add(time.Minute)
+			}
+
+			assert.Equal(t, gateways, controlplane.IDs(h.byRole(controlplane.RoleGateway), controlplane.ServerID), "the gateways")
+			assert.Empty(t, h.plane.Problems(context.Background(), h.read()), "problems")
+		})
 	}
+}
 
-	assert.Equal(t, gateways, controlplane.IDs(h.byRole(controlplane.RoleGateway), controlplane.ServerID), "the gateways")
-	assert.Empty(t, h.plane.Problems(context.Background(), h.read()), "problems")
+// planesInOneAndThreeLocations are a plane in three locations and one in one location, each sending node reports.
+var planesInOneAndThreeLocations = []struct {
+	name   string
+	option func(*harness)
+}{
+	{"a plane in three locations", withReports},
+	{"a plane in one location", oneLocation},
 }
 
 func TestPlane_AnUpgradeWithNoGatewayToReplaceChangesNothingThoughNoReportNamesAGateway(t *testing.T) {
@@ -941,20 +955,25 @@ func TestPlane_ReplacesAFailedGatewayOfThisReleasesListAtItsAddressFromTheSameLi
 }
 
 func TestPlane_RefusesToReplaceAGatewayWhoseLocationCanOrderNoSuccessorBeforeItDeletesIt(t *testing.T) {
+	upgrade := func(h *harness) {
+		h.relabelGateways("an-earlier-list")
+		h.plane.Upgrading = true
+		require.NoError(h.t, h.ensure())
+		h.plane.Upgrading = false
+	}
+	fail := func(h *harness) { gatewayFailures[0].fail(h, h.gatewayIn(controlplane.GatewayLocation)) }
 	for _, tc := range []struct {
 		name  string
+		plane func(h *harness)
 		begin func(h *harness)
 	}{
-		{"an upgrade's gateway of an earlier list", func(h *harness) {
-			h.relabelGateways("an-earlier-list")
-			h.plane.Upgrading = true
-			require.NoError(h.t, h.ensure())
-			h.plane.Upgrading = false
-		}},
-		{"a gateway that failed", func(h *harness) { gatewayFailures[0].fail(h, h.gatewayIn(controlplane.GatewayLocation)) }},
+		{"an upgrade's gateway of an earlier list", withReports, upgrade},
+		{"a gateway that failed", withReports, fail},
+		{"an upgrade's only gateway of a plane in one location", oneLocation, upgrade},
+		{"the failed only gateway of a plane in one location", oneLocation, fail},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			h := newHarness(t, withReports)
+			h := newHarness(t, tc.plane)
 			h.built()
 			gateways, from := h.gatewayIDs(), len(h.events)
 			h.cloud.SoldOut = controlplane.GatewayServerTypes
@@ -969,6 +988,7 @@ func TestPlane_RefusesToReplaceAGatewayWhoseLocationCanOrderNoSuccessorBeforeItD
 			}
 
 			assert.Equal(t, "server-unavailable", refusalClass(t, err))
+			assert.ErrorContains(t, err, controlplane.GatewayLocation, "the refusal names the location")
 			assert.Equal(t, gateways, h.gatewayIDs(), "the gateways")
 			assert.Empty(t, h.deletedGateways(from), "gateways deleted")
 		})
@@ -1237,4 +1257,272 @@ func TestPlane_ReadsACachedGatewayListWithoutCopyingTheComponentManifests(t *tes
 				perCall, bound, manifestBytes)
 		})
 	}
+}
+
+// outage is what each deletion of a plane in one location's only gateway says of the outage it begins and its bound.
+var outage = fmt.Sprintf("this begins an outage, since it is the plane's only gateway: the nodes pull no image and reach nothing outside the network until its successor serves, within %s of the successor's creation",
+	gateway.Deadline)
+
+// requireNoGatewayKept fails on an event since from in which the guard keeps a gateway, which a plane in one location,
+// with no other gateway to wait on, never writes.
+func (h *harness) requireNoGatewayKept(from int) {
+	h.t.Helper()
+	for _, e := range h.events[from:] {
+		require.NotContains(h.t, e, "keeps gateway", "an event of a plane in one location")
+	}
+}
+
+func TestPlane_AnUpgradeOfAPlaneInOneLocationDeletesItsOnlyGatewayNamingTheOutageAndEndsOnceItsSuccessorServesAtTheSameAddressFromThisReleasesList(t *testing.T) {
+	h := newHarness(t, oneLocation)
+	h.built()
+	old := h.gatewayIn(controlplane.GatewayLocation)
+	current, release := old.Labels[controlplane.KeyGatewayList], h.mirrored(old)
+	identity, _ := h.plane.Outputs(h.read())
+	h.relabelGateways("an-earlier-list")
+	h.images = []report.ImageRef{earlierTools}
+	from := len(h.events)
+
+	h.upgrade(func() { h.requireNoGatewayKept(from) })
+
+	deleted := h.deletedGateways(from)
+	require.Len(t, deleted, 1, "gateways deleted")
+	assert.True(t, strings.HasPrefix(deleted[0], fmt.Sprintf("deleted gateway %d in fsn1, built from an earlier list, ", old.ID)), "the deletion: %s", deleted[0])
+	assert.Contains(t, deleted[0], outage, "the deletion names the outage and its bound")
+	successor := h.gatewayIn(controlplane.GatewayLocation)
+	assert.NotEqual(t, old.ID, successor.ID, "the gateway in fsn1 was not replaced")
+	assert.Equal(t, current, successor.Labels[controlplane.KeyGatewayList], "the successor's list")
+	assert.Equal(t, controlplane.GatewayAddress, successor.PrivateIPs[h.network().ID], "the successor's private address")
+	assert.ElementsMatch(t, append(release, earlierTools.Image), h.mirrored(successor), "the successor mirrors the release's list and the image the newest report names")
+	outputs, _ := h.plane.Outputs(h.read())
+	for _, key := range []string{"enrolmentTokenSha256", "issuerBucket", "issuerUrl"} {
+		assert.Equal(t, identity[key], outputs[key], "the %s output once the successor serves", key)
+	}
+	assert.NotContains(t, h.network().Labels, controlplane.KeyGatewayUpgrade, "the network's labels once the upgrade ends")
+	assert.Empty(t, h.plane.Problems(context.Background(), h.read()), "problems")
+}
+
+func TestPlane_AnUpgradeOfAPlaneInOneLocationWhoseGatewayHetznerDeletedAfterItBeganBuildsOneSuccessorAndTakesItsMarkOff(t *testing.T) {
+	h := newHarness(t, oneLocation)
+	h.built()
+	current := h.gatewayIn(controlplane.GatewayLocation).Labels[controlplane.KeyGatewayList]
+	h.relabelGateways("an-earlier-list")
+	h.plane.Upgrading = true
+	require.NoError(t, h.ensure())
+	h.plane.Upgrading = false
+	require.Contains(t, h.network().Labels, controlplane.KeyGatewayUpgrade, "the upgrade's mark")
+	h.lose(controlplane.GatewayLocation)
+	specs, from := len(h.cloud.ServerSpecs), len(h.events)
+
+	h.drive("the rebuild", func() bool { return len(h.plane.Problems(context.Background(), h.read())) == 0 }, func() {})
+
+	var created []string
+	for _, spec := range h.cloud.ServerSpecs[specs:] {
+		if controlplane.Role(spec.Labels[controlplane.KeyRole]) == controlplane.RoleGateway {
+			created = append(created, spec.Location)
+		}
+	}
+	assert.Equal(t, []string{controlplane.GatewayLocation}, created, "the gateways the plane created")
+	assert.Empty(t, h.deletedGateways(from), "gateways the plane deleted")
+	assert.Equal(t, current, h.gatewayIn(controlplane.GatewayLocation).Labels[controlplane.KeyGatewayList], "the successor's list")
+	assert.NotContains(t, h.network().Labels, controlplane.KeyGatewayUpgrade, "the network's labels once the successor serves")
+}
+
+func TestPlane_KeepsTheFailedOnlyGatewayOfAPlaneInOneLocationAndRefusesBeforeAnyDeletionWhileItCouldBuildNoSuccessor(t *testing.T) {
+	for _, tc := range []struct {
+		name, class, names string
+		arrange            func(h *harness)
+	}{
+		{"no node report lists the images its successor keeps", controlplane.ClassGatewayImagesUnread, "the newest node report, read at ",
+			func(h *harness) { h.noImageList = true }},
+		{"neither the network nor the gateway holds the enrolment and issuer labels", controlplane.ClassGatewayLabelsLost, "subscribe again",
+			func(h *harness) {
+				h.builtByAnEarlierRelease()
+				gw := h.gatewayIn(controlplane.GatewayLocation)
+				labels := maps.Clone(gw.Labels)
+				delete(labels, controlplane.KeyEnrolmentSHA256)
+				delete(labels, controlplane.KeyIssuerBucket)
+				require.NoError(h.t, h.cloud.SetServerLabels(context.Background(), gw.ID, labels))
+			}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, oneLocation)
+			h.built()
+			tc.arrange(h)
+			failed, from := h.gatewayIn(controlplane.GatewayLocation), len(h.events)
+
+			gatewayFailures[0].fail(h, failed)
+			var err error
+			for range 10 {
+				if err = h.converge(); err != nil {
+					break
+				}
+				h.now = h.now.Add(reportEvery)
+			}
+
+			assert.Equal(t, tc.class, refusalClass(t, err), "the refusal of %v", err)
+			assert.ErrorContains(t, err, tc.names)
+			assert.Equal(t, []int64{failed.ID}, h.gatewayIDs(), "the gateways")
+			assert.Empty(t, h.deletedGateways(from), "gateways deleted")
+		})
+	}
+}
+
+func TestPlane_ReplacesTheFailedOnlyGatewayOfAPlaneInOneLocationOnceNamingTheOutageAndLeavesASuccessorThatFailsTooUnhealthy(t *testing.T) {
+	for _, tc := range gatewayFailures {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, oneLocation)
+			h.built()
+			failed, from := h.gatewayIn(controlplane.GatewayLocation), len(h.events)
+
+			tc.fail(h, failed)
+			require.NoError(t, h.advance(2*time.Hour, func() bool {
+				h.requireNoGatewayKept(from)
+				if !slices.Contains(h.gatewayIDs(), failed.ID) {
+					h.failing = nil
+				}
+				return h.servesInPlaceOf(failed)
+			}))
+
+			successor := h.gatewayIn(controlplane.GatewayLocation)
+			assert.Equal(t, failed.Labels[controlplane.KeyGatewayList], successor.Labels[controlplane.KeyGatewayList], "the successor's list")
+			assert.Equal(t, strconv.FormatInt(failed.ID, 10), successor.Labels[controlplane.KeyGatewayReplaces], "the gateway the successor replaced")
+			deleted := h.deletedGateways(from)
+			require.Len(t, deleted, 1, "gateways deleted")
+			assert.True(t, strings.HasPrefix(deleted[0], fmt.Sprintf("deleted gateway %d in fsn1, which ", failed.ID)), "the deletion: %s", deleted[0])
+			assert.Contains(t, deleted[0], outage, "the deletion names the outage and its bound")
+			assert.NotContains(t, h.network().Labels, controlplane.KeyGatewayFailed+controlplane.GatewayLocation, "the network's labels once the successor stands")
+
+			from = len(h.events)
+			gatewayFailures[0].fail(h, successor)
+			for range 3 {
+				require.NoError(t, h.converge())
+				h.now = h.now.Add(reportEvery)
+			}
+
+			assert.Equal(t, successor.ID, h.gatewayIn(controlplane.GatewayLocation).ID, "the successor that failed from the same list")
+			assert.Empty(t, h.deletedGateways(from), "gateways deleted after the successor failed")
+			cause, detail, err := h.plane.Unhealthy(context.Background(), h.read())
+			require.NoError(t, err)
+			assert.Equal(t, controlplane.CauseGatewayFailedAgain, cause)
+			assert.Contains(t, detail, fmt.Sprintf("gateway %d", failed.ID), "the detail names the gateway the successor replaced")
+		})
+	}
+}
+
+func TestPlane_JudgesTheOnlyGatewayOfAPlaneInOneLocationFailedOnlyOnTwoConsecutiveReadingsNotServing(t *testing.T) {
+	h := newHarness(t, oneLocation)
+	h.built()
+	gw, from := h.gatewayIn(controlplane.GatewayLocation), len(h.events)
+
+	gatewayFailures[0].fail(h, gw)
+	require.NoError(t, h.converge())
+	assert.Empty(t, h.deletedGateways(from), "gateways deleted on the first reading not serving")
+	cause, _, err := h.plane.Unhealthy(context.Background(), h.read())
+	require.NoError(t, err)
+	assert.Empty(t, cause, "the cause after one reading not serving")
+
+	h.failing = nil
+	h.now = h.now.Add(reportEvery)
+	require.NoError(t, h.converge())
+	h.failing = []string{controlplane.GatewayAddress}
+	h.now = h.now.Add(reportEvery)
+	require.NoError(t, h.converge())
+	assert.Empty(t, h.deletedGateways(from), "gateways deleted on a reading not serving that follows one serving")
+
+	h.now = h.now.Add(reportEvery)
+	require.NoError(t, h.converge())
+	deleted := h.deletedGateways(from)
+	require.Len(t, deleted, 1, "gateways deleted on the second consecutive reading not serving")
+	assert.True(t, strings.HasPrefix(deleted[0], fmt.Sprintf("deleted gateway %d in fsn1, which ", gw.ID)), "the deletion: %s", deleted[0])
+}
+
+func TestPlane_APlaneInOneLocationKeepsItsOnlyGatewayWhenTheOnlyReportNotServingWasReceivedInTheSecondItWasFirstRead(t *testing.T) {
+	h := newHarness(t, oneLocation)
+	h.built()
+	gw, from := h.gatewayIn(controlplane.GatewayLocation), len(h.events)
+	gatewayFailures[0].fail(h, gw)
+	h.now = h.now.Truncate(time.Second).Add(700 * time.Millisecond)
+	received := h.now.Truncate(time.Second).Add(400 * time.Millisecond)
+	h.plane.ReadGateway = func(_ context.Context, _ string, since time.Time) (controlplane.GatewayReading, error) {
+		if !received.After(since) {
+			return controlplane.GatewayReading{Detail: "no node report was received since " + since.Format(time.RFC3339)}, nil
+		}
+		return controlplane.GatewayReading{Read: true, At: received, Detail: "the node report received at " + received.Format(time.RFC3339Nano) + " reads its mirror not answering"}, nil
+	}
+
+	require.NoError(t, h.converge())
+
+	assert.Empty(t, h.deletedGateways(from), "gateways deleted on one report not serving, received in the second it was first read")
+}
+
+// unhealthyDetailsUntilDeleted steps the plane one call at a time until it deletes a gateway and gives each detail
+// Unhealthy names in between.
+func (h *harness) unhealthyDetailsUntilDeleted(from int) []string {
+	h.t.Helper()
+	var details []string
+	for range 50 {
+		_, detail, err := h.plane.Unhealthy(context.Background(), h.read())
+		require.NoError(h.t, err)
+		if detail != "" {
+			details = append(details, detail)
+		}
+		require.NoError(h.t, h.ensure())
+		if len(h.deletedGateways(from)) > 0 {
+			return details
+		}
+	}
+	h.t.Fatalf("no gateway deleted after 50 calls; details named: %q", details)
+	return nil
+}
+
+func TestPlane_UnhealthyNamesTheReplacementOfTheOnlyGatewayOfAPlaneInOneLocationAsAShortOutageAndNoOtherGateway(t *testing.T) {
+	h := newHarness(t, oneLocation)
+	h.built()
+	gw, from := h.gatewayIn(controlplane.GatewayLocation), len(h.events)
+	gatewayFailures[0].fail(h, gw)
+	require.NoError(t, h.converge())
+	h.now = h.now.Add(reportEvery)
+
+	details := h.unhealthyDetailsUntilDeleted(from)
+
+	require.NotEmpty(t, details, "the details Unhealthy names before the deletion")
+	for _, detail := range details {
+		assert.Contains(t, detail, "short outage", "the detail of a plane in one location")
+		assert.NotContains(t, detail, "other gateways", "the detail of a plane in one location")
+	}
+	assert.True(t, slices.ContainsFunc(details, func(d string) bool { return strings.Contains(d, "began replacing it at") }), "a detail once the replacement began: %q", details)
+}
+
+func TestPlane_UnhealthySaysAPlaneInThreeLocationsReplacesAFailedGatewayOnceTheOtherGatewaysServe(t *testing.T) {
+	h := newHarness(t, withReports)
+	h.built()
+	failed, from := h.gatewayIn(controlplane.GatewayLocation), len(h.events)
+	gatewayFailures[0].fail(h, failed)
+	_, before, err := h.plane.Unhealthy(context.Background(), h.read())
+	require.NoError(t, err)
+	require.NoError(t, h.converge())
+	h.now = h.now.Add(reportEvery)
+
+	details := append([]string{before}, h.unhealthyDetailsUntilDeleted(from)...)
+
+	require.NotEmpty(t, details, "the details Unhealthy names before the deletion")
+	for _, detail := range details {
+		assert.Contains(t, detail, "reads the other gateways serving", "the detail of a plane in three locations")
+		assert.NotContains(t, detail, "outage", "the detail of a plane in three locations")
+	}
+}
+
+func TestPlane_APlaneInThreeLocationsDeletesAFailedGatewayOnTheReportAfterItsFirstReadingNotServing(t *testing.T) {
+	h := newHarness(t, withReports)
+	h.built()
+	failed, from := h.gatewayIn(controlplane.GatewayLocation), len(h.events)
+
+	gatewayFailures[0].fail(h, failed)
+	require.NoError(t, h.converge())
+	h.now = h.now.Add(reportEvery)
+	require.NoError(t, h.converge())
+
+	deleted := h.deletedGateways(from)
+	require.Len(t, deleted, 1, "gateways deleted by the report after the first one not serving, which the guard reads the others by")
+	assert.True(t, strings.HasPrefix(deleted[0], fmt.Sprintf("deleted gateway %d in fsn1, which ", failed.ID)), "the deletion: %s", deleted[0])
 }

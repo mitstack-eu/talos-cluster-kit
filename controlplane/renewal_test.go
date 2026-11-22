@@ -366,3 +366,30 @@ func TestPlane_RenewsAGatewayOfAnEarlierListWithoutAnUpgradeFromThisReleasesList
 			"the replacement in %s mirrors this release's list and the image of the release before that the report names", loc)
 	}
 }
+
+func TestPlane_RenewsTheOnlyGatewayOfAPlaneInOneLocationNamingTheOutageWithACertificateTheClustersGatewayCASigns(t *testing.T) {
+	h := newHarness(t, oneLocation)
+	h.built()
+	old := h.gatewayIn(controlplane.GatewayLocation)
+	serial, lapses := h.gatewayLeaf(old).SerialNumber.Text(16), h.gatewayLeaf(old).NotAfter.UTC().Format(time.RFC3339)
+	h.reachRenewal()
+	reached, from := h.now, len(h.events)
+
+	h.drive("the renewal", func() bool { return h.renewedIn(controlplane.GatewayLocation) }, func() { h.requireNoGatewayKept(from) })
+
+	gw := h.gatewayIn(controlplane.GatewayLocation)
+	leaf := h.gatewayLeaf(gw)
+	roots := x509.NewCertPool()
+	require.True(t, roots.AppendCertsFromPEM(h.ca.Cert))
+	assert.NotEqual(t, old.ID, gw.ID, "the gateway in fsn1 was not replaced")
+	assert.Equal(t, controlplane.GatewayAddress, gw.PrivateIPs[h.network().ID], "the successor's private address")
+	_, err := leaf.Verify(x509.VerifyOptions{Roots: roots, CurrentTime: h.now, DNSName: controlplane.GatewayAddress})
+	assert.NoError(t, err, "the successor's certificate under the cluster's gateway CA")
+	assert.NotEqual(t, serial, leaf.SerialNumber.Text(16), "the serial of the successor's certificate")
+	assert.False(t, leaf.NotBefore.Before(reached), "the successor's certificate is valid from %s, before the renewal point at %s", leaf.NotBefore, reached)
+	deleted := h.deletedGateways(from)
+	require.Len(t, deleted, 1, "gateways deleted")
+	assert.Contains(t, deleted[0], fmt.Sprintf("deleted gateway %d in fsn1, whose certificate lapses at %s, so", old.ID, lapses), "the deletion")
+	assert.Contains(t, deleted[0], outage, "the deletion names the outage and its bound")
+	assert.Len(t, h.installed, 1, "installs, each of which mints a gateway CA")
+}

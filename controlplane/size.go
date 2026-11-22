@@ -28,6 +28,9 @@ func (p Plane) size() int {
 // each call gives a copy, so a caller's change cannot reach Locations.
 func (p Plane) NodeLocations() []string { return slices.Clone(nodeLocations[p.size()]) }
 
+// oneLocation reports whether the plane runs one node beside one gateway, for which no other gateway stands in.
+func (p Plane) oneLocation() bool { return len(p.NodeLocations()) == 1 }
+
 func (p Plane) gatewayAddrs() []netip.Addr {
 	locations := p.NodeLocations()
 	out := make([]netip.Addr, 0, len(locations))

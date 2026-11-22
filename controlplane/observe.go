@@ -126,12 +126,15 @@ func (p Plane) gatewayProblems(ctx context.Context, st State, network Network, f
 		if !slices.Contains(gw.FirewallIDs, firewall.ID) {
 			missing = append(missing, fmt.Sprintf("firewall %d is not applied to gateway %d", firewall.ID, gw.ID))
 		}
-		if gw.Labels[KeyIssuerBucket] == "" {
-			missing = append(missing, fmt.Sprintf("gateway %d has no %s label, so the block cannot read the issuer its nodes sign for", gw.ID, KeyIssuerBucket))
-		}
 		if problem := expiryLabelProblem(gw); problem != "" {
 			missing = append(missing, problem)
 		}
+	}
+	if st.HasServers() && network.Labels[KeyIssuerBucket] == "" {
+		missing = append(missing, fmt.Sprintf("network %d has no %s label, so the block cannot read the issuer its nodes sign for", network.ID, KeyIssuerBucket))
+	}
+	if st.HasServers() && network.Labels[KeyEnrolmentSHA256] == "" {
+		missing = append(missing, fmt.Sprintf("network %d has no %s label, so the cluster carries no enrolment outputs", network.ID, KeyEnrolmentSHA256))
 	}
 	route, err := p.routeProblem(ctx, st, network)
 	if err != nil || route != "" {
@@ -258,17 +261,17 @@ func onOff(on bool) string {
 	return "off"
 }
 
-// EnrolmentDigest is the digest a node's enrolment is judged against, which every gateway carries as a label from the
+// EnrolmentDigest is the digest a node's enrolment is judged against, which the network carries as a label from the
 // install on, or a reason it cannot be read; both are empty before the install.
 func (st State) EnrolmentDigest() (digest, gap string) {
-	gw, ok := st.SharedGateway()
+	network, ok := st.Network()
 	switch {
-	case !ok:
+	case !ok || !st.HasServers():
 		return "", ""
-	case gw.Labels[KeyEnrolmentSHA256] == "":
-		return "", fmt.Sprintf("gateway %d has no %s label, so the cluster carries no enrolment outputs", gw.ID, KeyEnrolmentSHA256)
+	case network.Labels[KeyEnrolmentSHA256] == "":
+		return "", fmt.Sprintf("network %d has no %s label, so the cluster carries no enrolment outputs", network.ID, KeyEnrolmentSHA256)
 	}
-	return gw.Labels[KeyEnrolmentSHA256], ""
+	return network.Labels[KeyEnrolmentSHA256], ""
 }
 
 // IngressAddresses is the one source of the ingress load balancer's public address, under its location and empty while the
@@ -281,7 +284,6 @@ func (st State) IngressAddresses() map[string]string {
 // Outputs are what a present plane gives its block's provided type, with the detail that says what stands.
 func (p Plane) Outputs(st State) (map[string]string, string) {
 	network, _ := st.Network()
-	gw, _ := st.SharedGateway()
 	endpoint, _ := st.LoadBalancerIn(RoleAPI, GatewayLocation)
 	var nodes []string
 	for _, loc := range p.NodeLocations() {
@@ -290,12 +292,12 @@ func (p Plane) Outputs(st State) (map[string]string, string) {
 	}
 	byLocation, _ := json.Marshal(st.IngressAddresses())
 	outputs := map[string]string{
-		"enrolmentTokenSha256": gw.Labels[KeyEnrolmentSHA256],
+		"enrolmentTokenSha256": network.Labels[KeyEnrolmentSHA256],
 		"privateEndpoint":      "https://" + endpoint.PrivateIPs[network.ID] + ":" + strconv.Itoa(APIServerPort),
 		"publicIpByLocation":   string(byLocation),
 		"subscriptionId":       p.Subscription,
-		"issuerBucket":         gw.Labels[KeyIssuerBucket],
-		"issuerUrl":            issuerURL(gw.Labels[KeyIssuerBucket], p.Subscription).String(),
+		"issuerBucket":         network.Labels[KeyIssuerBucket],
+		"issuerUrl":            issuerURL(network.Labels[KeyIssuerBucket], p.Subscription).String(),
 	}
 	if !p.Telemetry.IsZero() {
 		outputs["otlpEndpoint"] = components.TelemetryOTLPEndpoint

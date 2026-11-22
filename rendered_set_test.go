@@ -6,6 +6,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"maps"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -21,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
+	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
 	"github.com/mitstack-eu/talos-cluster-kit/rollout"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 	"github.com/mitstack-eu/talos-cluster-kit/tools"
@@ -321,8 +323,24 @@ func scheduledRequest(t *testing.T, spec map[string]any) podRequest {
 	return running.plus(sidecars).atLeast(initPeak)
 }
 
-// smallestPoolServer is the size Hetzner publishes for cx23 and cpx22, the smallest of controlplane.ServerTypes.
-var smallestPoolServer = podRequest{milliCPU: 2000, memory: 4 << 30}
+// serverSizes are the sizes Hetzner publishes for the types a pool may list, which its API reports only at run time.
+var serverSizes = map[string]podRequest{
+	"cx23": {2000, 4 << 30}, "cpx22": {2000, 4 << 30}, "cx33": {4000, 8 << 30}, "cpx32": {4000, 8 << 30},
+	"cx43": {8000, 16 << 30}, "cpx52": {12000, 24 << 30}, "cx53": {16000, 32 << 30}, "cpx62": {16000, 32 << 30},
+}
+
+// smallestPoolServer is the smallest size among controlplane.ServerTypes, failing on a type serverSizes does not hold.
+func smallestPoolServer(t *testing.T) podRequest {
+	t.Helper()
+	require.NotEmpty(t, controlplane.ServerTypes)
+	smallest := podRequest{milliCPU: math.MaxInt64, memory: math.MaxInt64}
+	for _, name := range controlplane.ServerTypes {
+		size, ok := serverSizes[name]
+		require.True(t, ok, "controlplane.ServerTypes lists %s, whose size the fit test does not know", name)
+		smallest = podRequest{min(size.milliCPU, smallest.milliCPU), min(size.memory, smallest.memory)}
+	}
+	return smallest
+}
 
 // kubeletHardEvictionMemory is the kubelet's default memory.available hard eviction threshold, which allocatable leaves out.
 const kubeletHardEvictionMemory = 100 << 20
@@ -370,6 +388,7 @@ func TestManifests_OneRunnerJobFitsOnTheSmallestPoolServerBesideEveryDaemonSetTh
 			daemons[key] = daemons[key].atLeast(scheduledRequest(t, pod.spec))
 		}
 	}
+	require.Contains(t, daemons, "istio-system/ztunnel", "the per-node pods the fit sums, %v", slices.Sorted(maps.Keys(daemons)))
 	job := scheduledRequest(t, runnerPod(t).spec)
 	require.Positive(t, job.milliCPU, "the runner pod requests %s, and a pod that reserves nothing fits anywhere", job)
 	require.Positive(t, job.memory, "the runner pod requests %s, and a pod that reserves nothing fits anywhere", job)
@@ -380,7 +399,7 @@ func TestManifests_OneRunnerJobFitsOnTheSmallestPoolServerBesideEveryDaemonSetTh
 		need = need.plus(daemons[key])
 		each = append(each, fmt.Sprintf("%s %s", key, daemons[key]))
 	}
-	room := workerAllocatable(smallestPoolServer)
+	room := workerAllocatable(smallestPoolServer(t))
 
 	assert.LessOrEqual(t, need.milliCPU, room.milliCPU, "the runner pod's %s with the DaemonSets' %v needs %s, and the smallest pool server offers %s", job, each, need, room)
 	assert.LessOrEqual(t, need.memory, room.memory, "the runner pod's %s with the DaemonSets' %v needs %s, and the smallest pool server offers %s", job, each, need, room)

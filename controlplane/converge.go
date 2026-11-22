@@ -58,7 +58,7 @@ func (p Plane) NextStep(ctx context.Context, st State, network Network) (Step, b
 	if step, ok, err := p.recordUpgradeStep(ctx, st, network); err != nil || ok {
 		return step, ok, err
 	}
-	if step, ok := p.copyIdentityStep(st, network); ok {
+	if step, ok := p.CopyIdentityStep(st, network); ok {
 		return step, true, nil
 	}
 	firewall, ok := st.Firewall()

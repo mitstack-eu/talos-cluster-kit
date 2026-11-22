@@ -777,8 +777,10 @@ both before it creates a server, and `Outputs`, `State.EnrolmentDigest` and
 gateway left standing to copy them from. On a cluster an earlier release
 built, which holds both only on its gateways, the plane's first call copies
 them onto the network. Only an upgrade's first write, which records the
-upgrade on the network, comes before that copy.
-Until that call, `Outputs` gives neither value. A plane in one location that
+upgrade on the network, comes before that copy. A block takes the same copy
+through `Plane.CopyIdentityStep` as its first write, ahead of any refusal of
+its own, so a cluster it refuses still keeps its outputs. Until that call,
+`Outputs` gives neither value. A plane in one location that
 lost its gateway before the copy refuses with class `gateway-labels-lost`,
 since no successor can carry the cluster's identity, and its message says to
 unsubscribe and subscribe again. A plane in three locations that lost every

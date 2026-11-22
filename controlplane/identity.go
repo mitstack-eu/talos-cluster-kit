@@ -178,9 +178,9 @@ func (p Plane) setIdentity(ctx context.Context, network Network, values map[stri
 	return p.API.SetNetworkLabels(ctx, network.ID, labels)
 }
 
-// copyIdentityStep copies onto the network each identity label only a gateway carries, since every reader reads them
-// from the network.
-func (p Plane) copyIdentityStep(st State, network Network) (Step, bool) {
+// CopyIdentityStep copies onto the network each identity label only a gateway carries, since every reader reads them
+// from the network, and a block takes it ahead of any refusal so a refused cluster still keeps its outputs.
+func (p Plane) CopyIdentityStep(st State, network Network) (Step, bool) {
 	gw, ok := st.SharedGateway()
 	if !ok || holdsIdentity(network) {
 		return Step{}, false

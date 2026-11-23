@@ -960,10 +960,11 @@ since an app's quota allows no NodePort Service. Before Let's Encrypt
 validates, cert-manager fetches the challenge itself from the app's public
 hostname on port 80. The hosting flows therefore let cert-manager look names
 up through Cilium's DNS proxy, reach `acme-v02.api.letsencrypt.org` on 443 and
-`*.apps.mitstack.dev` on 80, and the few names below. That fetch leaves through the
-gateway, which forwards port 80 to the ingress load balancer's public address
-alone. Hetzner fixes a server's user data when it creates the server, so only
-a cluster built on v0.27.0 or later carries that rule.
+`*.apps.mitstack.dev` on 80, and reach only the few names the next paragraph
+gives besides. That fetch leaves through the gateway, which forwards port 80
+to the ingress load balancer's public address alone. Hetzner fixes a
+server's user data when it creates the server, so only a cluster built on
+v0.27.0 or later carries that rule.
 
 A slice may also serve a hostname of its own from a namespaced Issuer that
 answers the DNS-01 challenge, a TXT record written into the zone that serves
@@ -971,11 +972,14 @@ the name. For a Route 53 zone, cert-manager trades a token of the slice's
 service account for an AWS role, so the flows let it reach AWS STS and
 `route53.amazonaws.com` on 443. They also let it reach
 `acme-staging-v02.api.letsencrypt.org`, Let's Encrypt's staging directory, for
-a rehearsal. cert-manager runs as the account `components.CertManagerAccount`
-names in `components.CertManagerNamespace`, which the slice grants that token.
-Before it asks Let's Encrypt to validate, cert-manager looks the TXT record up
-itself. It runs with `--dns01-recursive-nameservers-only`, so it asks cluster
-DNS, since the flows let it reach no zone's own name servers.
+a rehearsal. cert-manager's controller runs as the service account that
+`components.CertManagerAccount` names, in the namespace
+`components.CertManagerNamespace` names, so the slice grants that account the
+right to mint a token of the slice's own service account. Before it asks
+Let's Encrypt to validate, cert-manager looks the TXT record up itself. It
+runs with
+`--dns01-recursive-nameservers-only`, so it asks cluster DNS, since the flows
+let it reach no zone's own name servers.
 
 `plane.go`, `converge.go`, `install.go` and `observe.go` hold the plane, and
 `api.go` holds the Hetzner Cloud client behind the `API` interface. The

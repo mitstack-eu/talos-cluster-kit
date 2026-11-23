@@ -154,6 +154,7 @@ func (in Inputs) templateData() (map[string]string, error) {
 		"Network":         in.Network.String(),
 		"Resolvers":       joinAddrs(nodeconfig.HetznerResolvers),
 		"EgressPorts":     ports,
+		"ExtraPorts":      joinPorts(beyondHTTPS(in.EgressPorts)),
 		"Ingress":         ingress,
 		"CA":              string(in.TLS.CA),
 		"Cert":            string(in.TLS.Cert),

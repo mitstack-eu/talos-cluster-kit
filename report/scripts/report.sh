@@ -311,6 +311,7 @@ read_instance_status() {
   done < "$dir/instances"
   wait
   for ((called = 0; called < i; called++)); do
+    [ -s "$dir/$called.json" ] || return 0
     cat "$dir/$called.json"
   done >> "$work/instance-status.json"
   printf 0 > "$work/instance-status.status"

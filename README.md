@@ -1339,19 +1339,22 @@ locations with those recordings byte for byte, and finds none for one.
 ## How the database operators keep a replica in a second zone
 
 This section is for an engineer who changes where the pods talos-cluster-kit
-installs on every cluster run. Two of those pods matter here, each run by one
+installs on a cluster run. Two of those pods matter here, each run by one
 Deployment. The CloudNativePG operator is the Kubernetes controller that runs
-every Postgres database on a cluster, and the
-[Barman Cloud plugin](#how-a-postgres-cluster-backs-up) backs those databases
-up. When the nodes their pods may run on span two zones or more, each runs two
-replicas in two different zones, so losing one zone leaves the other replica
-to promote a Postgres standby. A zone here is a Hetzner location such as
-`fsn1`, which [the topology labeller](#how-each-node-is-labelled-with-its-zone)
-writes on each node as `topology.kubernetes.io/zone`.
+every Postgres database on a cluster. On a cluster that hosts the platform,
+the [Barman Cloud plugin](#how-a-postgres-cluster-backs-up) backs those
+databases up. When the nodes their pods may run on span two zones or more,
+each runs two replicas in two different zones, so losing one zone leaves the
+other replica to promote a Postgres standby. This section calls that change
+the spread. A zone here is a Hetzner location such as `fsn1`, which each node
+carries as its label `topology.kubernetes.io/zone`, as
+[the section on node labels](#how-each-node-is-labelled-with-its-zone)
+describes.
 
 Only one replica of each acts at a time. Both programs elect a leader through
-a Kubernetes Lease, the lock object each replica tries to hold, and only the
-holder reconciles. The other replica takes the Lease over within its
+a Kubernetes Lease, the lock object each replica tries to hold. Only the
+holder of the Lease reconciles, which means it acts on the Postgres resources
+to make them match what they ask for. The other replica takes the Lease over within its
 15-second lease duration once the holder stops renewing it. CloudNativePG
 documents multiple replicas under its
 [installation guide](https://github.com/cloudnative-pg/cloudnative-pg/blob/v1.30.1/docs/src/installation_upgrade.md).
@@ -1372,19 +1375,24 @@ nodes a pod of either Deployment may run on:
 
 | Node | Counts when | Why |
 |---|---|---|
-| A control-plane node | The plane keeps apps on its control-plane nodes | A plane that runs apps on workers taints these nodes, and neither Deployment tolerates the taint |
+| A control-plane node | The plane keeps apps on its control-plane nodes | A plane that runs apps on workers gives these nodes a taint, a mark that keeps off every pod without a matching toleration, and neither Deployment carries one |
 | A worker of a [Cloud pool](#how-a-block-takes-node-pools) | Its server is running, and it is not a [burst member](#steady-and-burst-members) | A server that is off holds no node a pod could use, and every kit pod refuses a burst member, which the pool removes once it is idle |
 | A [Robot worker](#the-robot-cluster-module-for-a-cluster-with-a-robot-worker), a dedicated server | Never | The plane's state lists Hetzner Cloud servers alone, so it holds no record of the worker |
 
-A Robot worker carries its zone label from its own configuration, so the
-scheduler may still place a replica on it and keeps the two apart by its zone.
-It only never turns the spread on. A Cloud worker counts once Hetzner reports
-its server running, which comes before its node joins the cluster, so the
-second replica can wait Pending until the node joins.
+A Robot worker never counts toward the two zones the spread needs. It can
+still carry a zone label: the node report of mitstack's own cluster shows its
+hel1 worker labelled `hel1`, with Talos as the label's manager, from the
+worker's own machine configuration. On such a worker the scheduler may still
+place a replica, and keeps the two replicas apart by its zone. A Robot worker
+without the label takes neither replica, since the node rule below requires
+it. A Cloud worker counts once Hetzner reports its
+server running, which comes before its node joins the cluster, so the second
+replica can wait Pending until the node joins.
 
 For two zones or more, `Set.DatabaseOperatorsAcrossZones` in
-`components/zones.go` changes each Deployment of the manifest the kit ships
-for it, which a Helm chart rendered:
+`components/zones.go` makes the spread. It changes each Deployment of the
+manifest the kit ships for it, which the CloudNativePG Helm chart or the
+Barman Cloud plugin's Helm chart rendered:
 
 | Field | As the chart renders it | As the release carries it | Why |
 |---|---|---|---|
@@ -1424,8 +1432,9 @@ in a second zone takes the spread at its next release.
 
 When the plugin rolls, both of its replicas stop before the new ones start,
 so for the time a pod takes to start the operator finds no plugin. A
-CloudNativePG Cluster resource that names the plugin for its backups then
-fails its reconcile and is retried.
+CloudNativePG Cluster, the Kubernetes object that describes one Postgres
+database, that names the plugin for its backups then fails its reconcile and
+is retried.
 
 `TestDatabaseOperatorsAcrossZones_RunTwoReplicasInDistinctZonesUnderADisruptionBudgetOfOneAndLeaveOneZoneAsBuilt`
 in `components/components_test.go` checks each field above for two and three

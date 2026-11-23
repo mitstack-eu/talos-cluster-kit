@@ -226,9 +226,27 @@ func TestGoProxy_AnswersItsHealthWithoutTheUpstream(t *testing.T) {
 	cache := goCache(t, t.TempDir(), upstream, func(string, string) ([]byte, error) { return goSumLines(t, m), nil })
 	upstream.Close()
 
-	status, _ := get(t, cache.URL+"/healthz")
+	status, _ := get(t, cache.URL+"/-/healthz")
 
-	assert.Equal(t, http.StatusOK, status, "GET /healthz")
+	assert.Equal(t, http.StatusOK, status, "GET /-/healthz")
+}
+
+func TestGoProxy_RefusesAndStoresNothingOfAModuleWhoseChecksumDatabaseSignsWithAnotherKey(t *testing.T) {
+	m := newModule(t)
+	upstream := newGoUpstream(t, m)
+	root := t.TempDir()
+	store, err := packagecache.NewStore(root, time.Now)
+	require.NoError(t, err)
+	dbURL, _ := checksumDB(t, func(string, string) ([]byte, error) { return goSumLines(t, m), nil })
+	_, otherKey := checksumDB(t, func(string, string) ([]byte, error) { return nil, nil })
+	cache := httptest.NewServer(packagecache.GoProxy{Upstream: upstream.URL, Store: store, Client: http.DefaultClient,
+		Sums: packagecache.NewChecksumDB(dbURL, otherKey, http.DefaultClient, store)})
+	t.Cleanup(cache.Close)
+
+	status, body := get(t, cache.URL+"/"+escapedModule+"/@v/"+moduleVersion+".zip")
+
+	assert.Equal(t, http.StatusBadGateway, status, "a zip whose hash only a database signed by another key holds: %s", body)
+	assertHoldsNone(t, root, m.zip)
 }
 
 // assertHoldsNone fails when any file under root holds one of the refused bodies.

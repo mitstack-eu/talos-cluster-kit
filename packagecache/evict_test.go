@@ -69,6 +69,9 @@ func TestEvict_RemovesTheEntriesPastTheCachesSizeOrAgeOldestUseFirstAndKeepsTheR
 		{"a cache past its size after the aged entries go loses the oldest of the rest too",
 			[]entry{{"aged", 400, 50 * time.Hour}, {"lru", 400, 5 * time.Hour}, {"mid", 400, 3 * time.Hour}, {"mru", 400, time.Minute}},
 			packagecache.Limits{MaxBytes: 500, MaxAge: 48 * time.Hour}, []string{"mru"}},
+		{"an entry larger than the cache goes while the older entries that fit stay",
+			[]entry{{"huge", 2000, time.Minute}, {"small", 100, time.Hour}, {"smaller", 50, 2 * time.Hour}},
+			packagecache.Limits{MaxBytes: 1000, MaxAge: 48 * time.Hour}, []string{"small", "smaller"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()

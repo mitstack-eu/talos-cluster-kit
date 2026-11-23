@@ -204,6 +204,37 @@ func Field(t *testing.T, doc any, path ...string) any {
 	return node
 }
 
+// Item is the entry of the list at path in doc that name names, as a container, a volume or a mount is named.
+func Item(t *testing.T, doc any, name string, path ...string) map[string]any {
+	t.Helper()
+	items, _ := Field(t, doc, path...).([]any)
+	i := slices.IndexFunc(items, func(item any) bool { return Field(t, item, "name") == name })
+	require.GreaterOrEqual(t, i, 0, "no %s in the %v of %v", name, path, doc)
+	return items[i].(map[string]any)
+}
+
+// Labels are the labels at path in doc as strings, as a CiliumEndpoint takes them.
+func Labels(t *testing.T, doc any, path ...string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	for k, v := range Field(t, doc, path...).(map[string]any) {
+		out[k] = fmt.Sprint(v)
+	}
+	return out
+}
+
+// Flags are a container's --name=value arguments.
+func Flags(container map[string]any) map[string]string {
+	out := map[string]string{}
+	args, _ := container["args"].([]any)
+	for _, arg := range args {
+		if name, value, ok := strings.Cut(fmt.Sprint(arg), "="); ok && strings.HasPrefix(name, "--") {
+			out[strings.TrimPrefix(name, "--")] = value
+		}
+	}
+	return out
+}
+
 func ContainerEnv(t *testing.T, container any) map[string]string {
 	t.Helper()
 	env := map[string]string{}

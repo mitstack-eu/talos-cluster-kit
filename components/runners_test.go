@@ -142,7 +142,7 @@ func TestWithRunners_HasIstioRerouteDockersDefaultAndCustomBridgesOutOfEachJobPo
 func TestWithRunners_ReservesEachJobContainersCPUAndMemoryAsItsLimitAndWholeCoresForTheRunnerSoTheJobPodIsGuaranteed(t *testing.T) {
 	containers := jobContainers(t, testutil.Field(t, scaleSetIn(t, runnerSet(t)), "spec", "template", "spec"))
 
-	require.ElementsMatch(t, []string{"init-dind-externals", "dind", "runner"}, slices.Collect(maps.Keys(containers)), "the job pod's containers")
+	require.ElementsMatch(t, []string{"init-dind-externals", "npmrc", "dind", "runner"}, slices.Collect(maps.Keys(containers)), "the job pod's containers")
 	for _, name := range slices.Sorted(maps.Keys(containers)) {
 		resources, _ := containers[name]["resources"].(map[string]any)
 		requests, _ := resources["requests"].(map[string]any)

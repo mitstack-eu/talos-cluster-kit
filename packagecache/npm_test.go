@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -164,12 +165,39 @@ func TestNPMProxy_PassesThePackageMetadataThroughUnchangedEachTime(t *testing.T)
 	assert.Equal(t, 3, upstream.times("/@types/node"), "the metadata is asked of the upstream each time, since a publish changes it")
 }
 
-func TestNPMProxy_AnswersItsHealthWithoutTheUpstream(t *testing.T) {
-	upstream := newNPMUpstream(t)
+func TestNPMProxy_AnswersItsHealthWithoutTheUpstreamOnAPathNoPackageTakes(t *testing.T) {
+	upstream := newNPMUpstream(t, newPackage("healthz", "healthz-4.17.21.tgz", []byte("a package named healthz")))
 	cache := npmCache(t, t.TempDir(), upstream)
+	_, want := get(t, upstream.URL+"/healthz")
+	_, metadata := get(t, cache.URL+"/healthz")
 	upstream.Close()
 
-	status, _ := get(t, cache.URL+"/healthz")
+	status, _ := get(t, cache.URL+"/-/healthz")
 
-	assert.Equal(t, http.StatusOK, status, "GET /healthz")
+	assert.JSONEq(t, string(want), string(metadata), "GET /healthz is the metadata of the package named healthz")
+	assert.Equal(t, http.StatusOK, status, "GET /-/healthz with the upstream gone")
+}
+
+func TestNPMProxy_PassesNoCredentialOrCookieOfTheJobToTheUpstream(t *testing.T) {
+	var got http.Header
+	upstream := &npmUpstream{Server: httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		fmt.Fprint(w, `{"name": "left-pad"}`)
+	}))}
+	t.Cleanup(upstream.Close)
+	cache := npmCache(t, t.TempDir(), upstream)
+	req, err := http.NewRequest(http.MethodGet, cache.URL+"/left-pad", nil)
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer npm_token")
+	req.Header.Set("Cookie", "session=job")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "GET /left-pad")
+	assert.Empty(t, got.Values("Authorization"), "the cache sends the upstream no credential a job meant for another registry")
+	assert.Empty(t, got.Values("Cookie"), "the cache sends the upstream no cookie of the job")
+	assert.Equal(t, "application/json", got.Get("Accept"), "the cache passes the rest of the request on")
 }

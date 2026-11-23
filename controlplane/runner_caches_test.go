@@ -108,6 +108,8 @@ func TestPlane_ReadsNoCacheCauseFromAReportThatCannotJudgeTheCachesOrAPlaneWitho
 		{"a report from before Argo CD applied the caches", []func(*harness){runners, cacheReports(map[string][]appliedCache{"component-other": healthyCaches()})}},
 		{"a plane without runners whose report still lists a cache that is down", []func(*harness){cacheReports(map[string][]appliedCache{cachesApplication: down})}},
 		{"a plane whose block reads no node report", []func(*harness){runners, func(h *harness) { h.plane.ReadReport = nil }}},
+		{"a report from before Argo CD judged a cache's health", []func(*harness){runners, cacheReports(map[string][]appliedCache{
+			cachesApplication: {{"go-cache", "", ""}, {"npm-cache", "Healthy", ""}, {"image-cache", "Healthy", ""}}})}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t, append([]func(*harness){withReports}, tc.opts...)...)

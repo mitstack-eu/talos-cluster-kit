@@ -958,31 +958,49 @@ directory and answers the HTTP-01 challenge with a solver pod that Traefik
 reaches in the app's namespace. That pod sits behind a ClusterIP Service,
 since an app's quota allows no NodePort Service. Before Let's Encrypt
 validates, cert-manager fetches the challenge itself from the app's public
-hostname on port 80. The hosting flows therefore let cert-manager look names
-up through Cilium's DNS proxy, reach `acme-v02.api.letsencrypt.org` on 443 and
-`*.apps.mitstack.dev` on 80, and reach only the few names the next paragraph
-gives besides. That fetch leaves through the gateway, which forwards port 80
+hostname on port 80. The hosting flows are the Cilium policy
+`mitstack-hosting-flows` in `components/hosting/flows.yaml`. It names every
+network flow the hosting set's pods may make or take, as
+[the section on which flows the hosting namespaces allow](#which-flows-the-hosting-namespaces-allow)
+lists. The flows therefore let cert-manager look names up through Cilium's DNS
+proxy, reach `acme-v02.api.letsencrypt.org` on 443 and `*.apps.mitstack.dev`
+on 80, and reach only the few names the next paragraph gives besides. That
+fetch leaves through the gateway, which forwards port 80
 to the ingress load balancer's public address alone. Hetzner fixes a
 server's user data when it creates the server, so only a cluster built on
 v0.27.0 or later carries that rule.
 
-A slice may also serve a hostname of its own from a namespaced Issuer that
+A slice may also serve a hostname of its own. It then holds an Issuer, a
+cert-manager authority that only its own namespace can name, and that Issuer
 answers the DNS-01 challenge. That challenge is a TXT record that
-cert-manager writes into the zone that serves the name. For a Route 53 zone,
-cert-manager trades a token of the slice's service account for an AWS role.
-The flows therefore let cert-manager's controller reach AWS STS and
-`route53.amazonaws.com` on 443. They also let it reach
+cert-manager writes into the zone that serves the name. Route 53 is AWS's DNS
+service. STS, AWS's Security Token Service, hands out short-lived AWS
+credentials. For a zone in Route 53, cert-manager trades a token of the
+slice's service account at STS for the credentials of an AWS role. The flows
+therefore let cert-manager's controller reach AWS STS and
+`route53.amazonaws.com`, Route 53's API, on 443. They also let it reach
 `acme-staging-v02.api.letsencrypt.org`, Let's Encrypt's staging directory, for
-a rehearsal. A separate spec in the flows selects the controller alone by its
-name and component labels, so the CA injector, the webhook and trust-manager
-in the same namespace get none of this reach.
+a rehearsal.
 
-cert-manager's controller runs as the service account `cert-manager`, which
-`components.CertManagerAccount` names, in the namespace `cert-manager`, which
-`components.CertManagerNamespace` names. The slice's Role and RoleBinding
-grant that account the right to mint a token of the slice's own service
-account. Before cert-manager asks Let's Encrypt to validate, it looks the TXT
-record up itself. The controller's flag `--dns01-recursive-nameservers-only`
+`mitstack-hosting-flows` holds a list of specs, each one a pod selector and
+the flows it allows. The DNS-01 reach sits in a spec of its own in
+`components/hosting/flows.yaml`, which selects the controller alone by the
+labels `app.kubernetes.io/name: cert-manager` and
+`app.kubernetes.io/component: controller`. The CA injector, the webhook and
+trust-manager run in the same namespace and get none of this reach.
+
+cert-manager's controller runs as the service account `cert-manager` in the
+namespace `cert-manager`. The kit exports both names, as
+`components.CertManagerAccount` and `components.CertManagerNamespace`, so a
+slice's block can read them instead of typing them. To answer the challenge,
+the controller asks the Kubernetes API for a token of the slice's own service
+account. The kit creates no grant for that request, so the block that runs
+the slice must create one in the slice's namespace. A Role there holds the
+right to request that token, and a RoleBinding gives the right to the
+controller's account. The `serviceAccountRef` field's description in
+`components/cert-manager/cert-manager.yaml` asks for the same grant. Before
+cert-manager asks Let's Encrypt to validate, it looks the TXT record up
+itself. The controller's flag `--dns01-recursive-nameservers-only`
 makes it ask cluster DNS, because the flows let it reach no zone's own name
 servers.
 

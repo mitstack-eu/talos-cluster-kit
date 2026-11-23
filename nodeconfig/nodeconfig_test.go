@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"maps"
 	"net"
 	"net/netip"
 	"net/url"
@@ -780,14 +781,18 @@ type renderedNode struct {
 	render  func(nodeconfig.Cluster) ([]byte, error)
 }
 
+// controlPlane renders n as a control-plane node.
+func controlPlane(n nodeconfig.Node) func(nodeconfig.Cluster) ([]byte, error) {
+	return func(c nodeconfig.Cluster) ([]byte, error) { return nodeconfig.Render(c, n) }
+}
+
+// worker renders n as a worker.
+func worker(n nodeconfig.Node) func(nodeconfig.Cluster) ([]byte, error) {
+	return func(c nodeconfig.Cluster) ([]byte, error) { return nodeconfig.RenderWorker(c, n) }
+}
+
 func renderedNodes(t *testing.T) []renderedNode {
 	t.Helper()
-	controlPlane := func(n nodeconfig.Node) func(nodeconfig.Cluster) ([]byte, error) {
-		return func(c nodeconfig.Cluster) ([]byte, error) { return nodeconfig.Render(c, n) }
-	}
-	worker := func(n nodeconfig.Node) func(nodeconfig.Cluster) ([]byte, error) {
-		return func(c nodeconfig.Cluster) ([]byte, error) { return nodeconfig.RenderWorker(c, n) }
-	}
 	dedicated := vswitchNode(t)
 	dedicated.Labels = map[string]string{"topology.kubernetes.io/zone": "hel1"}
 	cloud := func() nodeconfig.Cluster { return testutil.NewCluster(t) }
@@ -807,14 +812,14 @@ func renderedNodes(t *testing.T) []renderedNode {
 			return testutil.NewCluster(t, testutil.WithProfile(nodeconfig.Metal))
 		}},
 		{name: "a Cloud worker", cluster: cloud, render: worker(nodeconfig.Node{})},
-		{name: "a Cloud control-plane node that evicts at 85% disk", render: controlPlane(nodeconfig.Node{}), cluster: func() nodeconfig.Cluster {
+		{name: "a Cloud control-plane node of a cluster that runs CI jobs", render: controlPlane(nodeconfig.Node{}), cluster: func() nodeconfig.Cluster {
 			c := testutil.NewCluster(t)
-			c.DiskEviction = true
+			c.RunsCIJobs = true
 			return c
 		}},
-		{name: "a Cloud worker that evicts at 85% disk", render: worker(nodeconfig.Node{}), cluster: func() nodeconfig.Cluster {
+		{name: "a Cloud worker of a cluster that runs CI jobs", render: worker(nodeconfig.Node{}), cluster: func() nodeconfig.Cluster {
 			c := testutil.NewCluster(t)
-			c.DiskEviction = true
+			c.RunsCIJobs = true
 			return c
 		}},
 		{name: "a dedicated worker on a vSwitch with its own labels", render: worker(dedicated), cluster: func() nodeconfig.Cluster {
@@ -1046,49 +1051,68 @@ var diskEvictionSettings = map[string]any{
 	"evictionSoftGracePeriod":     map[string]any{"imagefs.available": "1m", "nodefs.available": "1m"},
 }
 
-func TestRender_DiskEvictionCollectsImagesFrom80PercentAndEvictsPodsWhenLessThan15PercentOfADiskIsFree(t *testing.T) {
+// ciWorkerSettings are a CI cluster's worker kubelet settings: disk eviction, and the static CPU manager policy that
+// gives a container its whole cores alone.
+func ciWorkerSettings() map[string]any {
+	settings := maps.Clone(diskEvictionSettings)
+	settings["cpuManagerPolicy"] = "static"
+	return settings
+}
+
+// withoutCPUManagerPolicy drops the CPU manager policy from a node's kubelet settings, as a release before it rendered them.
+func withoutCPUManagerPolicy(doc map[string]any) {
+	if settings, ok := doc["config"].(map[string]any); ok && doc["kind"] == "KubeletConfig" {
+		delete(settings, "cpuManagerPolicy")
+	}
+}
+
+func TestRender_RunsCIJobsCollectsImagesAndEvictsOnEveryNodeAndPutsAWorkerOnTheStaticCPUManagerPolicy(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		render func(nodeconfig.Cluster) ([]byte, error)
+		want   map[string]any
 	}{
-		{"a control-plane node", func(c nodeconfig.Cluster) ([]byte, error) { return nodeconfig.Render(c, nodeconfig.Node{}) }},
-		{"a worker", func(c nodeconfig.Cluster) ([]byte, error) { return nodeconfig.RenderWorker(c, nodeconfig.Node{}) }},
+		{"a control-plane node, where no job runs, collects images and evicts", controlPlane(nodeconfig.Node{}), diskEvictionSettings},
+		{"a worker also gives each job's whole cores to it alone", worker(nodeconfig.Node{}), ciWorkerSettings()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cluster := testutil.NewCluster(t)
-			cluster.DiskEviction = true
+			cluster.RunsCIJobs = true
 
 			got, err := tc.render(cluster)
 
 			require.NoError(t, err)
-			assert.Equal(t, diskEvictionSettings, kubeletSettings(t, got), "the kubelet's settings")
+			assert.Equal(t, tc.want, kubeletSettings(t, got), "the kubelet's settings")
 		})
 	}
 }
 
-func TestRender_WithoutDiskEvictionTheKubeletKeepsItsDefaultDiskSettings(t *testing.T) {
-	cluster := testutil.NewCluster(t)
+func TestRender_AClusterThatRunsNoCIJobKeepsTheKubeletsDefaultSettingsOnEveryNode(t *testing.T) {
+	for _, render := range []func(nodeconfig.Cluster) ([]byte, error){controlPlane(nodeconfig.Node{}), worker(nodeconfig.Node{})} {
+		got, err := render(testutil.NewCluster(t))
 
-	got, err := nodeconfig.Render(cluster, nodeconfig.Node{})
-
-	require.NoError(t, err)
-	assert.Empty(t, kubeletSettings(t, got), "the kubelet's settings")
+		require.NoError(t, err)
+		assert.Empty(t, kubeletSettings(t, got), "the kubelet's settings")
+	}
 }
 
-func TestRerender_KeepsTheDiskEvictionOfARunningNodeRenderedWithItAndAddsNoneToOneRenderedWithout(t *testing.T) {
+func TestRerender_GivesARunningNodeOfACIClusterThisReleasesKubeletSettingsAndAddsNoneToANodeRenderedWithout(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		eviction bool
-		want     map[string]any
+		name   string
+		ciJobs bool
+		render func(nodeconfig.Cluster) ([]byte, error)
+		want   map[string]any
 	}{
-		{"a node rendered with disk eviction", true, diskEvictionSettings},
-		{"a node rendered without it", false, nil},
+		{"a control-plane node rendered with disk eviction keeps it", true, controlPlane(nodeconfig.Node{}), diskEvictionSettings},
+		{"a worker rendered with disk eviction before the static CPU manager policy takes the policy", true, worker(nodeconfig.Node{}), ciWorkerSettings()},
+		{"a node rendered without disk eviction", false, controlPlane(nodeconfig.Node{}), nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cluster := testutil.NewCluster(t)
-			cluster.DiskEviction = tc.eviction
-			running, err := nodeconfig.Render(cluster, nodeconfig.Node{})
+			cluster.RunsCIJobs = tc.ciJobs
+			running, err := tc.render(cluster)
 			require.NoError(t, err)
+			running = editDocuments(t, running, withoutCPUManagerPolicy)
 
 			got, err := nodeconfig.Rerender(running, release)
 

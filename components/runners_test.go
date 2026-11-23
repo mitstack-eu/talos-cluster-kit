@@ -2,6 +2,8 @@
 package components_test
 
 import (
+	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -9,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/mirror"
@@ -43,6 +46,24 @@ func inSet(t *testing.T, set components.Set, name string) components.Manifest {
 	return testutil.Manifest(t, name, set.Served, set.Inline)
 }
 
+// scaleSetDocuments are the documents of the scale set's manifest in set.
+func scaleSetDocuments(t *testing.T, set components.Set) []map[string]any {
+	t.Helper()
+	return testutil.Documents(t, testutil.Manifest(t, "mitstack-runner-scale-set", set.Inline).Bytes)
+}
+
+// jobContainers are a job pod's init containers and containers by name.
+func jobContainers(t *testing.T, pod any) map[string]map[string]any {
+	t.Helper()
+	byName := map[string]map[string]any{}
+	for _, list := range []string{"initContainers", "containers"} {
+		for _, c := range testutil.Field(t, pod, list).([]any) {
+			byName[testutil.Field(t, c, "name").(string)] = c.(map[string]any)
+		}
+	}
+	return byName
+}
+
 func manifestNames(set components.Set) []string {
 	var names []string
 	for _, m := range slices.Concat(set.Served, set.Inline) {
@@ -56,7 +77,7 @@ func TestWithRunners_HoldsTheControllerTheRunnersNamespaceAndTheScaleSetTheInput
 
 	controller := testutil.Named(t, testutil.Documents(t, inSet(t, set, "gha-runner-scale-set-controller").Bytes), "Deployment", "arc-gha-rs-controller")
 	namespace := testutil.Named(t, testutil.Documents(t, inSet(t, set, "mitstack-runners").Bytes), "Namespace", components.RunnersNamespace)
-	scaleSet := testutil.Named(t, testutil.Documents(t, testutil.Manifest(t, "mitstack-runner-scale-set", set.Inline).Bytes), "AutoscalingRunnerSet", "mitstack-ci")
+	scaleSet := testutil.Named(t, scaleSetDocuments(t, set), "AutoscalingRunnerSet", "mitstack-ci")
 
 	containers := testutil.Field(t, controller, "spec", "template", "spec", "containers").([]any)
 	require.Len(t, containers, 1, "the controller's containers")
@@ -86,18 +107,12 @@ func TestWithRunners_ReadsTheGitHubTokenFromTheLeasedSecretAndRendersNoKeyOrToke
 
 func TestWithRunners_RunsEachJobInADindPodWithNoServiceAccountTokenAndOnlyEmptyDirVolumes(t *testing.T) {
 	set := runnerSet(t)
-	manifest := testutil.Manifest(t, "mitstack-runner-scale-set", set.Inline)
-	docs := testutil.Documents(t, manifest.Bytes)
+	docs := scaleSetDocuments(t, set)
 	scaleSet := testutil.Named(t, docs, "AutoscalingRunnerSet", "mitstack-ci")
 
 	pod := testutil.Field(t, scaleSet, "spec", "template", "spec")
 	labels := testutil.Field(t, scaleSet, "spec", "template", "metadata", "labels").(map[string]any)
-	byName := map[string]map[string]any{}
-	for _, list := range []string{"initContainers", "containers"} {
-		for _, c := range testutil.Field(t, pod, list).([]any) {
-			byName[testutil.Field(t, c, "name").(string)] = c.(map[string]any)
-		}
-	}
+	byName := jobContainers(t, pod)
 
 	require.Contains(t, byName, "runner", "the runner container")
 	require.Contains(t, byName, "dind", "the Docker daemon sidecar")
@@ -114,9 +129,25 @@ func TestWithRunners_RunsEachJobInADindPodWithNoServiceAccountTokenAndOnlyEmptyD
 	assert.Equal(t, false, account["automountServiceAccountToken"], "a job reaches no cluster token")
 }
 
+func TestWithRunners_ReservesEachJobContainersCPUAndMemoryAsItsLimitAndWholeCoresForTheRunnerSoTheJobPodIsGuaranteed(t *testing.T) {
+	scaleSet := testutil.Named(t, scaleSetDocuments(t, runnerSet(t)), "AutoscalingRunnerSet", "mitstack-ci")
+
+	containers := jobContainers(t, testutil.Field(t, scaleSet, "spec", "template", "spec"))
+
+	require.ElementsMatch(t, []string{"init-dind-externals", "dind", "runner"}, slices.Collect(maps.Keys(containers)), "the job pod's containers")
+	for _, name := range slices.Sorted(maps.Keys(containers)) {
+		resources, _ := containers[name]["resources"].(map[string]any)
+		requests, _ := resources["requests"].(map[string]any)
+		assert.Subset(t, slices.Collect(maps.Keys(requests)), []string{"cpu", "memory"}, "%s requests %v; a pod is Guaranteed only when each container requests both", name, requests)
+		assert.Equal(t, requests, resources["limits"], "%s's limits; a pod is Guaranteed only when each limit equals its request", name)
+	}
+	cpu := resource.MustParse(fmt.Sprint(testutil.Field(t, containers["runner"], "resources", "requests", "cpu")))
+	assert.True(t, cpu.MilliValue() >= 1000 && cpu.MilliValue()%1000 == 0, "the runner requests %s CPU; the static CPU manager gives a container cores of its own only for a whole number", cpu.String())
+}
+
 func TestWithRunners_KeepsTheListenerOffBurstMembersAndLabelsIt(t *testing.T) {
 	set := runnerSet(t)
-	scaleSet := testutil.Named(t, testutil.Documents(t, testutil.Manifest(t, "mitstack-runner-scale-set", set.Inline).Bytes), "AutoscalingRunnerSet", "mitstack-ci")
+	scaleSet := testutil.Named(t, scaleSetDocuments(t, set), "AutoscalingRunnerSet", "mitstack-ci")
 
 	listener := testutil.Field(t, scaleSet, "spec", "listenerTemplate")
 
@@ -133,7 +164,7 @@ func TestWithRunners_KeepsTheListenerOffBurstMembersAndLabelsIt(t *testing.T) {
 
 func TestWithRunners_GrantsTheControllerARoleToCreateTheListenersRoleAndBindingAndNamesThemForCleanup(t *testing.T) {
 	set := runnerSet(t)
-	docs := testutil.Documents(t, testutil.Manifest(t, "mitstack-runner-scale-set", set.Inline).Bytes)
+	docs := scaleSetDocuments(t, set)
 
 	role := testutil.Named(t, docs, "Role", "mitstack-ci-gha-rs-manager")
 	binding := testutil.Named(t, docs, "RoleBinding", "mitstack-ci-gha-rs-manager")

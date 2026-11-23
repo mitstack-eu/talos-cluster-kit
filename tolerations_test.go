@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v4"
@@ -27,7 +28,8 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 )
 
-const controlPlaneRole = "node-role.kubernetes.io/control-plane"
+// controlPlaneRole is Talos's own label, so a chart value that types it out fails these tests once Talos changes it.
+const controlPlaneRole = constants.LabelNodeRoleControlPlane
 
 // renderedManifests is every manifest the kit renders, by the name of what renders it.
 func renderedManifests(t *testing.T) map[string][]byte {

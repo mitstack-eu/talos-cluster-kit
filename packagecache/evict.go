@@ -61,8 +61,9 @@ func Evict(dir string, limits Limits, now time.Time) (Swept, error) {
 	var swept Swept
 	full := false
 	for _, f := range files {
-		full = full || (f.size <= limits.MaxBytes && swept.Kept+f.size > limits.MaxBytes)
-		if !full && f.size <= limits.MaxBytes && now.Sub(f.lastUsed) <= limits.MaxAge {
+		fits := f.size <= limits.MaxBytes
+		full = full || (fits && swept.Kept+f.size > limits.MaxBytes)
+		if !full && fits && now.Sub(f.lastUsed) <= limits.MaxAge {
 			swept.Kept += f.size
 			continue
 		}

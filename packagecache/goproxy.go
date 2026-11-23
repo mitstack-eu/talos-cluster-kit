@@ -60,7 +60,7 @@ func (p GoProxy) serveChecked(w http.ResponseWriter, r *http.Request, m module.V
 		return
 	}
 	refuse := func(err error) {
-		msg := fmt.Sprintf("the Go module cache refuses the %s of %s: %v", ext, m, err)
+		msg := fmt.Sprintf("the Go module cache refuses the %s of %q: %v", ext, m.String(), err)
 		log.Print(msg)
 		http.Error(w, msg, http.StatusBadGateway)
 	}

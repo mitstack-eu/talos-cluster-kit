@@ -64,7 +64,7 @@ func (p NPMProxy) serveChecked(w http.ResponseWriter, r *http.Request, name stri
 		return
 	}
 	refuse := func(err error) {
-		msg := fmt.Sprintf("the npm cache refuses %s's tarball %s: %v", name, r.URL.Path, err)
+		msg := fmt.Sprintf("the npm cache refuses the tarball %q of %q: %v", r.URL.Path, name, err)
 		log.Print(msg)
 		http.Error(w, msg, http.StatusBadGateway)
 	}

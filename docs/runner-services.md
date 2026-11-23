@@ -616,7 +616,7 @@ gives its pod, so no workflow names a cache.
 | Cache | How a job reaches it | What it checks before it keeps an entry | Disk | Sweep limit |
 |---|---|---|---|---|
 | `go-cache` | `GOPROXY` on the runner container names `http://go-cache.mitstack-runners.svc:8080` first | A module's `go.mod` or zip matches the hash in the signed tree of `sum.golang.org` | 6 GiB | 5 GiB |
-| `npm-cache` | `npm_config_registry` on the runner container names `http://npm-cache.mitstack-runners.svc:8080/` | A tarball matches the strongest `integrity` digest its package's metadata names, or its `shasum` | 4 GiB | 3 GiB |
+| `npm-cache` | The global npmrc, which `npm_config_globalconfig` on the runner container names, holds `registry=http://npm-cache.mitstack-runners.svc:8080/` | A tarball matches the strongest `integrity` digest its package's metadata names, or its `shasum` | 4 GiB | 3 GiB |
 | `image-cache` | The Docker daemon's `--registry-mirror` names `http://image-cache.mitstack-runners.svc:5000` | The registry checks each blob it pulls against its digest | 12 GiB | 10 GiB |
 
 The Go and npm caches run `package-cache`, a server the kit builds into its
@@ -625,6 +625,14 @@ covers, such as a module's version list or a package's metadata, since a
 release changes those. The image cache runs the registry
 `docker.io/library/registry:3.1.2` as a pull-through mirror of Docker Hub, with
 `package-cache sweep` beside it in the same pod.
+
+An init container named `npmrc` writes that global npmrc before the job
+starts. npm reads a project's `.npmrc`, and the user npmrc that
+`actions/setup-node` writes for a publish, before the global one. A job that
+names its own registry therefore keeps it, and its publish goes to that
+registry with its own token. The caches also strip the `Authorization` and
+`Cookie` headers of a request they pass through, since a job's credential is
+meant for another registry.
 
 For example, a job's `go mod download` asks `go-cache` for
 `golang.org/x/mod/@v/v0.38.0.zip`. The first time, the cache fetches the zip
@@ -636,8 +644,9 @@ job gets the stored zip without a fetch.
 
 Every cache sweeps its disk every five minutes. The sweep first removes each
 entry unused for 14 days. It then keeps the most recently used entries that fit
-the sweep limit and removes the rest. An entry's last use is the later of the
-times it was last read and last written. The Go and npm caches mark an entry
+the sweep limit and removes the rest. An entry larger than the whole sweep
+limit goes alone, and the older entries that fit stay. An entry's last use is
+the later of the times it was last read and last written. The Go and npm caches mark an entry
 each time they serve it. The registry's reads move only the read time, which
 the node's file system updates at most once a day, so a blob's last use is
 exact to the day.
@@ -650,7 +659,8 @@ Each sweep limit sits 1 to 2 GiB below the size limit of the cache's
 emptyDir. The kubelet evicts a pod whose emptyDir passes its limit, so the
 margin keeps a cache that fills between two sweeps from losing its pod. The
 cache's container asks the scheduler for the same disk, so a node holds room
-for it.
+for it. A burst of new entries can still pass the sweep limit for the five
+minutes until the next sweep.
 
 ### What happens when a cache is down
 
@@ -658,26 +668,53 @@ The go command tries `proxy.golang.org` on any error from `go-cache`, and the
 Docker daemon pulls from Docker Hub itself when the mirror fails. npm has no
 such fallback, so each `npm install` fails until `npm-cache` serves again.
 
-The plane's `Unhealthy` reads the newest node report for Argo CD's health of
-each cache's Deployment. When any reads other than `Healthy`, or the caches'
-Application lists no Deployment for one, the cluster reads unhealthy with
-`CauseRunnerCacheDown`. Its detail names each such cache with its health and
-the time the report was read, for example:
+Argo CD is the tool that applies the kit's manifests inside the cluster. It
+applies them as Applications, each a group of objects, and judges each object
+an Application holds as `Healthy`, `Progressing` or `Degraded`. The node report
+the cluster sends every five minutes carries those judgements.
+
+Each time the cluster's operator observes the cluster, it calls the plane's
+`Unhealthy` and hands the platform the cause and detail it returns. Both are
+empty when the cluster is well. The cause for a cache is
+`CauseRunnerCacheDown`, which the platform's catalogue lists as a transient
+failure: one that clears on its own once the cache serves again.
+
+`Unhealthy` reads the newest node report for Argo CD's health of each cache's
+Deployment. When any reads other than `Healthy`, or the caches' Application
+lists no Deployment for one, the plane answers `CauseRunnerCacheDown`. Its
+detail names each such cache with its health and the time the report was read,
+for example:
 
 ```text
 the node report read at 2026-11-23T12:00:00Z: Argo CD reads image-cache Progressing: Waiting for rollout to finish: 0 of 1 updated replicas are available...
 ```
 
 A report that carries no health for the caches' Application, such as one sent
-before Argo CD applied it, judges nothing.
+before Argo CD applied it, judges nothing, and neither does a cache whose
+health Argo CD has not judged yet.
+
+While a cache is down, the plane names the cache and does not also name a
+Cloud pool held at its maximum. The pool's cause shows once the cache serves.
 
 ### Where the caches run
 
 Each cache is a Deployment of one pod that refuses a burst member, since a
 burst member leaves with its idle window and takes its disks with it. Its
 entries sit on an emptyDir, so a pod that restarts or moves to another node
-starts empty. Each pod mounts no service account token, runs as uid 65532 and
-writes only its emptyDir.
+starts empty. Each kit release changes the tools image the Go and npm caches
+run, so each release starts those two caches empty.
+
+A cache rolls over to a new release with `maxSurge: 1` and
+`maxUnavailable: 0`. The old pod serves until the new pod answers its
+readiness probe, which the Go and npm caches answer on `/-/healthz`, a path no
+module or package name can take. The new pod asks for its own disk, so a
+rollout needs room for a second disk on a member that is not a burst member.
+Without that room the new pod waits, the old one serves on, and Argo CD reads
+the Deployment `Progressing`, which the plane names as a down cache. A node
+report sent in the minute a rollout takes reads the same.
+
+Each pod mounts no service account token, runs as uid 65532 and writes only
+its emptyDir.
 
 The Cilium policy `mitstack-runner-caches-flows` lets a job's pod reach each
 cache, and each cache answer job pods alone. Each cache reaches only its own
@@ -691,6 +728,10 @@ upstreams on port 443:
 
 Each cache's pod also reaches the API server, the cluster's DNS and GitHub,
 which `mitstack-runners-flows` gives every pod of the namespace.
+
+The Docker Hub hosts are typed into `components/runner_caches.go`. If Docker
+Hub moves its blobs to a new host, a pull through the mirror fails until a kit
+release names that host.
 
 The gateways mirror the registry image and the tools image for a plane with
 runners, so a node pulls both as it pulls every other image.
@@ -731,7 +772,7 @@ C4Container
   System_Ext(dockerhub, "Docker Hub", "Serves public images")
   System_Ext(harbor, "Harbor", "Takes the image cache's place once it serves")
   Rel(runner, gocache, "GOPROXY", "HTTP 8080")
-  Rel(runner, npmcache, "npm_config_registry", "HTTP 8080")
+  Rel(runner, npmcache, "registry in the global npmrc", "HTTP 8080")
   Rel(runner, imagecache, "registry mirror", "HTTP 5000")
   Rel(gocache, goproxy, "Fetches and checks", "HTTPS")
   Rel(npmcache, npm, "Fetches and checks", "HTTPS")

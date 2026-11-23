@@ -32,13 +32,17 @@ func namedNodes(replace []string) (locs []string) {
 
 // PlanReplacements names the nodes and the Cloud workers the request names that the cluster runs, so the platform
 // refuses any other name before the upgrade, and none for a request the upgrade would refuse before it reads the cluster.
-// It refuses a size the cluster cannot run or was not subscribed with, so the platform's dry run shows that refusal.
+// It refuses a size the cluster cannot run or was not subscribed with, and a signer list the policy cannot hold, so the
+// platform's dry run shows that refusal.
 func (k *Cluster) PlanReplacements(ctx context.Context, d contract.Desired) ([]string, error) {
 	size, err := operator.ControlPlaneSize(d)
 	if err != nil {
 		return nil, err
 	}
 	if err := k.refuseUndeclaredSize(size); err != nil {
+		return nil, err
+	}
+	if _, err := readSigners(d); err != nil {
 		return nil, err
 	}
 	if k.cloudOnly(d) {

@@ -2,7 +2,8 @@ package robotcluster_test
 
 // A cluster needs its operator's id, boundary and worker install, names to replace only the nodes and Cloud workers a
 // request names that the cluster runs, refuses a control-plane size its block declares no servers for or the running
-// cluster was not subscribed with, and rolls out the runner services its operator's Config asks for.
+// cluster was not subscribed with, and rolls out the runner services its operator's Config asks for and the signature
+// policy of the signer list a request names.
 
 import (
 	"context"
@@ -305,4 +306,61 @@ func TestDelete_ACloudOnlyClusterWhoseRunnersCannotBeNamedIsDeletedAndReadsAbsen
 	assert.Zero(t, e.Cloud.Count(), "the Cloud resources left after the unsubscribe")
 	obs := e.Observe()
 	assert.Equal(t, contract.Absent, obs.State, "the observe after the unsubscribe: %s", obs.StatusDetail)
+}
+
+const kitToolsSigner = "ghcr.io/mitstack-eu/talos-cluster-kit-tools|https://token.actions.githubusercontent.com|https://github.com/mitstack-eu/talos-cluster-kit/.github/workflows/ci.yml@refs/heads/main"
+
+var signaturePolicyObjects = []string{"ImageValidatingPolicy mitstack-verify-image-signatures", "CiliumClusterwideNetworkPolicy mitstack-kyverno-egress"}
+
+func TestEnsure_AnUpgradeNamingASignerListRollsOutItsSignaturePolicyAndOneEmptyingItTakesThePolicyOut(t *testing.T) {
+	e := robotclustertest.New(t, cloudOnlySub, cloudOnly)
+	obs, err := e.Settle()
+	require.NoError(t, err, "the subscribe: %s", obs.StatusDetail)
+
+	for _, tc := range []struct {
+		signers string
+		carried bool
+	}{{kitToolsSigner, true}, {"", false}} {
+		e.Params[robotcluster.ParamSigners] = tc.signers
+		obs, err := e.Settle()
+
+		require.NoErrorf(t, err, "the upgrade to signers %q: %s", tc.signers, obs.StatusDetail)
+		rolledOut := rolledOutObjects(t, e)
+		for _, object := range signaturePolicyObjects {
+			assert.Equalf(t, tc.carried, slices.Contains(rolledOut, object), "signers %q: whether the cluster repository holds %s", tc.signers, object)
+		}
+	}
+}
+
+func TestEnsure_RefusesASignerListThePolicyCannotHoldBeforeAnyChangeAndTheObserveReadsUnknownNamingIt(t *testing.T) {
+	const ecr = "123456789012.dkr.ecr.eu-central-1.amazonaws.com/shop-api|https://token.actions.githubusercontent.com|https://github.com/acme/shop/.github/workflows/build.yml@refs/heads/main"
+	tests := []struct{ name, signers, names string }{
+		{"an entry with no subject", "ghcr.io/acme/shop|https://token.actions.githubusercontent.com", "ghcr.io/acme/shop|https://token.actions.githubusercontent.com"},
+		{"an entry with a fifth field", ecr + "|app-shop/ecr-pull|extra", "extra"},
+		{"a pull Secret with no namespace", ecr + "|ecr-pull", "ecr-pull"},
+		{"a repository in a registry the kit holds no hosts for", "docker.io/acme/shop|https://token.actions.githubusercontent.com|main", "docker.io/acme/shop"},
+		{"a private registry's entry with no pull Secret", ecr, "123456789012.dkr.ecr.eu-central-1.amazonaws.com/shop-api"},
+		{"a pull Secret on a cluster that hosts no platform", ecr + "|app-shop/ecr-pull", "app-shop/ecr-pull"},
+		{"one repository named twice", kitToolsSigner + "," + kitToolsSigner, "named twice"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := robotclustertest.New(t, cloudOnlySub, cloudOnly)
+			obs, err := e.Settle()
+			require.NoError(t, err, "the subscribe: %s", obs.StatusDetail)
+			writes := e.Cloud.Writes()
+			e.Params[robotcluster.ParamSigners] = tc.signers
+
+			err = e.Ensure()
+			obs = e.Observe()
+
+			var refused *handler.Refused
+			require.ErrorAsf(t, err, &refused, "the upgrade to signers %q", tc.signers)
+			assert.Equal(t, "invalid-param", refused.Class, "the class of the refusal: %v", err)
+			assert.Contains(t, err.Error(), tc.names, "the refusal names what the policy cannot hold")
+			assert.Equal(t, writes, e.Cloud.Writes(), "a refused upgrade changes nothing in Hetzner Cloud")
+			assert.Equal(t, contract.Unknown, obs.State, "the observe of a cluster whose signer list cannot be read: %s", obs.StatusDetail)
+			assert.Contains(t, obs.StatusDetail, tc.names, "the observe names what the policy cannot hold")
+		})
+	}
 }

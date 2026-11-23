@@ -107,7 +107,8 @@ func loadBalancerOutputs(r controlplane.Role, loc, exposure string) func(control
 }
 
 // gatewayObserver reads a location's gateway as labelledObserver does, and gives a check from outside the cluster its
-// addresses, its image list and the public CA certificate the nodes trust it under, never the CA's key.
+// addresses, its mitstack.dev/gateway-list label as imageList, which is the list's digest only while the block opens no
+// egress port beyond 443, and the public CA certificate the nodes trust it under, never the CA's key.
 type gatewayObserver struct {
 	k   *Cluster
 	loc string

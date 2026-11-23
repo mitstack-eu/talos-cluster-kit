@@ -1,7 +1,13 @@
 #cloud-config
 # A cluster's gateway, an Ubuntu 24.04 Cloud server with the only public
+{{- if .ExtraPorts }}
+# address of the cluster. It forwards the nodes' DNS, NTP and HTTPS, TCP
+# {{ .ExtraPorts }} to every outside address and HTTP to the ingress load
+# balancer, and drops every other flow. It records
+{{- else }}
 # address of the cluster. It forwards the nodes' DNS, NTP and HTTPS, and HTTP
 # to the ingress load balancer alone, and drops every other flow. It records
+{{- end }}
 # each DNS and NTP packet and each new flow, serves the image mirror and the
 # served manifests over TLS on the private network, and holds the etcd
 # bootstrap script. nftables.conf is its whole firewall:

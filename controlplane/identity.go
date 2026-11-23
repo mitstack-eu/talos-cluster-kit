@@ -22,7 +22,7 @@ const (
 	KeyRole            = "mitstack.dev/role"
 	KeyEnrolmentSHA256 = "mitstack.dev/enrolment-sha256"
 	KeyIssuerBucket    = "mitstack.dev/issuer-bucket"
-	// KeyGatewayList is the digest of the pinned list a gateway was built from, as gateway.ListDigest gives it.
+	// KeyGatewayList is the mark of the pinned list and egress ports a gateway was built from, as gateway.List.Mark gives it.
 	KeyGatewayList = "mitstack.dev/gateway-list"
 	// KeyPoweredOnAt is when the plane last powered a gateway back on, in Unix seconds, so it does so once an outage.
 	KeyPoweredOnAt = "mitstack.dev/powered-on-at"

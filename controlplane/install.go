@@ -30,7 +30,7 @@ type installation struct {
 	gateways                                                map[string]renderedGateway
 	gatewayCA                                               gateway.CA
 	cluster                                                 nodeconfig.Cluster
-	enrolmentDigest, issuerBucket, listDigest               string
+	enrolmentDigest, issuerBucket, listMark                 string
 }
 
 // renderedGateway keeps the issued certificate beside the user data, which holds it only as PEM, so the gateway's label
@@ -58,7 +58,7 @@ func (p Plane) install(ctx context.Context, s site) error {
 	orderable := &OrderableTypes{API: p.API}
 	var specs []ServerSpec
 	for _, loc := range p.NodeLocations() {
-		spec, err := p.gatewaySpec(ctx, orderable, loc, inst.gateways[loc], s, inst.listDigest)
+		spec, err := p.gatewaySpec(ctx, orderable, loc, inst.gateways[loc], s, inst.listMark)
 		if err != nil {
 			return err
 		}
@@ -260,7 +260,7 @@ func (p Plane) renderGateways(inst *installation, set components.Set, apiAddr, i
 	if err := sameList(set, list); err != nil {
 		return err
 	}
-	inst.listDigest = list.Digest()
+	inst.listMark = p.gatewayMark(list)
 	// The address only fills the talosconfig's defaults, since the bootstrap names the node it finds on every call.
 	talosconfig, err := secrets.AdminTalosconfig(apiAddr, adminTalosconfigTTL, now)
 	if err != nil {
@@ -310,13 +310,14 @@ func (p Plane) renderGateway(loc string, ingressAddr netip.Addr, now time.Time, 
 		return renderedGateway{}, fmt.Errorf("the tools image: %w", err)
 	}
 	kitPart, err := gateway.Render(gateway.Inputs{
-		Address: address,
-		Network: netip.MustParsePrefix(NetworkIPRange),
-		Ingress: ingressAddr,
-		TLS:     tls,
-		List:    list,
-		Tools:   tools,
-		Gzipped: true,
+		Address:     address,
+		Network:     netip.MustParsePrefix(NetworkIPRange),
+		Ingress:     ingressAddr,
+		TLS:         tls,
+		List:        list,
+		Tools:       tools,
+		EgressPorts: p.GatewayEgressPorts,
+		Gzipped:     true,
 	})
 	if err != nil {
 		return renderedGateway{}, err

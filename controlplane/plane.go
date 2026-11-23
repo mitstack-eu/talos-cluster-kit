@@ -80,6 +80,9 @@ type Plane struct {
 	// Runners gives the cluster ARC's controller and the org's one runner scale set, and each node what a node running
 	// CI jobs needs, which nodeconfig.Cluster's RunsCIJobs and IsolatesJobs name; nil runs no runner.
 	Runners *components.RunnerInputs
+	// GatewayEgressPorts are the TCP ports each gateway forwards to every outside address beside 443, as
+	// gateway.Inputs.EgressPorts; a change of the ports beyond 443 replaces each gateway at the next upgrade.
+	GatewayEgressPorts []int
 }
 
 // Record adds to the network's labels what an upgrade asks of a part beside the plane, inside the upgrade's one write.

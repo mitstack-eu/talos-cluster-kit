@@ -106,6 +106,9 @@ func (p Plane) gatewayList() (gateway.List, error) {
 	return list, nil
 }
 
+// gatewayMark is the KeyGatewayList label of a gateway the plane builds from list, which a stale gateway lacks.
+func (p Plane) gatewayMark(list gateway.List) string { return list.Mark(p.GatewayEgressPorts) }
+
 // zoneStep creates the gateway of a location that has none, once nodes run from a node report since the loss, attaches
 // each gateway at its address, and takes the record of a loss off once the location has its gateway again.
 func (p Plane) zoneStep(ctx context.Context, st State, s site) (Step, bool, error) {
@@ -487,9 +490,10 @@ func (p Plane) failedStep(ctx context.Context, st State, s site) (Step, bool, er
 	if err != nil {
 		return Step{}, false, err
 	}
+	mark := p.gatewayMark(list)
 	for _, loc := range p.NodeLocations() {
 		gw, _ := st.GatewayIn(loc)
-		if gw.Labels[KeyGatewayList] != list.Digest() {
+		if gw.Labels[KeyGatewayList] != mark {
 			continue
 		}
 		f, err := p.failure(ctx, gw, s.network)
@@ -499,11 +503,11 @@ func (p Plane) failedStep(ctx context.Context, st State, s site) (Step, bool, er
 		case f.firstUnserved || f.servedAgain:
 			return p.unservedStep(gw, f), true, nil
 		case f.cause == "":
-			if step, ok, err := p.endReplacementStep(ctx, gw, s.network, list.Digest()); err != nil || ok {
+			if step, ok, err := p.endReplacementStep(ctx, gw, s.network, mark); err != nil || ok {
 				return step, ok, err
 			}
 		case gw.Labels[KeyGatewayReplaces] == "":
-			return p.replaceGateway(ctx, st, s, removal{gw: gw, plan: list.Digest(), why: "which " + f.what, keeper: "the block",
+			return p.replaceGateway(ctx, st, s, removal{gw: gw, plan: mark, why: "which " + f.what, keeper: "the block",
 				record: func(ctx context.Context) error { return p.recordFailed(ctx, s.network, gw) }})
 		}
 	}
@@ -556,7 +560,7 @@ func (p Plane) replacement(st State, network Network) (replacement, error) {
 	if err != nil {
 		return replacement{}, err
 	}
-	digest := list.Digest()
+	digest := p.gatewayMark(list)
 	r := replacement{digest: digest}
 	for _, loc := range p.NodeLocations() {
 		if gw, ok := st.GatewayIn(loc); ok && gw.Labels[KeyGatewayList] == digest {
@@ -864,7 +868,7 @@ func (p Plane) createGateway(ctx context.Context, st State, s site, loc string, 
 	if err != nil {
 		return err
 	}
-	spec, err := p.gatewaySpec(ctx, &OrderableTypes{API: p.API}, loc, rendered, s, list.Digest())
+	spec, err := p.gatewaySpec(ctx, &OrderableTypes{API: p.API}, loc, rendered, s, p.gatewayMark(list))
 	if err != nil {
 		return err
 	}
@@ -939,7 +943,7 @@ func (p Plane) Unhealthy(ctx context.Context, st State) (cause, detail string, e
 		if err != nil {
 			return "", "", err
 		}
-		if cause, detail := f.unhealthy(gw, list.Digest(), p.oneLocation()); cause != "" {
+		if cause, detail := f.unhealthy(gw, p.gatewayMark(list), p.oneLocation()); cause != "" {
 			return cause, detail, nil
 		}
 	}

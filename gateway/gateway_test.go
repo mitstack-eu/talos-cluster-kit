@@ -74,6 +74,21 @@ func TestList_KeepingMirrorsEachKeptImageOnceAndLeavesTheDigestTheReleaseListsAl
 	assert.Equal(t, 1, strings.Count(images, in.Tools.Ref()+"\n"), "images.txt names the release's image once")
 }
 
+func TestList_MarkChangesOnlyWithTheListOrTheEgressPortsBeyondHTTPS(t *testing.T) {
+	list, other := inputs(t).List, hostingInputs(t).List
+
+	opened := list.Mark([]int{80, 443})
+
+	for name, ports := range map[string][]int{"unset": nil, "empty": {}, "443 alone": {443, 443}} {
+		assert.Equal(t, list.Digest(), list.Mark(ports), "a gateway forwarding %s keeps the list's own mark", name)
+	}
+	assert.NotEqual(t, list.Digest(), opened, "opening port 80 marks the gateway stale")
+	assert.Equal(t, opened, list.Mark([]int{443, 80, 80}), "the same ports reordered or repeated keep the mark")
+	assert.NotEqual(t, opened, list.Mark([]int{80, 443, 8080}), "adding 8080 marks the gateway stale")
+	assert.NotEqual(t, opened, other.Mark([]int{80, 443}), "another list with the same ports marks the gateway stale")
+	assert.Len(t, opened, len(list.Digest()), "the mark is as long as the digest the label holds today")
+}
+
 func TestRender_RefusesACloudConfigPastHetznersLimitUnlessItTravelsGzipped(t *testing.T) {
 	in, images := inputs(t), []components.Image{}
 	for i := range 300 {
@@ -129,6 +144,60 @@ func TestRender_MatchesTheGoldenCloudConfigWithinHetznersUserDataLimit(t *testin
 	testutil.Golden(t, filepath.Join("testdata", "golden", "cloud-config.yaml"), got)
 }
 
+func TestRender_WithNoEgressPortBeyondHTTPSMatchesTheGoldenCloudConfigOfTheReleaseBefore(t *testing.T) {
+	for name, ports := range map[string][]int{"unset": nil, "empty": {}, "443 alone": {443}} {
+		t.Run(name, func(t *testing.T) {
+			in := inputs(t)
+			in.EgressPorts = ports
+
+			got, err := gateway.Render(in)
+
+			require.NoError(t, err)
+			testutil.Golden(t, filepath.Join("testdata", "golden", "cloud-config.yaml"), got)
+		})
+	}
+}
+
+func TestRender_ForwardsTheEgressPortsToEveryOutsideAddressBesideHTTPSAndNamesThemInTheHeader(t *testing.T) {
+	const unsetRule = "tcp dport { 443, 4317 } accept"
+	unset, err := gateway.Render(inputs(t))
+	require.NoError(t, err)
+	unsetHeader, _, _ := strings.Cut(string(unset), "\npackage_update:")
+	for _, tc := range []struct {
+		name   string
+		ports  []int
+		want   []string
+		header string
+	}{
+		{"no setting forwards HTTPS and the log port alone", nil, []string{"443", "4317"}, ""},
+		{"80 and 443 add port 80", []int{80, 443}, []string{"443", "80", "4317"}, "80"},
+		{"8080 joins 80 in ascending order", []int{443, 8080, 80}, []string{"443", "80", "8080", "4317"}, "80, 8080"},
+		{"a repeated port and the log port are forwarded once", []int{80, 4317, 80}, []string{"443", "80", "4317"}, "80, 4317"},
+		{"the lowest and highest ports are accepted", []int{65535, 1}, []string{"443", "1", "65535", "4317"}, "1, 65535"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := inputs(t)
+			in.EgressPorts = tc.ports
+
+			got, err := gateway.Render(in)
+
+			require.NoError(t, err)
+			rules := regexp.MustCompile(`(?m)^ +ip saddr 10\.0\.0\.0/16 tcp dport \{ ([^}]*) \} accept$`).FindAllStringSubmatch(string(got), -1)
+			require.Len(t, rules, 1, "the forward rule naming no destination address")
+			assert.Equal(t, tc.want, strings.Split(rules[0][1], ", "), "the ports forwarded to every outside address for %v", tc.ports)
+			header, _, _ := strings.Cut(string(got), "\npackage_update:")
+			if tc.header != "" {
+				prose := strings.ReplaceAll(header, "\n# ", " ")
+				assert.Contains(t, prose, "HTTPS, TCP "+tc.header+" to every outside address", "the header names the forwarded ports")
+				assert.NotContains(t, prose, "load balancer alone", "the header")
+			}
+			wantRule := "tcp dport { " + strings.Join(tc.want, ", ") + " } accept"
+			want := strings.Replace(strings.Replace(string(unset), unsetRule, wantRule, 1), unsetHeader, header, 1)
+			assert.Equal(t, want, string(got), "the cloud-config beside that rule and the header")
+		})
+	}
+}
+
 func TestRender_WithNoLogReceiverForwardsHTTPSAloneAndChangesNothingElse(t *testing.T) {
 	const withLogPort, httpsAlone = "tcp dport { 443, 4317 } accept", "tcp dport { 443 } accept"
 	in := inputs(t)
@@ -165,6 +234,8 @@ func TestRender_RefusesInputsItCannotServe(t *testing.T) {
 		"192.168.0.2 is not inside network 10.0.0.0/16":          func(in *gateway.Inputs) { in.Address = netip.MustParseAddr("192.168.0.2") },
 		"the gateway has no list; build one with NewList":        func(in *gateway.Inputs) { in.List = gateway.List{} },
 		"the list does not mirror the tools image":               func(in *gateway.Inputs) { in.Tools.Digest = "sha256:" + strings.Repeat("f", 64) },
+		"egress port 0 is outside 1 to 65535":                    func(in *gateway.Inputs) { in.EgressPorts = []int{80, 0} },
+		"egress port 70000 is outside 1 to 65535":                func(in *gateway.Inputs) { in.EgressPorts = []int{70000, 443} },
 	} {
 		in := valid
 		change(&in)

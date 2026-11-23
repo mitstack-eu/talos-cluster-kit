@@ -93,7 +93,7 @@ func (p Plane) dueForRenewal(ctx context.Context, st State, network Network) ([]
 		if !ok || !p.reachedRenewal(gw) {
 			continue
 		}
-		failed, err := p.replacedAsFailed(ctx, gw, network, list.Digest())
+		failed, err := p.replacedAsFailed(ctx, gw, network, p.gatewayMark(list))
 		if err != nil {
 			return nil, err
 		}

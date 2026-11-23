@@ -158,7 +158,7 @@ func TestPlanReplacements_RefusesASignerListThePolicyCannotHoldNamingTheEntry(t 
 	var refused *handler.Refused
 	require.ErrorAs(t, err, &refused, "the dry run of an upgrade shows the refusal the upgrade would meet")
 	assert.Equal(t, "invalid-param", refused.Class)
-	assert.ErrorContains(t, err, entry)
+	assert.ErrorContains(t, err, "holds 2 fields", "the refusal says what the entry lacks")
 }
 
 func TestPlanReplacements_RefusesAControlPlaneSizeOtherThanTheOneTheRunningClusterWasSubscribedWith(t *testing.T) {
@@ -346,13 +346,13 @@ func TestEnsure_AnUpgradeNamingASignerListRollsOutItsSignaturePolicyAndOneEmptyi
 func TestEnsure_RefusesASignerListThePolicyCannotHoldBeforeAnyChangeAndTheObserveReadsUnknownNamingIt(t *testing.T) {
 	const ecr = "123456789012.dkr.ecr.eu-central-1.amazonaws.com/shop-api|https://token.actions.githubusercontent.com|https://github.com/acme/shop/.github/workflows/build.yml@refs/heads/main"
 	tests := []struct{ name, signers, names string }{
-		{"an entry with no subject", "ghcr.io/acme/shop|https://token.actions.githubusercontent.com", "ghcr.io/acme/shop|https://token.actions.githubusercontent.com"},
-		{"an entry with a fifth field", ecr + "|app-shop/ecr-pull|extra", "extra"},
-		{"a pull Secret with no namespace", ecr + "|ecr-pull", "ecr-pull"},
-		{"a repository in a registry the kit holds no hosts for", "docker.io/acme/shop|https://token.actions.githubusercontent.com|main", "docker.io/acme/shop"},
-		{"a private registry's entry with no pull Secret", ecr, "123456789012.dkr.ecr.eu-central-1.amazonaws.com/shop-api"},
-		{"a pull Secret on a cluster that hosts no platform", ecr + "|app-shop/ecr-pull", "app-shop/ecr-pull"},
-		{"one repository named twice", kitToolsSigner + "," + kitToolsSigner, "named twice"},
+		{"an entry with no subject", "ghcr.io/acme/shop|https://token.actions.githubusercontent.com", "holds 2 fields"},
+		{"an entry with a fifth field", ecr + "|app-shop/ecr-pull|extra", "holds 5 fields"},
+		{"a pull Secret with no namespace", ecr + "|ecr-pull", `the pull Secret "ecr-pull", which is not namespace/name`},
+		{"a repository in a registry the kit holds no hosts for", "docker.io/acme/shop|https://token.actions.githubusercontent.com|main", "a registry the kit holds no hosts for"},
+		{"a private registry's entry with no pull Secret", ecr, "names no pull Secret that holds one"},
+		{"a pull Secret on a cluster that hosts no platform", ecr + "|app-shop/ecr-pull", "only a cluster that hosts the platform"},
+		{"one repository named twice", kitToolsSigner + "," + kitToolsSigner, "is named twice"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -368,10 +368,10 @@ func TestEnsure_RefusesASignerListThePolicyCannotHoldBeforeAnyChangeAndTheObserv
 			var refused *handler.Refused
 			require.ErrorAsf(t, err, &refused, "the upgrade to signers %q", tc.signers)
 			assert.Equal(t, "invalid-param", refused.Class, "the class of the refusal: %v", err)
-			assert.Contains(t, err.Error(), tc.names, "the refusal names what the policy cannot hold")
+			assert.Contains(t, err.Error(), tc.names, "the refusal says why the policy cannot hold the list")
 			assert.Equal(t, writes, e.Cloud.Writes(), "a refused upgrade changes nothing in Hetzner Cloud")
 			assert.Equal(t, contract.Unknown, obs.State, "the observe of a cluster whose signer list cannot be read: %s", obs.StatusDetail)
-			assert.Contains(t, obs.StatusDetail, tc.names, "the observe names what the policy cannot hold")
+			assert.Contains(t, obs.StatusDetail, tc.names, "the observe says why the policy cannot hold the list")
 		})
 	}
 }

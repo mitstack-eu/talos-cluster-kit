@@ -8,13 +8,17 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -631,7 +635,8 @@ func TestReport_PostsEachMemberItReadsFromAHealthyCluster(t *testing.T) {
 			map[string]any{"namespace": "app-pg", "kind": "Cluster", "name": "shared", "subscription": "sub_pg0123456789",
 				"phase": "Cluster in healthy state", "instances": float64(2), "readyInstances": float64(2), "currentPrimary": "shared-1",
 				"continuousArchiving": map[string]any{"status": "True", "reason": "ContinuousArchivingSuccess", "message": "Continuous archiving is working"},
-				"lastBackup":          map[string]any{"status": "False", "reason": "LastBackupFailed", "message": "can't execute backup: exit status 4"}},
+				"lastBackup":          map[string]any{"status": "False", "reason": "LastBackupFailed", "message": "can't execute backup: exit status 4"},
+				"instanceStatus":      []any{}},
 			map[string]any{"namespace": "app-pg", "kind": "Database", "name": "shop", "subscription": "sub_shop01234567",
 				"applied": true, "message": nil},
 			map[string]any{"namespace": "app-pg", "kind": "DatabaseRole", "name": "shop", "subscription": nil,
@@ -882,8 +887,8 @@ func TestReport_NamesAFailedVolumeCloudNativePGStorageOrServiceReadInlineWithIts
 		"the storage and Service read prints no JSON": {kubectlWith(storageRead, "echo 'not json'"),
 			map[string]any{"storage": notStorage, "services": notStorage, "cloudNativePGPlugins": notStorage}},
 		"the pod read exits 1, for every pod and Argo CD's": {kubectlWith(podsRead, `echo 'error: pods is forbidden' >&2; exit 1`),
-			map[string]any{"pods": podsFailed, "kubernetes.argocdPods": podsFailed}},
-		"the pod read times out": {kubectlWith(podsRead, "sleep 10"), map[string]any{"pods": timedOut}},
+			map[string]any{"pods": podsFailed, "kubernetes.argocdPods": podsFailed, "cloudNativePG.0.instanceStatus": nil}},
+		"the pod read times out": {kubectlWith(podsRead, "sleep 10"), map[string]any{"pods": timedOut, "cloudNativePG.0.instanceStatus": nil}},
 		"the Ingress read exits 1, for every Ingress and Argo CD's": {kubectlWith(ingressesRead, `echo 'error: ingresses is forbidden' >&2; exit 1`),
 			map[string]any{"ingresses": ingressesFailed, "argocd.ingresses": ingressesFailed}},
 		"the Ingress read prints no JSON": {kubectlWith(ingressesRead, "echo 'not json'"),
@@ -1038,4 +1043,118 @@ func TestManifests_RefusesAProofScriptOneByteOverItsLimit(t *testing.T) {
 	_, err := report.Manifests(in)
 
 	require.ErrorContains(t, err, fmt.Sprintf("the proof script is %d bytes, over the %d a report takes", len(in.ProofScript), report.ProofScriptLimit))
+}
+
+const primaryStatusAnswer = `{"currentLsn": "0/5000060", "systemID": "7311", "isPrimary": true, "isWalReceiverActive": false, "node": "poc-talos4-cp2",
+	"pod": {"metadata": {"name": "shared-1"}}, "replicationInfo": [{"applicationName": "shared-2", "state": "streaming"}], "sessionID": "s-1"}`
+
+// instanceManager is the port a database pod names for its instance manager, and whether it serves TLS there.
+type instanceManager struct {
+	port  string
+	https bool
+}
+
+func instanceManagerAnswering(t *testing.T, newServer func(http.Handler) *httptest.Server, status int, answer string, calls *atomic.Int32) instanceManager {
+	t.Helper()
+	server := newServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.URL.Path != "/pg/status" || r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, answer)
+	}))
+	t.Cleanup(server.Close)
+	parsed, err := url.Parse(server.URL)
+	require.NoError(t, err)
+	return instanceManager{port: parsed.Port(), https: parsed.Scheme == "https"}
+}
+
+func instanceManagerNeverAnswering(t *testing.T) instanceManager {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(10 * time.Second):
+		}
+	}))
+	t.Cleanup(server.Close)
+	parsed, err := url.Parse(server.URL)
+	require.NoError(t, err)
+	return instanceManager{port: parsed.Port()}
+}
+
+func closedPort(t *testing.T) instanceManager {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	_, port, err := net.SplitHostPort(listener.Addr().String())
+	require.NoError(t, err)
+	require.NoError(t, listener.Close())
+	return instanceManager{port: port}
+}
+
+func databasePod(t *testing.T, namespace, name string, labels map[string]any, ip string, manager instanceManager) map[string]any {
+	t.Helper()
+	command := []any{"/controller/manager", "instance", "run", "--status-port=" + manager.port}
+	if manager.https {
+		command = append(command, "--status-port-tls")
+	}
+	port, err := strconv.Atoi(manager.port)
+	require.NoError(t, err)
+	status := map[string]any{"phase": "Running"}
+	if ip != "" {
+		status["podIP"] = ip
+	}
+	return map[string]any{
+		"metadata": map[string]any{"name": name, "namespace": namespace, "labels": labels},
+		"spec": map[string]any{"nodeName": "poc-talos4-cp2", "containers": []any{map[string]any{"name": "postgres", "image": "ghcr.io/cloudnative-pg/postgresql:16.15",
+			"command": command, "ports": []any{map[string]any{"name": "postgresql", "containerPort": 5432, "protocol": "TCP"},
+				map[string]any{"name": "metrics", "containerPort": 9187, "protocol": "TCP"},
+				map[string]any{"name": "status", "containerPort": port, "protocol": "TCP"}}}}},
+		"status": status,
+	}
+}
+
+func instancePod(t *testing.T, namespace, cluster, name, ip string, manager instanceManager) map[string]any {
+	t.Helper()
+	return databasePod(t, namespace, name, map[string]any{"cnpg.io/cluster": cluster, "cnpg.io/podRole": "instance"}, ip, manager)
+}
+
+func TestReport_NamesEachDatabaseInstancesRoleAndWhetherItStreamsOrWhyItsStatusIsUnreadable(t *testing.T) {
+	var instanceCalls, jobCalls atomic.Int32
+	answering := func(newServer func(http.Handler) *httptest.Server, status int, answer string) instanceManager {
+		return instanceManagerAnswering(t, newServer, status, answer, &instanceCalls)
+	}
+	pods := []any{
+		instancePod(t, "app-pg", "shared", "shared-1", "127.0.0.1", answering(httptest.NewServer, http.StatusOK, primaryStatusAnswer)),
+		instancePod(t, "app-pg", "shared", "shared-2", "127.0.0.1", answering(httptest.NewTLSServer, http.StatusOK,
+			`{"systemID": "7311", "isPrimary": false, "isWalReceiverActive": true, "receivedLsn": "0/5000060", "node": "poc-talos4-cp1"}`)),
+		instancePod(t, "app-pg", "shared", "shared-3", "127.0.0.1", answering(httptest.NewServer, http.StatusOK,
+			`{"systemID": "7311", "isPrimary": false, "isWalReceiverActive": false}`)),
+		instancePod(t, "app-solo", "solo", "solo-1", "127.0.0.1", answering(httptest.NewTLSServer, http.StatusOK, `{"isPrimary": true, "isWalReceiverActive": false}`)),
+		instancePod(t, "app-pg", "lost", "lost-1", "127.0.0.1", closedPort(t)),
+		instancePod(t, "app-pg", "lost", "lost-2", "127.0.0.1", instanceManagerNeverAnswering(t)),
+		instancePod(t, "app-pg", "lost", "lost-3", "127.0.0.1", answering(httptest.NewServer, http.StatusInternalServerError, `{"isPrimary": true, "isWalReceiverActive": false}`)),
+		instancePod(t, "app-pg", "lost", "lost-4", "", answering(httptest.NewServer, http.StatusOK, `{"isPrimary": true, "isWalReceiverActive": false}`)),
+		instancePod(t, "app-pg", "lost", "lost-5", "127.0.0.1", answering(httptest.NewServer, http.StatusOK, `{"systemID": "7311"}`)),
+		databasePod(t, "app-pg", "shared-1-initdb-x7k2p", map[string]any{"cnpg.io/cluster": "shared", "cnpg.io/jobRole": "initdb"}, "127.0.0.1",
+			instanceManagerAnswering(t, httptest.NewServer, http.StatusOK, primaryStatusAnswer, &jobCalls)),
+	}
+	podList, err := json.Marshal(map[string]any{"apiVersion": "v1", "kind": "List", "items": pods})
+	require.NoError(t, err)
+	podFile := filepath.Join(t.TempDir(), "pods.json")
+	require.NoError(t, os.WriteFile(podFile, podList, 0o600))
+
+	_, posted, out, err := runReport(t, map[string]string{"kubectl": kubectlAnswering(map[string]string{
+		podsRead: "cat " + podFile, cloudNativePGRead: "cat testdata/instance-status-clusters.json"})}, "REPORT_READ_SECONDS=1")
+
+	require.NoError(t, err, out)
+	assert.Equal(t, readJSON(t, "testdata", "golden", "instance-status.json"), posted.body["cloudNativePG"])
+	assert.Equal(t, int32(7), instanceCalls.Load(), "one call to each instance pod that names an IP and its status port, and none to another")
+	assert.Zero(t, jobCalls.Load(), "a call to a pod CloudNativePG does not label an instance")
+	for _, field := range []string{"currentLsn", "receivedLsn", "replicationInfo", "systemID", "sessionID"} {
+		assert.NotContains(t, string(posted.raw), field, "the report keeps no field of the status answer but its two flags")
+	}
 }

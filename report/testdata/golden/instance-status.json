@@ -1,0 +1,24 @@
+[
+  {"namespace": "app-pg", "kind": "Cluster", "name": "shared", "subscription": "sub_pg0123456789", "phase": "Cluster in healthy state",
+    "instances": 3, "readyInstances": 3, "currentPrimary": "shared-1", "continuousArchiving": null, "lastBackup": null,
+    "instanceStatus": [
+      {"name": "shared-1", "isPrimary": true, "isWalReceiverActive": false},
+      {"name": "shared-2", "isPrimary": false, "isWalReceiverActive": true},
+      {"name": "shared-3", "isPrimary": false, "isWalReceiverActive": false}
+    ]},
+  {"namespace": "app-solo", "kind": "Cluster", "name": "solo", "subscription": null, "phase": "Cluster in healthy state",
+    "instances": 1, "readyInstances": 1, "currentPrimary": "solo-1", "continuousArchiving": null, "lastBackup": null,
+    "instanceStatus": [
+      {"name": "solo-1", "isPrimary": true, "isWalReceiverActive": false}
+    ]},
+  {"namespace": "app-pg", "kind": "Cluster", "name": "lost", "subscription": null, "phase": "Failing over",
+    "instances": 5, "readyInstances": 0, "currentPrimary": "lost-1", "continuousArchiving": null, "lastBackup": null,
+    "instanceStatus": [
+      {"name": "lost-1", "unreadable": "curl exit 7"},
+      {"name": "lost-2", "unreadable": "the call timed out"},
+      {"name": "lost-3", "unreadable": "HTTP 500"},
+      {"name": "lost-4", "unreadable": "the pod has no IP and status port to call"},
+      {"name": "lost-5", "unreadable": "the answer names no isPrimary or isWalReceiverActive"}
+    ]},
+  {"namespace": "app-pg", "kind": "Database", "name": "shop", "subscription": null, "applied": true, "message": null}
+]

@@ -1,0 +1,34 @@
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "apiVersion": "postgresql.cnpg.io/v1",
+      "kind": "Cluster",
+      "metadata": {"name": "shared", "namespace": "app-pg", "labels": {"mitstack.dev/subscription": "sub_pg0123456789"}},
+      "spec": {"instances": 3},
+      "status": {"phase": "Cluster in healthy state", "instances": 3, "readyInstances": 3, "currentPrimary": "shared-1", "targetPrimary": "shared-1"}
+    },
+    {
+      "apiVersion": "postgresql.cnpg.io/v1",
+      "kind": "Cluster",
+      "metadata": {"name": "solo", "namespace": "app-solo"},
+      "spec": {"instances": 1},
+      "status": {"phase": "Cluster in healthy state", "instances": 1, "readyInstances": 1, "currentPrimary": "solo-1", "targetPrimary": "solo-1"}
+    },
+    {
+      "apiVersion": "postgresql.cnpg.io/v1",
+      "kind": "Cluster",
+      "metadata": {"name": "lost", "namespace": "app-pg"},
+      "spec": {"instances": 5},
+      "status": {"phase": "Failing over", "instances": 5, "readyInstances": 0, "currentPrimary": "lost-1", "targetPrimary": "lost-2"}
+    },
+    {
+      "apiVersion": "postgresql.cnpg.io/v1",
+      "kind": "Database",
+      "metadata": {"name": "shop", "namespace": "app-pg"},
+      "spec": {"cluster": {"name": "shared"}, "name": "shop", "owner": "shop"},
+      "status": {"applied": true}
+    }
+  ]
+}

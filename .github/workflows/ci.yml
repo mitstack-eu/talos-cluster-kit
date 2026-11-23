@@ -27,6 +27,7 @@ on:
 permissions:
   contents: read
 
+# Every job runs on GitHub's hosted ubuntu-latest, which is free for a public repository.
 jobs:
   test:
     name: test

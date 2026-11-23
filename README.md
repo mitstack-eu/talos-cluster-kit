@@ -958,51 +958,68 @@ directory and answers the HTTP-01 challenge with a solver pod that Traefik
 reaches in the app's namespace. That pod sits behind a ClusterIP Service,
 since an app's quota allows no NodePort Service. Before Let's Encrypt
 validates, cert-manager fetches the challenge itself from the app's public
-hostname on port 80. The hosting flows are the Cilium policy
-`mitstack-hosting-flows` in `components/hosting/flows.yaml`. It names every
-network flow the hosting set's pods may make or take, as
-[the section on which flows the hosting namespaces allow](#which-flows-the-hosting-namespaces-allow)
-lists. The flows therefore let cert-manager look names up through Cilium's DNS
-proxy, reach `acme-v02.api.letsencrypt.org` on 443 and `*.apps.mitstack.dev`
-on 80, and reach only the few names the next paragraph gives besides. That
-fetch leaves through the gateway, which forwards port 80
-to the ingress load balancer's public address alone. Hetzner fixes a
+hostname on port 80. That fetch leaves through the gateway, which forwards
+port 80 to the ingress load balancer's public address alone. Hetzner fixes a
 server's user data when it creates the server, so only a cluster built on
-v0.27.0 or later carries that rule.
+v0.27.0 or later carries that rule. The Cilium policy `mitstack-hosting-flows`
+in `components/hosting/flows.yaml` lets every pod in the `cert-manager`
+namespace look names up through Cilium's DNS proxy. It also lets those pods
+reach `acme-v02.api.letsencrypt.org` on 443 and `*.apps.mitstack.dev` on 80.
+[The section on which flows the hosting namespaces allow](#which-flows-the-hosting-namespaces-allow)
+lists that policy's flows for each set of pods.
 
-A slice may also serve a hostname of its own. It then holds an Issuer, a
-cert-manager authority that only its own namespace can name, and that Issuer
-answers the DNS-01 challenge. That challenge is a TXT record that
-cert-manager writes into the zone that serves the name. Route 53 is AWS's DNS
-service. STS, AWS's Security Token Service, hands out short-lived AWS
-credentials. For a zone in Route 53, cert-manager trades a token of the
-slice's service account at STS for the credentials of an AWS role. The flows
-therefore let cert-manager's controller reach AWS STS and
-`route53.amazonaws.com`, Route 53's API, on 443. They also let it reach
-`acme-staging-v02.api.letsencrypt.org`, Let's Encrypt's staging directory, for
-a rehearsal.
+A slice, the namespace a block gives one app, may also serve a hostname of
+its own. It then holds an Issuer for that name. An Issuer works like the
+ClusterIssuer `letsencrypt-production` above, but only objects in its own
+namespace can name it. That Issuer answers the DNS-01 challenge, which
+cert-manager meets by writing a TXT record into the zone that serves the name.
+Route 53 is AWS's DNS service. STS, AWS's Security Token Service, hands out
+short-lived AWS credentials. A service account is the identity a program runs
+as inside Kubernetes, and Kubernetes issues tokens that prove it. For a zone in
+Route 53, the Issuer names a service account in the slice. cert-manager trades
+that account's token at STS for the credentials of an AWS role.
 
-`mitstack-hosting-flows` holds a list of specs, each one a pod selector and
-the flows it allows. The DNS-01 reach sits in a spec of its own in
-`components/hosting/flows.yaml`, which selects the controller alone by the
+The same policy lets cert-manager's controller, and no other pod, reach
+`route53.amazonaws.com`, Route 53's API, on 443. It also lets the controller
+reach STS on 443, at the global host `sts.amazonaws.com` and at each regional
+host that `sts.*.amazonaws.com` matches, such as `sts.us-east-1.amazonaws.com`.
+The region an Issuer names picks the STS host that cert-manager calls, so the
+policy admits every region's host. The policy is one fixed file, the same on
+every hosting cluster, so the controller has this reach whether or not any
+slice serves a hostname of its own.
+
+The controller may also reach `acme-staging-v02.api.letsencrypt.org` on 443.
+That is Let's Encrypt's staging directory, which issues test certificates. No
+issuer in the kit orders from it. A slice's block can point the slice's Issuer
+there for a trial order, before the Issuer orders from production.
+
+`mitstack-hosting-flows` holds a list of specs. Each spec picks a set of pods
+by their labels and lists the flows those pods may make or take. The DNS-01
+reach sits in a spec of its own, which picks the controller alone by the
 labels `app.kubernetes.io/name: cert-manager` and
-`app.kubernetes.io/component: controller`. The CA injector, the webhook and
-trust-manager run in the same namespace and get none of this reach.
+`app.kubernetes.io/component: controller`. cert-manager's two other pods, the
+CA injector and the webhook, run in the same namespace. The CA injector copies
+a certificate authority's certificate into each webhook configuration that
+asks for one. The webhook checks each cert-manager object the API server
+receives. trust-manager runs there too, and none of the three gets this reach.
 
 cert-manager's controller runs as the service account `cert-manager` in the
 namespace `cert-manager`. The kit exports both names, as
 `components.CertManagerAccount` and `components.CertManagerNamespace`, so a
 slice's block can read them instead of typing them. To answer the challenge,
-the controller asks the Kubernetes API for a token of the slice's own service
-account. The kit creates no grant for that request, so the block that runs
-the slice must create one in the slice's namespace. A Role there holds the
-right to request that token, and a RoleBinding gives the right to the
-controller's account. The `serviceAccountRef` field's description in
-`components/cert-manager/cert-manager.yaml` asks for the same grant. Before
-cert-manager asks Let's Encrypt to validate, it looks the TXT record up
-itself. The controller's flag `--dns01-recursive-nameservers-only`
-makes it ask cluster DNS, because the flows let it reach no zone's own name
-servers.
+the controller asks the Kubernetes API for a token of the service account the
+slice's Issuer names. The kit creates no permission for that request, so the
+slice's block must create one in the slice's namespace. Kubernetes holds such
+a permission in two objects. A Role names the right, here to request that one
+account's token. A RoleBinding gives the Role to an account, here the
+controller's. The `serviceAccountRef` field's description in
+`components/cert-manager/cert-manager.yaml` asks for the same permission.
+
+Before cert-manager asks Let's Encrypt to validate, it looks the TXT record up
+itself. The controller runs with the option
+`--dns01-recursive-nameservers-only`, which makes it ask the cluster's own DNS
+server. The policy lets it reach none of the name servers that answer for a
+zone, so the cluster's server is the only one it can ask.
 
 `plane.go`, `converge.go`, `install.go` and `observe.go` hold the plane, and
 `api.go` holds the Hetzner Cloud client behind the `API` interface. The
@@ -3435,7 +3452,8 @@ hosting set carries that label. The Cilium policy `mitstack-hosting-flows` in
 
 | Pods | What the policy allows |
 |---|---|
-| cert-manager and trust-manager | Calls to the API server, and the API server's calls to their webhooks |
+| cert-manager's controller, CA injector and webhook, and trust-manager, all in the `cert-manager` namespace | Calls to the API server, lookups through Cilium's DNS proxy, calls to `acme-v02.api.letsencrypt.org` on 443 and to `*.apps.mitstack.dev` on 80, and the API server's calls to their webhooks |
+| cert-manager's controller alone, picked by its labels `app.kubernetes.io/name: cert-manager` and `app.kubernetes.io/component: controller` | Calls to `acme-staging-v02.api.letsencrypt.org`, `sts.amazonaws.com`, `sts.*.amazonaws.com` and `route53.amazonaws.com` on 443. Only the controller solves a slice's DNS-01 challenge, so the other three pods get none of this reach |
 | External Secrets | Calls to the API server and to OpenBao on 8200, lookups through Cilium's DNS proxy, calls to `sts.amazonaws.com`, `sts.*.amazonaws.com` and `api.ecr.*.amazonaws.com` on 443, and the API server's calls to its webhook. The policy `mitstack-external-secrets-ssm` of its own adds calls to `ssm.*.amazonaws.com` on 443 |
 | OpenBao | Calls between members on 8200 and 8201, to the API server and to cluster DNS, the calls of External Secrets and the init Job on 8200, and the telemetry Collector's cluster copy's calls on 9101 |
 | OpenBao's init Job | Lookups through Cilium's DNS proxy, calls to OpenBao on 8200, and SSH to `ssh.github.com` on 443, which the gateway forwards |

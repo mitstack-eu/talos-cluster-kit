@@ -28,7 +28,12 @@ Back to [the README](../README.md).
 | Kubelet | The Kubernetes agent on each node, which starts the node's pods and gives them their CPU and memory |
 | Cloud pool | The cluster's workers on Hetzner Cloud servers, which grows and shrinks with the load |
 | EphemeralRunner | The object ARC keeps for each runner under the runner's name, which it creates before it registers the runner |
-| Runner sweep | The node report's removal of each runner GitHub still lists after ARC has let it go |
+| Offline | GitHub's status for a registered runner that no longer reports in to GitHub |
+| Dead runner | A runner GitHub still lists offline after ARC has let it go, which no job can ever run on |
+| Runner sweep | The node report's removal of each dead runner of the cluster's scale set |
+| Redundancy guard | block-kit's check that refuses to remove a node or gateway until enough of the others read serving in a node report |
+| Right | A permission Kubernetes grants an account through a Role or ClusterRole, such as `list` on one kind of object |
+| Capability | A service a block offers the apps subscribed to it, here CI runners, which the block reads as healthy or unhealthy |
 | Burst member | A Cloud worker added for a burst of load, labelled `mitstack.dev/burst` |
 | Worker | A node outside the control plane, either a Cloud pool server or a dedicated server |
 | Worker image | The disk snapshot an install builds, which every Cloud worker boots from |
@@ -385,7 +390,9 @@ reads it from the Secret to register the scale set. The CronJob
 `mitstack-runner-lease` runs
 `cluster-tokens.sh runner-lease` every 30 minutes, so a token stays valid
 through one failed run. Each run asks for a new token, whatever the Secret
-holds, and makes four calls in turn.
+holds, and makes four calls in turn. It asks the platform for a token,
+writes it into the runners' Secret, restarts ARC's listener and writes the
+token into the sweep's Secret.
 
 The Secret starts empty, so ARC registers the scale set only after the
 CronJob's first run. That run comes at the next full or half hour, up to 30
@@ -431,7 +438,8 @@ runners keep registering with the new token, and the sweep reads the token of
 the run before until the next run.
 
 The job's account may patch the one Secret and delete pods by collection in
-`mitstack-runners`, and patch the sweep's one Secret in `mitstack-node`. It
+`mitstack-runners`, which is one call that deletes every pod a label selector
+matches. It may also patch the sweep's one Secret in `mitstack-node`. It
 may read, list or create nothing. Kubernetes lets that
 account delete any pod of the namespace, so the label selector of the job's
 call limits the deletion to the listener's pods. The job never prints the
@@ -447,35 +455,55 @@ controller, which keeps its list of registrations still to remove in memory.
 GitHub then lists the runner offline, and the runner group fills with dead
 entries.
 
-The node report runs the runner sweep on each of its runs, every 5 minutes,
-so the sweep adds no job of its own. A report whose plane names runner inputs
-takes these steps:
+The node report is a CronJob that starts a Job every 5 minutes, and each of
+those Jobs runs the runner sweep, so the sweep adds no job of its own. A
+report whose plane names runner inputs takes these steps:
 
-1. It lists the organisation's runners, as
-   `GET /orgs/<Organization>/actions/runners`, 100 to a page and at most 3
-   pages.
-2. It then reads the pods and EphemeralRunners in `mitstack-runners`. ARC
+1. It finds the id of the runner group the runner inputs name, as
+   `GET /orgs/<Organization>/actions/runner-groups`, one page of 100.
+2. It lists that group's runners, as
+   `GET /orgs/<Organization>/actions/runner-groups/<id>/runners`, 100 to a
+   page and at most 3 pages.
+3. It then reads the pods and EphemeralRunners in `mitstack-runners`. ARC
    creates a runner's EphemeralRunner before it registers the runner, so a
    runner ARC still holds has one of the two by the time of this read.
-3. It picks each listed runner that GitHub reads offline, whose name no pod
-   or EphemeralRunner holds, and whose name is ARC's for the scale set, such
-   as `mitstack-ci-7xk2p-runner-q8w4z`.
-4. It leaves a picked runner that GitHub still reads busy for a later run,
+4. It picks each listed runner that GitHub reads offline, whose name no pod
+   or EphemeralRunner holds, and whose name is ARC's for the scale set. ARC
+   names a runner after its scale set, then the random suffix of the
+   EphemeralRunnerSet that holds it, then `runner` and the random suffix of
+   its EphemeralRunner, as in `mitstack-ci-7xk2p-runner-q8w4z`.
+5. It leaves a picked runner that GitHub still reads busy for a later run,
    since GitHub refuses to remove a runner while it holds a job.
-5. It asks GitHub to remove the other picked runners one at a time, at most
+6. It asks GitHub to remove the other picked runners one at a time, at most
    10 a run, as `DELETE /orgs/<Organization>/actions/runners/<id>`, and
    leaves the rest for the next run.
+
+Each run starts its 10 removals at a different place in the list of picked
+runners. The place moves on by 10 every 5 minutes, worked out from the clock,
+so 10 runners GitHub keeps refusing cannot hold back the rest. The sweep
+stores nothing between runs for this.
+
+The sweep tells its own runners from the rest of the organisation's by the
+runner group and the name. GitHub's runner object carries `id`, `name`, `os`,
+`status`, `busy`, `ephemeral`, `labels`, `runner_group_id` and `version`, and
+none of them names the scale set. ARC registers a scale set in a runner group
+only when the group holds none of that name, and otherwise takes over the one
+there. A scale set of the same name in another runner group therefore keeps
+its runners. The kit assumes one cluster per scale set name in a runner group:
+a second cluster that registers the same name in the same group shares the
+scale set, and its sweep could remove the first cluster's starting runners.
 
 A runner starting up is offline with its EphemeralRunner, so the sweep keeps
 it. A runner whose pod just went may still read online, so a later run
 removes it. The sweep never removes a runner of another scale set or one ARC
-did not name. When GitHub's list or the read of `mitstack-runners` fails, the
+did not name. When a GitHub list or the read of `mitstack-runners` fails, the
 sweep removes nothing, since it cannot tell which runners ARC still holds.
 GitHub answers 404 for a runner it no longer lists, as when ARC removed it
 after the list, so the sweep counts that runner removed.
 
 The report's `runners` member says what the sweep did. This run listed three
-runners, removed one, met one refusal and left one busy runner for later:
+runners, removed one and left one busy runner for later. GitHub refused the
+third with status 403, which means the token lacks the right to remove it:
 
 ```json
 {
@@ -488,13 +516,23 @@ runners, removed one, met one refusal and left one busy runner for later:
 }
 ```
 
-Each refusal keeps GitHub's status and its message cut to 256 characters.
-`deferred` counts the busy runners and the runners past the 10 a run, which
-wait for the next run. `unlisted` counts the runners GitHub registers past
-the third page, which the sweep did not read. A run that removed nothing
-carries `unread` instead, naming the read that failed or saying the sweep
-stopped before it finished. It carries `skipped` before the lease job has
-written its first token.
+The fields mean this:
+
+- `scaleSet` is the scale set's name.
+- `listed` counts the runners of the group that carry ARC's name for the scale
+  set.
+- `removed` names each runner GitHub removed, or answered 404 for.
+- `unremoved` holds each refusal, with GitHub's status and its message cut to
+  256 characters.
+- `deferred` counts the busy runners and the runners past the 10 a run, which
+  wait for the next run.
+- `unlisted` counts the runners GitHub lists in the group past the third page,
+  which the sweep did not read.
+
+A run that removed nothing carries `scaleSet` and `unread` in place of the
+other fields, naming the read that failed or saying the sweep stopped before
+it finished. Before the lease job has written its first token, a run carries
+`scaleSet` and `skipped` in their place.
 
 The node report holds no right on any Secret. The lease job therefore writes
 the token into `mitstack-runner-sweep-token` in `mitstack-node`, which the
@@ -502,14 +540,19 @@ report mounts as an optional volume, so a report runs before the first lease.
 Each GitHub call reads the token from a header file and never from the
 command line. Once the sweep has read the token, it drops every line holding
 it from the read errors it posts. The sweep's one right beyond the report's
-own is a list of EphemeralRunners, which hold no Secret data, and only a
-report with runner inputs holds it.
+own is a list of EphemeralRunners, which hold no Secret data. The Role
+`mitstack-node-report-runners` grants it in `mitstack-runners` alone, and only
+a report with runner inputs holds it. The lease job's Role already sits in
+`mitstack-runners` among the same manifests, so this Role asks nothing new
+of the order the kit applies them in.
 
 A block built on the robot cluster module reads the member through
 `Cluster.RunnersProblem`. It reads the newest report that names no failed
 read, since a report whose other read failed carries no sweep. It names each
-runner that report's sweep could not remove, or why the sweep removed none,
-and is empty otherwise. The block reads its runner capability as unhealthy
+runner that report's sweep could not remove, how many runners it left
+unlisted, or why the sweep removed none, and is empty otherwise. A dead
+runner past the third page stays listed, so an `unlisted` count above zero
+reads as a problem too. The block reads its runner capability as unhealthy
 with that text, and a later clean run clears it.
 
 ## How a runner release reaches the cluster

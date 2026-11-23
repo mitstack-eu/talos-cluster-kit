@@ -30,8 +30,7 @@ set -euo pipefail
 # default-deny, credential, ObjectStore, scan, OpenBao, etcd status, gateway and egress reads run beside them, each within one limit,
 # the admission fixtures' read and their dry runs within two, and the runner sweep within five.
 limit=${REPORT_READ_SECONDS:-21}
-# The runner sweep reads at most three pages of the org's runners and removes at most ten a run, one at a time, so its
-# calls to GitHub stay few, and each call ends within five seconds.
+# The sweep's fourteen GitHub calls at most, one list of groups, three pages and ten removals, of five seconds each fit its five limits.
 runners_per_page=100
 runner_pages_max=3
 runner_removals_max=10
@@ -128,9 +127,7 @@ read_cluster() {
   wait
 }
 
-# sweep_runners removes each idle runner of RUNNER_SCALE_SET that GitHub lists offline and ARC no longer holds, and
-# writes what it did as the report's runners member. It removes none when either read fails, since it then cannot tell
-# a dead runner from one ARC still holds. Its first write reads unread, so a sweep that stops partway never reads clean.
+# sweep_runners removes nothing once a read fails, since it then cannot tell a dead runner from one ARC still holds.
 sweep_runners() {
   : > "$work/runners.json"
   [ -n "${RUNNERS_ORGANIZATION:-}" ] || return 0
@@ -157,9 +154,7 @@ sweep_reading() {
     > "$work/runners.next" && mv "$work/runners.next" "$work/runners.json"
 }
 
-# github_call METHOD PATH OUT asks GitHub's API with the leased token, keeps the answer in OUT and prints its HTTP
-# status, or 000 when no answer came. -q reads no ~/.curlrc, and the token stays in a header file off the command line.
-# OUT is removed first, so an answer with no body never reads as an earlier call's answer.
+# github_call METHOD PATH OUT prints GitHub's HTTP status, or 000, with the token in a header file so it never shows on the command line.
 github_call() {
   local status
   rm -f "$3"
@@ -212,9 +207,7 @@ list_runners() {
   done
 }
 
-# read_runner_holds keeps the name of each pod and EphemeralRunner in the runner namespace. ARC gives a runner, its
-# EphemeralRunner and its pod one name, and creates the EphemeralRunner before it registers the runner, so a runner
-# GitHub listed before this read that ARC still holds has one of the two.
+# read_runner_holds runs after GitHub's list, since ARC creates a runner's same-named EphemeralRunner before it registers the runner.
 read_runner_holds() {
   local status
   read_beside runner-holds kubectl get pods,ephemeralrunners.actions.github.com -n "$RUNNERS_NAMESPACE" -o json
@@ -228,10 +221,7 @@ read_runner_holds() {
   return 1
 }
 
-# remove_stale_runners asks GitHub, one removal at a time as GitHub asks of a client, to remove up to
-# runner_removals_max idle runners of the scale set it lists offline whose name ARC no longer holds, as ARC names a
-# runner <scale set>-<id>-runner-<id>, and writes the runners member. A busy runner waits, since GitHub refuses to
-# remove a runner while it holds a job.
+# remove_stale_runners skips a busy runner and removes one at a time, since GitHub refuses a runner holding a job and asks clients not to call in parallel.
 remove_stale_runners() {
   local runner stale=()
   if ! jq -c -n --arg pattern "^$RUNNER_SCALE_SET-[a-z0-9]+-runner-[a-z0-9]+\$" --rawfile held "$work/runner-holds.names" '

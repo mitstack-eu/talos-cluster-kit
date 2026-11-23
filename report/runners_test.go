@@ -50,8 +50,7 @@ type gitHubRunner struct {
 	Busy          bool   `json:"busy"`
 }
 
-// runnerAPI fakes the org's runner API, answering a list with listBody when it is set, refusing a removal of an id in
-// refusals with that status and the headers in limit, and recording each call.
+// runnerAPI fakes the org's runner API, answering a list with listBody when set and a refusal with the headers in limit.
 type runnerAPI struct {
 	mu                       sync.Mutex
 	groups                   []map[string]any
@@ -265,7 +264,7 @@ func TestReport_ARemovalGitHubRefusesLeavesTheRunnerUnremovedNamingItWithGitHubs
 func TestReport_RemovesNoRunnerAndNamesTheReadThatFailedWhenGitHubsListOrTheRunnerNamespacesReadFails(t *testing.T) {
 	cases := map[string]struct {
 		groupsStatus int
-		noGroup      bool
+		fake         func(*runnerAPI)
 		listStatus   int
 		listBody     []byte
 		env          []string
@@ -278,16 +277,17 @@ func TestReport_RemovesNoRunnerAndNamesTheReadThatFailedWhenGitHubsListOrTheRunn
 		"GitHub answers the list with runners that are not an array": {listBody: []byte(`{"total_count": 1, "runners": {}}`), fakes: withRunnerPods(),
 			named: []string{"200", "runners array"}},
 		"GitHub answers the list with no total_count": {listBody: []byte(`{"runners": []}`), fakes: withRunnerPods(), named: []string{"200", "total_count"}},
-		"GitHub refuses the list of runner groups": {groupsStatus: http.StatusForbidden, fakes: withRunnerPods(),
-			named: []string{"403", "runner groups"}},
-		"GitHub lists no runner group of the scale set's group name": {noGroup: true, fakes: withRunnerPods(),
+		"GitHub refuses the list of runner groups":    {groupsStatus: http.StatusForbidden, fakes: withRunnerPods(), named: []string{"403", "runner groups"}},
+		"GitHub lists no runner group of the scale set's group name": {fake: func(api *runnerAPI) { api.groups = api.groups[:1] }, fakes: withRunnerPods(),
 			named: []string{runnerGroup}},
-		"the read of the runner pods and EphemeralRunners fails": {
-			fakes: map[string]string{"kubectl": kubectlAnswering(map[string]string{runnerHoldsRead: failedRead})},
-			named: []string{"pods", "EphemeralRunners", "exit status 3", "the server is gone"}},
-		"the read of the runner pods and EphemeralRunners answers no list": {
-			fakes: map[string]string{"kubectl": kubectlAnswering(map[string]string{runnerHoldsRead: "echo 'not json'"})},
-			named: []string{"pods", "EphemeralRunners"}},
+		"GitHub answers the list of runner groups with no runner_groups array": {fake: func(api *runnerAPI) { api.groups = nil }, fakes: withRunnerPods(),
+			named: []string{"200", "runner_groups array"}},
+		"GitHub lists an offline runner whose busy is neither true nor false": {fakes: withRunnerPods(), named: []string{killedRunner, "busy"},
+			listBody: []byte(`{"total_count": 1, "runners": [{"id": 31, "name": "` + killedRunner + `", "status": "offline"}]}`)},
+		"the read of the runner pods and EphemeralRunners fails": {named: []string{"pods", "EphemeralRunners", "exit status 3", "the server is gone"},
+			fakes: map[string]string{"kubectl": kubectlAnswering(map[string]string{runnerHoldsRead: failedRead})}},
+		"the read of the runner pods and EphemeralRunners answers no list": {named: []string{"pods", "EphemeralRunners"},
+			fakes: map[string]string{"kubectl": kubectlAnswering(map[string]string{runnerHoldsRead: "echo 'not json'"})}},
 		"the read of the runner pods and EphemeralRunners exits 0 and prints nothing": {
 			fakes: map[string]string{"kubectl": kubectlAnswering(map[string]string{runnerHoldsRead: "true"})}, named: []string{"pods", "EphemeralRunners"}},
 		"jq cannot pick the runners to remove": {env: []string{"RUNNER_SCALE_SET=mitstack-ci("}, fakes: withRunnerPods(), named: []string{"jq could not pick"}},
@@ -298,8 +298,8 @@ func TestReport_RemovesNoRunnerAndNamesTheReadThatFailedWhenGitHubsListOrTheRunn
 			api.listStatus = cmp.Or(tc.listStatus, http.StatusOK)
 			api.groupsStatus = cmp.Or(tc.groupsStatus, http.StatusOK)
 			api.listBody = tc.listBody
-			if tc.noGroup {
-				api.groups = api.groups[:1]
+			if tc.fake != nil {
+				tc.fake(api)
 			}
 
 			_, posted, out, err := runReport(t, tc.fakes, append(append(sweeping(t, api), "REPORT_READ_SECONDS=2"), tc.env...)...)

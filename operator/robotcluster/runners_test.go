@@ -96,6 +96,12 @@ func TestCluster_RunnersProblemNamesEachRunnerTheNewestReportsSweepCouldNotRemov
 		"a sweep skipped before the first runner token is leased reads unhealthy naming why, since no runner registers before it either": {
 			reports: []observe.NodeReport{sweepReport(t, sweptAt, map[string]any{"scaleSet": "mitstack-ci", "skipped": "no runner token is leased yet"})},
 			named:   []string{"no runner token is leased yet"}},
+		"a sweep of another scale set than the one the cluster runs reads unhealthy naming both": {
+			reports: []observe.NodeReport{sweepReport(t, sweptAt, map[string]any{"scaleSet": "old-ci", "listed": 0, "removed": []any{}, "unremoved": []any{},
+				"busy": []any{}, "deferred": 0, "unlisted": 0})},
+			named: []string{`"old-ci"`, `"mitstack-ci"`}},
+		"a sweep that names neither how many runners it listed nor why it listed none reads unhealthy": {
+			reports: []observe.NodeReport{sweepReport(t, sweptAt, map[string]any{"scaleSet": "mitstack-ci"})}, named: []string{"how many runners it listed"}},
 		"a report from a kit that sweeps nothing reads unhealthy, since the cluster runs a scale set": {
 			reports: []observe.NodeReport{sweepReport(t, sweptAt, nil)}, named: []string{"carries no runner sweep"}},
 		"a cluster that has sent no report yet reads unhealthy": {named: []string{"no node report"}},

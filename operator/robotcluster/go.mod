@@ -71,3 +71,9 @@ require (
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
+
+// A block builds all three modules at one release, so the kit's checks build against the code of the same commit.
+replace (
+	github.com/mitstack-eu/talos-cluster-kit => ../..
+	github.com/mitstack-eu/talos-cluster-kit/operator => ..
+)

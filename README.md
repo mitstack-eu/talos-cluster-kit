@@ -5251,6 +5251,12 @@ go -C operator/robotcluster vet ./...
 go -C operator/robotcluster test -race ./...
 ```
 
+The module's `go.mod` replaces the kit and the operator module with the
+directories beside it. Its tests therefore build against the code of their own
+commit, which is what a block builds when it requires all three modules at one
+release. Go applies a `replace` only in the module it builds, so a block that
+requires the robot cluster module ignores those lines.
+
 An operator's tests settle its cluster on the same fakes the module's own tests
 use, so neither keeps a copy of them. The package
 `operator/robotcluster/robotclustertest` builds a cluster against fakes of

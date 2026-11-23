@@ -288,6 +288,8 @@ func (k *Cluster) observeCluster(ctx context.Context, d contract.Desired) (contr
 	}
 	types, typesErr := requestedServerTypes(d)
 	p.ServerTypes = types
+	signers, signersErr := readSigners(d)
+	p.Signers = signers
 	if st.Empty() && repo.Absent() {
 		return contract.Observation{
 			State:        contract.Absent,
@@ -296,6 +298,9 @@ func (k *Cluster) observeCluster(ctx context.Context, d contract.Desired) (contr
 	}
 	if typesErr != nil {
 		return operator.Unknown("the request's server types cannot be read: " + operator.RefusalDetail(typesErr)), nil
+	}
+	if signersErr != nil {
+		return operator.Unknown("the request's signer list cannot be read: " + operator.RefusalDetail(signersErr)), nil
 	}
 	if p.Runners, err = k.runnersFor(d); err != nil {
 		return operator.Unknown("the cluster's runner services cannot be named: " + operator.RefusalDetail(err)), nil

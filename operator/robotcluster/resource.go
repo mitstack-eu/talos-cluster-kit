@@ -43,6 +43,7 @@ const (
 	TypeRobotFirewall           = "hetzner.robot-firewall"
 	ParamHostsPlatform          = "hostsPlatform"
 	ParamRobotServer            = "robotServerNumber"
+	ParamSigners                = "signers"
 )
 
 const (
@@ -66,6 +67,8 @@ type clusterParams struct {
 	// hosting is whether the cluster hosts the platform, and recipient the key its recovery files are encrypted to.
 	hosting   bool
 	recipient []byte
+	// signers is the list whose signature policy the cluster's release carries.
+	signers []components.Signer
 }
 
 // HostsPlatform is whether the request asks for a cluster that hosts the platform.
@@ -81,6 +84,9 @@ func (k *Cluster) readParams(d contract.Desired) (clusterParams, error) {
 		return p, err
 	}
 	if p.serverTypes, err = requestedServerTypes(d); err != nil {
+		return p, err
+	}
+	if p.signers, err = readSigners(d); err != nil {
 		return p, err
 	}
 	if p.hosting = HostsPlatform(d); p.hosting {
@@ -219,7 +225,7 @@ func (req ensureRequest) plane(ctx context.Context, api controlplane.API) contro
 	p := req.k.placeApps(req.k.NewPlane(api, req.subID, req.params.appName), req.d)
 	p = withTelemetry(req.k.withReports(ctx, p, req.d, req.reports), req.d)
 	p.Size, p.ServerTypes, p.RepoURL, p.Removals = req.params.size, req.params.serverTypes, req.gh.Repo.URL(), req.gh.removals()
-	p.Runners = req.runners
+	p.Runners, p.Signers = req.runners, req.params.signers
 	if req.params.hosting {
 		p.Hosting = req.hosting()
 	}

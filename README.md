@@ -1643,6 +1643,18 @@ list. An image outside the list passes on its digest alone, and so does every
 image once a repository leaves the list. An empty list renders no manifest, so
 such a cluster checks no signature and its Kyverno keeps the reach it had.
 
+The robot cluster module, which hcloud-hrobot-talos-cluster runs, reads the
+list from its request's `signers` param. A comma separates one entry from the
+next, and `|` separates an entry's fields: the repository, the issuer and the
+subject. An entry for a private registry adds its pull Secret as
+`namespace/name` in a fourth field. An example is
+`123456789012.dkr.ecr.eu-central-1.amazonaws.com/shop-api|https://token.actions.githubusercontent.com|https://github.com/acme/shop/.github/workflows/build.yml@refs/heads/main|app-shop/ecr-pull`.
+The module refuses with `invalid-param`, before any change, a list that
+`SignaturePolicy` refuses and a pull Secret on a cluster that hosts no
+platform, and its observe then reads unknown and names the entry. An Update
+that changes the list carries the new policy in the cluster's next release,
+and one that empties it takes the policy out.
+
 Kyverno reads each signature from the registry that holds the image. It
 checks the signature's certificate against Sigstore's trust root, the keys
 Sigstore publishes at `tuf-repo-cdn.sigstore.dev`. Sigstore records every

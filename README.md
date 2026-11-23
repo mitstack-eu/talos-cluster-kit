@@ -282,11 +282,16 @@ removals take, so the refusal names the member that is not serving. The Job's sc
    and so does any call to Kubernetes or the Talos API that does not answer
    within it, or a watch that reads the etcd service destroyed.
 
-Any other failure retries up to three times. While the Job reads failed, the
-cluster reads unknown, naming the nodes behind and the message its failed
-attempt left, such as the setting that only a reboot would apply. The configurations the Job writes
-hold the cluster's keys, so they sit in a memory-backed volume, are deleted as
-soon as they are applied, and are never printed.
+Any other failure retries up to three times.
+
+The Job fails when it refuses the release with exit 3 or uses up its retries.
+The cluster's status then reads unknown. It names the nodes not yet on the
+release's configuration and quotes the message the failed pod left, such as
+the setting a node takes only at reboot.
+
+The configurations the Job writes hold the cluster's keys, so they sit in a
+memory-backed volume, are deleted as soon as they are applied, and are never
+printed.
 
 ## How a block drives the Cloud control plane
 

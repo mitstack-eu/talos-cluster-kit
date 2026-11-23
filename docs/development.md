@@ -727,8 +727,8 @@ go test -run TestRemoveMemberJob ./etcd/
 ## What CI runs
 
 `.github/workflows/ci.yml` runs on every pull request, every push to `main`
-and a manual run. Every job runs on the runner the repository variable
-`CI_RUNS_ON` names, `ubicloud-standard-2` by default.
+and a manual run. Every job runs on `ubuntu-latest`, GitHub's hosted runner,
+which is free for a public repository.
 
 | Job | What it proves |
 |---|---|

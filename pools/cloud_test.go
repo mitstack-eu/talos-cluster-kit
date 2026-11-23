@@ -18,6 +18,7 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/internal/redundanttest"
 	"github.com/mitstack-eu/talos-cluster-kit/pools"
 	"github.com/mitstack-eu/talos-cluster-kit/report"
+	scale "github.com/mitstack-eu/talos-cluster-kit/scaling"
 )
 
 type site struct {
@@ -660,4 +661,67 @@ func TestReclassify_LeavesAMemberWhoseRemovalIsUnderWayAsItIs(t *testing.T) {
 	got := pools.Reclassify(scaling(1, 3), members)
 
 	assert.Empty(t, got, "the steady member at the minimum and the member leaving")
+}
+
+// sizedPool lists a small type, cx23, before a large one, cx53, in one location.
+func sizedPool() pools.CloudPool {
+	return pools.CloudPool{ServerTypes: []string{"cx23", "cx53"}, Locations: []string{"fsn1"}, Min: 0, Max: 3, IdleWindow: 15 * time.Minute}
+}
+
+// runnerWaits is a node report reading each member Ready while one runner pod waits for a node.
+func (s *site) runnerWaits() report.Read {
+	s.t.Helper()
+	nodes := []map[string]any{}
+	for _, srv := range s.members() {
+		nodes = append(nodes, map[string]any{"name": srv.Name, "ready": true})
+	}
+	runner := map[string]any{"namespace": "mitstack-runners", "name": "runner-1", "phase": "Pending", "ownerKind": "EphemeralRunner", "unschedulable": true}
+	at := s.tick()
+	body, err := json.Marshal(map[string]any{"madeAt": at, "nodes": nodes, "pods": []any{runner}})
+	require.NoError(s.t, err)
+	return report.Read{Body: body, At: at}
+}
+
+// grow decides pool by one node report and plans its servers at the decided size, as the block's pool step does.
+func (s *site) grow(pool pools.CloudPool, read report.Read) (scale.Decision, pools.CloudPlan) {
+	s.t.Helper()
+	decision, err := scale.Decide(pool, s.members(), []report.Read{read})
+	require.NoError(s.t, err)
+	sized := pool
+	sized.Max = decision.Want
+	plan, err := s.plan(sized)
+	require.NoError(s.t, err)
+	return decision, plan
+}
+
+// The node report carries no pod requests, so this one waiting pod stands for a pod of any size.
+func TestDecideAndPlanCloud_APoolListingASmallTypeBeforeALargeOneOrdersTheSmallOneForAWaitingPod(t *testing.T) {
+	s := newSite(t, imagedOn("cx23"))
+
+	decision, plan := s.grow(sizedPool(), s.runnerWaits())
+
+	assert.Equal(t, 1, decision.Want, "the members the pool wants for one waiting pod")
+	require.Len(t, plan.Create, 1, "the servers the pool orders")
+	assert.Equal(t, "cx23", plan.Create[0].ServerType, "the type ordered by a pool listing %v", sizedPool().ServerTypes)
+}
+
+func TestDecideAndPlanCloud_APodStillWaitingOnceTheSmallMemberIsReadyGetsASecondSmallMember(t *testing.T) {
+	s := newSite(t, imagedOn("cx23"))
+	_, first := s.grow(sizedPool(), s.runnerWaits())
+	require.NoError(t, first.Apply(context.Background(), s.cloud))
+	require.Equal(t, []string{"cx23"}, typesOf(s.members()), "precondition: the pool's first member")
+
+	decision, plan := s.grow(sizedPool(), s.runnerWaits())
+
+	assert.Equal(t, 2, decision.Want, "the members the pool wants while the pod still waits beside a Ready cx23")
+	require.Len(t, plan.Create, 1, "the servers the pool orders next")
+	assert.Equal(t, "cx23", plan.Create[0].ServerType, "the type of the second member, ordered by a pool listing %v", sizedPool().ServerTypes)
+}
+
+func typesOf(servers []controlplane.Server) []string {
+	out := make([]string, 0, len(servers))
+	for _, srv := range servers {
+		out = append(out, srv.ServerType)
+	}
+	return out
 }

@@ -55,6 +55,23 @@ func TestCI_TestJobFailsAPullRequestThatAddsAFixedSleepOrAPollingIntervalAgainst
 	assert.EqualValues(t, 0, steps[0].With["fetch-depth"], "the test job checks out the full history, so the base commit is present")
 }
 
+// GitHub's hosted runners are free for a public repository, so every job of the kit's own CI runs on one.
+func TestCI_EveryJobRunsOnGitHubsHostedUbuntuRunner(t *testing.T) {
+	raw, err := os.ReadFile(".github/workflows/ci.yml")
+	require.NoError(t, err)
+	var ci struct {
+		Jobs map[string]struct {
+			RunsOn any `yaml:"runs-on"`
+		} `yaml:"jobs"`
+	}
+	require.NoError(t, yaml.Unmarshal(raw, &ci))
+	require.NotEmpty(t, ci.Jobs, "the CI workflow has jobs")
+
+	for name, job := range ci.Jobs {
+		assert.Equal(t, "ubuntu-latest", job.RunsOn, "the %s job runs on GitHub's hosted ubuntu-latest", name)
+	}
+}
+
 // The ci module's go.mod alone names the check's block-kit release, so no workflow names it and a block requiring this kit inherits none of it.
 func TestCI_ThePollingCheckRunsAtTheReleaseTheCIModuleRequires(t *testing.T) {
 	ciMod, err := os.ReadFile("ci/go.mod")

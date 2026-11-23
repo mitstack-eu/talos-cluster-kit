@@ -432,10 +432,11 @@ A run fails, and writes nothing, in each of these cases:
 - The Secret refuses the patch. The run names the Secret and the status and
   leaves the listener running on the token it holds.
 
-The job writes the sweep's Secret last, once the listener has restarted. When
-that Secret refuses the patch, the run fails naming it and the status. The
-runners keep registering with the new token, and the sweep reads the token of
-the run before until the next run.
+A run can also fail after it has written the runners' Secret. The job writes
+the sweep's Secret last, once the listener has restarted. When that Secret
+refuses the patch, the run fails naming it and the status. The runners keep
+registering with the new token, and the sweep reads the token of the run
+before until the next run.
 
 The job's account may patch the one Secret and delete pods by collection in
 `mitstack-runners`, which is one call that deletes every pod a label selector
@@ -509,9 +510,11 @@ These answers count as failed reads too:
 - an offline runner whose `busy` is neither true nor false
 - a read of `mitstack-runners` that prints no Kubernetes list
 
-
 GitHub answers 404 for a runner it no longer lists, as when ARC removed it
-after the list, so the sweep counts that runner removed.
+after the list, so the sweep counts that runner removed. Whether GitHub also
+answers 404 to a token that lacks the right to remove a runner is not yet
+proven. A later sweep that removes the same runner again shows that GitHub
+still lists it, so the block's check names that runner.
 
 The report's `runners` member says what the sweep did. This run listed three
 runners, removed one and left one busy runner for later. GitHub refused the
@@ -541,14 +544,16 @@ The fields mean this:
   GitHub to fail its job.
 - `deferred` counts the busy runners and the picked runners the run did not
   ask about, past the 10 a run or after a rate limit, which wait for the next
-  run.
+  run. The block's check reads no `deferred` count, so a backlog reads no
+  problem however many runs it takes to drain.
 - `unlisted` counts the runners GitHub lists in the group past the third page,
   which the sweep did not read.
 
-A run that removed nothing carries `scaleSet` and `unread` in place of the
-other fields, naming the read that failed or saying the sweep stopped before
-it finished. Before the lease job has written its first token, a run carries
-`scaleSet` and `skipped` in their place.
+A run whose sweep picked its runners carries the fields above, even when it
+removed none. A run whose sweep could not tell which runners to remove, or
+stopped before it finished, carries `scaleSet` and `unread` in place of the
+other fields, naming why. Before the lease job has written its first token, a
+run carries `scaleSet` and `skipped` in their place.
 
 The node report holds no right on any Secret. The lease job therefore writes
 the token into `mitstack-runner-sweep-token` in `mitstack-node`, which the
@@ -558,16 +563,16 @@ command line. Once the sweep has read the token, it drops every line holding
 it from the read errors it posts. The sweep's one right beyond the report's
 own is a list of EphemeralRunners, which hold no Secret data. The Role
 `mitstack-node-report-runners` grants it in `mitstack-runners` alone, and only
-a report with runner inputs holds it. The lease job's Role already sits in
-`mitstack-runners` among the same manifests, so this Role asks nothing new
-of the order the kit applies them in.
+a report with runner inputs holds it. Kubernetes creates a Role only in a
+namespace that exists. The lease job's Role already lives in
+`mitstack-runners` and reaches the cluster in the same set of the kit's own
+components, so this Role needs no new step to create the namespace first.
 
 A block built on the robot cluster module reads the member through
 `Cluster.RunnersProblem`. It reads the newest report that names no failed
 read, since a report whose other read failed carries no sweep. The text it
-returns is empty for a cluster that runs no scale set, and for a sweep that
-left no dead runner it could see. Otherwise it names what is wrong, in these
-cases:
+returns names each way that report shows the sweep failed, stopped or was
+blocked, in these cases:
 
 - the block cannot read the cluster's runner services or its node reports
 - no report that names no failed read has reached the platform
@@ -582,12 +587,23 @@ cases:
 - `unlisted` is above zero, since a dead runner past the third page stays
   listed
 - a runner reads busy in two sweeps 30 minutes or more apart
+- a runner the newest sweep counts removed was counted removed by an older
+  sweep too, so GitHub still lists it
+
+The text is empty when that report shows none of these, and for a cluster
+that runs no scale set. The block reads its runner capability as unhealthy
+with the text, and a later clean run clears it.
 
 The sweep never removes a busy runner, so a dead runner GitHub keeps reading
 busy would stay listed with no other sign. GitHub's docs give no time within
 which it fails the job of a runner that went away, so the 30 minutes is the
-kit's own choice. The block reads its runner capability as unhealthy with
-that text, and a later clean run clears it.
+kit's own choice.
+
+A backlog the sweep still works through reads empty too, however many runs it
+takes, since no case reads `deferred`. A time-based check on `deferred` would
+read unhealthy for a backlog that drains as designed at ten a run, and a group
+that outgrows the drain already reads unhealthy through `unlisted` once it
+passes the 300 runners the sweep reads.
 
 ## How a runner release reaches the cluster
 

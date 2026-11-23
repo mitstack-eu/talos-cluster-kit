@@ -91,7 +91,7 @@ func (k *Cluster) RunnersProblem(ctx context.Context, d contract.Desired) string
 		problems = append(problems, fmt.Sprintf("GitHub lists %d more runners in the runner group of the scale set %s than the sweep reads, so a dead runner among them stays listed",
 			sweep.Unlisted, sweep.ScaleSet))
 	}
-	// The sweep counts GitHub's 404 as removed, so a runner a later sweep removes again is one GitHub went on listing.
+	// The sweep counts GitHub's 404 as removed, so a runner a later sweep counts removed again is one GitHub went on listing.
 	if again := namedEarlier(sweep.Removed, full, newest.ReceivedAt, 0, func(s runnerSweep) []string { return s.Removed }); len(again) > 0 {
 		problems = append(problems, fmt.Sprintf("GitHub still lists these offline runners of the scale set %s, though it answered an earlier sweep's removal of each with 204 or 404: %s",
 			sweep.ScaleSet, strings.Join(again, ", ")))

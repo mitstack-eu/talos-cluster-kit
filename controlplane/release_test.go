@@ -575,6 +575,22 @@ func TestRelease_APlaneWithRunnersCarriesTheRunnerTokenSecretTheLeaseCronJobOffB
 	}, role["rules"], "the job may patch the one Secret and delete pods by collection, and read, list or create none")
 	binding := testutil.Named(t, docs, "RoleBinding", "mitstack-runner-lease")
 	assert.Equal(t, []any{map[string]any{"kind": "ServiceAccount", "name": "mitstack-runner-lease", "namespace": "mitstack-node"}}, binding["subjects"])
+	sweepSecret := testutil.Named(t, docs, "Secret", components.RunnerSweepTokenSecret)
+	assert.Equal(t, "mitstack-node", testutil.Field(t, sweepSecret, "metadata", "namespace"), "the namespace the report mounts the sweep's token from")
+	assert.Nil(t, sweepSecret["data"], "the kit commits the sweep's Secret empty, for the lease job to fill")
+	assert.Nil(t, sweepSecret["stringData"])
+	sweepRole := testutil.Named(t, docs, "Role", components.RunnerSweepTokenSecret)
+	assert.Equal(t, "mitstack-node", testutil.Field(t, sweepRole, "metadata", "namespace"))
+	assert.Equal(t, []any{
+		map[string]any{"apiGroups": []any{""}, "resources": []any{"secrets"}, "resourceNames": []any{components.RunnerSweepTokenSecret}, "verbs": []any{"patch"}},
+	}, sweepRole["rules"], "the job may patch the sweep's one Secret in the report's namespace, and read none")
+	sweepBinding := testutil.Named(t, docs, "RoleBinding", components.RunnerSweepTokenSecret)
+	assert.Equal(t, components.RunnerSweepTokenSecret, testutil.Field(t, sweepBinding, "roleRef", "name"))
+	assert.Equal(t, []any{map[string]any{"kind": "ServiceAccount", "name": "mitstack-runner-lease", "namespace": "mitstack-node"}}, sweepBinding["subjects"])
+	reportEnv := testutil.ContainerEnv(t, testutil.Field(t, testutil.Named(t, testutil.Documents(t, testutil.Manifest(t, "mitstack-node-report", release.Components).Bytes),
+		"CronJob", "mitstack-node-report"), "spec", "jobTemplate", "spec", "template", "spec", "containers", "0"))
+	assert.Equal(t, "acme-org", reportEnv["RUNNERS_ORGANIZATION"], "the report sweeps the runners of the plane's organisation")
+	assert.Equal(t, "mitstack-ci", reportEnv["RUNNER_SCALE_SET"], "and of its scale set")
 	lease := testutil.Named(t, docs, "CronJob", "mitstack-runner-lease")
 	assert.Equal(t, "mitstack-node", testutil.Field(t, lease, "metadata", "namespace"))
 	assert.Equal(t, "*/30 * * * *", testutil.Field(t, lease, "spec", "schedule"), "twice in the hour a token lives")
@@ -606,7 +622,7 @@ func TestRelease_APlaneWithRunnersCarriesTheRunnerTokenSecretTheLeaseCronJobOffB
 			carried = append(carried, fmt.Sprintf("%v %v", doc["kind"], testutil.Field(t, doc, "metadata", "name")))
 		}
 	}
-	assert.Subset(t, carried, []string{"Secret mitstack-runner-token", "CronJob mitstack-runner-lease", "AutoscalingRunnerSet mitstack-ci"},
+	assert.Subset(t, carried, []string{"Secret mitstack-runner-token", "Secret " + components.RunnerSweepTokenSecret, "CronJob mitstack-runner-lease", "AutoscalingRunnerSet mitstack-ci"},
 		"what Argo CD applies from the cluster repository")
 }
 

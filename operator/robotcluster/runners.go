@@ -22,7 +22,8 @@ const staleSweepBound = 3 * report.Interval
 // busy runner and GitHub documents no time within which it fails the job of a runner that went away.
 const stuckRunnerBound = 30 * time.Minute
 
-// unremovedRunner is a runner the report's sweep asked GitHub to remove, with how GitHub refused.
+// unremovedRunner is a runner the sweep asked GitHub to remove that GitHub did not answer as gone, with its status
+// and message.
 type unremovedRunner struct {
 	Name    string `json:"name"`
 	ID      int64  `json:"id"`
@@ -30,7 +31,7 @@ type unremovedRunner struct {
 	Message string `json:"message"`
 }
 
-// runnerSweep is the node report's runners member, which a cluster that runs a runner scale set reports.
+// runnerSweep is the part of the node report's runners member that the check reads.
 type runnerSweep struct {
 	ScaleSet  string            `json:"scaleSet"`
 	Listed    *int              `json:"listed"`
@@ -41,8 +42,9 @@ type runnerSweep struct {
 	Unlisted  int               `json:"unlisted"`
 }
 
-// RunnersProblem names why the runner sweep of a cluster that runs a scale set has not removed every dead runner, read
-// from the newest full report, and is "" when it has or the cluster runs no scale set.
+// RunnersProblem names each way the newest node report that read everything shows the runner sweep failed, stopped or
+// blocked, and is "" when it shows none or the cluster runs no scale set, so a backlog the sweep still works through
+// reads "".
 func (k *Cluster) RunnersProblem(ctx context.Context, d contract.Desired) string {
 	runners, err := k.runnersFor(d)
 	switch {
@@ -106,7 +108,6 @@ func fullReports(reports []observe.NodeReport) []observe.NodeReport {
 	})
 }
 
-// sweepOf is the runner sweep r carries, or nil when it carries none.
 func sweepOf(r observe.NodeReport) (*runnerSweep, error) {
 	var body struct {
 		Runners *runnerSweep `json:"runners"`

@@ -477,6 +477,10 @@ report whose plane names runner inputs takes these steps:
 6. It asks GitHub to remove the other picked runners one at a time, at most
    10 a run, as `DELETE /orgs/<Organization>/actions/runners/<id>`, and
    leaves the rest for the next run.
+7. It stops asking once GitHub answers a removal with a rate limit, which is
+   a 429, or a 403 with a `Retry-After` header or no requests left. GitHub
+   asks a client it limits to stop calling for a while, so the rest wait for
+   the next run.
 
 Each run starts its 10 removals at a different place in the list of picked
 runners. The place moves on by 10 every 5 minutes, worked out from the clock,
@@ -498,6 +502,14 @@ it. A runner whose pod just went may still read online, so a later run
 removes it. The sweep never removes a runner of another scale set or one ARC
 did not name. When a GitHub list or the read of `mitstack-runners` fails, the
 sweep removes nothing, since it cannot tell which runners ARC still holds.
+These answers count as failed reads too:
+
+- a runner-group answer with no `runner_groups` array
+- a list answer with no `runners` array or no numeric `total_count`
+- an offline runner whose `busy` is neither true nor false
+- a read of `mitstack-runners` that prints no Kubernetes list
+
+
 GitHub answers 404 for a runner it no longer lists, as when ARC removed it
 after the list, so the sweep counts that runner removed.
 
@@ -511,6 +523,7 @@ third with status 403, which means the token lacks the right to remove it:
   "listed": 3,
   "removed": ["mitstack-ci-7xk2p-runner-q8w4z"],
   "unremoved": [{"id": 22, "name": "mitstack-ci-7xk2p-runner-m3n5b", "status": 403, "message": "the message GitHub answered with"}],
+  "busy": ["mitstack-ci-7xk2p-runner-h5j6k"],
   "deferred": 1,
   "unlisted": 0
 }
@@ -524,8 +537,11 @@ The fields mean this:
 - `removed` names each runner GitHub removed, or answered 404 for.
 - `unremoved` holds each refusal, with GitHub's status and its message cut to
   256 characters.
-- `deferred` counts the busy runners and the runners past the 10 a run, which
-  wait for the next run.
+- `busy` names each picked runner GitHub still reads busy, which waits for
+  GitHub to fail its job.
+- `deferred` counts the busy runners and the picked runners the run did not
+  ask about, past the 10 a run or after a rate limit, which wait for the next
+  run.
 - `unlisted` counts the runners GitHub lists in the group past the third page,
   which the sweep did not read.
 
@@ -548,12 +564,30 @@ of the order the kit applies them in.
 
 A block built on the robot cluster module reads the member through
 `Cluster.RunnersProblem`. It reads the newest report that names no failed
-read, since a report whose other read failed carries no sweep. It names each
-runner that report's sweep could not remove, how many runners it left
-unlisted, or why the sweep removed none, and is empty otherwise. A dead
-runner past the third page stays listed, so an `unlisted` count above zero
-reads as a problem too. The block reads its runner capability as unhealthy
-with that text, and a later clean run clears it.
+read, since a report whose other read failed carries no sweep. The text it
+returns is empty for a cluster that runs no scale set, and for a sweep that
+left no dead runner it could see. Otherwise it names what is wrong, in these
+cases:
+
+- the block cannot read the cluster's runner services or its node reports
+- no report that names no failed read has reached the platform
+- the newest such report is more than 15 minutes old, which is three report
+  runs, so the sweep has stopped
+- the report carries no `runners` member, as from a kit release without the
+  sweep
+- the sweep carries `unread` or `skipped`
+- the sweep read another scale set than the one the cluster runs
+- the sweep says neither how many runners it listed nor why it listed none
+- GitHub refused a removal, named with its status and message
+- `unlisted` is above zero, since a dead runner past the third page stays
+  listed
+- a runner reads busy in two sweeps 30 minutes or more apart
+
+The sweep never removes a busy runner, so a dead runner GitHub keeps reading
+busy would stay listed with no other sign. GitHub's docs give no time within
+which it fails the job of a runner that went away, so the 30 minutes is the
+kit's own choice. The block reads its runner capability as unhealthy with
+that text, and a later clean run clears it.
 
 ## How a runner release reaches the cluster
 

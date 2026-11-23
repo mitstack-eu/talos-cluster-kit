@@ -199,7 +199,8 @@ find_runner_group() {
   return 1
 }
 
-# list_runners keeps each runner of the runner group GitHub lists, one per line, reading pages until one holds fewer than a page.
+# list_runners keeps each runner of the runner group GitHub lists, one per line, reading pages until one holds fewer than a
+# page or runner_pages_max pages are read.
 list_runners() {
   local page status
   : > "$work/github-runners.jsonl"
@@ -237,8 +238,8 @@ read_runner_holds() {
 # runner holding a job and asks clients to call one at a time and to stop calling once limited.
 remove_stale_runners() {
   local runner picked=()
-  # The first line counts what the sweep read, and each line after it is a runner to remove. Each run starts where the
-  # run five minutes before stopped, so runners GitHub keeps refusing cannot starve the rest.
+  # The first line counts what the sweep read, and each line after it is a runner to remove. The start moves on by the
+  # removal cap every five minutes, so runners GitHub keeps refusing cannot starve the rest.
   if ! jq -c -n --arg pattern "^$RUNNER_SCALE_SET-[a-z0-9]+-runner-[a-z0-9]+\$" --rawfile held "$work/runner-holds.names" \
       --argjson most "$runner_removals_max" --argjson run "$(($(date +%s) / 300))" '
       ($held | split("\n")) as $names
@@ -429,8 +430,8 @@ read_subscription_resources() {
   done
 }
 
-# scrubbed FILE prints FILE with no NUL and no line that holds the report token, or the runner token once the sweep has
-# read it, or looks like a bearer token or a JWT.
+# scrubbed FILE prints FILE with no NUL and no line that holds the report token, or the runner token inside the sweep's
+# subshell, which alone reads it, or looks like a bearer token or a JWT.
 scrubbed() {
   tr -d '\000' < "$1" \
     | { grep -avF -- "$token" || true; } \
@@ -439,7 +440,7 @@ scrubbed() {
 }
 
 # report_failure NAME STATUS posts a report whose error names the read, how it ended and the last 1 KiB of its
-# stderr, scrubbed of every token.
+# stderr, keeping no NUL and no line that holds the report token or looks like a bearer token or a JWT.
 report_failure() {
   local name=$1 status=$2
   scrubbed "$work/read.err" | tail -c 1024 > "$work/read.tail"

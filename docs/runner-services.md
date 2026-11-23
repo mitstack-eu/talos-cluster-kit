@@ -37,7 +37,7 @@ Back to [the README](../README.md).
 | Node rollout | The kit's Job that gives each running node a release's configuration, one node at a time and without a reboot |
 | Subscribe | The call mitstack sends the operator to build or change the cluster, which the operator answers one step at a time |
 | Install | The subscribes that first build a cluster, and render every node's first configuration |
-| Update | A later subscribe that moves a running cluster onto a newer release of its block, and so onto the kit release that block release carries |
+| Update | A later subscribe that moves a running cluster onto a newer release of its block, and so onto the kit release that block release carries. The platform's API and console call it an upgrade |
 | Upgrade | A request that changes a running cluster's parameters, such as one that names runner inputs |
 | Observe | The operator's read of the cluster's state, whose status names what the next subscribe would do |
 
@@ -79,8 +79,6 @@ holds the following parts, beside every component a cluster runs anyway:
   [the README](../README.md#how-a-cloud-pool-scales-with-the-load) explains. A
   test in `rendered_set_test.go` at the kit's root sums those DaemonSets'
   requests against the published sizes and fails once the job no longer fits.
-  A live cpx32 offers its pods about 465Mi less memory than the test's sum
-  for that type, so the test's memory margin is wider than a live node's.
 - The CronJob `mitstack-runner-lease` in `mitstack-node`, which runs on the
   control plane and keeps the GitHub token ARC reads from the Secret
   `mitstack-runner-token` fresh.
@@ -118,17 +116,21 @@ Kubernetes counts CPU in thousandths of a core, so `1000m` is one whole core
 and `250m` is a quarter of one. A container asks for whole cores when its CPU
 request is a whole number of them, such as `1000m` or `2000m`.
 
-Each worker's kubelet therefore runs the static CPU manager policy, a kubelet
-setting that splits the node's cores in two:
+Each worker of a cluster that runs CI jobs therefore runs the static CPU
+manager policy once it has taken that setting, as
+[How each node comes to run the kubelet settings](#how-each-node-comes-to-run-the-kubelet-settings)
+explains. The policy is a kubelet setting that splits the node's cores in two:
 
 1. A container of a `Guaranteed` pod that asks for whole cores gets those
    cores alone, and no other container runs on them.
 2. Every other container shares the cores left over, which the kubelet calls
    the shared pool.
 
-`nproc` in a step then prints 1, the one whole core the runner asks for. The Docker
-daemon and the init container ask for a fraction of a core, so they run in
-the shared pool, beside the node's other pods.
+`nproc` in a step then prints the number of whole cores the runner container
+asks for, which is 1 at the request `components/runners.go` sets. The Docker daemon asks
+for a fraction of a core, and so does the init container, which copies files
+from the runner image into a shared volume before the other containers start.
+Both therefore run in the shared pool, beside the node's other pods.
 
 The kubelet refuses the static policy unless some CPU is kept for the system,
 so the shared pool never empties. Talos keeps 50m of CPU for the system on
@@ -149,29 +151,43 @@ The install alone decides whether a cluster's nodes run CI jobs. Every node
 boots on a configuration the install renders: the control-plane nodes, the
 dedicated worker, and the worker image every Cloud worker boots from, burst
 members included. When the plane names runner inputs at the install, the
-install renders the kubelet's CI settings into each of them. Which settings
-those are depends on the kit release the install ran:
-
-| Kit release at the install | The kubelet's CI settings it renders |
-|---|---|
-| v0.117.0 or earlier | None |
-| v0.118.0 to v0.128.x | The disk eviction settings, on every node |
-| v0.129.0 or later | The disk eviction settings on every node, and the static CPU manager policy on each worker |
+install renders the kubelet's CI settings into each of them.
 
 The kit keeps no record of the install's choice outside the nodes, so a
 rerender reads it back from the running node. A node that carries the disk
 eviction settings takes the CI settings of the kit release an Update carries,
 and a node without them takes none. An upgrade that names runner inputs on a
 cluster installed without them therefore leaves every kubelet as the install
-rendered it. The table shows when each kind of worker comes to run the static
-policy.
+rendered it.
 
-| Worker | When it runs the static CPU manager policy |
-|---|---|
-| Any worker of a cluster installed with runner inputs on v0.129.0 or later | From its first boot, since its configuration or the worker image it boots from carries the policy |
-| A running worker of a cluster installed with runner inputs on v0.118.0 to v0.128.x | From the node rollout of the Update that carries v0.129.0 or later, with no reboot and no rebuild |
-| A Cloud worker that such a cluster creates later, such as a burst member | It boots from the install's worker image without the policy, and runs it from the first node rollout that reaches it, as the next section describes |
-| Any worker of a cluster installed on v0.117.0 or earlier, or installed without runner inputs | Never, since a rerender finds no disk eviction settings to read. Only a new install gives such a cluster the policy: build the cluster again with runner inputs on v0.129.0 or later |
+The table below is the one place this page names kit releases. It maps the
+kit release the install ran to the settings it renders and to when a worker
+comes to run the static policy.
+
+| Kit release at the install | The kubelet's CI settings it renders | When a worker runs the static CPU manager policy |
+|---|---|---|
+| v0.117.0 or earlier, or any release on a plane without runner inputs | None | Never, since a rerender finds no disk eviction settings to read |
+| v0.118.0 to v0.128.x | The disk eviction settings, on every node | A running worker, from the node rollout of the first Update onto a kit release of the next row, with no reboot and no rebuild. A Cloud worker the cluster creates later, such as a burst member, boots from the install's worker image without the policy, and runs it from the first node rollout that reaches it |
+| v0.129.0 or later | The disk eviction settings on every node, and the static CPU manager policy on each worker | From its first boot, since its configuration or the worker image it boots from carries the policy |
+
+The platform sends an Update once the block release a subscription uses moves
+to a newer one. The kit release that block release carries decides the row an
+Update moves a running worker into.
+
+A cluster in the first row takes the policy only from a new install. For a
+running cluster, that means you delete it and create it again: an unsubscribe
+removes the cluster, and a later subscribe builds it with runner inputs on a
+block release whose kit release sits in the last row.
+
+A removal deletes every Cloud resource that carries the subscription's labels,
+as
+[How a block drives the Cloud control plane](../README.md#how-a-block-drives-the-cloud-control-plane)
+explains. Those include the worker image and the snapshot that holds the
+cluster's keys. A block built on the robot cluster module also deletes the
+cluster repository and releases the dedicated server, as
+[A cluster with no dedicated server](../README.md#a-cluster-with-no-dedicated-server)
+describes. `Cluster.Delete` in `operator/robotcluster/teardown.go` holds that
+removal.
 
 At a node rollout, Talos applies the new configuration without a reboot.
 Talos stops the kubelet, deletes the CPU manager's state file
@@ -180,15 +196,43 @@ and starts the kubelet again. The kubelet refuses a state file written under
 another policy, so without that step it would not start.
 
 Kubernetes applies a CPU manager policy only to the pods the kubelet starts
-after the change. Neither Talos nor the rollout drains the node first, so a
-job pod already running keeps sharing its node's cores until it ends. Each
-later job gets cores of its own.
+after the change. Neither Talos nor the rollout drains the node first, which
+would move its pods to other nodes before the change. A job pod already
+running therefore keeps sharing its node's cores until it ends, and each later
+job gets cores of its own.
+
+### How you read which row a worker is in
+
+The kubelet's running settings tell you the row. You read them through the
+Kubernetes API's path to a node's kubelet, so you need a kubeconfig for the
+cluster, for an account that may `get` the resource `nodes/proxy`. Run this
+for a worker, with its node name in place of `<worker>`:
+
+```bash
+kubectl get --raw "/api/v1/nodes/<worker>/proxy/configz" | jq '.kubeletconfig | {evictionSoft, cpuManagerPolicy}'
+```
+
+| What it prints | What it means for the worker |
+|---|---|
+| `evictionSoft` null, `cpuManagerPolicy` `none` | The install rendered no CI settings, so the worker is in the first row and runs the policy only once the cluster is built again |
+| `evictionSoft` set, `cpuManagerPolicy` `none` | The install rendered the disk eviction settings alone, so the worker is in the middle row and runs the policy once a node rollout of a kit release from the last row reaches it |
+| `evictionSoft` set, `cpuManagerPolicy` `static` | The worker runs the policy |
+
+The node report answers a narrower question, and needs no kubeconfig. The
+kit posts it to the platform, which serves it at
+`GET /v1/subscriptions/<id>/node-reports`. Each node's `machineConfig` in it
+names the release the node's machine configuration was rendered from, by the
+digest of that release's tools image. It therefore shows whether a release's
+node rollout has reached a worker. It cannot tell the row, since a node
+without the disk eviction settings takes each later release's configuration
+without them too.
 
 ### When the rollout reaches a worker created later
 
-A burst member of a cluster installed on v0.118.0 to v0.128.x boots on the
-install's kit release. The node report names that release as the source of
-its machine configuration, so the kit reads the member as behind. The
+A burst member of a cluster whose install rendered the disk eviction settings
+alone boots on the install's kit release. The node report names that release
+as the source of its machine configuration, so the kit reads the member as
+behind. The
 member's jobs share its cores until a node rollout reaches it, which takes
 these steps:
 

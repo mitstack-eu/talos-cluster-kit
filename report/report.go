@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"go.yaml.in/yaml/v4"
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
@@ -204,6 +205,9 @@ func Manifests(in Inputs) ([]byte, error) {
 		"ScriptDir":        tools.ScriptDir,
 		"KubeBenchVersion": tools.Pin("KUBE_BENCH_VERSION"),
 		"ControlsVersion":  tools.Pin("KUBESCAPE_CONTROLS_VERSION"),
+		// Talos keeps each kubeconfig in its directory here, one of the places kube-bench looks for it.
+		"SchedulerSecrets":         constants.KubernetesSchedulerSecretsDir,
+		"ControllerManagerSecrets": constants.KubernetesControllerManagerSecretsDir,
 	})
 	if err != nil {
 		return nil, err

@@ -97,6 +97,10 @@ holds the following parts, beside every component a cluster runs anyway:
   `mitstack-runner-token` fresh. It writes the same token into the Secret
   `mitstack-runner-sweep-token`, which the node report reads to remove dead
   runners.
+- Three package caches that every job shares: a Go module cache, an npm cache
+  and a Docker Hub image cache.
+  [How the jobs share package caches](#how-the-jobs-share-package-caches)
+  explains them.
 
 The three pod policies `mitstack-disallow-host-path`,
 `mitstack-require-resource-limits` and `mitstack-restrict-image-registries`
@@ -601,6 +605,140 @@ C4Container
   Rel(runner, gateway, "Pulls images")
 ```
 
+## How the jobs share package caches
+
+A job's pod starts with empty disks, so without a cache each job fetches every
+Go module, npm package and Docker Hub image from the internet again. The
+runner services therefore run three caches in `mitstack-runners` that every
+job of every repository shares. A job reaches them by settings the scale set
+gives its pod, so no workflow names a cache.
+
+| Cache | How a job reaches it | What it checks before it keeps an entry | Disk | Sweep limit |
+|---|---|---|---|---|
+| `go-cache` | `GOPROXY` on the runner container names `http://go-cache.mitstack-runners.svc:8080` first | A module's `go.mod` or zip matches the hash in the signed tree of `sum.golang.org` | 6 GiB | 5 GiB |
+| `npm-cache` | `npm_config_registry` on the runner container names `http://npm-cache.mitstack-runners.svc:8080/` | A tarball matches the strongest `integrity` digest its package's metadata names, or its `shasum` | 4 GiB | 3 GiB |
+| `image-cache` | The Docker daemon's `--registry-mirror` names `http://image-cache.mitstack-runners.svc:5000` | The registry checks each blob it pulls against its digest | 12 GiB | 10 GiB |
+
+The Go and npm caches run `package-cache`, a server the kit builds into its
+tools image from `cmd/package-cache`. Each passes through what no digest
+covers, such as a module's version list or a package's metadata, since a
+release changes those. The image cache runs the registry
+`docker.io/library/registry:3.1.2` as a pull-through mirror of Docker Hub, with
+`package-cache sweep` beside it in the same pod.
+
+For example, a job's `go mod download` asks `go-cache` for
+`golang.org/x/mod/@v/v0.38.0.zip`. The first time, the cache fetches the zip
+from `proxy.golang.org` and asks `sum.golang.org` for its hash. It stores the
+zip only if the hashes match, and refuses it with a 502 otherwise. Every later
+job gets the stored zip without a fetch.
+
+### How a cache evicts its entries
+
+Every cache sweeps its disk every five minutes. The sweep first removes each
+entry unused for 14 days. It then keeps the most recently used entries that fit
+the sweep limit and removes the rest. An entry's last use is the later of the
+times it was last read and last written. The Go and npm caches mark an entry
+each time they serve it. The registry's reads move only the read time, which
+the node's file system updates at most once a day, so a blob's last use is
+exact to the day.
+
+The registry also drops each image it pulled 14 days after the pull, and pulls
+it again on the next ask. It keeps no cache of blob descriptors, since such a
+cache would name a blob the sweep removed as present.
+
+Each sweep limit sits 1 to 2 GiB below the size limit of the cache's
+emptyDir. The kubelet evicts a pod whose emptyDir passes its limit, so the
+margin keeps a cache that fills between two sweeps from losing its pod. The
+cache's container asks the scheduler for the same disk, so a node holds room
+for it.
+
+### What happens when a cache is down
+
+The go command tries `proxy.golang.org` on any error from `go-cache`, and the
+Docker daemon pulls from Docker Hub itself when the mirror fails. npm has no
+such fallback, so each `npm install` fails until `npm-cache` serves again.
+
+The plane's `Unhealthy` reads the newest node report for Argo CD's health of
+each cache's Deployment. When any reads other than `Healthy`, or the caches'
+Application lists no Deployment for one, the cluster reads unhealthy with
+`CauseRunnerCacheDown`. Its detail names each such cache with its health and
+the time the report was read, for example:
+
+```text
+the node report read at 2026-11-23T12:00:00Z: Argo CD reads image-cache Progressing: Waiting for rollout to finish: 0 of 1 updated replicas are available...
+```
+
+A report that carries no health for the caches' Application, such as one sent
+before Argo CD applied it, judges nothing.
+
+### Where the caches run
+
+Each cache is a Deployment of one pod that refuses a burst member, since a
+burst member leaves with its idle window and takes its disks with it. Its
+entries sit on an emptyDir, so a pod that restarts or moves to another node
+starts empty. Each pod mounts no service account token, runs as uid 65532 and
+writes only its emptyDir.
+
+The Cilium policy `mitstack-runner-caches-flows` lets a job's pod reach each
+cache, and each cache answer job pods alone. Each cache reaches only its own
+upstreams on port 443:
+
+| Cache | The hosts it reaches |
+|---|---|
+| `go-cache` | `proxy.golang.org` and `sum.golang.org` |
+| `npm-cache` | `registry.npmjs.org` |
+| `image-cache` | `registry-1.docker.io`, `auth.docker.io`, `production.cloudflare.docker.com` and Docker Hub's blob host on `r2.cloudflarestorage.com` |
+
+Each cache's pod also reaches the API server, the cluster's DNS and GitHub,
+which `mitstack-runners-flows` gives every pod of the namespace.
+
+The gateways mirror the registry image and the tools image for a plane with
+runners, so a node pulls both as it pulls every other image.
+
+A node applies the caches' manifest at its build, as it applies the scale
+set's. The builder's user data has no room for the caches beside the scale
+set, so the builder fetches their manifest from the short-lived serving
+server, as
+[the README's section on the serving server](../README.md#how-the-hosting-set-reaches-the-builder)
+explains. A build of a cluster with runner services therefore orders that
+server, which the plane deletes once the build ends.
+
+A job skips a cache when its workflow sets its own `GOPROXY` or npm registry.
+A package manager that reads its own registry setting skips the npm cache
+too, as Yarn 2 and later do.
+
+### How the image cache moves to Harbor
+
+Harbor is the image registry mitstack plans for its own cluster, and its proxy
+cache projects mirror a public registry as the image cache does. Harbor is not
+live yet, so the image cache runs the plain registry. Once Harbor serves, the
+Docker daemon's `--registry-mirror` names Harbor's Docker Hub proxy in place of
+`image-cache`. The image cache's Deployment, ConfigMap, Service and policy
+rules then leave the rendered set, and Argo CD removes them from the cluster.
+The Go and npm caches stay as they are.
+
+```mermaid
+C4Container
+  title The runner services' package caches
+  System_Boundary(cluster, "Talos cluster, namespace mitstack-runners") {
+    Container(runner, "Runner pod", "Pod per job", "Runs the job beside a Docker daemon sidecar")
+    Container(gocache, "go-cache", "Deployment, package-cache go", "Keeps Go modules whose hash sum.golang.org holds")
+    Container(npmcache, "npm-cache", "Deployment, package-cache npm", "Keeps npm tarballs whose digest their metadata names")
+    Container(imagecache, "image-cache", "Deployment, registry 3.1.2 and package-cache sweep", "Mirrors Docker Hub images")
+  }
+  System_Ext(goproxy, "proxy.golang.org and sum.golang.org", "Serve Go modules and their signed hashes")
+  System_Ext(npm, "registry.npmjs.org", "Serves npm packages and their metadata")
+  System_Ext(dockerhub, "Docker Hub", "Serves public images")
+  System_Ext(harbor, "Harbor", "Takes the image cache's place once it serves")
+  Rel(runner, gocache, "GOPROXY", "HTTP 8080")
+  Rel(runner, npmcache, "npm_config_registry", "HTTP 8080")
+  Rel(runner, imagecache, "registry mirror", "HTTP 5000")
+  Rel(gocache, goproxy, "Fetches and checks", "HTTPS")
+  Rel(npmcache, npm, "Fetches and checks", "HTTPS")
+  Rel(imagecache, dockerhub, "Pulls through", "HTTPS")
+  Rel(runner, harbor, "Registry mirror, once Harbor serves")
+```
+
 ## How an operator switches the services on
 
 A block switches the services on by setting `Plane.Runners` to a
@@ -926,7 +1064,10 @@ controller starts each later job on the new image.
 |---|---|
 | `components/runners.go` | `RunnerInputs`, its checks, `Set.WithRunnerServices` and `Set.WithRunners`, the CPU and memory each container of a job's pod asks for and is limited to, and `dockerBridges`, the interfaces Istio reroutes out of a job's pod |
 | `components/runners/runners.yaml` | The namespace and its Cilium policy |
-| `components/runners/scale-set.yaml` | The template of the scale set, its runner pod, and the Role and RoleBinding that let ARC's controller create each listener's Role |
+| `components/runners/scale-set.yaml` | The template of the scale set, its runner pod with each cache's address, and the Role and RoleBinding that let ARC's controller create each listener's Role |
+| `components/runner_caches.go` and `components/runners/caches.yaml` | Each cache's sizes, upstreams and address, and the template of the caches, the registry's configuration and their Cilium policy |
+| `packagecache/` and `cmd/package-cache/` | The Go and npm caches' server, its digest checks and the sweep |
+| `controlplane/runners.go` | `CauseRunnerCacheDown` and the reading of each cache's health |
 | `components/runners/policies/` | The three pod policies that skip `mitstack-runners`, which `scripts/render-components.sh` writes |
 | `components/gha-runner-scale-set-controller/gha-runner-scale-set-controller.yaml` | ARC's controller and its CRDs, which `scripts/render-components.sh` renders |
 | `controlplane/runners.go` and `controlplane/manifests/runner-token.yaml` | The runner token's Secret, the sweep's Secret and the lease CronJob |

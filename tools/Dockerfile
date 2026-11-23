@@ -15,7 +15,8 @@
 # keys. It builds from the kit's own source with the Go release go.mod names, which a test holds the stage to. The
 # build needs the components package's Go source and every manifest it embeds, so the build context lets the whole
 # components directory in. The image takes that directory from this stage once its Go source is deleted, so it carries
-# every manifest of it, the gateways serving a subset.
+# every manifest of it, the gateways serving a subset. The same stage builds package-cache, which runs the runner
+# services' Go and npm caches and sweeps the image cache's disk.
 FROM docker.io/library/golang:1.26.10-alpine@sha256:87c65a688975c0b1d4585d204874c45ca78354670e3a5f11368c5a492303d696 AS machine-config
 
 WORKDIR /src
@@ -27,6 +28,9 @@ COPY internal/ internal/
 COPY nodeconfig/ nodeconfig/
 COPY openbaoinit/ openbaoinit/
 RUN CGO_ENABLED=0 GOTOOLCHAIN=local go build -trimpath -ldflags="-s -w" -o /machine-config ./cmd/machine-config
+COPY cmd/package-cache/ cmd/package-cache/
+COPY packagecache/ packagecache/
+RUN CGO_ENABLED=0 GOTOOLCHAIN=local go build -trimpath -ldflags="-s -w" -o /package-cache ./cmd/package-cache
 RUN find components -name "*.go" -delete
 
 FROM docker.io/library/alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
@@ -68,5 +72,6 @@ COPY report/scripts/report.sh report/scripts/mesh-probe.sh report/scripts/securi
 COPY tools/kube-bench-talos.yaml /usr/local/lib/mitstack/kube-bench/cfg/cis-1.10/config.yaml
 COPY --from=machine-config /src/components/ /usr/local/lib/mitstack/components/
 COPY --from=machine-config /machine-config /usr/local/bin/machine-config
+COPY --from=machine-config /package-cache /usr/local/bin/package-cache
 
 USER 65532:65532

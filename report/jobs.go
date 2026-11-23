@@ -9,8 +9,12 @@ import (
 	"time"
 )
 
-// AppliedJob is what Argo CD keeps of a Job an Application applied: its health, and the message of a failed one.
-type AppliedJob struct{ Health, Message string }
+// Applied is what Argo CD keeps of an object an Application applied: its health, and the message of one that is not
+// healthy.
+type Applied struct{ Health, Message string }
+
+// AppliedJob is what Argo CD keeps of a Job an Application applied.
+type AppliedJob = Applied
 
 const (
 	// JobCompleted and JobFailed are the health Argo CD reads of a Job that completed and of one that failed.
@@ -21,6 +25,12 @@ const (
 
 // AppliedJobs reads Argo CD's health of each Job application applied, and false when r lacks any object's health.
 func (r Read) AppliedJobs(application string) (map[string]AppliedJob, bool, error) {
+	return r.AppliedResources(application, jobKind)
+}
+
+// AppliedResources reads Argo CD's health of each object of kind that application applied, and false when r lacks the
+// application or any object's health.
+func (r Read) AppliedResources(application, kind string) (map[string]Applied, bool, error) {
 	var body struct {
 		ArgoCD struct {
 			Applications []struct {
@@ -36,20 +46,20 @@ func (r Read) AppliedJobs(application string) (map[string]AppliedJob, bool, erro
 		if app.Name != application || app.Resources == nil {
 			continue
 		}
-		jobs := map[string]AppliedJob{}
+		applied := map[string]Applied{}
 		for _, res := range *app.Resources {
 			health, kept := res["health"]
 			if !kept {
 				return nil, false, nil
 			}
-			if res["kind"] == jobKind {
+			if res["kind"] == kind {
 				name, _ := res["name"].(string)
 				status, _ := health.(string)
 				message, _ := res["message"].(string)
-				jobs[name] = AppliedJob{Health: status, Message: message}
+				applied[name] = Applied{Health: status, Message: message}
 			}
 		}
-		return jobs, true, nil
+		return applied, true, nil
 	}
 	return nil, false, nil
 }

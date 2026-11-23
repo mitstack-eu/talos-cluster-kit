@@ -80,7 +80,11 @@ func (p Plane) gatewayExtraImages() ([]components.Image, error) {
 		if err != nil {
 			return nil, err
 		}
-		extra = append(extra, runnerImages...)
+		registry, err := components.ParseImage(components.ImageCacheImage)
+		if err != nil {
+			return nil, fmt.Errorf("the image cache's registry: %w", err)
+		}
+		extra = append(extra, append(runnerImages, registry)...)
 	}
 	return extra, nil
 }
@@ -947,7 +951,7 @@ func (p Plane) Unhealthy(ctx context.Context, st State) (cause, detail string, e
 			return cause, detail, nil
 		}
 	}
-	return "", "", nil
+	return p.runnerCacheDown(ctx)
 }
 
 // unhealthy names a failed gateway's cause, with how its replacement stands or why the plane leaves it.

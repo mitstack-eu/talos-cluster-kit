@@ -185,6 +185,7 @@ spec:
             - dockerd
             - --host=unix:///var/run/docker.sock
             - --group=$(DOCKER_GROUP_GID)
+            - {{ printf "--registry-mirror=%s" .Caches.RegistryMirror | printf "%q" }}
           env:
             - name: DOCKER_GROUP_GID
               value: "123"
@@ -235,6 +236,11 @@ spec:
               value: unix:///var/run/docker.sock
             - name: RUNNER_WAIT_FOR_DOCKER_IN_SECONDS
               value: "120"
+            # The go command turns to the internet on any error of the Go cache, and npm has no such fallback.
+            - name: GOPROXY
+              value: {{ printf "%q" .Caches.GoProxy }}
+            - name: npm_config_registry
+              value: {{ printf "%q" .Caches.NPMRegistry }}
           resources:
             requests:
               cpu: {{ .RunnerSize.CPU }}

@@ -39,10 +39,11 @@ const (
 	runnerGroupsPath = "/orgs/" + runnerOrg + "/actions/runner-groups"
 	groupRunnersPath = runnerGroupsPath + "/7/runners"
 	forbiddenRefusal = "Resource not accessible by integration"
+	killedRunner     = "mitstack-ci-7xk2p-runner-q8w4z"
+	startingRunner   = "mitstack-ci-7xk2p-runner-m3v9d"
 )
 
-// gitHubRunner is one self-hosted runner as GitHub's runner list answers it, in the scale set's runner group unless
-// RunnerGroupID names another.
+// gitHubRunner is one runner as GitHub lists it, in the scale set's runner group unless RunnerGroupID names another.
 type gitHubRunner struct {
 	ID            int64  `json:"id"`
 	RunnerGroupID int64  `json:"runner_group_id"`
@@ -51,30 +52,24 @@ type gitHubRunner struct {
 	Busy          bool   `json:"busy"`
 }
 
-// runnerAPI fakes GitHub's runner groups, each group's runner list and the removal of a runner for the org, answering
-// a removal of an id in refusals with that status and refusal as GitHub's message, and recording each call with its
-// bearer and the most removals open at once.
+// runnerAPI fakes the org's runner API, refusing a removal of an id in refusals with that status, and records each call.
 type runnerAPI struct {
-	mu           sync.Mutex
-	groups       []map[string]any
-	groupsStatus int
-	runners      []gitHubRunner
-	listStatus   int
-	refusals     map[int64]int
-	refusal      string
-	calls        []string
-	bearers      []string
-	removing     atomic.Int32
-	mostAtOnce   int32
-	url          string
+	mu                       sync.Mutex
+	groups                   []map[string]any
+	groupsStatus, listStatus int
+	runners                  []gitHubRunner
+	refusals                 map[int64]int
+	refusal                  string
+	calls, bearers           []string
+	removing                 atomic.Int32
+	mostAtOnce               int32
+	url                      string
 }
 
 func gitHubRunners(t *testing.T, runners ...gitHubRunner) *runnerAPI {
 	t.Helper()
 	for i := range runners {
-		if runners[i].RunnerGroupID == 0 {
-			runners[i].RunnerGroupID = runnerGroupID
-		}
+		runners[i].RunnerGroupID = cmp.Or(runners[i].RunnerGroupID, runnerGroupID)
 	}
 	api := &runnerAPI{runners: runners, listStatus: http.StatusOK, groupsStatus: http.StatusOK, refusals: map[int64]int{},
 		refusal: forbiddenRefusal, groups: []map[string]any{{"id": 1, "name": "Default"}, {"id": runnerGroupID, "name": runnerGroup},
@@ -85,7 +80,7 @@ func gitHubRunners(t *testing.T, runners ...gitHubRunner) *runnerAPI {
 		group, inGroups := strings.CutPrefix(r.URL.Path, runnerGroupsPath+"/")
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == runnerGroupsPath:
-			api.listGroups(w)
+			answer(w, api.groupsStatus, map[string]any{"total_count": len(api.groups), "runner_groups": api.groups})
 		case r.Method == http.MethodGet && inGroups && strings.HasSuffix(group, "/runners"):
 			id, _ := strconv.ParseInt(strings.TrimSuffix(group, "/runners"), 10, 64)
 			api.list(w, r, id)
@@ -108,34 +103,34 @@ func (api *runnerAPI) record(r *http.Request) {
 	api.bearers = append(api.bearers, r.Header.Get("Authorization"))
 }
 
-func (api *runnerAPI) listGroups(w http.ResponseWriter) {
-	if api.groupsStatus != http.StatusOK {
-		w.WriteHeader(api.groupsStatus)
-		_ = json.NewEncoder(w).Encode(map[string]string{"message": "Bad credentials"})
-		return
+// answer writes body, or GitHub's refusal of the token when status is not 200.
+func answer(w http.ResponseWriter, status int, body any) {
+	if status != http.StatusOK {
+		w.WriteHeader(status)
+		body = map[string]string{"message": "Bad credentials"}
 	}
-	_ = json.NewEncoder(w).Encode(map[string]any{"total_count": len(api.groups), "runner_groups": api.groups})
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 func (api *runnerAPI) list(w http.ResponseWriter, r *http.Request, group int64) {
-	if api.listStatus != http.StatusOK {
-		w.WriteHeader(api.listStatus)
-		_ = json.NewEncoder(w).Encode(map[string]string{"message": "Bad credentials"})
-		return
-	}
 	inGroup := slices.DeleteFunc(slices.Clone(api.runners), func(runner gitHubRunner) bool { return runner.RunnerGroupID != group })
 	perPage, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 	from := min(max(page-1, 0)*perPage, len(inGroup))
-	_ = json.NewEncoder(w).Encode(map[string]any{"total_count": len(inGroup), "runners": inGroup[from:min(from+perPage, len(inGroup))]})
+	answer(w, api.listStatus, map[string]any{"total_count": len(inGroup), "runners": inGroup[from:min(from+perPage, len(inGroup))]})
+}
+
+// callsTo is each call the sweep sent that starts with prefix, such as a method or a method and a path.
+func (api *runnerAPI) callsTo(prefix string) []string {
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	return slices.DeleteFunc(slices.Clone(api.calls), func(call string) bool { return !strings.HasPrefix(call, prefix) })
 }
 
 // lists is each GET the sweep sent for a page of its runner group's runners.
-func (api *runnerAPI) lists() []string {
-	api.mu.Lock()
-	defer api.mu.Unlock()
-	return slices.DeleteFunc(slices.Clone(api.calls), func(call string) bool { return !strings.HasPrefix(call, "GET "+groupRunnersPath) })
-}
+func (api *runnerAPI) lists() []string { return api.callsTo("GET " + groupRunnersPath) }
+
+func (api *runnerAPI) removals() []string { return api.callsTo(http.MethodDelete) }
 
 // remove holds each removal open long enough that a second one sent at the same time overlaps it.
 func (api *runnerAPI) remove(w http.ResponseWriter, r *http.Request) {
@@ -154,12 +149,6 @@ func (api *runnerAPI) remove(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (api *runnerAPI) removals() []string {
-	api.mu.Lock()
-	defer api.mu.Unlock()
-	return slices.DeleteFunc(slices.Clone(api.calls), func(call string) bool { return !strings.HasPrefix(call, http.MethodDelete) })
-}
-
 // sweeping is the environment the report's CronJob gives the sweep, with the leased token in a file and GitHub's API faked.
 func sweeping(t *testing.T, api *runnerAPI) []string {
 	t.Helper()
@@ -169,8 +158,7 @@ func sweeping(t *testing.T, api *runnerAPI) []string {
 		"RUNNERS_NAMESPACE=" + components.RunnersNamespace, "RUNNER_TOKEN_FILE=" + token, "GITHUB_API_URL=" + api.url}
 }
 
-// atRun answers date +%s as the start of the report run with that index, five minutes apart as the CronJob runs, and
-// passes every other date call to the system's date.
+// atRun answers date +%s as the start of the report run with that index, five minutes apart, and any other date call as date does.
 func atRun(fakes map[string]string, run int) map[string]string {
 	fakes = maps.Clone(fakes)
 	fakes["date"] = fmt.Sprintf(`if [ "$*" = +%%s ]; then echo %d; else PATH=${PATH#*:} exec date "$@"; fi`, run*300)
@@ -178,12 +166,9 @@ func atRun(fakes map[string]string, run int) map[string]string {
 }
 
 // withRunnerPods answers the runner namespace's read with a pod of each name and no EphemeralRunner.
-func withRunnerPods(names ...string) map[string]string {
-	return withRunnerHolds(names, nil)
-}
+func withRunnerPods(names ...string) map[string]string { return withRunnerHolds(names, nil) }
 
-// withRunnerHolds answers the runner namespace's read with a pod of each name in pods and an EphemeralRunner of each
-// name in ephemeral, the object ARC creates before it registers the runner of that name.
+// withRunnerHolds answers the runner namespace's read with a pod of each name in pods and an EphemeralRunner of each in ephemeral.
 func withRunnerHolds(pods, ephemeral []string) map[string]string {
 	items := make([]map[string]any, 0, len(pods)+len(ephemeral))
 	for _, name := range pods {
@@ -204,11 +189,6 @@ func sweptMember(t *testing.T, posted *postedReport) map[string]any {
 	require.True(t, ok, "the report carries no runners member: %v", posted.body["runners"])
 	return member
 }
-
-const (
-	killedRunner   = "mitstack-ci-7xk2p-runner-q8w4z"
-	startingRunner = "mitstack-ci-7xk2p-runner-m3v9d"
-)
 
 func TestReport_RemovesARunnerOfItsScaleSetThatGitHubListsOfflineWithNoPodBehindItAndKeepsEveryOtherRunner(t *testing.T) {
 	cases := map[string]struct {
@@ -246,8 +226,7 @@ func TestReport_RemovesARunnerOfItsScaleSetThatGitHubListsOfflineWithNoPodBehind
 			_, posted, out, err := runReport(t, withRunnerHolds(tc.pods, tc.ephemeral), sweeping(t, api)...)
 
 			require.NoError(t, err, out)
-			gets := slices.DeleteFunc(slices.Clone(api.calls), func(call string) bool { return !strings.HasPrefix(call, http.MethodGet) })
-			assert.Equal(t, []string{"GET " + runnerGroupsPath + "?per_page=100", "GET " + groupRunnersPath + "?per_page=100&page=1"}, gets,
+			assert.Equal(t, []string{"GET " + runnerGroupsPath + "?per_page=100", "GET " + groupRunnersPath + "?per_page=100&page=1"}, api.callsTo(http.MethodGet),
 				"the sweep finds its runner group by name and reads only that group's runners")
 			want := map[string]any{"scaleSet": runnerScaleSet, "listed": float64(1), "removed": []any{}, "unremoved": []any{},
 				"deferred": float64(0), "unlisted": float64(0)}
@@ -264,42 +243,28 @@ func TestReport_RemovesARunnerOfItsScaleSetThatGitHubListsOfflineWithNoPodBehind
 			}
 			assert.Equal(t, removals, api.removals(), "the removals the sweep asked GitHub for")
 			assert.Equal(t, want, sweptMember(t, posted))
-			for _, bearer := range api.bearers {
-				assert.Equal(t, "Bearer "+runnerToken, bearer, "each GitHub call carries the leased runner token")
-			}
+			assert.Equal(t, slices.Repeat([]string{"Bearer " + runnerToken}, len(api.calls)), api.bearers, "each GitHub call carries the leased runner token")
 			assert.NotContains(t, string(posted.raw)+out, runnerToken, "the leased token reaches neither the platform nor the log")
 		})
 	}
 }
 
-func TestReport_ARemovalGitHubRefusesLeavesTheRunnerUnremovedNamingItWithGitHubsStatusAndMessageAndTheRestAreRemoved(t *testing.T) {
+func TestReport_ARemovalGitHubRefusesLeavesTheRunnerUnremovedNamingItWithGitHubsStatusAndMessageAndTheRestAndEach404AreRemoved(t *testing.T) {
+	gone := "mitstack-ci-7xk2p-runner-n4t8r"
 	api := gitHubRunners(t, gitHubRunner{ID: 21, Name: killedRunner, Status: "offline"},
-		gitHubRunner{ID: 22, Name: "mitstack-ci-7xk2p-runner-h5j6k", Status: "offline"})
-	api.refusals[21] = http.StatusForbidden
+		gitHubRunner{ID: 22, Name: "mitstack-ci-7xk2p-runner-h5j6k", Status: "offline"}, gitHubRunner{ID: 23, Name: gone, Status: "offline"})
+	api.refusals[21], api.refusals[23] = http.StatusForbidden, http.StatusNotFound
 	api.refusal = forbiddenRefusal + strings.Repeat(" and more", 40)
 
 	_, posted, out, err := runReport(t, withRunnerPods(), sweeping(t, api)...)
 
 	require.NoError(t, err, "a refused removal is a reading of the report, which still posts: %s", out)
-	assert.ElementsMatch(t, []string{"DELETE " + runnersPath + "/21", "DELETE " + runnersPath + "/22"}, api.removals())
-	assert.Equal(t, map[string]any{"scaleSet": runnerScaleSet, "listed": float64(2), "deferred": float64(0), "unlisted": float64(0),
-		"removed": []any{"mitstack-ci-7xk2p-runner-h5j6k"},
-		"unremoved": []any{map[string]any{"name": killedRunner, "id": float64(21), "status": float64(http.StatusForbidden),
-			"message": api.refusal[:256]}}}, sweptMember(t, posted), "the refused runner by name, with GitHub's status and its message cut to 256 characters")
-}
-
-func TestReport_CountsARunnerGitHubAnswersNotFoundForAsRemovedSinceGitHubNoLongerListsIt(t *testing.T) {
-	api := gitHubRunners(t, gitHubRunner{ID: 23, Name: killedRunner, Status: "offline"})
-	api.refusals[23] = http.StatusNotFound
-	api.refusal = "Not Found"
-
-	_, posted, out, err := runReport(t, withRunnerPods(), sweeping(t, api)...)
-
-	require.NoError(t, err, out)
-	assert.Equal(t, []string{"DELETE " + runnersPath + "/23"}, api.removals())
+	assert.ElementsMatch(t, []string{"DELETE " + runnersPath + "/21", "DELETE " + runnersPath + "/22", "DELETE " + runnersPath + "/23"}, api.removals())
 	member := sweptMember(t, posted)
-	assert.Equal(t, []any{killedRunner}, member["removed"], "ARC removed it between the list and the removal")
-	assert.Equal(t, []any{}, member["unremoved"])
+	assert.ElementsMatch(t, []any{"mitstack-ci-7xk2p-runner-h5j6k", gone}, member["removed"], "a 404 means ARC removed it between the list and the removal")
+	assert.Equal(t, map[string]any{"scaleSet": runnerScaleSet, "listed": float64(3), "deferred": float64(0), "unlisted": float64(0),
+		"removed": member["removed"], "unremoved": []any{map[string]any{"name": killedRunner, "id": float64(21), "status": float64(http.StatusForbidden),
+			"message": api.refusal[:256]}}}, member, "the refused runner by name, with GitHub's status and its message cut to 256 characters")
 }
 
 func TestReport_RemovesNoRunnerAndNamesTheReadThatFailedWhenGitHubsListOrTheRunnerNamespacesReadFails(t *testing.T) {
@@ -346,30 +311,24 @@ func TestReport_RemovesNoRunnerAndNamesTheReadThatFailedWhenGitHubsListOrTheRunn
 	}
 }
 
-func TestReport_ReadsASweepThatStopsBeforeItFinishesAsUnreadRatherThanClean(t *testing.T) {
-	api := gitHubRunners(t, gitHubRunner{ID: 32, Name: killedRunner, Status: "offline"})
+func TestReport_ReadsASweepThatStopsBeforeItFinishesAsUnreadAndSkipsItUntilTheFirstRunnerTokenIsLeasedWithNoGitHubCall(t *testing.T) {
+	cases := map[string]struct{ env, key, names string }{
+		"a sweep that stops before it finishes reads unread rather than clean": {"GITHUB_API_URL=", "unread", "ended before it finished"},
+		"a sweep with no leased token yet is skipped":                          {"RUNNER_TOKEN_FILE=" + filepath.Join(t.TempDir(), "github_token"), "skipped", "leased"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			api := gitHubRunners(t, gitHubRunner{ID: 32, Name: killedRunner, Status: "offline"})
 
-	_, posted, out, err := runReport(t, withRunnerPods(), append(sweeping(t, api), "GITHUB_API_URL=")...)
+			_, posted, out, err := runReport(t, withRunnerPods(), append(sweeping(t, api), tc.env)...)
 
-	require.NoError(t, err, "a sweep that stops is a reading of the report, which still posts: %s", out)
-	assert.Empty(t, api.calls)
-	member := sweptMember(t, posted)
-	assert.Equal(t, []string{"scaleSet", "unread"}, slices.Sorted(maps.Keys(member)))
-	assert.Contains(t, member["unread"], "ended before it finished")
-}
-
-func TestReport_SkipsTheSweepWithoutAnyGitHubCallUntilTheFirstRunnerTokenIsLeased(t *testing.T) {
-	api := gitHubRunners(t, gitHubRunner{ID: 41, Name: killedRunner, Status: "offline"})
-	env := sweeping(t, api)
-	env = append(env, "RUNNER_TOKEN_FILE="+filepath.Join(t.TempDir(), "github_token"))
-
-	_, posted, out, err := runReport(t, withRunnerPods(), env...)
-
-	require.NoError(t, err, out)
-	assert.Empty(t, api.calls, "the sweep calls GitHub only with a leased token")
-	member := sweptMember(t, posted)
-	assert.Equal(t, []string{"scaleSet", "skipped"}, slices.Sorted(maps.Keys(member)))
-	assert.Contains(t, member["skipped"], "leased", "the reason says no token is leased yet")
+			require.NoError(t, err, "a sweep that removes nothing is a reading of the report, which still posts: %s", out)
+			assert.Empty(t, api.calls, "the sweep calls GitHub only with a leased token and every setting")
+			member := sweptMember(t, posted)
+			assert.Equal(t, []string{"scaleSet", tc.key}, slices.Sorted(maps.Keys(member)))
+			assert.Contains(t, member[tc.key], tc.names)
+		})
+	}
 }
 
 func TestReport_ReadsEveryPageOfItsRunnerGroupsRunnersAndRemovesAtMostTenRunnersARunOneAtATimeLeavingTheRestForTheNext(t *testing.T) {

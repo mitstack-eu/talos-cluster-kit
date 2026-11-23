@@ -11,7 +11,16 @@ import (
 	"github.com/mitstack-eu/block-kit/contract"
 	"github.com/mitstack-eu/block-kit/observe"
 	"github.com/mitstack-eu/talos-cluster-kit/operator"
+	"github.com/mitstack-eu/talos-cluster-kit/report"
 )
+
+// staleSweepBound is how old the newest full report may be before the check reads the sweep as stopped, three report
+// runs, so one late or failed run alone reads no problem.
+const staleSweepBound = 3 * report.Interval
+
+// stuckRunnerBound is how long a runner may read busy with no pod before the check names it, since the sweep removes no
+// busy runner and GitHub documents no time within which it fails the job of a runner that went away.
+const stuckRunnerBound = 30 * time.Minute
 
 // unremovedRunner is a runner the report's sweep asked GitHub to remove, with how GitHub refused.
 type unremovedRunner struct {
@@ -25,32 +34,46 @@ type unremovedRunner struct {
 type runnerSweep struct {
 	ScaleSet  string            `json:"scaleSet"`
 	Unread    string            `json:"unread"`
+	Skipped   string            `json:"skipped"`
 	Unremoved []unremovedRunner `json:"unremoved"`
+	Busy      []string          `json:"busy"`
 	Unlisted  int               `json:"unlisted"`
 }
 
-// RunnersProblem names each runner the newest full report's sweep could not remove, how many runners it left unread, or why it removed none, and is "" otherwise.
+// RunnersProblem names why the runner sweep of a cluster that runs a scale set has not removed every dead runner, read
+// from the newest full report, and is "" when it has or the cluster runs no scale set.
 func (k *Cluster) RunnersProblem(ctx context.Context, d contract.Desired) string {
+	runners, err := k.runnersFor(d)
+	switch {
+	case err != nil:
+		return fmt.Sprintf("the cluster's runner services cannot be read, so whether the runner sweep removes dead runners is unknown: %v", err)
+	case runners == nil:
+		return ""
+	}
 	reports, err := k.cfg.NodeReports(ctx, d, d.SubscriptionID)
 	if err != nil {
 		return fmt.Sprintf("the node reports cannot be read, so whether the runner sweep removed every dead runner is unknown: %v", err)
 	}
-	newest := operator.NewestReport(fullReports(reports), time.Time{})
+	full := fullReports(reports)
+	newest := operator.NewestReport(full, time.Time{})
 	if newest == nil {
-		return ""
+		return "no node report that read everything has reached the platform, so the runner sweep has not reported"
 	}
-	var body struct {
-		Runners *runnerSweep `json:"runners"`
-	}
-	if err := json.Unmarshal(newest.Body, &body); err != nil {
+	sweep, err := sweepOf(*newest)
+	if err != nil {
 		return "the newest node report's runners member is not the runner sweep's JSON"
 	}
-	sweep := body.Runners
+	if k.cfg.Now().Sub(newest.ReceivedAt) > staleSweepBound {
+		return fmt.Sprintf("the newest node report that read everything was received at %s, more than %d minutes ago, so the runner sweep has not reported since",
+			newest.ReceivedAt.UTC().Format(time.RFC3339), int(staleSweepBound/time.Minute))
+	}
 	switch {
 	case sweep == nil:
-		return ""
+		return "the newest node report carries no runner sweep, though the cluster runs the scale set " + runners.ScaleSet
 	case sweep.Unread != "":
 		return "the runner sweep removed no runner: " + sweep.Unread
+	case sweep.Skipped != "":
+		return "the runner sweep has not run: " + sweep.Skipped
 	}
 	var problems []string
 	if len(sweep.Unremoved) > 0 {
@@ -59,6 +82,10 @@ func (k *Cluster) RunnersProblem(ctx context.Context, d contract.Desired) string
 	if sweep.Unlisted > 0 {
 		problems = append(problems, fmt.Sprintf("GitHub lists %d more runners in the runner group of the scale set %s than the sweep reads, so a dead runner among them stays listed",
 			sweep.Unlisted, sweep.ScaleSet))
+	}
+	if stuck := stuckRunners(*sweep, full, newest.ReceivedAt); len(stuck) > 0 {
+		problems = append(problems, fmt.Sprintf("these offline runners of the scale set %s have read busy with no pod behind them for %d minutes or more, and the sweep removes no busy runner: %s",
+			sweep.ScaleSet, int(stuckRunnerBound/time.Minute), strings.Join(stuck, ", ")))
 	}
 	return strings.Join(problems, "; ")
 }
@@ -72,6 +99,33 @@ func fullReports(reports []observe.NodeReport) []observe.NodeReport {
 		}
 		return json.Unmarshal(r.Body, &body) == nil && body.Error != nil
 	})
+}
+
+// sweepOf is the runner sweep r carries, or nil when it carries none.
+func sweepOf(r observe.NodeReport) (*runnerSweep, error) {
+	var body struct {
+		Runners *runnerSweep `json:"runners"`
+	}
+	err := json.Unmarshal(r.Body, &body)
+	return body.Runners, err
+}
+
+// stuckRunners is each runner sweep reads busy that the sweep of a full report received stuckRunnerBound or more
+// before at also read busy.
+func stuckRunners(sweep runnerSweep, full []observe.NodeReport, at time.Time) []string {
+	var stuck []string
+	for _, r := range full {
+		older, err := sweepOf(r)
+		if err != nil || older == nil || r.ReceivedAt.After(at.Add(-stuckRunnerBound)) {
+			continue
+		}
+		for _, name := range sweep.Busy {
+			if slices.Contains(older.Busy, name) && !slices.Contains(stuck, name) {
+				stuck = append(stuck, name)
+			}
+		}
+	}
+	return stuck
 }
 
 func (s runnerSweep) refusals() string {

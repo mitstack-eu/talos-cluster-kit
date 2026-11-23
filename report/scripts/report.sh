@@ -154,14 +154,21 @@ sweep_reading() {
     > "$work/runners.next" && mv "$work/runners.next" "$work/runners.json"
 }
 
-# github_call METHOD PATH OUT prints GitHub's HTTP status, or 000, with the token in a header file so it never shows on the command line.
+# github_call METHOD PATH OUT prints GitHub's HTTP status, or 000, keeping the answer in OUT and its headers in
+# OUT.headers, with the token in a header file so it never shows on the command line.
 github_call() {
   local status
-  rm -f "$3"
+  rm -f "$3" "$3.headers"
   status=$(curl -q -sS --proto '=https' --max-time "$github_call_seconds" -X "$1" -H @"$work/github-headers" \
-    -o "$3" -w '%{http_code}' "$GITHUB_API_URL$2") || status=000
-  [ -f "$3" ] || : > "$3"
+    -D "$3.headers" -o "$3" -w '%{http_code}' "$GITHUB_API_URL$2") || status=000
+  touch "$3" "$3.headers"
   printf '%s' "$status"
+}
+
+# rate_limited ANSWER is true when GitHub answered with a rate limit, a 429 or a 403 with Retry-After or no request left.
+rate_limited() {
+  grep -qE '^HTTP/[0-9.]+ 429' "$1.headers" || { grep -qE '^HTTP/[0-9.]+ 403' "$1.headers" &&
+    grep -qiE '^(retry-after:|x-ratelimit-remaining:[[:space:]]*0[[:space:]]*$)' "$1.headers"; }
 }
 
 # github_failure WHAT STATUS ANSWER names how GitHub answered the call for WHAT, with its message cut to 256 characters.
@@ -199,8 +206,9 @@ list_runners() {
       sweep_reading unread "$(github_failure "the list of the runner group's runners" "$status" "$work/runners-page.json")"
       return 1
     fi
-    if ! jq -c '.runners[]' "$work/runners-page.json" >> "$work/github-runners.jsonl" 2> /dev/null; then
-      sweep_reading unread "GitHub answered 200 to the list of the runner group's runners with no runners array"
+    if ! jq -n -c 'input | if (.runners | type) == "array" and (.total_count | type) == "number" then .runners[] else error end' \
+        "$work/runners-page.json" >> "$work/github-runners.jsonl" 2> /dev/null; then
+      sweep_reading unread "GitHub answered 200 to the list of the runner group's runners with no runners array or no numeric total_count"
       return 1
     fi
     [ "$(jq '.runners | length' "$work/runners-page.json")" -eq "$runners_per_page" ] || return 0
@@ -216,46 +224,49 @@ read_runner_holds() {
     sweep_reading unread "the read of the pods and EphemeralRunners in $RUNNERS_NAMESPACE ended with exit status $status: $(scrubbed "$work/runner-holds.err" | tail -c 256)"
     return 1
   fi
-  jq -r '.items[].metadata.name' "$work/runner-holds.out" > "$work/runner-holds.names" 2> /dev/null && return 0
+  jq -n -r 'input | if .kind == "List" and all(.items[]; .metadata.name | type == "string") then .items[].metadata.name else error end' \
+    "$work/runner-holds.out" > "$work/runner-holds.names" 2> /dev/null && return 0
   sweep_reading unread "kubectl exited 0, and its output is not the pods and EphemeralRunners in $RUNNERS_NAMESPACE"
   return 1
 }
 
-# remove_stale_runners skips a busy runner and removes one at a time, since GitHub refuses a runner holding a job and asks clients not to call in parallel.
+# remove_stale_runners skips a busy runner, removes one at a time and stops at a rate limit, since GitHub refuses a
+# runner holding a job and asks clients to call one at a time and to stop calling once limited.
 remove_stale_runners() {
-  local runner stale=()
-  if ! jq -c -n --arg pattern "^$RUNNER_SCALE_SET-[a-z0-9]+-runner-[a-z0-9]+\$" --rawfile held "$work/runner-holds.names" '
+  local runner picked=()
+  # The first line counts what the sweep read, and each line after it is a runner to remove. Each run starts where the
+  # run five minutes before stopped, so runners GitHub keeps refusing cannot starve the rest.
+  if ! jq -c -n --arg pattern "^$RUNNER_SCALE_SET-[a-z0-9]+-runner-[a-z0-9]+\$" --rawfile held "$work/runner-holds.names" \
+      --argjson most "$runner_removals_max" --argjson run "$(($(date +%s) / 300))" '
       ($held | split("\n")) as $names
       | [inputs] as $all
       | [$all[] | select((.name | type) == "string" and (.name | test($pattern)))] as $listed
       | [$listed[] | select(.status == "offline" and (.id | type) == "number" and (.name | IN($names[]) | not))] as $stale
-      | {read: ($all | length), listed: ($listed | length),
-        idle: [$stale[] | select(.busy != true) | {id, name}], busy: ([$stale[] | select(.busy == true)] | length)}' \
-      "$work/github-runners.jsonl" > "$work/sweep.json" 2> "$work/sweep.err"; then
+      | [$stale[] | select(.busy != true) | {id, name}] as $idle | ($idle | length) as $n
+      | {read: ($all | length), listed: ($listed | length), idle: $n, busy: [$stale[] | select(.busy == true) | .name]},
+        if $n == 0 then empty else (($run * $most) % $n) as $start | ($idle[$start:] + $idle[:$start])[:$most][] end' \
+      "$work/github-runners.jsonl" > "$work/sweep.jsonl" 2> "$work/sweep.err"; then
     sweep_reading unread "jq could not pick the runners to remove: $(tail -c 256 "$work/sweep.err")"
     return 0
   fi
-  # Each run starts where the run five minutes before stopped, so runners GitHub keeps refusing cannot starve the rest.
-  mapfile -t stale < <(jq -c --argjson most "$runner_removals_max" --argjson run "$(($(date +%s) / 300))" '
-    .idle as $idle | ($idle | length) as $n
-    | if $n == 0 then empty else (($run * $most) % $n) as $start | ($idle[$start:] + $idle[:$start])[:$most][] end' \
-    "$work/sweep.json")
+  mapfile -t picked < "$work/sweep.jsonl"
   : > "$work/removals.jsonl"
-  for runner in "${stale[@]}"; do
+  for runner in "${picked[@]:1}"; do
     remove_runner "$runner" >> "$work/removals.jsonl"
+    if rate_limited "$work/removal.answer"; then break; fi
   done
   # GitHub answers 404 for a runner it no longer lists, as when ARC removed it after the list.
-  jq -c -n --arg scale_set "$RUNNER_SCALE_SET" --slurpfile sweep "$work/sweep.json" --slurpfile removals "$work/removals.jsonl" \
-    --slurpfile page "$work/runners-page.json" --argjson most "$runner_removals_max" '
+  jq -c -n --arg scale_set "$RUNNER_SCALE_SET" --argjson sweep "${picked[0]}" --slurpfile removals "$work/removals.jsonl" \
+    --slurpfile page "$work/runners-page.json" '
     def gone: .status == 204 or .status == 404;
-    ($page[0].total_count | if type == "number" then . else 0 end) as $total
-    | {
+    {
       scaleSet: $scale_set,
-      listed: $sweep[0].listed,
+      listed: $sweep.listed,
       removed: [$removals[] | select(gone) | .name],
       unremoved: [$removals[] | select(gone | not)],
-      deferred: ($sweep[0].busy + ([($sweep[0].idle | length) - $most, 0] | max)),
-      unlisted: ([$total - $sweep[0].read, 0] | max)
+      busy: $sweep.busy,
+      deferred: (($sweep.busy | length) + $sweep.idle - ($removals | length)),
+      unlisted: ([$page[0].total_count - $sweep.read, 0] | max)
     }' > "$work/runners.next" && mv "$work/runners.next" "$work/runners.json"
 }
 

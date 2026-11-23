@@ -106,10 +106,11 @@ alone. `nproc` in a step then prints the cores the runner asked for. The
 Docker daemon and the init container ask for a fraction of a core, so they
 run on the cores the node shares, beside the node's other pods.
 
-The policy keeps at least one core shared for the system. The kubelet rounds
-the CPU it keeps for the system up to whole cores, and Talos keeps 50m on
-every node. On a node of N cores, N minus one cores can therefore go to jobs,
-and the scheduler's sum of requests never passes that.
+The policy keeps at least one core shared for the system. Talos keeps 50m of
+CPU for the system on every node, and the kubelet rounds that up to one whole
+core. On a node of N cores, N minus one cores can therefore go to jobs. The
+scheduler offers pods N cores less those 50m, so the whole cores it places on
+a node never pass N minus one either.
 
 The control-plane nodes keep the default policy, since no job runs there.
 

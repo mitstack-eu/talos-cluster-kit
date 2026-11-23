@@ -188,9 +188,12 @@ find_runner_group() {
     sweep_reading unread "$(github_failure "the list of the org's runner groups" "$status" "$work/runner-groups.json")"
     return 1
   fi
-  runner_group_id=$(jq -r --arg name "$RUNNER_GROUP" \
-    'first(.runner_groups[]? | select(.name == $name and (.id | type) == "number") | .id) // empty' \
-    "$work/runner-groups.json" 2> /dev/null || true)
+  if ! runner_group_id=$(jq -r --arg name "$RUNNER_GROUP" 'if (.runner_groups | type) == "array" then
+      first(.runner_groups[] | select(.name == $name and (.id | type) == "number") | .id) // empty else error end' \
+      "$work/runner-groups.json" 2> /dev/null); then
+    sweep_reading unread "GitHub answered 200 to the list of the org's runner groups with no runner_groups array"
+    return 1
+  fi
   [ -n "$runner_group_id" ] && return 0
   sweep_reading unread "GitHub lists no runner group named $RUNNER_GROUP among the org's first $runners_per_page runner groups"
   return 1
@@ -241,9 +244,10 @@ remove_stale_runners() {
       ($held | split("\n")) as $names
       | [inputs] as $all
       | [$all[] | select((.name | type) == "string" and (.name | test($pattern)))] as $listed
-      | [$listed[] | select(.status == "offline" and (.id | type) == "number" and (.name | IN($names[]) | not))] as $stale
-      | [$stale[] | select(.busy != true) | {id, name}] as $idle | ($idle | length) as $n
-      | {read: ($all | length), listed: ($listed | length), idle: $n, busy: [$stale[] | select(.busy == true) | .name]},
+      | [$listed[] | select(.status == "offline" and (.id | type) == "number" and (.name | IN($names[]) | not))
+        | if (.busy | type) == "boolean" then . else error("GitHub lists the offline runner \(.name) with a busy that is neither true nor false") end] as $stale
+      | [$stale[] | select(.busy | not) | {id, name}] as $idle | ($idle | length) as $n
+      | {read: ($all | length), listed: ($listed | length), idle: $n, busy: [$stale[] | select(.busy) | .name]},
         if $n == 0 then empty else (($run * $most) % $n) as $start | ($idle[$start:] + $idle[:$start])[:$most][] end' \
       "$work/github-runners.jsonl" > "$work/sweep.jsonl" 2> "$work/sweep.err"; then
     sweep_reading unread "jq could not pick the runners to remove: $(tail -c 256 "$work/sweep.err")"

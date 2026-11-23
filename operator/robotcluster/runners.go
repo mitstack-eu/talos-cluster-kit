@@ -33,6 +33,7 @@ type unremovedRunner struct {
 // runnerSweep is the node report's runners member, which a cluster that runs a runner scale set reports.
 type runnerSweep struct {
 	ScaleSet  string            `json:"scaleSet"`
+	Listed    *int              `json:"listed"`
 	Unread    string            `json:"unread"`
 	Skipped   string            `json:"skipped"`
 	Unremoved []unremovedRunner `json:"unremoved"`
@@ -74,6 +75,10 @@ func (k *Cluster) RunnersProblem(ctx context.Context, d contract.Desired) string
 		return "the runner sweep removed no runner: " + sweep.Unread
 	case sweep.Skipped != "":
 		return "the runner sweep has not run: " + sweep.Skipped
+	case sweep.ScaleSet != runners.ScaleSet:
+		return fmt.Sprintf("the newest runner sweep read the scale set %q, though the cluster runs the scale set %q", sweep.ScaleSet, runners.ScaleSet)
+	case sweep.Listed == nil:
+		return "the newest runner sweep says neither how many runners it listed nor why it listed none, so whether it removed every dead runner is unknown"
 	}
 	var problems []string
 	if len(sweep.Unremoved) > 0 {

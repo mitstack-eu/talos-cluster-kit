@@ -77,8 +77,8 @@ type Plane struct {
 	Records               []Record
 	Signers               []components.Signer
 	Telemetry             components.TelemetryExport
-	// Runners gives the cluster ARC's controller and the org's one runner scale set, and puts each node's kubelet on
-	// disk eviction; nil runs no runner.
+	// Runners gives the cluster ARC's controller and the org's one runner scale set, and each node what a node running
+	// CI jobs needs, which nodeconfig.Cluster's RunsCIJobs and IsolatesJobs name; nil runs no runner.
 	Runners *components.RunnerInputs
 }
 

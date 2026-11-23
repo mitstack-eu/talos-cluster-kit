@@ -66,6 +66,9 @@ type RunnerInputs struct {
 	MaxRunners int
 	// LeaseResource is the resource type whose GitHub token the lease job asks the platform for.
 	LeaseResource string
+	// IsolateJobs runs each job's pod in its own user namespace with a Docker daemon holding only what Docker needs
+	// there; false runs the daemon privileged, sharing its node's users.
+	IsolateJobs bool
 }
 
 // githubLogin matches a GitHub organisation login: letters, digits and single hyphens, at most 39 characters.
@@ -173,6 +176,7 @@ func (s Set) WithRunners(in RunnerInputs) (Set, error) {
 		"RunnerSize":        jobRunnerSize,
 		"DindSize":          jobDindSize,
 		"InitSize":          jobInitSize,
+		"IsolateJobs":       in.IsolateJobs,
 	})
 	if err != nil {
 		return Set{}, err

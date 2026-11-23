@@ -167,6 +167,7 @@ these documents, each named by its Talos kind:
 | The issuer, the URL each service-account token names so AWS can check it | `KubeServiceAccountConfig` |
 | The gateways, the Cloud servers that give the nodes their route out and serve their images, and the gateway CA, the certificate the nodes trust them by | The `RegistryTLSConfig` names and the `mitstack-gateway` `TrustedRootsConfig` |
 | The profile, `hcloud` for a Hetzner Cloud server or `metal` for a dedicated server | The `eth0` `LinkConfig`, which only a Cloud server carries |
+| Whether each CI job's pod runs in its own user namespace, as [the runner services page](docs/runner-services.md#how-a-runner-group-isolates-its-jobs) explains | The `mitstack-job-isolation` `CRICustomizationConfig` |
 | The user volumes, the disk space Talos gives a component such as the local path provisioner, which backs the cluster's default storage | Each `UserVolumeConfig` |
 | A dedicated server's name and its vSwitch, Hetzner's private link to the Cloud network | `HostnameConfig`, the `pub0` `LinkAliasConfig` for its public link and the `vsw0` `VLANConfig` for the vSwitch |
 

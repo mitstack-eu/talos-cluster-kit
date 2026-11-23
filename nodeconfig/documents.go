@@ -82,8 +82,8 @@ const (
 	evictionGracePeriod         = "1m"
 )
 
-// staticCPUManagerPolicy gives a container of a Guaranteed pod that asks for whole cores those cores alone. It needs
-// CPU kept for the system, which Talos's default system reservation keeps, and the kubelet rounds it up to one core.
+// staticCPUManagerPolicy gives a Guaranteed pod's container that asks for whole cores those cores alone, and the kubelet
+// takes it only beside the CPU Talos keeps for the system when no setting names any.
 const staticCPUManagerPolicy = "static"
 
 // ciJobSettings are the KubeletConfiguration keys a node of a cluster that runs CI jobs sets: a soft eviction so a pod

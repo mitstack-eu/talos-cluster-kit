@@ -41,9 +41,8 @@ var scaleSet = tmpl.Must("the runner scale set", scaleSetTemplate)
 // containerSize is the CPU and memory a container requests and is limited to, equal so its pod is Guaranteed.
 type containerSize struct{ CPU, Memory string }
 
-// The sizes of a job pod's containers, the same for every block. The runner takes a whole core, which the static CPU
-// manager gives it alone, and dind and the init container share the node's other cores. With the DaemonSets the kit
-// runs on every node, one job fits on a cx23, the smallest server a Cloud pool may list.
+// The sizes of a job pod's containers, the same for every block, give the runner a whole core the static CPU manager
+// keeps for it alone and fit one job on a cx23, the smallest server a Cloud pool may list.
 var (
 	jobRunnerSize = containerSize{CPU: "1000m", Memory: "1536Mi"}
 	jobDindSize   = containerSize{CPU: "250m", Memory: "512Mi"}

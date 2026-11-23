@@ -24,12 +24,18 @@ Back to [the README](../README.md).
 | Gateway | The kit's server in each location, which mirrors every image the cluster's nodes pull |
 | Node report | The kit's job that posts each node's state to the platform |
 | Report token | The token the node report and the lease job present to the platform |
+| Talos | The operating system every node runs, set up by one machine configuration per node |
+| Kubelet | The Kubernetes agent on each node, which starts the node's pods and gives them their CPU and memory |
+| Cloud pool | The cluster's workers on Hetzner Cloud servers, which grows and shrinks with the load |
 | Burst member | A Cloud worker added for a burst of load, labelled `mitstack.dev/burst` |
 | Worker | A node outside the control plane, either a Cloud pool server or a dedicated server |
+| Worker image | The disk snapshot an install builds, which every Cloud worker boots from |
 | Taint | A mark on a node that keeps off every pod without a matching toleration |
 | Toleration | A pod's declaration that it accepts a taint, so it may run on the tainted node |
 | Argo CD | The kit's deploy tool, which applies every component's manifests to the cluster |
-| Rerender | The kit's render of a running node's configuration for a new release, which keeps the settings that node already has |
+| Rerender | The kit's render of a running node's configuration for a new release, from the cluster and node settings it reads back from that node |
+| Node rollout | The kit's Job that gives each running node a release's configuration, one node at a time and without a reboot |
+| Subscribe | The call mitstack sends the operator to build or change the cluster |
 
 A block and the other workspace terms are defined in
 [the workspace glossary](https://github.com/mitstack-eu/mitstack-workspace/blob/main/docs/glossary.md).
@@ -86,8 +92,9 @@ which ARC's controller and listener need. Only a job's pod, which ARC labels
 `app.kubernetes.io/component: runner`, reaches the rest of the internet, since
 a job reaches whatever its workflow pulls or calls.
 
-Every node's kubelet starts collecting unused images once 80% of a disk is in
-use, and evicts pods once less than 15% of a disk is free for a minute. A
+On a cluster installed with runner services, every node's kubelet starts
+collecting unused images once 80% of a disk is in use, and evicts pods once
+less than 15% of a disk is free for a minute. A
 job's images and build caches fill a disk quickly, and an eviction stops a pod
 gracefully where a full disk would stop the node. A node the kubelet marks with the
 `node.kubernetes.io/disk-pressure` taint reads as not serving in the node
@@ -97,22 +104,71 @@ report, so the redundancy guard counts it as down.
 
 A job's steps run in the runner container. When that container shares every
 core of its node with the node's other pods, a step's timings vary with
-whatever else runs there, and `nproc` prints the node's cores rather than the
-job's.
+whatever else runs there. The Linux command `nproc`, which prints how many
+cores a process may use, then prints the node's cores rather than the job's.
 
-Each worker's kubelet therefore runs the static CPU manager policy, which
-gives a container of a `Guaranteed` pod that asks for whole cores those cores
-alone. `nproc` in a step then prints the cores the runner asked for. The
-Docker daemon and the init container ask for a fraction of a core, so they
-run on the cores the node shares, beside the node's other pods.
+Kubernetes counts CPU in thousandths of a core, so `1000m` is one whole core
+and `250m` is a quarter of one. A container asks for whole cores when its CPU
+request is a whole number of them, such as `1000m` or `2000m`.
 
-The policy keeps at least one core shared for the system. Talos keeps 50m of
-CPU for the system on every node, and the kubelet rounds that up to one whole
-core. On a node of N cores, N minus one cores can therefore go to jobs. The
-scheduler offers pods N cores less those 50m, so the whole cores it places on
-a node never pass N minus one either.
+Each worker's kubelet therefore runs the static CPU manager policy, a kubelet
+setting that splits the node's cores in two:
 
-The control-plane nodes keep the default policy, since no job runs there.
+1. A container of a `Guaranteed` pod that asks for whole cores gets those
+   cores alone, and no other container runs on them.
+2. Every other container shares the cores left over, which the kubelet calls
+   the shared pool.
+
+`nproc` in a step then prints the cores the runner asked for. The Docker
+daemon and the init container ask for a fraction of a core, so they run in
+the shared pool, beside the node's other pods.
+
+The kubelet refuses the static policy unless some CPU is kept for the system,
+so the shared pool never empties. Talos keeps 50m of CPU for the system on
+every node, and the kubelet rounds that up to one whole core it keeps in the
+shared pool. On a node of N cores, N minus one cores can therefore go to jobs.
+
+A cx23 shows the arithmetic. It has 2 cores, so the kubelet keeps one in the
+shared pool and one can go to a job's runner. The scheduler, which places
+pods on nodes, offers pods the node's 2000m less Talos's 50m, so 1950m. Whole
+cores it places there therefore never pass one either.
+
+The control-plane nodes keep the kubelet's default policy, `none`, under which
+every container shares every core. No job runs there.
+
+## How each node comes to run the kubelet settings
+
+The kit decides at install whether a cluster's nodes run CI jobs. When the
+plane names runner inputs, the install renders the disk eviction settings into
+every node's configuration, and the static CPU manager policy into each
+worker's. The worker image the install builds carries the same settings.
+
+The kit keeps no record of that choice outside the nodes, so a rerender reads
+it back from the running node. A node that carries the disk eviction settings
+takes this release's kubelet settings, and a node without them takes none.
+The table shows when each kind of node comes to run the static policy.
+
+| Node | When it runs the static CPU manager policy |
+|---|---|
+| A worker of a cluster installed with runner services, running before the release that adds the policy | From that release's node rollout, with no reboot and no rebuild |
+| A Cloud worker created after the install, such as a burst member | It boots from the worker image on the install's settings, and runs the policy from the node rollout a later subscribe runs again for it |
+| Any node of a cluster installed without runner services | None runs it, since a rerender finds no disk eviction settings to read, and an upgrade that adds the services leaves the kubelet settings as the install rendered them |
+
+At a node rollout, Talos applies the new configuration without a reboot. It
+stops the kubelet, deletes the CPU manager's state file `cpu_manager_state`
+when the kubelet would refuse it under the new policy, and starts the kubelet
+again. The kubelet refuses a state file written under another policy, so
+without that step it would not start.
+
+Kubernetes applies a CPU manager policy only to the pods the kubelet starts
+after the change. Neither Talos nor the rollout drains the node first, so a
+job pod already running keeps sharing its node's cores until it ends. Each
+later job gets cores of its own. A job that a new burst member takes before
+the rollout reaches it shares that member's cores too.
+
+[How an Update reaches each node's configuration](../README.md#how-an-update-reaches-each-nodes-configuration)
+explains when the rollout runs, and when it runs again for a node that joined
+after it.
 
 ## Why the runner token stays on the control plane
 
@@ -226,18 +282,9 @@ rendered from the inputs, which the build and every release carry.
 A build of a plane with runner inputs carries the runner services from its
 first boot. A plane that gains them on an upgrade replaces each gateway first,
 as the last section of this page shows, and its next release carries the rest.
-
-The kit renders the disk eviction settings, and on a worker the static CPU
-manager policy, into a node's configuration when it builds the node. A
-rerender reads whether the running node carries the disk eviction settings,
-and renders this release's kubelet settings for a node that does. A worker
-built before the static policy therefore takes it at the next rollout of node
-configuration. Talos restarts the kubelet with no reboot and drops the CPU
-manager state the old policy left, which the kubelet otherwise refuses to
-start with.
-
-A cluster that gains the runner services by an upgrade keeps its nodes'
-kubelet settings, and each node takes the settings only once it is rebuilt.
+Its nodes keep the kubelet settings the install rendered, as
+[How each node comes to run the kubelet settings](#how-each-node-comes-to-run-the-kubelet-settings)
+explains.
 
 ## How the GitHub token stays fresh
 
@@ -323,15 +370,15 @@ controller starts each later job on the new image.
 
 | File | What it holds |
 |---|---|
-| `components/runners.go` | `RunnerInputs`, its checks, and `Set.WithRunnerServices` and `Set.WithRunners` |
+| `components/runners.go` | `RunnerInputs`, its checks, `Set.WithRunnerServices` and `Set.WithRunners`, and the CPU and memory each container of a job's pod asks for and is limited to |
 | `components/runners/runners.yaml` | The namespace and its Cilium policy |
 | `components/runners/scale-set.yaml` | The template of the scale set, its runner pod, and the Role and RoleBinding that let ARC's controller create each listener's Role |
 | `components/runners/policies/` | The three pod policies that skip `mitstack-runners`, which `scripts/render-components.sh` writes |
 | `components/gha-runner-scale-set-controller/gha-runner-scale-set-controller.yaml` | ARC's controller and its CRDs, which `scripts/render-components.sh` renders |
 | `controlplane/runners.go` and `controlplane/manifests/runner-token.yaml` | The runner token's Secret and the lease CronJob |
 | `controlplane/scripts/cluster-tokens.sh` | The `runner-lease` verb the CronJob runs |
-| `components/runners.go` | The CPU and memory each container of a job's pod asks for and is limited to |
 | `nodeconfig/documents.go` | The kubelet's disk eviction settings and a worker's static CPU manager policy |
+| `nodeconfig/rerender.go` | `Rerender`, which reads whether a running node carries the disk eviction settings |
 | `report/members.go` | The reading of a node under disk pressure |
 
 [The development page](development.md) explains how to render the

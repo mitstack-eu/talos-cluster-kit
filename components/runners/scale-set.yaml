@@ -99,7 +99,14 @@ spec:
     metadata:
       labels:
         mitstack.dev/app: {{ .Namespace }}
+    # The listener holds the runner token, so it runs on the control plane, where no job's pod runs.
     spec:
+      nodeSelector:
+        {{ .ControlPlaneLabel }}: ""
+      tolerations:
+        - key: {{ .ControlPlaneLabel }}
+          operator: Exists
+          effect: NoSchedule
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -138,7 +145,15 @@ spec:
     metadata:
       labels:
         mitstack.dev/app: {{ .Namespace }}
+    # A job that escapes its pod reaches its node, so a job never runs on the control plane beside the runner token.
     spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: {{ .ControlPlaneLabel }}
+                    operator: DoesNotExist
       restartPolicy: Never
       serviceAccountName: {{ .Name }}-runner
       automountServiceAccountToken: false

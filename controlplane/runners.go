@@ -40,14 +40,15 @@ func (p Plane) runnerTokenManifests() ([]components.Manifest, error) {
 		return nil, nil
 	}
 	out, err := execute(runnerToken, map[string]any{
-		"Namespace":        nodeconfig.TalosAPINamespace,
-		"RunnersNamespace": components.RunnersNamespace,
-		"TokenSecret":      components.RunnerTokenSecret,
-		"Image":            toolsImage(),
-		"Script":           clusterTokensScript,
-		"PlatformURL":      p.PlatformURL,
-		"LeaseResource":    p.Runners.LeaseResource,
-		"BurstLabel":       components.BurstLabel,
+		"Namespace":         nodeconfig.TalosAPINamespace,
+		"RunnersNamespace":  components.RunnersNamespace,
+		"TokenSecret":       components.RunnerTokenSecret,
+		"Image":             toolsImage(),
+		"Script":            clusterTokensScript,
+		"PlatformURL":       p.PlatformURL,
+		"LeaseResource":     p.Runners.LeaseResource,
+		"BurstLabel":        components.BurstLabel,
+		"ControlPlaneLabel": components.ControlPlaneLabel,
 	})
 	if err != nil {
 		return nil, err

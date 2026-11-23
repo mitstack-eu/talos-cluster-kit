@@ -705,7 +705,22 @@ func TestHosting_LetsCertManagerReachOnlyTheAPIServerClusterDNSLetsEncryptsTwoAC
 		"egress to sts.*.amazonaws.com on 443/TCP",
 		"egress to sts.amazonaws.com on 443/TCP",
 		"egress with cluster DNS on 53/UDP 53/TCP through the DNS proxy",
-	}, hostingEgress(t, testutil.Endpoint("cert-manager", nil, map[string]string{"app.kubernetes.io/name": "cert-manager", "mitstack.dev/app": "cert-manager"})), "cert-manager's flows")
+	}, hostingEgress(t, testutil.Endpoint("cert-manager", nil, map[string]string{"app.kubernetes.io/name": "cert-manager", "app.kubernetes.io/component": "controller", "mitstack.dev/app": "cert-manager"})), "cert-manager's flows")
+}
+
+func TestHosting_LetsNoCertManagerPodButTheControllerReachLetsEncryptsStagingAPIAWSSTSOrRoute53(t *testing.T) {
+	for name, labels := range map[string]map[string]string{
+		"the CA injector": {"app.kubernetes.io/name": "cainjector", "app.kubernetes.io/component": "cainjector", "mitstack.dev/app": "cert-manager-cainjector"},
+		"the webhook":     {"app.kubernetes.io/name": "webhook", "app.kubernetes.io/component": "webhook", "mitstack.dev/app": "cert-manager-webhook"},
+		"trust-manager":   {"app.kubernetes.io/name": "trust-manager", "mitstack.dev/app": "trust-manager"},
+	} {
+		assert.Equal(t, []string{
+			"egress to *.apps.mitstack.dev on 80/TCP",
+			"egress to acme-v02.api.letsencrypt.org on 443/TCP",
+			"egress to entity kube-apiserver",
+			"egress with cluster DNS on 53/UDP 53/TCP through the DNS proxy",
+		}, hostingEgress(t, testutil.Endpoint("cert-manager", nil, labels)), "%s's flows, since only the controller solves a DNS-01 challenge", name)
+	}
 }
 
 func TestHosting_CertManagersControllerRunsAsTheAccountTheKitNamesAndChecksADNS01RecordThroughClusterDNSAlone(t *testing.T) {

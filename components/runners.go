@@ -158,6 +158,7 @@ func (s Set) WithRunners(in RunnerInputs) (Set, error) {
 		"ControllerVersion": controller.Tag,
 		"ControllerAccount": account,
 		"BurstLabel":        BurstLabel,
+		"ControlPlaneLabel": ControlPlaneLabel,
 	})
 	if err != nil {
 		return Set{}, err

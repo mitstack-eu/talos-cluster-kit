@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"sync"
+
+	"github.com/siderolabs/talos/pkg/machinery/constants"
 )
 
 // BurstLabel is the node label each burst member of a Cloud pool carries, which every pod the set renders refuses but
@@ -18,6 +20,10 @@ const BurstLabel = "mitstack.dev/burst"
 
 // BurstValue is the value of BurstLabel on a burst member.
 const BurstValue = "true"
+
+// ControlPlaneLabel is the label Talos gives each control-plane node, with an empty value, and the key of the
+// NoSchedule taint those nodes keep when apps run on workers alone.
+const ControlPlaneLabel = constants.LabelNodeRoleControlPlane
 
 type Versions struct {
 	Talos      string

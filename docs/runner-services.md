@@ -37,19 +37,20 @@ holds the following parts, beside every component a cluster runs anyway:
 
 - The namespace `mitstack-runners`, at the privileged Pod Security level,
   because each job's Docker daemon runs privileged.
-- ARC's controller, which watches that namespace alone. The kit renders it
-  from the gha-runner-scale-set-controller 0.15.1 chart.
+- ARC's controller, which watches that namespace alone and runs on the
+  control plane. The kit renders it from the gha-runner-scale-set-controller
+  0.15.1 chart.
 - One scale set, an AutoscalingRunnerSet named for the label a workflow's
   `runs-on` names. It registers in the organisation's runner group, starts no
   runner while no job waits, and starts at most the number of runners the
   operator sets.
-- The scale set's listener, a pod ARC's controller starts, which holds a long
-  poll open to GitHub and asks the controller for a runner pod when a job
-  waits.
+- The scale set's listener, a pod ARC's controller starts on the control
+  plane, which holds a long poll open to GitHub and asks the controller for a
+  runner pod when a job waits.
 - A runner pod for each job. It runs the actions-runner image beside a Docker
   daemon as a sidecar, so a job can build and run containers. Every volume it
   mounts is an emptyDir, it mounts no service account token, and it may run on
-  a burst member.
+  a burst member. It never runs on a control-plane node.
 - A fixed CPU and memory request on the runner pod's runner and Docker daemon
   containers, the same for every block. The figures live only in
   `components/runners/scale-set.yaml`, so read them there. One job then fits on
@@ -60,8 +61,9 @@ holds the following parts, beside every component a cluster runs anyway:
   [the README](../README.md#how-a-cloud-pool-scales-with-the-load) explains. A
   test in `rendered_set_test.go` at the kit's root sums those DaemonSets'
   requests and fails once the job no longer fits.
-- The CronJob `mitstack-runner-lease` in `mitstack-node`, which keeps the
-  GitHub token ARC reads from the Secret `mitstack-runner-token` fresh.
+- The CronJob `mitstack-runner-lease` in `mitstack-node`, which runs on the
+  control plane and keeps the GitHub token ARC reads from the Secret
+  `mitstack-runner-token` fresh.
 
 The three pod policies `mitstack-disallow-host-path`,
 `mitstack-require-resource-limits` and `mitstack-restrict-image-registries`
@@ -83,6 +85,43 @@ job's images and build caches fill a disk quickly, and an eviction stops a pod
 gracefully where a full disk would stop the node. A node the kubelet marks with the
 `node.kubernetes.io/disk-pressure` taint reads as not serving in the node
 report, so the redundancy guard counts it as down.
+
+## Why the runner token stays on the control plane
+
+The runner token lets its holder register runners in the organisation's
+runner groups. A runner registered that way could take jobs queued by any
+repository of the organisation. A job's pod is privileged, so a job that
+escapes its pod can read whatever its node holds, including the service
+account tokens of the pods beside it.
+
+The kit therefore keeps the three pods that use the runner token on the
+control-plane nodes, where no job's pod runs:
+
+1. ARC's controller reads the token to register the scale set.
+2. The listener holds the token while it waits for jobs.
+3. The lease job writes a new token into the Secret every 30 minutes.
+
+Each of those pods selects the label Talos gives a control-plane node,
+`node-role.kubernetes.io/control-plane`. When a cluster runs its apps on
+workers alone, Talos also gives each control-plane node a NoSchedule taint
+under the same key, which keeps off every pod that does not declare it
+accepts the taint. These three pods declare it with a toleration. The runner
+pod's node affinity refuses the label. The account a job runs as mounts no
+service account token, and no role bound to it reads the Secret, so it cannot
+read the token through the Kubernetes API either.
+
+Since a job never runs on a control-plane node, a cluster with runner services
+needs at least one worker, or every job waits unscheduled.
+
+This placement leaves two paths open. Several components on every cluster,
+Argo CD's application controller among them, hold cluster-wide roles that may
+read every Secret, the runner token included. Argo CD's application controller
+selects only Linux nodes, so it may run on a worker beside a job, and a job
+that escapes onto that worker could use its account. Jobs from different
+repositories can also share a
+worker, and a job that escapes may reach what that node holds for the other
+jobs on it. Closing the first path would take workers that run CI jobs and
+nothing else, and closing the second would take one job per worker.
 
 ## How the parts fit together
 

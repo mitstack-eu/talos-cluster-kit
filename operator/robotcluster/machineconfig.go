@@ -4,6 +4,7 @@ package robotcluster
 // never dials into a cluster.
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/mitstack-eu/block-kit/observe"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
+	"github.com/mitstack-eu/talos-cluster-kit/nodeconfig"
 	"github.com/mitstack-eu/talos-cluster-kit/noderollout"
 	"github.com/mitstack-eu/talos-cluster-kit/pools"
 	"github.com/mitstack-eu/talos-cluster-kit/report"
@@ -124,6 +126,13 @@ func readRollout(ctx context.Context, p controlplane.Plane, st controlplane.Stat
 		return r, nil
 	case holds && !readable:
 		r.problem += ", and " + read.UnreadJobs(controlplane.RemovalApplication)
+		return r, nil
+	case holds && applied && ran.Health == report.JobFailed:
+		failure, err := read.JobFailure(nodeconfig.TalosAPINamespace, noderollout.JobName(release))
+		if err != nil {
+			return nodeRollout{}, err
+		}
+		r.problem += ", and its Job failed: " + cmp.Or(failure, ran.Message, "the node report gives no message of it")
 		return r, nil
 	case holds:
 		return r, nil

@@ -95,16 +95,20 @@ of its two fields set.
 A block opens further outbound ports with `controlplane.Plane.GatewayEgressPorts`,
 which the plane passes to each gateway as `gateway.Inputs.EgressPorts`. Every
 gateway then forwards those TCP ports to any outside address, beside 443, which
-it always forwards. A runner cluster sets `[]int{80, 443}`, so a CI job fetches
-Debian packages over plain HTTP. `gateway.Render` refuses a port outside 1 to
-65535.
+it always forwards. A runner cluster, whose nodes run a repository's CI jobs,
+sets `[]int{80, 443}`. A CI job, one build or test run on those nodes, can then
+reach an outside host over plain HTTP. `gateway.Render` refuses a port outside 1
+to 65535.
 
-The ports also decide when a gateway is replaced. `gateway.List.Mark` gives the
-`mitstack.dev/gateway-list` label of a gateway built from a list and its ports.
-With no port beyond 443 the label is the list's digest, so a block that leaves
-the field unset keeps its gateways. A change of the ports beyond 443 changes the
-label, and the block's next upgrade replaces each gateway with one that forwards
-them.
+The ports also decide when a gateway is replaced. Each gateway is built from a
+gateway list, the images it mirrors and the manifests it serves to the nodes,
+which the kit release pins. `gateway.List.Mark` gives the gateway's
+`mitstack.dev/gateway-list` label from that list and the ports. With no port
+beyond 443 the label is the list's digest, the label every gateway already
+carries, so a block that leaves the field unset keeps its gateways. A change of
+the ports beyond 443 changes the label. The block's next upgrade brings a running
+cluster to the kit release the block pins, and it replaces each gateway with one
+that forwards the new ports.
 
 A Cloud cluster renders once with an empty `Node`, because every node boots
 from one snapshot and takes its name from Hetzner's metadata service. A

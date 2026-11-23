@@ -37,6 +37,20 @@ specs:
         node-role.kubernetes.io/control-plane: ""
     toPorts:
     - ports: [{port: "10250", protocol: TCP}, {port: "6443", protocol: TCP}]
+- description: "cert-manager's controller, which alone solves a slice's DNS-01 challenge, reaches Let's Encrypt's staging ACME API, AWS STS and Route 53 on 443."
+  endpointSelector:
+    matchLabels:
+      k8s:io.kubernetes.pod.namespace: cert-manager
+      k8s:app.kubernetes.io/name: cert-manager
+      k8s:app.kubernetes.io/component: controller
+  egress:
+  - toFQDNs:
+    - matchName: acme-staging-v02.api.letsencrypt.org
+    - matchName: sts.amazonaws.com
+    - matchPattern: "sts.*.amazonaws.com"
+    - matchName: route53.amazonaws.com
+    toPorts:
+    - ports: [{port: "443", protocol: TCP}]
 - description: "External Secrets reaches the API server and OpenBao, looks names up through Cilium's DNS proxy, and reaches AWS STS and ECR's API on 443 for its ECR token generator, and the API server reaches its webhook."
   endpointSelector:
     matchLabels:

@@ -164,6 +164,13 @@ func HostingServed() Set {
 	return set
 }
 
+// cert-manager's controller runs as this account, so a slice whose issuer solves through a cloud role grants it that
+// issuer's service account token.
+const (
+	CertManagerNamespace = "cert-manager"
+	CertManagerAccount   = "cert-manager"
+)
+
 const (
 	traefikName = "traefik"
 	// Under the chart's argument Traefik publishes each node's ExternalIP, and a node of the kit holds none.

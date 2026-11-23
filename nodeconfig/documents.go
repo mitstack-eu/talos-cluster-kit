@@ -156,7 +156,6 @@ const userNamespaces = "11255"
 
 const writableCgroups = "[plugins.\"io.containerd.cri.v1.runtime\".containerd.runtimes.runc]\n  cgroup_writable = true\n"
 
-// jobIsolationDocuments are what a worker holds for CI jobs that each run in their own user namespace.
 func (c Cluster) jobIsolationDocuments() []config.Document {
 	if !c.IsolatesJobs {
 		return nil

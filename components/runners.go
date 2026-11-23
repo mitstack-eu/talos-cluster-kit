@@ -69,8 +69,8 @@ type RunnerInputs struct {
 	MaxRunners int
 	// LeaseResource is the resource type whose GitHub token the lease job asks the platform for.
 	LeaseResource string
-	// IsolateJobs runs each job's pod in its own user namespace with a Docker daemon holding only what Docker needs
-	// there; false runs the daemon privileged, sharing its node's users.
+	// IsolateJobs runs each job's pod in its own user namespace with an unprivileged Docker daemon; false runs the
+	// daemon privileged, sharing its node's users.
 	IsolateJobs bool
 }
 

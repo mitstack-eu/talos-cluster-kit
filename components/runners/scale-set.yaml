@@ -195,7 +195,7 @@ spec:
               memory: {{ .DindSize.Memory }}
           securityContext:
 {{- if .IsolateJobs }}
-            # What Docker needs inside the pod's user namespace; docs/runner-services.md gives each setting's reason.
+            # The unprivileged daemon's settings in a user namespace; docs/runner-services.md gives each one's reason and which are unproven on Talos.
             privileged: false
             procMount: Unmasked
             capabilities:

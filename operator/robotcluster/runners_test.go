@@ -63,6 +63,9 @@ func TestCluster_RunnersProblemNamesEachRunnerTheNewestReportsSweepCouldNotRemov
 		refused("mitstack-ci-7xk2p-runner-h5j6k", 22, 500, "Server Error")}}
 	busySweep := map[string]any{"scaleSet": "mitstack-ci", "listed": 1, "removed": []any{}, "unremoved": []any{},
 		"busy": []any{"mitstack-ci-7xk2p-runner-q8w4z"}, "deferred": 1, "unlisted": 0}
+	otherSweep := map[string]any{"scaleSet": "mitstack-ci", "listed": 3, "removed": []any{"mitstack-ci-7xk2p-runner-h5j6k"}, "unremoved": []any{},
+		"busy": []any{}, "deferred": 0, "unlisted": 0}
+	emptySweep := map[string]any{"scaleSet": "mitstack-ci", "listed": 2, "removed": []any{}, "unremoved": []any{}, "busy": []any{}, "deferred": 0, "unlisted": 0}
 	cases := map[string]struct {
 		runsNone   bool
 		runnersErr error
@@ -75,6 +78,14 @@ func TestCluster_RunnersProblemNamesEachRunnerTheNewestReportsSweepCouldNotRemov
 			named:   []string{"mitstack-ci-7xk2p-runner-q8w4z", "403", "Resource not accessible by integration", "mitstack-ci-7xk2p-runner-h5j6k", "500"}},
 		"a sweep that removed every offline runner reads no problem": {
 			reports: []observe.NodeReport{sweepReport(t, sweptAt, cleanSweep)}},
+		"a runner the newest sweep and an older sweep both removed reads unhealthy naming it, since GitHub listed it again after answering its removal as done": {
+			reports: []observe.NodeReport{sweepReport(t, sweptAt.Add(-5*time.Minute), cleanSweep), sweepReport(t, sweptAt, cleanSweep)},
+			named:   []string{"mitstack-ci-7xk2p-runner-q8w4z", "mitstack-ci", "removal"}},
+		"a runner only the newest sweep removed reads no problem, though an older sweep removed another": {
+			reports: []observe.NodeReport{sweepReport(t, sweptAt.Add(-5*time.Minute), otherSweep), sweepReport(t, sweptAt, cleanSweep)}},
+		"a runner only older sweeps removed reads no problem, since the newest sweep found none to remove": {
+			reports: []observe.NodeReport{sweepReport(t, sweptAt.Add(-10*time.Minute), cleanSweep), sweepReport(t, sweptAt.Add(-5*time.Minute), cleanSweep),
+				sweepReport(t, sweptAt, emptySweep)}},
 		"a later sweep that removed the runner GitHub refused before reads no problem": {
 			reports: []observe.NodeReport{sweepReport(t, sweptAt, refusedSweep), sweepReport(t, sweptAt.Add(5*time.Minute), cleanSweep)}},
 		"a later report whose other read failed carries no sweep, so the refusal before it still reads unhealthy": {

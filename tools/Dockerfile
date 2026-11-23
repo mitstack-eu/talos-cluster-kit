@@ -1,10 +1,11 @@
 # Each binary is checked against its sha256 pin: talosctl and kubectl against tools.env, which the gateway checks them
 # against once it copies them out, and jq against jq.env, the file the report's tests fetch the same jq by. coreutils
 # replaces busybox's timeout, which exits 143 on a timeout where the node report reads GNU timeout's 124. ssh refuses to
-# run for a uid with no passwd entry, so the image names the uid every non-root container runs as. The image carries the
-# node report's, its outside mesh probe's, the security scan's, the topology labeller's and the cluster tokens' scripts,
-# since a node's machine configuration has no room for them inside the builder's user data, and the script each
-# component's handover Job runs and the one OpenBao's rollout Job runs. The security scan's
+# run for a uid with no passwd entry, so the image names the uid every non-root container runs as. It names uid and gid
+# 60 etcd too, the user and group Talos runs etcd as, since kube-bench reads the owner of etcd's directory by name. The
+# image carries the node report's, its outside mesh probe's, the security scan's, the topology labeller's and the
+# cluster tokens' scripts, since a node's machine configuration has no room for them inside the builder's user data, and
+# the script each component's handover Job runs and the one OpenBao's rollout Job runs. The security scan's
 # kube-bench with its own cis-1.10 config, kubescape and the NSA framework with its default inputs are checked against
 # scan.env. procps gives kube-bench the ps it finds each component's process with, which busybox's ps refuses. The image
 # carries every manifest a gateway serves at its repository path under the scripts' directory, since a gateway copies
@@ -59,7 +60,9 @@ RUN apk add --no-cache bash ca-certificates coreutils curl git gpg openssh-clien
  && chmod 0755 /usr/local/bin/kube-bench /usr/local/bin/kubescape \
  && rm /tmp/tools.env /tmp/jq.env /tmp/scan.env /tmp/kube-bench.tar.gz \
  && addgroup -g 65532 mitstack \
- && adduser -D -H -h /tmp -s /sbin/nologin -G mitstack -u 65532 mitstack
+ && adduser -D -H -h /tmp -s /sbin/nologin -G mitstack -u 65532 mitstack \
+ && addgroup -g 60 etcd \
+ && adduser -D -H -h /var/lib/etcd -s /sbin/nologin -G etcd -u 60 etcd
 
 COPY report/scripts/report.sh report/scripts/mesh-probe.sh report/scripts/security-scan.sh topology/scripts/label-nodes.sh controlplane/scripts/cluster-tokens.sh rollout/scripts/handover.sh rollout/scripts/openbao-rollout.sh /usr/local/lib/mitstack/
 COPY tools/kube-bench-talos.yaml /usr/local/lib/mitstack/kube-bench/cfg/cis-1.10/config.yaml

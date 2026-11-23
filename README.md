@@ -2467,10 +2467,11 @@ The `mitstack-security-scan` CronJob runs once a day in `kube-system`, on a
 control-plane node, from the tools image. kube-bench runs the `cis-1.10`
 benchmark, the one Sidero documents for Talos, since kube-bench's version
 mapping picks none for Talos. It reads each component's flags from its
-process and `/etc/kubernetes`, `/var/lib/kubelet` and `/var/lib/etcd`
-read-only. kubescape scans the NSA framework with an empty exception list and
-no host sensor, under an identity that may read the cluster's objects but no
-Secret.
+process. It also reads `/etc/kubernetes`, `/var/lib/kubelet`, `/var/lib/etcd`
+and the two directories that hold the scheduler's and the controller
+manager's kubeconfigs, all read-only. kubescape scans the NSA framework with
+an empty exception list and no host sensor, under an identity that may read
+the cluster's objects but no Secret.
 
 kube-bench reads the files of the node it runs on, so the scan runs on a
 control-plane node, the only kind that holds the API server, the controller
@@ -2488,16 +2489,31 @@ kube-bench is expected to read the mode and owner Talos gave the directory.
 No test in this repository runs on a Talos node, so a cluster's own scan is
 what shows the mount.
 
-Three more things let kube-bench read a Talos node truthfully.
+Talos writes the scheduler's kubeconfig into
+`/system/secrets/kubernetes/kube-scheduler` and the controller manager's into
+`/system/secrets/kubernetes/kube-controller-manager`, each file with mode 400.
+kube-bench looks for each kubeconfig there among other paths, and checks 1.1.15
+and 1.1.17 read its mode. The kubelet's container holds no `/system` either,
+so both directories are mounted with no type check. The scan mounts each
+directory rather than the kubeconfig in it. The container runtime makes a
+directory at a host path that does not exist. A scan that mounted a
+kubeconfig before Talos wrote it would leave a directory where the file
+belongs, and Talos could then not write that node's control-plane secrets.
+The controller manager's directory also holds its signing keys, each with mode
+400 for the controller manager's user, so the scan's root, holding no
+capability, can read none of them.
+
+Four more things let kube-bench read a Talos node truthfully.
 
 | What the scan does | Why |
 |---|---|
 | It names no variable that starts with `KUBE_BENCH_` | kube-bench reads its own settings under that prefix. It takes `KUBE_BENCH_VERSION` for its `--version` flag and refuses that flag beside `--benchmark` |
 | The tools image installs `procps` | kube-bench finds each component's process with `ps -C`, which busybox's `ps` refuses. Without it, every check of a component's flags reads nothing and fails |
 | `tools/kube-bench-talos.yaml` stands where kube-bench reads the settings that override its config for `cis-1.10`, and names `/var/lib/etcd` as etcd's data directory | Talos gives that directory mode 700 and etcd's own user. kube-bench's default looks up a path inside it, which the scan's root may not do with every capability dropped, and kube-bench then stops |
+| The tools image names uid and gid 60 `etcd` | Talos runs etcd as uid and gid 60 and gives it the etcd directory. Check 1.1.12 reads that directory's owner by name and wants `etcd:etcd`, which `stat` prints only when the image's own user list names the uid |
 
 The two tools run as two steps of one pod, so neither holds both the host's
-files and the API token. kube-bench runs first, as root with those three
+files and the API token. kube-bench runs first, as root with those five
 directories and no token, and leaves its summary in a shared scratch
 directory. kubescape runs after it as a non-root user, with the token and no
 host file, and then patches both summaries. A non-root user cannot reach a

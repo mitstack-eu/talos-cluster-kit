@@ -18,7 +18,10 @@
       {"name": "lost-2", "unreadable": "the call timed out"},
       {"name": "lost-3", "unreadable": "HTTP 500"},
       {"name": "lost-4", "unreadable": "the pod has no IP and status port to call"},
-      {"name": "lost-5", "unreadable": "the answer names no isPrimary or isWalReceiverActive"}
+      {"name": "lost-5", "unreadable": "the answer names no isPrimary or isWalReceiverActive"},
+      {"name": "lost-6", "unreadable": "the certificate is not one the database CA signed for lost-rw.app-pg.svc"},
+      {"name": "lost-7", "unreadable": "the certificate is not one the database CA signed for lost-rw.app-pg.svc"},
+      {"name": "lost-8", "unreadable": "the instance manager serves its status without TLS"}
     ]},
   {"namespace": "app-pg", "kind": "Database", "name": "shop", "subscription": null, "applied": true, "message": null}
 ]

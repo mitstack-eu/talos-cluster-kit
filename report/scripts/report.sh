@@ -22,15 +22,16 @@
 # RUNNER_TOKEN_FILE, and its runners member names each removal and each refusal.
 # When a read, the body or the token request fails or times out, it posts an unsigned report whose error names it
 # instead, then exits non-zero.
-# Usage: REPORT_URL=<https url> SUBSCRIPTION_ID=<id> HOST_IP=<this pod's node> REPORT_PROOF_SCRIPT=<script> MESH_PROBE_URL=<target's url> MESH_PROBE_ANSWER=<its answer> MESH_PROBE_IDENTITY=<its SPIFFE id> MESH_PROBE_CONFIGMAP=<namespace/name> OPENBAO_MEMBERS="<name>=<https url> ..." OPENBAO_CA_FILE=<pem> DATABASE_CA_FILE=<pem> ARGOCD_URL=<https url> GATEWAYS="<address> ..." EGRESS_URL=<https url> [POD_NAMESPACE=mitstack-node] [REPORT_TOKEN_FILE=/var/run/mitstack/token] [REPORT_READ_SECONDS=21] [RUNNERS_ORGANIZATION=<org> RUNNER_GROUP=<name> RUNNER_SCALE_SET=<name> RUNNERS_NAMESPACE=<namespace> RUNNER_TOKEN_FILE=<file> GITHUB_API_URL=<https url>] report.sh
+# Usage: REPORT_URL=<https url> SUBSCRIPTION_ID=<id> HOST_IP=<this pod's node> REPORT_PROOF_SCRIPT=<script> MESH_PROBE_URL=<target's url> MESH_PROBE_ANSWER=<its answer> MESH_PROBE_IDENTITY=<its SPIFFE id> MESH_PROBE_CONFIGMAP=<namespace/name> OPENBAO_MEMBERS="<name>=<https url> ..." OPENBAO_CA_FILE=<pem> [DATABASE_CA_FILE=<pem>] ARGOCD_URL=<https url> GATEWAYS="<address> ..." EGRESS_URL=<https url> [POD_NAMESPACE=mitstack-node] [REPORT_TOKEN_FILE=/var/run/mitstack/token] [REPORT_READ_SECONDS=21] [RUNNERS_ORGANIZATION=<org> RUNNER_GROUP=<name> RUNNER_SCALE_SET=<name> RUNNERS_NAMESPACE=<namespace> RUNNER_TOKEN_FILE=<file> GITHUB_API_URL=<https url>] report.sh
 # It exists so the platform sees a cluster it never dials into, as ADR 0072 requires, with os:reader and no Secret right.
 set -euo pipefail
 
 # Nine limits of 21 seconds, the token request's 5, each with a 5-second kill grace, and the post's 20 make 264, which
-# leaves 16 seconds of the Job's activeDeadlineSeconds of 280 for the tools to start. The mesh, pod, workload, Argo CD,
-# default-deny, credential, ObjectStore, scan, OpenBao, etcd status, gateway and egress reads run beside them, each within one limit,
-# the admission fixtures' read and their dry runs within two, the pod read and the instance managers' calls within two,
-# and the runner sweep within five.
+# leaves 16 seconds of the Job's activeDeadlineSeconds of 280 for the tools to start. The workload, Argo CD,
+# default-deny, credential, ObjectStore, scan, OpenBao, etcd status and egress reads run beside them, each within one limit,
+# and the mesh probe's call and the read of its outside result, which holds each gateway's reading, the admission
+# fixtures' read and their dry runs, and the pod read and the instance managers' calls, each within two, and the
+# runner sweep within five.
 limit=${REPORT_READ_SECONDS:-21}
 # The sweep's fourteen GitHub calls at most, one list of groups, three pages and ten removals, of five seconds each fit its five limits.
 runners_per_page=100
@@ -289,8 +290,8 @@ remove_runner() {
     '$runner + {status: $status, message: (if $status == 0 then "GitHub gave no answer" else $message end)}'
 }
 
-# read_instance_status asks the instance manager of each pod CloudNativePG labels an instance for its status, all at the
-# same time, on the status port the pod's postgres container names. Its status is 0 once it read the pods.
+# read_instance_status asks each CloudNativePG instance pod's instance manager for its status, and leaves its status file
+# 0 only once the pod list was read and parsed and each instance's answer was kept.
 read_instance_status() {
   local i=0 called instance scheme target dir=$work/instances
   mkdir "$dir"
@@ -317,12 +318,9 @@ read_instance_status() {
   printf 0 > "$work/instance-status.status"
 }
 
-# instance_status OUT INSTANCE SCHEME TARGET calls one instance manager's status route with a GET that sends no
-# credential, and keeps of its answer whether the instance is the primary and whether its WAL receiver streams, or why
-# the call failed. TARGET is HOST:PORT:IP as curl's --resolve takes it, so the call goes to the pod's IP under HOST, the
-# name of its Cluster's read-write Service in the pod's namespace. The database CA signs a Cluster's certificate for its
-# Services and never for a pod's IP, and two namespaces may each hold a Cluster of one name.
-# -q reads no ~/.curlrc that could add a credential.
+# instance_status calls the status route at the pod's IP under its Cluster's read-write Service name, since the database
+# CA signs a certificate for a Cluster's Services and never for a pod's IP, and two namespaces may each hold a Cluster of
+# one name; -q reads no ~/.curlrc that could add a credential.
 instance_status() {
   local out=$1 instance=$2 scheme=$3 target=$4 host port code ended=0 reason=
   host=${target%%:*}
@@ -620,7 +618,7 @@ body() {
     def condition($type): [.status.conditions[]? | select(.type == $type)
       | {status, reason: (.reason // null), message: (.message // null | at_most_256)}] | .[0];
     # instance_status is what the instance manager of each of the Cluster's instance pods answered, by pod name, or null
-    # when the report read no pods.
+    # when the pods could not be read or an instance's answer could not be kept.
     def instance_status: .metadata as $cluster
       | if $instance_status_status != 0 then null
         else [$instance_status[] | select(.namespace == $cluster.namespace and .cluster == $cluster.name)

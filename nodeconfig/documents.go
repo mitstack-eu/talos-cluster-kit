@@ -40,7 +40,7 @@ var TalosAPIRoles = []string{"os:admin", "os:etcd:backup", "os:reader"}
 const TalosAPINamespace = "mitstack-node"
 
 // adapt changes the generated documents the kit keeps, turning kube-proxy off since Cilium replaces it.
-func (c Cluster) adapt(generated []config.Document, n Node) []config.Document {
+func (c Cluster) adapt(generated []config.Document, role machine.Type, n Node) []config.Document {
 	var docs []config.Document
 	for _, doc := range generated {
 		if !keepGenerated(doc) {
@@ -64,8 +64,8 @@ func (c Cluster) adapt(generated []config.Document, n Node) []config.Document {
 		case *k8s.KubeServiceAccountConfigV1Alpha1:
 			d.ServiceIssuer.IssuerURL = meta.URL{URL: c.ServiceAccountIssuer}
 		case *k8s.KubeletConfigV1Alpha1:
-			if c.DiskEviction {
-				d.KubeletConfig = meta.Unstructured{Object: diskEvictionSettings()}
+			if c.RunsCIJobs {
+				d.KubeletConfig = meta.Unstructured{Object: ciJobSettings(role)}
 			}
 		}
 		docs = append(docs, doc)
@@ -82,15 +82,24 @@ const (
 	evictionGracePeriod         = "1m"
 )
 
-// diskEvictionSettings are the KubeletConfiguration keys a cluster with DiskEviction sets, a soft eviction so a pod
-// stops gracefully before the kubelet's hard thresholds are reached.
-func diskEvictionSettings() map[string]any {
-	return map[string]any{
+// staticCPUManagerPolicy gives a container of a Guaranteed pod that asks for whole cores those cores alone. It needs
+// CPU kept for the system, which Talos's default system reservation keeps, and the kubelet rounds it up to one core.
+const staticCPUManagerPolicy = "static"
+
+// ciJobSettings are the KubeletConfiguration keys a node of a cluster that runs CI jobs sets: a soft eviction so a pod
+// stops gracefully before the kubelet's hard thresholds are reached, and on a worker, where the jobs run, the static
+// CPU manager policy.
+func ciJobSettings(role machine.Type) map[string]any {
+	settings := map[string]any{
 		"imageGCHighThresholdPercent": imageCollectionStartPercent,
 		"imageGCLowThresholdPercent":  imageCollectionStopPercent,
 		"evictionSoft":                map[string]any{"imagefs.available": evictionFreePercent, "nodefs.available": evictionFreePercent},
 		"evictionSoftGracePeriod":     map[string]any{"imagefs.available": evictionGracePeriod, "nodefs.available": evictionGracePeriod},
 	}
+	if role == machine.TypeWorker {
+		settings["cpuManagerPolicy"] = staticCPUManagerPolicy
+	}
+	return settings
 }
 
 func (c Cluster) adaptV1Alpha1(d *v1alpha1.Config) {

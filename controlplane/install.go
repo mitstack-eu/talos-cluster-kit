@@ -218,7 +218,7 @@ func (p Plane) renderNodes(ctx context.Context, apiAddr netip.Addr, now time.Tim
 		ServiceAccountIssuer: issuerURL(bucket, p.Subscription),
 		AppsOnWorkers:        p.AppsOnWorkers,
 		Release:              release,
-		DiskEviction:         p.Runners != nil,
+		RunsCIJobs:           p.Runners != nil,
 	}
 	inst := installation{
 		cluster: cluster, enrolmentDigest: enrolmentTokenDigest(token), issuerBucket: bucket, gatewayCA: *p.GatewayCA,

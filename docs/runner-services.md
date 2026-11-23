@@ -55,9 +55,12 @@ holds the following parts, beside every component a cluster runs anyway:
   daemon as a sidecar, so a job can build and run containers. Every volume it
   mounts is an emptyDir, it mounts no service account token, and it may run on
   a burst member. It never runs on a control-plane node.
-- A fixed CPU and memory request on the runner pod's runner and Docker daemon
-  containers, the same for every block. The figures live only in
-  `components/runners/scale-set.yaml`, so read them there. One job then fits on
+- A fixed CPU and memory request on each container of the runner pod, the
+  same for every block, with a limit equal to each request. Kubernetes then
+  gives the pod its `Guaranteed` class, the class whose containers keep what
+  they asked for. The runner container asks for whole cores, so a job's steps
+  get cores of their own, as the next section explains. The figures live only
+  in `components/runners.go`, so read them there. One job then fits on
   a cx23, Hetzner's 2 vCPU and 4 GB server and the smallest a Cloud pool may
   list. It fits beside every DaemonSet, the pods the kit runs once on each
   node, such as the mesh and network agents. A job that finds no room on any
@@ -89,6 +92,26 @@ job's images and build caches fill a disk quickly, and an eviction stops a pod
 gracefully where a full disk would stop the node. A node the kubelet marks with the
 `node.kubernetes.io/disk-pressure` taint reads as not serving in the node
 report, so the redundancy guard counts it as down.
+
+## How a job gets cores of its own
+
+A job's steps run in the runner container. When that container shares every
+core of its node with the node's other pods, a step's timings vary with
+whatever else runs there, and `nproc` prints the node's cores rather than the
+job's.
+
+Each worker's kubelet therefore runs the static CPU manager policy, which
+gives a container of a `Guaranteed` pod that asks for whole cores those cores
+alone. `nproc` in a step then prints the cores the runner asked for. The
+Docker daemon and the init container ask for a fraction of a core, so they
+run on the cores the node shares, beside the node's other pods.
+
+The policy keeps at least one core shared for the system. The kubelet rounds
+the CPU it keeps for the system up to whole cores, and Talos keeps 50m on
+every node. On a node of N cores, N minus one cores can therefore go to jobs,
+and the scheduler's sum of requests never passes that.
+
+The control-plane nodes keep the default policy, since no job runs there.
 
 ## Why the runner token stays on the control plane
 
@@ -203,10 +226,17 @@ A build of a plane with runner inputs carries the runner services from its
 first boot. A plane that gains them on an upgrade replaces each gateway first,
 as the last section of this page shows, and its next release carries the rest.
 
-The kit renders the disk eviction settings into a node's configuration when it
-builds the node. A rerender keeps a running node's kubelet settings, so a
-cluster that gains the runner services by an upgrade keeps its nodes' kubelet
-settings. Each node takes the disk eviction settings only once it is rebuilt.
+The kit renders the disk eviction settings, and on a worker the static CPU
+manager policy, into a node's configuration when it builds the node. A
+rerender reads whether the running node carries the disk eviction settings,
+and renders this release's kubelet settings for a node that does. A worker
+built before the static policy therefore takes it at the next rollout of node
+configuration. Talos restarts the kubelet with no reboot and drops the CPU
+manager state the old policy left, which the kubelet otherwise refuses to
+start with.
+
+A cluster that gains the runner services by an upgrade keeps its nodes'
+kubelet settings, and each node takes the settings only once it is rebuilt.
 
 ## How the GitHub token stays fresh
 
@@ -299,7 +329,8 @@ controller starts each later job on the new image.
 | `components/gha-runner-scale-set-controller/gha-runner-scale-set-controller.yaml` | ARC's controller and its CRDs, which `scripts/render-components.sh` renders |
 | `controlplane/runners.go` and `controlplane/manifests/runner-token.yaml` | The runner token's Secret and the lease CronJob |
 | `controlplane/scripts/cluster-tokens.sh` | The `runner-lease` verb the CronJob runs |
-| `nodeconfig/documents.go` | The kubelet's disk eviction settings |
+| `components/runners.go` | The CPU and memory each container of a job's pod asks for and is limited to |
+| `nodeconfig/documents.go` | The kubelet's disk eviction settings and a worker's static CPU manager policy |
 | `report/members.go` | The reading of a node under disk pressure |
 
 [The development page](development.md) explains how to render the

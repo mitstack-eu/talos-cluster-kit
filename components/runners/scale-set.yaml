@@ -162,6 +162,13 @@ spec:
           image: {{ .RunnerImage }}
           command: ["cp"]
           args: ["-r", "/home/runner/externals/.", "/home/runner/tmpDir/"]
+          resources:
+            requests:
+              cpu: {{ .InitSize.CPU }}
+              memory: {{ .InitSize.Memory }}
+            limits:
+              cpu: {{ .InitSize.CPU }}
+              memory: {{ .InitSize.Memory }}
           volumeMounts:
             - name: dind-externals
               mountPath: /home/runner/tmpDir
@@ -174,11 +181,13 @@ spec:
           env:
             - name: DOCKER_GROUP_GID
               value: "123"
-          # Requests make a queued job grow a Cloud pool, and with the runner's they fit one job on a cx23 beside every DaemonSet.
           resources:
             requests:
-              cpu: 250m
-              memory: 512Mi
+              cpu: {{ .DindSize.CPU }}
+              memory: {{ .DindSize.Memory }}
+            limits:
+              cpu: {{ .DindSize.CPU }}
+              memory: {{ .DindSize.Memory }}
           securityContext:
             privileged: true
           restartPolicy: Always
@@ -209,8 +218,11 @@ spec:
               value: "120"
           resources:
             requests:
-              cpu: 1000m
-              memory: 1536Mi
+              cpu: {{ .RunnerSize.CPU }}
+              memory: {{ .RunnerSize.Memory }}
+            limits:
+              cpu: {{ .RunnerSize.CPU }}
+              memory: {{ .RunnerSize.Memory }}
           volumeMounts:
             - name: work
               mountPath: /home/runner/_work

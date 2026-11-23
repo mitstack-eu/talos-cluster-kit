@@ -38,6 +38,18 @@ var (
 
 var scaleSet = tmpl.Must("the runner scale set", scaleSetTemplate)
 
+// containerSize is the CPU and memory a container requests and is limited to, equal so its pod is Guaranteed.
+type containerSize struct{ CPU, Memory string }
+
+// The sizes of a job pod's containers, the same for every block. The runner takes a whole core, which the static CPU
+// manager gives it alone, and dind and the init container share the node's other cores. With the DaemonSets the kit
+// runs on every node, one job fits on a cx23, the smallest server a Cloud pool may list.
+var (
+	jobRunnerSize = containerSize{CPU: "1000m", Memory: "1536Mi"}
+	jobDindSize   = containerSize{CPU: "250m", Memory: "512Mi"}
+	jobInitSize   = containerSize{CPU: "100m", Memory: "128Mi"}
+)
+
 // controllerAccountRe matches a pod's serviceAccountName with its value, which a CRD schema's bare key never has.
 var controllerAccountRe = regexp.MustCompile(`(?m)^[ \t]+serviceAccountName:[ \t]+(\S+)[ \t]*$`)
 
@@ -159,6 +171,9 @@ func (s Set) WithRunners(in RunnerInputs) (Set, error) {
 		"ControllerAccount": account,
 		"BurstLabel":        BurstLabel,
 		"ControlPlaneLabel": ControlPlaneLabel,
+		"RunnerSize":        jobRunnerSize,
+		"DindSize":          jobDindSize,
+		"InitSize":          jobInitSize,
 	})
 	if err != nil {
 		return Set{}, err

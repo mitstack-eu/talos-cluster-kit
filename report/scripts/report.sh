@@ -22,7 +22,7 @@
 # RUNNER_TOKEN_FILE, and its runners member names each removal and each refusal.
 # When a read, the body or the token request fails or times out, it posts an unsigned report whose error names it
 # instead, then exits non-zero.
-# Usage: REPORT_URL=<https url> SUBSCRIPTION_ID=<id> HOST_IP=<this pod's node> REPORT_PROOF_SCRIPT=<script> MESH_PROBE_URL=<target's url> MESH_PROBE_ANSWER=<its answer> MESH_PROBE_IDENTITY=<its SPIFFE id> MESH_PROBE_CONFIGMAP=<namespace/name> OPENBAO_MEMBERS="<name>=<https url> ..." OPENBAO_CA_FILE=<pem> ARGOCD_URL=<https url> GATEWAYS="<address> ..." EGRESS_URL=<https url> [POD_NAMESPACE=mitstack-node] [REPORT_TOKEN_FILE=/var/run/mitstack/token] [REPORT_READ_SECONDS=21] [RUNNERS_ORGANIZATION=<org> RUNNER_GROUP=<name> RUNNER_SCALE_SET=<name> RUNNERS_NAMESPACE=<namespace> RUNNER_TOKEN_FILE=<file> GITHUB_API_URL=<https url>] report.sh
+# Usage: REPORT_URL=<https url> SUBSCRIPTION_ID=<id> HOST_IP=<this pod's node> REPORT_PROOF_SCRIPT=<script> MESH_PROBE_URL=<target's url> MESH_PROBE_ANSWER=<its answer> MESH_PROBE_IDENTITY=<its SPIFFE id> MESH_PROBE_CONFIGMAP=<namespace/name> OPENBAO_MEMBERS="<name>=<https url> ..." OPENBAO_CA_FILE=<pem> DATABASE_CA_FILE=<pem> ARGOCD_URL=<https url> GATEWAYS="<address> ..." EGRESS_URL=<https url> [POD_NAMESPACE=mitstack-node] [REPORT_TOKEN_FILE=/var/run/mitstack/token] [REPORT_READ_SECONDS=21] [RUNNERS_ORGANIZATION=<org> RUNNER_GROUP=<name> RUNNER_SCALE_SET=<name> RUNNERS_NAMESPACE=<namespace> RUNNER_TOKEN_FILE=<file> GITHUB_API_URL=<https url>] report.sh
 # It exists so the platform sees a cluster it never dials into, as ADR 0072 requires, with os:reader and no Secret right.
 set -euo pipefail
 
@@ -49,10 +49,6 @@ scan_events_kept=20
 cnpg_namespace=cnpg-system
 # An instance manager's status answer carries its whole pod, so a bound well above one pod's size caps what is read.
 instance_status_max_bytes=1048576
-# -k accepts the certificate an instance manager serves its status with, whose names are the Cluster's Services and
-# never the pod's IP the report calls. The mesh has already checked the instance's identity, the call carries no
-# credential, and of the answer only two booleans leave the pod.
-instance_status_tls=(-k)
 # Kinds as kubectl --show-kind names them, as blocks name their objects; never secret, as the report holds no Secret right.
 subscription_kinds=(namespace serviceaccount service resourcequota limitrange deployment.apps
   ingress.networking.k8s.io networkpolicy.networking.k8s.io role.rbac.authorization.k8s.io
@@ -296,7 +292,7 @@ remove_runner() {
 # read_instance_status asks the instance manager of each pod CloudNativePG labels an instance for its status, all at the
 # same time, on the port and with the scheme the pod's postgres container names. Its status is 0 once it read the pods.
 read_instance_status() {
-  local i=0 called instance url dir=$work/instances
+  local i=0 called instance scheme target dir=$work/instances
   mkdir "$dir"
   : > "$work/instance-status.json"
   printf 1 > "$work/instance-status.status"
@@ -306,10 +302,11 @@ read_instance_status() {
     | ([$postgres.ports[]? | select(.name == "status") | .containerPort][0] // null) as $port
     | (if ($postgres.command // []) | index("--status-port-tls") then "https" else "http" end) as $scheme
     | [({namespace: .metadata.namespace, cluster: (.metadata.labels["cnpg.io/cluster"] // null), name: .metadata.name} | tojson),
-      (if .status.podIP and $port then "\($scheme)://\(.status.podIP):\($port)/pg/status" else "" end)] | @tsv' \
+      $scheme, (if .status.podIP and $port
+        then "\(.metadata.labels["cnpg.io/cluster"])-rw.\(.metadata.namespace).svc:\($port):\(.status.podIP)" else "" end)] | @tsv' \
     "$work/pods.out" > "$dir/instances" 2> /dev/null || return 0
-  while IFS=$'\t' read -r instance url; do
-    instance_status "$dir/$i" "$instance" "$url" &
+  while IFS=$'\t' read -r instance scheme target; do
+    instance_status "$dir/$i" "$instance" "$scheme" "$target" &
     i=$((i + 1))
   done < "$dir/instances"
   wait
@@ -319,21 +316,37 @@ read_instance_status() {
   printf 0 > "$work/instance-status.status"
 }
 
-# instance_status OUT INSTANCE URL calls one instance manager's status route with a GET that sends no credential, and
-# keeps of its answer whether the instance is the primary and whether its WAL receiver streams, or why the call failed.
+# instance_status OUT INSTANCE SCHEME TARGET calls one instance manager's status route with a GET that sends no
+# credential, and keeps of its answer whether the instance is the primary and whether its WAL receiver streams, or why
+# the call failed. TARGET is HOST:PORT:IP: the call goes to the pod's IP under the name HOST of its Cluster's read-write
+# Service, since the database CA signs a Cluster's certificate for its Services and never for a pod's IP, and HOST
+# names the namespace, since two namespaces may each hold a Cluster of one name.
 # -q reads no ~/.curlrc that could add a credential.
 instance_status() {
-  local out=$1 instance=$2 url=$3 code ended=0
-  if [ -z "$url" ]; then
-    jq -c -n --argjson instance "$instance" '$instance + {unreadable: "the pod has no IP and status port to call"}' > "$out.json"
+  local out=$1 instance=$2 scheme=$3 target=$4 host port code ended=0 reason=
+  host=${target%%:*}
+  port=${target#*:}
+  port=${port%%:*}
+  if [ -z "$target" ]; then
+    reason="the pod has no IP and status port to call"
+  elif [ "$scheme" != https ]; then
+    reason="the instance manager serves its status without TLS"
+  elif [ ! -s "${DATABASE_CA_FILE:-}" ]; then
+    reason="the report holds no database CA to check the certificate with"
+  fi
+  if [ -n "$reason" ]; then
+    jq -c -n --argjson instance "$instance" --arg reason "$reason" '$instance + {unreadable: $reason}' > "$out.json"
     return 0
   fi
-  code=$(limited "$limit" curl -q -s "${instance_status_tls[@]}" --proto '=http,https' --connect-timeout 2 --max-time 5 \
-    --max-filesize "$instance_status_max_bytes" -o "$out.body" -w '%{http_code}' "$url") || ended=$?
+  code=$(limited "$limit" curl -q -s --proto '=https' --cacert "$DATABASE_CA_FILE" --resolve "$target" --connect-timeout 2 \
+    --max-time 5 --max-filesize "$instance_status_max_bytes" -o "$out.body" -w '%{http_code}' "https://$host:$port/pg/status") ||
+    ended=$?
   [ -f "$out.body" ] || : > "$out.body"
-  jq -c -n --argjson instance "$instance" --argjson ended "$ended" --arg code "${code:-0}" --rawfile answer "$out.body" '
+  jq -c -n --argjson instance "$instance" --argjson ended "$ended" --arg code "${code:-0}" --arg host "$host" \
+    --rawfile answer "$out.body" '
     ((try ($answer | fromjson) catch null) | if type == "object" then . else {} end) as $a
     | $instance + if $ended == 124 or $ended == 28 then {unreadable: "the call timed out"}
+      elif $ended == 60 then {unreadable: "the certificate is not one the database CA signed for \($host)"}
       elif $ended != 0 then {unreadable: "curl exit \($ended)"}
       elif $code != "200" then {unreadable: "HTTP \($code)"}
       elif ($a.isPrimary | type) != "boolean" or ($a.isWalReceiverActive | type) != "boolean" then

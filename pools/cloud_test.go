@@ -911,6 +911,24 @@ func TestDecideAndPlanCloud_APodThatFitsATypesPublishedSizeGetsThatTypeWhenNoSer
 	}
 }
 
+func TestDecideAndPlanCloud_ADecisionJudgesAPodByTheNewestOfTwoReportsAndHandsThePlanTheRoomItRead(t *testing.T) {
+	s := newSite(t, imagedOn("cx23"))
+	s.reach(oneOf("cx23"))
+	running := s.members()[0].Name
+	s.offers(running, report.Request{MilliCPU: 100, Memory: 100 << 20})
+	older := s.waits(s.gapPod())
+	s.offers(running, cx23Allocatable())
+	newest := s.waits(s.gapPod())
+	pool := oneOf("cx23")
+	pool.Min, pool.Max = 0, 3
+
+	decision, err := scale.Decide(pool, s.members(), []report.Read{newest, older}, pools.Holds(context.Background(), s.plane, pool))
+
+	require.NoError(t, err)
+	assert.Equal(t, 2, decision.Want, "the members the pool wants once the newest report's cx23 holds the pod")
+	assert.Equal(t, pools.Measured{"cx23": cx23Allocatable()}, decision.Measured, "the room the decision hands the plan")
+}
+
 func typesOfSpecs(specs []controlplane.ServerSpec) []string {
 	var out []string
 	for _, spec := range specs {

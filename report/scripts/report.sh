@@ -158,7 +158,7 @@ sweep_reading() {
 
 # github_call METHOD PATH OUT asks GitHub's API with the leased token, keeps the answer in OUT and prints its HTTP
 # status, or 000 when no answer came. -q reads no ~/.curlrc, and the token stays in a header file off the command line.
-# curl writes no file for an empty answer, so OUT is removed first and never holds an earlier call's answer.
+# OUT is removed first, so an answer with no body never reads as an earlier call's answer.
 github_call() {
   local status
   rm -f "$3"

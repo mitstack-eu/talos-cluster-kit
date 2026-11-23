@@ -168,7 +168,7 @@ func TestReport_RemovesARunnerOfItsScaleSetThatGitHubListsOfflineWithNoPodBehind
 			if !strings.HasPrefix(tc.runner.Name, runnerScaleSet+"-7xk2p-runner-") {
 				want["listed"] = float64(0)
 			}
-			var removals []string
+			removals := []string{}
 			if tc.removed {
 				want["removed"] = []any{tc.runner.Name}
 				removals = []string{fmt.Sprintf("DELETE %s/%d", runnersListPath, tc.runner.ID)}
@@ -299,7 +299,7 @@ func TestManifests_GivesTheReportTheRunnerSweepsSettingsAndItsTokenAsAnOptionalM
 	assert.Contains(t, testutil.Field(t, container, "volumeMounts"), map[string]any{"name": "runner-token", "mountPath": "/var/run/mitstack-runner", "readOnly": true})
 	pod := testutil.Field(t, job, "spec", "jobTemplate", "spec", "template", "spec")
 	assert.Contains(t, testutil.Field(t, pod, "volumes"), map[string]any{"name": "runner-token", "secret": map[string]any{
-		"secretName": components.RunnerSweepTokenSecret, "optional": true, "defaultMode": float64(0o440)}},
+		"secretName": components.RunnerSweepTokenSecret, "optional": true, "defaultMode": 0o440}},
 		"the Secret the lease job fills, optional so the report runs before the first lease")
 	for _, name := range []string{"RUNNERS_ORGANIZATION", "RUNNER_SCALE_SET", "GITHUB_API_URL", "RUNNER_TOKEN_FILE"} {
 		assert.NotContains(t, testutil.ContainerEnv(t, without), name, "a report without runner inputs sweeps nothing")

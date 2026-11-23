@@ -108,6 +108,11 @@ func TestWithRunners_RunsTheImageCacheAsADockerHubPullThroughMirrorWhoseBlobsIts
 	assert.Equal(t, "/var/lib/registry", testutil.Field(t, config, "storage", "filesystem", "rootdirectory"), "where the registry keeps its blobs")
 	assert.NotContains(t, testutil.Field(t, config, "storage"), "cache", "a blob descriptor cache would name a blob the sweep removed as present")
 	assert.Equal(t, "/var/lib/registry/docker/registry/v2/blobs", flags(sweep)["dir"], "what the sweep evicts from")
+	assert.Equal(t, "image-cache", testutil.Field(t, volumeNamed(t, pod, "config"), "configMap", "name"), "the ConfigMap the config volume holds")
+	registryMounts, _ := registry["volumeMounts"].([]any)
+	assert.True(t, slices.ContainsFunc(registryMounts, func(m any) bool {
+		return testutil.Field(t, m, "name") == "config" && testutil.Field(t, m, "mountPath") == "/etc/distribution"
+	}), "the registry reads config.yml where its image looks for it")
 	for _, c := range []map[string]any{registry, sweep} {
 		mounts, _ := c["volumeMounts"].([]any)
 		assert.True(t, slices.ContainsFunc(mounts, func(m any) bool {
@@ -180,7 +185,9 @@ func TestWithRunners_KeepsEveryCacheOffBurstMembersWithEmptyDirDisksAloneNoToken
 		assert.NotEmpty(t, testutil.Field(t, deployment, "spec", "template", "metadata", "labels", "mitstack.dev/app"), "the app-label policy refuses an unlabelled pod")
 		assert.NotEqual(t, "runner", testutil.Field(t, deployment, "spec", "template", "metadata", "labels", "app.kubernetes.io/component"), "%s would reach the internet as a job pod does", name)
 		for _, volume := range testutil.Field(t, pod, "volumes").([]any) {
-			assert.Contains(t, volume, "emptyDir", "volume %v of %s", volume, name)
+			_, disk := volume.(map[string]any)["emptyDir"]
+			_, config := volume.(map[string]any)["configMap"]
+			assert.True(t, disk || config, "volume %v of %s is an emptyDir or a ConfigMap, never a host path or a claim that binds the cache to one node", volume, name)
 		}
 		for _, c := range testutil.Field(t, pod, "containers").([]any) {
 			if testutil.Field(t, c, "name") != "sweep" {

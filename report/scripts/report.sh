@@ -16,17 +16,25 @@
 # last runs, newest Job with its events and kept summaries, and a checks member naming each check of the platform's
 # verdict, signed with a token the API server mints for the body through block-kit's token-request.sh in
 # REPORT_PROOF_SCRIPT.
+# With RUNNERS_ORGANIZATION set, it also removes each idle runner of RUNNER_SCALE_SET in the runner group RUNNER_GROUP
+# that GitHub lists offline with no pod or EphemeralRunner behind it in RUNNERS_NAMESPACE, with the leased token in
+# RUNNER_TOKEN_FILE, and its runners member names each removal and each refusal.
 # When a read, the body or the token request fails or times out, it posts an unsigned report whose error names it
 # instead, then exits non-zero.
-# Usage: REPORT_URL=<https url> SUBSCRIPTION_ID=<id> HOST_IP=<this pod's node> REPORT_PROOF_SCRIPT=<script> MESH_PROBE_URL=<target's url> MESH_PROBE_ANSWER=<its answer> MESH_PROBE_IDENTITY=<its SPIFFE id> MESH_PROBE_CONFIGMAP=<namespace/name> OPENBAO_MEMBERS="<name>=<https url> ..." OPENBAO_CA_FILE=<pem> ARGOCD_URL=<https url> GATEWAYS="<address> ..." EGRESS_URL=<https url> [POD_NAMESPACE=mitstack-node] [REPORT_TOKEN_FILE=/var/run/mitstack/token] [REPORT_READ_SECONDS=21] report.sh
+# Usage: REPORT_URL=<https url> SUBSCRIPTION_ID=<id> HOST_IP=<this pod's node> REPORT_PROOF_SCRIPT=<script> MESH_PROBE_URL=<target's url> MESH_PROBE_ANSWER=<its answer> MESH_PROBE_IDENTITY=<its SPIFFE id> MESH_PROBE_CONFIGMAP=<namespace/name> OPENBAO_MEMBERS="<name>=<https url> ..." OPENBAO_CA_FILE=<pem> ARGOCD_URL=<https url> GATEWAYS="<address> ..." EGRESS_URL=<https url> [POD_NAMESPACE=mitstack-node] [REPORT_TOKEN_FILE=/var/run/mitstack/token] [REPORT_READ_SECONDS=21] [RUNNERS_ORGANIZATION=<org> RUNNER_GROUP=<name> RUNNER_SCALE_SET=<name> RUNNERS_NAMESPACE=<namespace> RUNNER_TOKEN_FILE=<file> GITHUB_API_URL=<https url>] report.sh
 # It exists so the platform sees a cluster it never dials into, as ADR 0072 requires, with os:reader and no Secret right.
 set -euo pipefail
 
 # Nine limits of 21 seconds, the token request's 5, each with a 5-second kill grace, and the post's 20 make 264, which
 # leaves 16 seconds of the Job's activeDeadlineSeconds of 280 for the tools to start. The mesh, pod, workload, Argo CD,
 # default-deny, credential, ObjectStore, scan, OpenBao, etcd status, gateway and egress reads run beside them, each within one limit,
-# and the admission fixtures' read and their dry runs within two.
+# the admission fixtures' read and their dry runs within two, and the runner sweep within five.
 limit=${REPORT_READ_SECONDS:-21}
+# The sweep's fourteen GitHub calls at most, one list of groups, three pages and ten removals, of five seconds each fit its five limits.
+runners_per_page=100
+runner_pages_max=3
+runner_removals_max=10
+github_call_seconds=5
 # The outside probe writes every five minutes, so a result three runs old means it stopped.
 mesh_probe_max_age=900
 # The report dry-runs the admission fixtures in the probe namespace, and reads what the security scan last kept.
@@ -93,10 +101,12 @@ read_egress() {
 }
 
 # read_cluster reads every pod, every workload with a pod template, each default-deny NetworkPolicy and each ObjectStore
-# of the Barman Cloud plugin, whose kind a cluster without the plugin does not serve, and asks each
-# OpenBao member for its seal state and whether it is the active one, which OpenBao answers without a token.
+# of the Barman Cloud plugin, whose kind a cluster without the plugin does not serve, asks each
+# OpenBao member for its seal state and whether it is the active one, which OpenBao answers without a token, and sweeps
+# the scale set's dead runners.
 read_cluster() {
   local member
+  sweep_runners &
   read_beside pods kubectl get pods -A -o json &
   read_beside workloads kubectl get deployments.apps,statefulsets.apps,daemonsets.apps,jobs.batch,cronjobs.batch -A -o json &
   read_beside default-deny kubectl get networkpolicies.networking.k8s.io -A --field-selector metadata.name=mitstack-default-deny -o json &
@@ -115,6 +125,164 @@ read_cluster() {
       --max-time 5 "${member#*=}/v1/sys/leader" &
   done
   wait
+}
+
+# sweep_runners removes nothing once a read fails, since it then cannot tell a dead runner from one ARC still holds.
+sweep_runners() {
+  : > "$work/runners.json"
+  [ -n "${RUNNERS_ORGANIZATION:-}" ] || return 0
+  sweep_reading unread "the runner sweep ended before it finished, and the report log holds why"
+  : "${RUNNER_SCALE_SET:?names the runner scale set the sweep removes runners of}" "${RUNNER_TOKEN_FILE:?names the file of the leased GitHub token}"
+  : "${RUNNER_GROUP:?names the runner group the scale set registers in}" "${RUNNERS_NAMESPACE:?names the namespace ARC runs the runners in}"
+  : "${GITHUB_API_URL:?names the GitHub API}"
+  if [ ! -s "$RUNNER_TOKEN_FILE" ]; then
+    sweep_reading skipped "no runner token is leased yet, so the sweep waits for the lease job's first run"
+    return 0
+  fi
+  github_token=$(cat "$RUNNER_TOKEN_FILE")
+  printf 'Authorization: Bearer %s\nAccept: application/vnd.github+json\nX-GitHub-Api-Version: 2022-11-28\n' \
+    "$github_token" > "$work/github-headers"
+  find_runner_group || return 0
+  list_runners || return 0
+  read_runner_holds || return 0
+  remove_stale_runners
+}
+
+# sweep_reading KEY TEXT writes a runners member holding the scale set and, under KEY, why the sweep removed nothing.
+sweep_reading() {
+  jq -c -n --arg scale_set "${RUNNER_SCALE_SET:-}" --arg key "$1" --arg text "$2" '{scaleSet: $scale_set, ($key): $text}' \
+    > "$work/runners.next" && mv "$work/runners.next" "$work/runners.json"
+}
+
+# github_call METHOD PATH OUT prints GitHub's HTTP status, or 000, keeping the answer in OUT and its headers in
+# OUT.headers, with the token in a header file so it never shows on the command line.
+github_call() {
+  local status
+  rm -f "$3" "$3.headers"
+  status=$(curl -q -sS --proto '=https' --max-time "$github_call_seconds" -X "$1" -H @"$work/github-headers" \
+    -D "$3.headers" -o "$3" -w '%{http_code}' "$GITHUB_API_URL$2") || status=000
+  touch "$3" "$3.headers"
+  printf '%s' "$status"
+}
+
+# rate_limited ANSWER is true when GitHub answered with a rate limit, a 429 or a 403 with Retry-After or no request left.
+rate_limited() {
+  grep -qE '^HTTP/[0-9.]+ 429' "$1.headers" || { grep -qE '^HTTP/[0-9.]+ 403' "$1.headers" &&
+    grep -qiE '^(retry-after:|x-ratelimit-remaining:[[:space:]]*0[[:space:]]*$)' "$1.headers"; }
+}
+
+# github_failure WHAT STATUS ANSWER names how GitHub answered the call for WHAT, with its message cut to 256 characters.
+github_failure() {
+  if [ "$2" = 000 ]; then
+    printf 'GitHub gave no answer to %s, and the report log holds curl'"'"'s error' "$1"
+    return 0
+  fi
+  printf 'GitHub answered %s to %s: %s' "$2" "$1" "$(jq -r '.message // empty | tostring | .[0:256]' "$3" 2> /dev/null || true)"
+}
+
+# find_runner_group sets runner_group_id to the id of RUNNER_GROUP, since a same-named scale set in another group is not ours.
+find_runner_group() {
+  local status
+  status=$(github_call GET "/orgs/$RUNNERS_ORGANIZATION/actions/runner-groups?per_page=$runners_per_page" "$work/runner-groups.json")
+  if [ "$status" != 200 ]; then
+    sweep_reading unread "$(github_failure "the list of the org's runner groups" "$status" "$work/runner-groups.json")"
+    return 1
+  fi
+  if ! runner_group_id=$(jq -r --arg name "$RUNNER_GROUP" 'if (.runner_groups | type) == "array" then
+      first(.runner_groups[] | select(.name == $name and (.id | type) == "number") | .id) // empty else error end' \
+      "$work/runner-groups.json" 2> /dev/null); then
+    sweep_reading unread "GitHub answered 200 to the list of the org's runner groups with no runner_groups array"
+    return 1
+  fi
+  [ -n "$runner_group_id" ] && return 0
+  sweep_reading unread "GitHub lists no runner group named $RUNNER_GROUP among the org's first $runners_per_page runner groups"
+  return 1
+}
+
+# list_runners keeps each runner of the runner group GitHub lists, one per line, reading pages until one holds fewer than a
+# page or runner_pages_max pages are read.
+list_runners() {
+  local page status
+  : > "$work/github-runners.jsonl"
+  for ((page = 1; page <= runner_pages_max; page++)); do
+    status=$(github_call GET "/orgs/$RUNNERS_ORGANIZATION/actions/runner-groups/$runner_group_id/runners?per_page=$runners_per_page&page=$page" "$work/runners-page.json")
+    if [ "$status" != 200 ]; then
+      sweep_reading unread "$(github_failure "the list of the runner group's runners" "$status" "$work/runners-page.json")"
+      return 1
+    fi
+    if ! jq -n -c 'input | if (.runners | type) == "array" and (.total_count | type) == "number" then .runners[] else error end' \
+        "$work/runners-page.json" >> "$work/github-runners.jsonl" 2> /dev/null; then
+      sweep_reading unread "GitHub answered 200 to the list of the runner group's runners with no runners array or no numeric total_count"
+      return 1
+    fi
+    [ "$(jq '.runners | length' "$work/runners-page.json")" -eq "$runners_per_page" ] || return 0
+  done
+}
+
+# read_runner_holds runs after GitHub's list, since ARC creates a runner's same-named EphemeralRunner before it registers the runner.
+read_runner_holds() {
+  local status
+  read_beside runner-holds kubectl get pods,ephemeralrunners.actions.github.com -n "$RUNNERS_NAMESPACE" -o json
+  status=$(cat "$work/runner-holds.status")
+  if [ "$status" != 0 ]; then
+    sweep_reading unread "the read of the pods and EphemeralRunners in $RUNNERS_NAMESPACE ended with exit status $status: $(scrubbed "$work/runner-holds.err" | tail -c 256)"
+    return 1
+  fi
+  jq -n -r 'input | if .kind == "List" and all(.items[]; .metadata.name | type == "string") then .items[].metadata.name else error end' \
+    "$work/runner-holds.out" > "$work/runner-holds.names" 2> /dev/null && return 0
+  sweep_reading unread "kubectl exited 0, and its output is not the pods and EphemeralRunners in $RUNNERS_NAMESPACE"
+  return 1
+}
+
+# remove_stale_runners skips a busy runner, removes one at a time and stops at a rate limit, since GitHub refuses a
+# runner holding a job and asks clients to call one at a time and to stop calling once limited.
+remove_stale_runners() {
+  local runner picked=()
+  # The first line counts what the sweep read, and each line after it is a runner to remove. The start moves on by the
+  # removal cap every five minutes, so runners GitHub keeps refusing cannot starve the rest.
+  if ! jq -c -n --arg pattern "^$RUNNER_SCALE_SET-[a-z0-9]+-runner-[a-z0-9]+\$" --rawfile held "$work/runner-holds.names" \
+      --argjson most "$runner_removals_max" --argjson run "$(($(date +%s) / 300))" '
+      ($held | split("\n")) as $names
+      | [inputs] as $all
+      | [$all[] | select((.name | type) == "string" and (.name | test($pattern)))] as $listed
+      | [$listed[] | select(.status == "offline" and (.id | type) == "number" and (.name | IN($names[]) | not))
+        | if (.busy | type) == "boolean" then . else error("GitHub lists the offline runner \(.name) with a busy that is neither true nor false") end] as $stale
+      | [$stale[] | select(.busy | not) | {id, name}] as $idle | ($idle | length) as $n
+      | {read: ($all | length), listed: ($listed | length), idle: $n, busy: [$stale[] | select(.busy) | .name]},
+        if $n == 0 then empty else (($run * $most) % $n) as $start | ($idle[$start:] + $idle[:$start])[:$most][] end' \
+      "$work/github-runners.jsonl" > "$work/sweep.jsonl" 2> "$work/sweep.err"; then
+    sweep_reading unread "jq could not pick the runners to remove: $(tail -c 256 "$work/sweep.err")"
+    return 0
+  fi
+  mapfile -t picked < "$work/sweep.jsonl"
+  : > "$work/removals.jsonl"
+  for runner in "${picked[@]:1}"; do
+    remove_runner "$runner" >> "$work/removals.jsonl"
+    if rate_limited "$work/removal.answer"; then break; fi
+  done
+  # GitHub answers 404 for a runner it no longer lists, as when ARC removed it after the list.
+  jq -c -n --arg scale_set "$RUNNER_SCALE_SET" --argjson sweep "${picked[0]}" --slurpfile removals "$work/removals.jsonl" \
+    --slurpfile page "$work/runners-page.json" '
+    def gone: .status == 204 or .status == 404;
+    {
+      scaleSet: $scale_set,
+      listed: $sweep.listed,
+      removed: [$removals[] | select(gone) | .name],
+      unremoved: [$removals[] | select(gone | not)],
+      busy: $sweep.busy,
+      deferred: (($sweep.busy | length) + $sweep.idle - ($removals | length)),
+      unlisted: ([$page[0].total_count - $sweep.read, 0] | max)
+    }' > "$work/runners.next" && mv "$work/runners.next" "$work/runners.json"
+}
+
+# remove_runner RUNNER asks GitHub to remove one runner and prints it with GitHub's status and message.
+remove_runner() {
+  local id status
+  id=$(jq -r .id <<< "$1")
+  status=$(github_call DELETE "/orgs/$RUNNERS_ORGANIZATION/actions/runners/$id" "$work/removal.answer")
+  jq -c -n --argjson runner "$1" --argjson status "$((10#$status))" \
+    --arg message "$(jq -r '.message // empty | tostring | .[0:256]' "$work/removal.answer" 2> /dev/null || true)" \
+    '$runner + {status: $status, message: (if $status == 0 then "GitHub gave no answer" else $message end)}'
 }
 
 # read_admission reads the probe namespace's fixtures and has the API server dry-run each one named for a rule, all at
@@ -262,14 +430,20 @@ read_subscription_resources() {
   done
 }
 
+# scrubbed FILE prints FILE with no NUL and no line that holds the report token, or the runner token inside the sweep's
+# subshell, which alone reads it, or looks like a bearer token or a JWT.
+scrubbed() {
+  tr -d '\000' < "$1" \
+    | { grep -avF -- "$token" || true; } \
+    | { grep -avF -- "${github_token:-$token}" || true; } \
+    | { grep -avE '[Bb]earer|eyJ[A-Za-z0-9_-]+\.' || true; }
+}
+
 # report_failure NAME STATUS posts a report whose error names the read, how it ended and the last 1 KiB of its
 # stderr, keeping no NUL and no line that holds the report token or looks like a bearer token or a JWT.
 report_failure() {
   local name=$1 status=$2
-  tr -d '\000' < "$work/read.err" \
-    | { grep -avF -- "$token" || true; } \
-    | { grep -avE '[Bb]earer|eyJ[A-Za-z0-9_-]+\.' || true; } \
-    | tail -c 1024 > "$work/read.tail"
+  scrubbed "$work/read.err" | tail -c 1024 > "$work/read.tail"
   cat "$work/read.tail" >&2
   rm -f "$work/proof"
   jq -n \
@@ -364,6 +538,7 @@ body() {
     --rawfile scan_events "$work/security-scan-events.out" \
     --rawfile scan_events_err "$work/security-scan-events.err" \
     --argjson scan_events_status "$(cat "$work/security-scan-events.status")" \
+    --slurpfile runners "$work/runners.json" \
     --from-file /dev/stdin <<'JQ'
     def talos_version: (.status.nodeInfo.osImage // "") | (try capture("^Talos \\((?<v>[^)]+)\\)").v catch null);
     def ready: [.status.conditions[]? | select(.type == "Ready") | .status == "True"] | any;
@@ -760,7 +935,8 @@ body() {
         else failed("the TLS connection to \($egress_url) ended with curl exit status \($egress_status): \($egress_err[-512:])") end),
       checks: {contract: "node-report/v1", names: ["routes", "exposure", "credentials", "version", "advisories", "admission",
         "default-deny", "cis-benchmark", "nsa-scan"]}
-    } | if tojson | utf8bytelength < 256 * 1024 then . else del(.argocd.applications[].resources) end
+    } + (if $runners == [] then {} else {runners: $runners[0]} end)
+    | if tojson | utf8bytelength < 256 * 1024 then . else del(.argocd.applications[].resources) end
 JQ
 }
 

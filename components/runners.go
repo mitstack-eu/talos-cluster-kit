@@ -18,6 +18,9 @@ const (
 	RunnersNamespace = "mitstack-runners"
 	// RunnerTokenSecret is the Secret the lease job fills with a GitHub token, which ARC reads as github_token.
 	RunnerTokenSecret = "mitstack-runner-token"
+	// RunnerSweepTokenSecret is the Secret in the report's namespace the lease job also fills with the GitHub token, which
+	// the node report mounts to remove the scale set's dead runners, since the report holds no right on any Secret.
+	RunnerSweepTokenSecret = "mitstack-runner-sweep-token"
 	// RunnerTokenName names the control plane's manifest of the runner token's Secret and the CronJob that leases it.
 	RunnerTokenName = "mitstack-runner-token"
 

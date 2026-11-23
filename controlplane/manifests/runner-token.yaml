@@ -1,10 +1,17 @@
-# The runner scale set's GitHub token: an empty Secret ARC reads, and a CronJob that leases a token from the
-# platform under the report token, writes it to the Secret and restarts the listener so it registers with the new one.
+# The runner scale set's GitHub token: an empty Secret ARC reads, an empty Secret the node report's runner sweep
+# mounts, and a CronJob that leases a token from the platform under the report token, writes it to both Secrets and
+# restarts the listener so it registers with the new one.
 apiVersion: v1
 kind: Secret
 metadata:
   name: {{ .TokenSecret }}
   namespace: {{ .RunnersNamespace }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .SweepTokenSecret }}
+  namespace: {{ .Namespace }}
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -35,6 +42,31 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: mitstack-runner-lease
+subjects:
+  - kind: ServiceAccount
+    name: mitstack-runner-lease
+    namespace: {{ .Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .SweepTokenSecret }}
+  namespace: {{ .Namespace }}
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [{{ .SweepTokenSecret }}]
+    verbs: [patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .SweepTokenSecret }}
+  namespace: {{ .Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .SweepTokenSecret }}
 subjects:
   - kind: ServiceAccount
     name: mitstack-runner-lease

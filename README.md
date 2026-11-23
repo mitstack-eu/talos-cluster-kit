@@ -5251,11 +5251,16 @@ go -C operator/robotcluster vet ./...
 go -C operator/robotcluster test -race ./...
 ```
 
-The module's `go.mod` replaces the kit and the operator module with the
-directories beside it. Its tests therefore build against the code of their own
-commit, which is what a block builds when it requires all three modules at one
-release. Go applies a `replace` only in the module it builds, so a block that
-requires the robot cluster module ignores those lines.
+The robot cluster module's `go.mod` replaces two of the modules it requires
+with directories of the same checkout. The kit,
+`github.com/mitstack-eu/talos-cluster-kit`, comes from the repository root, two
+levels above `operator/robotcluster`. The operator module,
+`github.com/mitstack-eu/talos-cluster-kit/operator`, comes from `operator`, one
+level above it. The robot cluster module's tests therefore build against the
+kit and operator code of their own commit. A block builds the same combination
+when it requires the kit, the operator module and the robot cluster module at
+one release. Go applies a `replace` only in the module it builds, so a block
+that requires the robot cluster module ignores those lines.
 
 An operator's tests settle its cluster on the same fakes the module's own tests
 use, so neither keeps a copy of them. The package

@@ -158,19 +158,21 @@ func TestRender_WithNoEgressPortBeyondHTTPSMatchesTheGoldenCloudConfigOfTheRelea
 	}
 }
 
-func TestRender_ForwardsTheEgressPortsToEveryOutsideAddressBesideHTTPSAndChangesNothingElse(t *testing.T) {
+func TestRender_ForwardsTheEgressPortsToEveryOutsideAddressBesideHTTPSAndNamesThemInTheHeader(t *testing.T) {
 	const unsetRule = "tcp dport { 443, 4317 } accept"
 	unset, err := gateway.Render(inputs(t))
 	require.NoError(t, err)
+	unsetHeader, _, _ := strings.Cut(string(unset), "\npackage_update:")
 	for _, tc := range []struct {
-		name  string
-		ports []int
-		want  []string
+		name   string
+		ports  []int
+		want   []string
+		header string
 	}{
-		{"no setting forwards HTTPS and the log port alone", nil, []string{"443", "4317"}},
-		{"80 and 443 add port 80", []int{80, 443}, []string{"443", "80", "4317"}},
-		{"8080 joins 80 in ascending order", []int{443, 8080, 80}, []string{"443", "80", "8080", "4317"}},
-		{"a repeated port and the log port are forwarded once", []int{80, 4317, 80}, []string{"443", "80", "4317"}},
+		{"no setting forwards HTTPS and the log port alone", nil, []string{"443", "4317"}, ""},
+		{"80 and 443 add port 80", []int{80, 443}, []string{"443", "80", "4317"}, "80"},
+		{"8080 joins 80 in ascending order", []int{443, 8080, 80}, []string{"443", "80", "8080", "4317"}, "80, 8080"},
+		{"a repeated port and the log port are forwarded once", []int{80, 4317, 80}, []string{"443", "80", "4317"}, "80, 4317"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			in := inputs(t)
@@ -182,8 +184,15 @@ func TestRender_ForwardsTheEgressPortsToEveryOutsideAddressBesideHTTPSAndChanges
 			rules := regexp.MustCompile(`(?m)^ +ip saddr 10\.0\.0\.0/16 tcp dport \{ ([^}]*) \} accept$`).FindAllStringSubmatch(string(got), -1)
 			require.Len(t, rules, 1, "the forward rule naming no destination address")
 			assert.Equal(t, tc.want, strings.Split(rules[0][1], ", "), "the ports forwarded to every outside address for %v", tc.ports)
+			header, _, _ := strings.Cut(string(got), "\npackage_update:")
+			if tc.header != "" {
+				prose := strings.ReplaceAll(header, "\n# ", " ")
+				assert.Contains(t, prose, "HTTPS, TCP "+tc.header+" to every outside address", "the header names the forwarded ports")
+				assert.NotContains(t, prose, "load balancer alone", "the header")
+			}
 			wantRule := "tcp dport { " + strings.Join(tc.want, ", ") + " } accept"
-			assert.Equal(t, strings.Replace(string(unset), unsetRule, wantRule, 1), string(got), "the cloud-config beside that rule")
+			want := strings.Replace(strings.Replace(string(unset), unsetRule, wantRule, 1), unsetHeader, header, 1)
+			assert.Equal(t, want, string(got), "the cloud-config beside that rule and the header")
 		})
 	}
 }

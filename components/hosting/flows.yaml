@@ -5,7 +5,7 @@ kind: CiliumClusterwideNetworkPolicy
 metadata:
   name: mitstack-hosting-flows
 specs:
-- description: "cert-manager, its CA injector and trust-manager reach the API server, which reaches their webhooks. cert-manager looks names up through Cilium's DNS proxy, reaches Let's Encrypt's production and staging ACME APIs on 443, AWS STS and Route 53 on 443 for a slice's DNS-01 issuer, and makes its HTTP-01 self-check to an app's hostname on 80."
+- description: "cert-manager, its CA injector and trust-manager reach the API server, which reaches their webhooks. cert-manager looks names up through Cilium's DNS proxy, reaches Let's Encrypt's ACME API on 443, and makes its HTTP-01 self-check to an app's hostname on 80."
   endpointSelector:
     matchLabels:
       k8s:io.kubernetes.pod.namespace: cert-manager
@@ -22,10 +22,6 @@ specs:
         - matchPattern: "*"
   - toFQDNs:
     - matchName: acme-v02.api.letsencrypt.org
-    - matchName: acme-staging-v02.api.letsencrypt.org
-    - matchName: sts.amazonaws.com
-    - matchPattern: "sts.*.amazonaws.com"
-    - matchName: route53.amazonaws.com
     toPorts:
     - ports: [{port: "443", protocol: TCP}]
   - toFQDNs:
@@ -41,6 +37,20 @@ specs:
         node-role.kubernetes.io/control-plane: ""
     toPorts:
     - ports: [{port: "10250", protocol: TCP}, {port: "6443", protocol: TCP}]
+- description: "cert-manager's controller, which alone solves a slice's DNS-01 challenge, reaches Let's Encrypt's staging ACME API, AWS STS and Route 53 on 443."
+  endpointSelector:
+    matchLabels:
+      k8s:io.kubernetes.pod.namespace: cert-manager
+      k8s:app.kubernetes.io/name: cert-manager
+      k8s:app.kubernetes.io/component: controller
+  egress:
+  - toFQDNs:
+    - matchName: acme-staging-v02.api.letsencrypt.org
+    - matchName: sts.amazonaws.com
+    - matchPattern: "sts.*.amazonaws.com"
+    - matchName: route53.amazonaws.com
+    toPorts:
+    - ports: [{port: "443", protocol: TCP}]
 - description: "External Secrets reaches the API server and OpenBao, looks names up through Cilium's DNS proxy, and reaches AWS STS and ECR's API on 443 for its ECR token generator, and the API server reaches its webhook."
   endpointSelector:
     matchLabels:

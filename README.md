@@ -1354,9 +1354,9 @@ describes.
 Only one replica of each acts at a time. Both programs elect a leader through
 a Kubernetes Lease, the lock object each replica tries to hold. Only the
 holder of the Lease reconciles, which means it acts on the Postgres resources
-to make them match what they ask for. The other replica takes the Lease over within its
-15-second lease duration once the holder stops renewing it. CloudNativePG
-documents multiple replicas under its
+to make them match what they ask for. The other replica takes the Lease over
+within its 15-second lease duration once the holder stops renewing it.
+CloudNativePG documents multiple replicas under its
 [installation guide](https://github.com/cloudnative-pg/cloudnative-pg/blob/v1.30.1/docs/src/installation_upgrade.md).
 Every replica serves the operator's admission webhook, the check the
 Kubernetes API runs before it stores a Postgres resource, with the certificate
@@ -1381,13 +1381,12 @@ nodes a pod of either Deployment may run on:
 
 A Robot worker never counts toward the two zones the spread needs. It can
 still carry a zone label: the node report of mitstack's own cluster shows its
-hel1 worker labelled `hel1`, with Talos as the label's manager, from the
-worker's own machine configuration. On such a worker the scheduler may still
-place a replica, and keeps the two replicas apart by its zone. A Robot worker
-without the label takes neither replica, since the node rule below requires
-it. A Cloud worker counts once Hetzner reports its
-server running, which comes before its node joins the cluster, so the second
-replica can wait Pending until the node joins.
+hel1 worker labelled `hel1`, with Talos as the label's manager. On such a
+worker the scheduler may still place a replica, and keeps the two replicas
+apart by its zone. A Robot worker without the label takes neither replica,
+since the node rule below requires it. A Cloud worker counts once Hetzner
+reports its server running, which comes before its node joins the cluster,
+so the second replica can wait Pending until the node joins.
 
 For two zones or more, `Set.DatabaseOperatorsAcrossZones` in
 `components/zones.go` makes the spread. It changes each Deployment of the

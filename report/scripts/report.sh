@@ -290,7 +290,7 @@ remove_runner() {
 }
 
 # read_instance_status asks the instance manager of each pod CloudNativePG labels an instance for its status, all at the
-# same time, on the port and with the scheme the pod's postgres container names. Its status is 0 once it read the pods.
+# same time, on the status port the pod's postgres container names. Its status is 0 once it read the pods.
 read_instance_status() {
   local i=0 called instance scheme target dir=$work/instances
   mkdir "$dir"
@@ -318,9 +318,9 @@ read_instance_status() {
 
 # instance_status OUT INSTANCE SCHEME TARGET calls one instance manager's status route with a GET that sends no
 # credential, and keeps of its answer whether the instance is the primary and whether its WAL receiver streams, or why
-# the call failed. TARGET is HOST:PORT:IP: the call goes to the pod's IP under the name HOST of its Cluster's read-write
-# Service, since the database CA signs a Cluster's certificate for its Services and never for a pod's IP, and HOST
-# names the namespace, since two namespaces may each hold a Cluster of one name.
+# the call failed. TARGET is HOST:PORT:IP as curl's --resolve takes it, so the call goes to the pod's IP under HOST, the
+# name of its Cluster's read-write Service in the pod's namespace. The database CA signs a Cluster's certificate for its
+# Services and never for a pod's IP, and two namespaces may each hold a Cluster of one name.
 # -q reads no ~/.curlrc that could add a credential.
 instance_status() {
   local out=$1 instance=$2 scheme=$3 target=$4 host port code ended=0 reason=

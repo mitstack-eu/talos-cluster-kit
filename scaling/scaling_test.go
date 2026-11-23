@@ -146,7 +146,9 @@ func TestDecide_PodsThatWaitAddOneMemberForEachUpToTheMaximumAndNeverPastIt(t *t
 }
 
 // listedTypes holds every waiting pod but ci/huge, as a pool whose largest listed type holds any other pod.
-func listedTypes(w report.WaitingPod, _ pools.Measured) (bool, error) { return w.Name != "ci/huge", nil }
+func listedTypes(w report.WaitingPod, _ pools.Measured) (bool, error) {
+	return w.Name != "ci/huge", nil
+}
 
 // judged is d without the pods it grows for and the room it measured, which a table judges by its detail.
 func judged(d scaling.Decision) scaling.Decision {

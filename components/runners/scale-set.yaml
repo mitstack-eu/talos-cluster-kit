@@ -1,6 +1,8 @@
 # The org's one runner scale set in ARC's dind mode, as the gha-runner-scale-set chart renders it for containerMode
 # dind. Each job's pod mounts emptyDir volumes alone and reaches no cluster token. ARC's controller refuses a scale set
 # whose version label differs from its own release.
+{{- $npmrcDir := "/home/runner/npmrc" }}
+{{- $npmrc := printf "%s/npmrc" $npmrcDir }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -179,6 +181,26 @@ spec:
           volumeMounts:
             - name: dind-externals
               mountPath: /home/runner/tmpDir
+        # npm reads a project's .npmrc and the user npmrc setup-node writes before this global one, so a job that names
+        # its own registry keeps it.
+        - name: npmrc
+          image: {{ .RunnerImage }}
+          command: ["sh", "-c", "printf 'registry=%s\\n' \"$NPM_REGISTRY\" > \"$npm_config_globalconfig\""]
+          env:
+            - name: NPM_REGISTRY
+              value: {{ printf "%q" .Caches.NPMRegistry }}
+            - name: npm_config_globalconfig
+              value: {{ $npmrc }}
+          resources:
+            requests:
+              cpu: {{ .InitSize.CPU }}
+              memory: {{ .InitSize.Memory }}
+            limits:
+              cpu: {{ .InitSize.CPU }}
+              memory: {{ .InitSize.Memory }}
+          volumeMounts:
+            - name: npmrc
+              mountPath: {{ $npmrcDir }}
         - name: dind
           image: {{ .DindImage }}
           args:
@@ -239,8 +261,8 @@ spec:
             # The go command turns to the internet on any error of the Go cache, and npm has no such fallback.
             - name: GOPROXY
               value: {{ printf "%q" .Caches.GoProxy }}
-            - name: npm_config_registry
-              value: {{ printf "%q" .Caches.NPMRegistry }}
+            - name: npm_config_globalconfig
+              value: {{ $npmrc }}
           resources:
             requests:
               cpu: {{ .RunnerSize.CPU }}
@@ -253,7 +275,12 @@ spec:
               mountPath: /home/runner/_work
             - name: dind-sock
               mountPath: /var/run
+            - name: npmrc
+              mountPath: {{ $npmrcDir }}
+              readOnly: true
       volumes:
+        - name: npmrc
+          emptyDir: {}
         - name: dind-sock
           emptyDir: {}
         - name: dind-externals

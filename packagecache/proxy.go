@@ -12,15 +12,16 @@ import (
 )
 
 // healthPath answers while the cache serves, whether or not its upstream does, since a job falls back past a cache
-// that does not answer.
-const healthPath = "/healthz"
+// that does not answer. No Go module path or npm package name begins with "-".
+const healthPath = "/-/healthz"
 
 func answerHealthy(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = io.WriteString(w, "ok\n")
 }
 
-// passThrough answers r with what upstream answers it, keeping nothing.
+// passThrough answers r with what upstream answers it, keeping nothing and sending no credential or cookie of the job,
+// which is meant for another registry.
 func passThrough(w http.ResponseWriter, r *http.Request, upstream string, client *http.Client) {
 	target, err := url.Parse(upstream)
 	if err != nil {
@@ -31,7 +32,11 @@ func passThrough(w http.ResponseWriter, r *http.Request, upstream string, client
 	if client.Transport != nil {
 		transport = client.Transport
 	}
-	proxy := &httputil.ReverseProxy{Rewrite: func(pr *httputil.ProxyRequest) { pr.SetURL(target) }, Transport: transport}
+	proxy := &httputil.ReverseProxy{Rewrite: func(pr *httputil.ProxyRequest) {
+		pr.SetURL(target)
+		pr.Out.Header.Del("Authorization")
+		pr.Out.Header.Del("Cookie")
+	}, Transport: transport}
 	proxy.ServeHTTP(w, r)
 }
 

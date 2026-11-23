@@ -51,6 +51,8 @@ func (p Plane) runnerCacheDown(ctx context.Context) (cause, detail string, err e
 		switch {
 		case !ok:
 			down = append(down, fmt.Sprintf("the caches' Application lists no Deployment %s", cache))
+		case applied.Health == "":
+			// Argo CD has not judged the Deployment yet.
 		case applied.Health != "Healthy":
 			reading := fmt.Sprintf("Argo CD reads %s %s", cache, applied.Health)
 			if applied.Message != "" {

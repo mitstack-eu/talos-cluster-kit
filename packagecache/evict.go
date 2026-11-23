@@ -28,8 +28,8 @@ type sweptFile struct {
 	lastUsed time.Time
 }
 
-// Evict removes each file under dir unused for longer than the age limit, then the least recently used of the rest
-// until the bytes they hold fit the size limit.
+// Evict removes each file under dir unused for longer than the age limit or larger than the size limit, then the least
+// recently used of the rest until the bytes they hold fit the size limit.
 func Evict(dir string, limits Limits, now time.Time) (Swept, error) {
 	if limits.MaxBytes <= 0 || limits.MaxAge <= 0 {
 		return Swept{}, fmt.Errorf("the sweep of %s needs a size and an age limit above zero, got %d bytes and %s", dir, limits.MaxBytes, limits.MaxAge)
@@ -61,8 +61,8 @@ func Evict(dir string, limits Limits, now time.Time) (Swept, error) {
 	var swept Swept
 	full := false
 	for _, f := range files {
-		full = full || swept.Kept+f.size > limits.MaxBytes
-		if !full && now.Sub(f.lastUsed) <= limits.MaxAge {
+		full = full || (f.size <= limits.MaxBytes && swept.Kept+f.size > limits.MaxBytes)
+		if !full && f.size <= limits.MaxBytes && now.Sub(f.lastUsed) <= limits.MaxAge {
 			swept.Kept += f.size
 			continue
 		}

@@ -86,8 +86,7 @@ func TestWithRunners_HoldsTheControllerTheRunnersNamespaceAndTheScaleSetTheInput
 }
 
 func TestWithRunners_ReadsTheGitHubTokenFromTheLeasedSecretAndRendersNoKeyOrTokenValue(t *testing.T) {
-	set := runnerSet(t)
-	scaleSet := testutil.Manifest(t, "mitstack-runner-scale-set", set.Inline)
+	scaleSet := testutil.Manifest(t, "mitstack-runner-scale-set", runnerSet(t).Inline)
 
 	doc := testutil.Named(t, testutil.Documents(t, scaleSet.Bytes), "AutoscalingRunnerSet", "mitstack-ci")
 
@@ -99,8 +98,7 @@ func TestWithRunners_ReadsTheGitHubTokenFromTheLeasedSecretAndRendersNoKeyOrToke
 }
 
 func TestWithRunners_RunsEachJobInADindPodWithNoServiceAccountTokenAndOnlyEmptyDirVolumes(t *testing.T) {
-	set := runnerSet(t)
-	docs := testutil.Documents(t, testutil.Manifest(t, "mitstack-runner-scale-set", set.Inline).Bytes)
+	docs := testutil.Documents(t, testutil.Manifest(t, "mitstack-runner-scale-set", runnerSet(t).Inline).Bytes)
 	scaleSet := testutil.Named(t, docs, "AutoscalingRunnerSet", "mitstack-ci")
 
 	pod := testutil.Field(t, scaleSet, "spec", "template", "spec")
@@ -140,8 +138,7 @@ func TestWithRunners_ReservesEachJobContainersCPUAndMemoryAsItsLimitAndWholeCore
 }
 
 func TestWithRunners_KeepsTheListenerOffBurstMembersAndLabelsIt(t *testing.T) {
-	set := runnerSet(t)
-	scaleSet := testutil.Named(t, testutil.Documents(t, testutil.Manifest(t, "mitstack-runner-scale-set", set.Inline).Bytes), "AutoscalingRunnerSet", "mitstack-ci")
+	scaleSet := testutil.Named(t, testutil.Documents(t, testutil.Manifest(t, "mitstack-runner-scale-set", runnerSet(t).Inline).Bytes), "AutoscalingRunnerSet", "mitstack-ci")
 
 	listener := testutil.Field(t, scaleSet, "spec", "listenerTemplate")
 

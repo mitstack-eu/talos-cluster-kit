@@ -184,3 +184,25 @@ func TestRead_AWaitingPodAdmitsANodeWhoseLabelsItsPlacementAccepts(t *testing.T)
 		})
 	}
 }
+
+func TestTemplatePod_ReadsThePlacementAndWhatTheSchedulerReservesFromAPodTemplatesSpec(t *testing.T) {
+	spec := `{"nodeSelector": {"kubernetes.io/os": "linux"},
+		"affinity": {"nodeAffinity": {"requiredDuringSchedulingIgnoredDuringExecution": {"nodeSelectorTerms": [
+			{"matchExpressions": [{"key": "mitstack.dev/burst", "operator": "DoesNotExist"}]}]}}},
+		"initContainers": [{"name": "install", "resources": {"requests": {"cpu": "100m", "memory": "64Mi"}}}],
+		"containers": [{"name": "agent", "resources": {"requests": {"cpu": "200m", "memory": "512Mi"}}}, {"name": "logs", "resources": {"requests": {"cpu": "50m"}}}]}`
+
+	pod, err := report.TemplatePod("kube-system/agent", []byte(spec))
+
+	require.NoError(t, err)
+	assert.Equal(t, "kube-system/agent", pod.Name)
+	assert.Equal(t, "250m CPU and 512Mi", pod.Request().String(), "the containers' requests, which outweigh the init container's")
+	assert.True(t, pod.Admits(map[string]string{"kubernetes.io/os": "linux"}), "a steady Linux node")
+	assert.False(t, pod.Admits(map[string]string{"kubernetes.io/os": "linux", "mitstack.dev/burst": "true"}), "a burst node")
+}
+
+func TestTemplatePod_FailsOnASpecThatIsNotAPodSpec(t *testing.T) {
+	_, err := report.TemplatePod("kube-system/agent", []byte(`{"containers": "none"}`))
+
+	assert.ErrorContains(t, err, "kube-system/agent", "the error names the template")
+}

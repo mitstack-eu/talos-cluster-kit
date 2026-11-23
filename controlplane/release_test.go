@@ -408,6 +408,35 @@ func TestRelease_AClusterRequiringNoOTLPBackendCarriesNoTelemetryCollectorAndNoE
 	}
 }
 
+func TestPlane_DaemonSetPodsAreThePodsOfEachDaemonSetTheClusterRunsWithWhatEachAsksTheScheduler(t *testing.T) {
+	everyCluster := []string{"istio-system/istio-cni-node", "istio-system/ztunnel", "kube-system/cilium", "kube-system/cilium-envoy"}
+	for _, tc := range []struct {
+		name    string
+		options []func(*harness)
+		want    []string
+	}{
+		{"a cluster requiring no OTLP backend", nil, everyCluster},
+		{"a cluster requiring one", []func(*harness){telemetry}, slices.Concat(everyCluster, []string{"kube-system/mitstack-telemetry-node"})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, tc.options...)
+
+			pods, err := h.plane.DaemonSetPods()
+
+			require.NoError(t, err)
+			requests := map[string]string{}
+			for _, pod := range pods {
+				requests[pod.Name] = pod.Request().String()
+			}
+			assert.ElementsMatch(t, tc.want, slices.Collect(maps.Keys(requests)), "the DaemonSets' pods")
+			assert.Equal(t, "200m CPU and 512Mi", requests["istio-system/ztunnel"], "what ztunnel's container requests")
+			cilium := slices.IndexFunc(pods, func(p report.WaitingPod) bool { return p.Name == "kube-system/cilium" })
+			require.GreaterOrEqual(t, cilium, 0, "cilium's pod")
+			assert.False(t, pods[cilium].Admits(map[string]string{"kubernetes.io/os": "windows"}), "cilium's placement, which asks for a Linux node")
+		})
+	}
+}
+
 func TestPlane_OutputsTheCollectorsOTLPReceiverOnlyForAClusterRequiringAnOTLPBackend(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

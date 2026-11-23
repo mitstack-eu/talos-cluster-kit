@@ -35,7 +35,7 @@ func (h *harness) poolWorkers(size int, locations ...string) []controlplane.Serv
 
 func (h *harness) grow(pool pools.CloudPool) []controlplane.Server {
 	h.t.Helper()
-	plan, err := pools.PlanCloud(context.Background(), h.plane, pool, func(controlplane.Server) bool { return false })
+	plan, err := pools.PlanCloud(context.Background(), h.plane, pool, func(controlplane.Server) bool { return false }, nil)
 	require.NoError(h.t, err)
 	require.NoError(h.t, plan.Apply(context.Background(), h.cloud))
 	return h.byRole(pools.RoleCloudWorker)

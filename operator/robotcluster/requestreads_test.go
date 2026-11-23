@@ -1,6 +1,7 @@
 package robotcluster_test
 
-// Within one request the cluster lists each kind of Cloud resource once, and its worker install reads the Cloud afresh.
+// Within one request the cluster lists each kind of Cloud resource once, and the server types once however many pods
+// wait, and its worker install reads the Cloud afresh.
 
 import (
 	"context"
@@ -8,6 +9,7 @@ import (
 	"fmt"
 	"maps"
 	"testing"
+	"time"
 
 	"github.com/mitstack-eu/block-kit/capabilities/hetzner/robot/robottest"
 	"github.com/mitstack-eu/block-kit/contract"
@@ -90,6 +92,31 @@ func assertEachKindListedOnce(t *testing.T, call string, made cloudtest.Reads) {
 	for _, list := range []string{"ListServers", "ListLoadBalancers", "ListNetworks", "ListFirewalls", "ListSnapshots"} {
 		assert.Equal(t, 1, made[list], "the %s calls of %s, among its reads %v", list, call, made)
 	}
+}
+
+func TestPool_ListsTheServerTypesOnceASubscribeWithOneWaitingPodAndWithThree(t *testing.T) {
+	listed, created := map[int]int{}, map[int]int{}
+	for _, waiting := range []int{1, 3} {
+		e := robotclustertest.New(t, cloudOnlySub, cloudOnly)
+		settleWith(e, "1", "4")
+		members := len(e.ByRole(controlplane.RoleCloudWorker))
+		for i := range waiting {
+			e.WaitingPods = append(e.WaitingPods, runnerAsking(fmt.Sprintf("runner-%d", i), "250m", "512Mi"))
+		}
+		e.Now = e.Now.Add(time.Minute)
+		e.Progress()
+
+		made := listsOfOneRequest(e, func(ctx context.Context) {
+			_, _, err := e.Cluster.EnsureResourcesOwning(ctx, e.Desired())
+			require.NoError(t, err, "the subscribe while %d pods wait", waiting)
+			observeEach(t, ctx, e, e.Desired())
+		})
+
+		listed[waiting] = made["AvailableServerTypes"]
+		created[waiting] = len(e.ByRole(controlplane.RoleCloudWorker)) - members
+	}
+	assert.Equal(t, map[int]int{1: 1, 3: 1}, listed, "the server-type listings of a subscribe and its observe, by the pods waiting")
+	assert.Equal(t, map[int]int{1: 1, 3: 3}, created, "the members each subscribe created, by the pods waiting")
 }
 
 func TestStartWorkerInstall_ReadsThePlaneAfterItsRequestEnded(t *testing.T) {

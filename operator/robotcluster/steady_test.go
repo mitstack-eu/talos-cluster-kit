@@ -1,7 +1,7 @@
 package robotcluster_test
 
 // A Cloud pool keeps its minimum of steady members, which carry no burst label, marks each member above it burst, and
-// holds rather than grows for pods whose placement refuses every burst member.
+// holds rather than grows for pods whose placement refuses every burst member or that no listed type holds.
 
 import (
 	"context"
@@ -12,6 +12,7 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
 	"github.com/mitstack-eu/talos-cluster-kit/operator/robotcluster/robotclustertest"
 	"github.com/mitstack-eu/talos-cluster-kit/pools"
+	"github.com/mitstack-eu/talos-cluster-kit/scaling"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -113,6 +114,32 @@ func TestPool_HoldsWhilePodsWaitWhosePlacementRefusesEveryBurstMemberAndReadsUnh
 	assert.Contains(t, obs.Unhealthy.Cause, "cloudPoolMin", "the cause names the input that adds steady members")
 	assert.Contains(t, obs.Unhealthy.Detail, "argocd/argocd-repo-server-7d9f", "the detail names the waiting pod")
 	assert.Contains(t, obs.Unhealthy.Detail, "refuses every burst member", "the detail says why the pool holds")
+}
+
+// runnerAsking is a runner pod that waits for a node, whose one container requests cpu and memory.
+func runnerAsking(name, cpu, memory string) map[string]any {
+	requests := map[string]any{"requests": map[string]any{"cpu": cpu, "memory": memory}}
+	return map[string]any{"namespace": "mitstack-runners", "name": name, "phase": "Pending", "ownerKind": "EphemeralRunner", "unschedulable": true,
+		"requests": map[string]any{"initContainers": []any{}, "containers": []any{map[string]any{"resources": requests}}}}
+}
+
+func TestPool_OrdersNoServerForAPodNoListedTypeHoldsAndReadsUnhealthyNamingIt(t *testing.T) {
+	e := robotclustertest.New(t, cloudOnlySub, cloudOnly)
+	settleWith(e, "1", "4")
+	ids := controlplane.IDs(e.ByRole(controlplane.RoleCloudWorker), controlplane.ServerID)
+
+	e.WaitingPods = []map[string]any{runnerAsking("runner-huge", "64", "4Gi")}
+	for range 5 {
+		e.Now = e.Now.Add(time.Minute)
+		e.Progress()
+		e.EnsureOrWait("a subscribe while the pod waits")
+	}
+	obs := e.Observe()
+
+	assert.ElementsMatch(t, ids, controlplane.IDs(e.ByRole(controlplane.RoleCloudWorker), controlplane.ServerID), "the pool adds no member")
+	require.NotNil(t, obs.Unhealthy, "the cluster names the pod: %s", obs.StatusDetail)
+	assert.Equal(t, scaling.CauseNoTypeHolds, obs.Unhealthy.Cause)
+	assert.Contains(t, obs.Unhealthy.Detail, "mitstack-runners/runner-huge", "the detail names the waiting pod")
 }
 
 // labellerRun is the pod of the node labeller's run scheduled at minute, as the node report carries a finished one.

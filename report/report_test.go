@@ -719,6 +719,26 @@ func TestReport_CarriesEachFailedContainersMessageCutTo256BytesFromTheNewestFail
 	assert.NotContains(t, string(posted.raw), "app-job-message-fixture", "an app's own Job's message is whatever the app wrote")
 }
 
+func TestReport_CarriesWhatTheSchedulerReservesForEachWaitingPodInitSidecarsIncludedAndNothingForAScheduledOne(t *testing.T) {
+	_, posted, out, err := runReport(t, kubectlWith(podsRead, "cat testdata/runner-pods.json"))
+	require.NoError(t, err, out)
+
+	waiting, err := report.Read{Body: posted.raw}.Unschedulable()
+
+	require.NoError(t, err)
+	requests := map[string]string{}
+	for _, w := range waiting {
+		requests[w.Name] = w.Request().String()
+	}
+	assert.Equal(t, map[string]string{
+		"mitstack-runners/runner-1": "2500m CPU and 5120Mi",
+		"mitstack-runners/runner-2": "4000m CPU and 3072Mi",
+	}, requests, "the runner with its dind sidecar, and the runner whose init container started after its sidecar costs most")
+	scheduled := slices.IndexFunc(posted.body["pods"].([]any), func(pod any) bool { return testutil.Field(t, pod, "name") == "runner-3" })
+	require.GreaterOrEqual(t, scheduled, 0, "the report carries the scheduled runner")
+	assert.NotContains(t, posted.body["pods"].([]any)[scheduled], "requests", "a scheduled pod carries no requests")
+}
+
 func TestReport_CarriesOneMessageOfAtMost256BytesForEachOf40FailedKitJobsInsideThePlatformsLimit(t *testing.T) {
 	_, posted, out, err := runReport(t, map[string]string{"kubectl": kubectlAnswering(map[string]string{workloadsRead: "jq -n -f testdata/forty-kit-jobs.jq", podsRead: "jq -n -f testdata/forty-kit-job-pods.jq"})})
 

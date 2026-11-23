@@ -291,14 +291,14 @@ func TestHetznerAdapter_ReadsWhichServerTypesTheLocationCanOrder(t *testing.T) {
 	api, _ := recordHetzner(t, map[string]string{
 		"GET /server_types": `{"server_types": [
 			{"id": 1, "name": "cx23", "disk": 40, "locations": [{"id": 2, "name": "nbg1", "available": false}, {"id": 3, "name": "hel1", "available": true}]},
-			{"id": 4, "name": "cpx22", "disk": 80, "locations": [{"id": 2, "name": "nbg1", "available": true}]},
+			{"id": 4, "name": "cpx22", "disk": 80, "cores": 2, "memory": 4, "locations": [{"id": 2, "name": "nbg1", "available": true}]},
 			{"id": 5, "name": "cpx52", "disk": 480, "locations": [{"id": 3, "name": "hel1", "available": true}]}]}`,
 	})
 
 	types, err := api.AvailableServerTypes(context.Background(), "nbg1")
 
 	require.NoError(t, err)
-	assert.Equal(t, []controlplane.ServerType{{Name: "cpx22", DiskGB: 80}}, types, "the types nbg1 can order")
+	assert.Equal(t, []controlplane.ServerType{{Name: "cpx22", DiskGB: 80, Cores: 2, MemoryGB: 4}}, types, "the types nbg1 can order with their size")
 }
 
 func TestHetznerAdapter_ReadsTheDiskOfEachSnapshot(t *testing.T) {

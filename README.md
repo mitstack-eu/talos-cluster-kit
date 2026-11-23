@@ -1655,7 +1655,7 @@ of this table.
 | Field | Required | What it holds | Example |
 |---|---|---|---|
 | Repository | Yes | The image repository, written without a tag | `123456789012.dkr.ecr.eu-central-1.amazonaws.com/shop-api` |
-| Issuer | Yes | The address of the CI provider that issued the build's short-lived identity token, which the keyless signature's certificate names. The certificate must name it exactly, since it is no pattern | `https://token.actions.githubusercontent.com` |
+| Issuer | Yes | The address of the CI provider that issued the build's short-lived identity token, which the keyless signature's certificate names. The certificate must name it exactly, since the issuer is not a pattern | `https://token.actions.githubusercontent.com` |
 | Subject | Yes | The build pipeline that token names, matched exactly as the issuer is | `https://github.com/acme/shop/.github/workflows/build.yml@refs/heads/main` |
 | Pull Secret | Only for a private registry | A Secret in the cluster holding the registry's login, as `namespace/name`, which [the section on private registries](#how-kyverno-reads-a-private-registry) describes | `app-shop/ecr-pull` |
 
@@ -1667,16 +1667,17 @@ is this one line.
 ghcr.io/acme/shop-web|https://token.actions.githubusercontent.com|https://github.com/acme/shop/.github/workflows/build.yml@refs/heads/main,123456789012.dkr.ecr.eu-central-1.amazonaws.com/shop-api|https://token.actions.githubusercontent.com|https://github.com/acme/shop/.github/workflows/build.yml@refs/heads/main|app-shop/ecr-pull
 ```
 
-An empty `signers` param, or a request with none, is an empty list. Each
+An empty `signers` param, or a request that carries no `signers` param, is an
+empty list. Each
 request therefore names the whole list, not only the entries that changed.
 
 The module refuses a list the signature policy cannot hold before it changes
 anything. It refuses each list `components.SignaturePolicy` refuses, such as
 an entry missing a field, a repository named twice, or a private registry's
-entry with no pull Secret, and the paragraph after the table of hosts below
+entry with no pull Secret, and the paragraph before the table of hosts below
 lists every limit it applies. It also refuses a pull Secret on a cluster that
-does not host the platform, which is a cluster whose request does not set the
-`hostsPlatform` param to `true`. Only a cluster that hosts the platform runs
+does not host the platform. A cluster hosts the platform when its request sets
+the `hostsPlatform` param to `true`. Only a cluster that hosts the platform runs
 External Secrets, which copies each pull Secret into Kyverno's namespace, as
 [the section on private registries](#how-kyverno-reads-a-private-registry)
 explains. The refusal reaches mitstack with the class `invalid-param`, which

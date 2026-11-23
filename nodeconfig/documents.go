@@ -141,9 +141,30 @@ func (c Cluster) documents(role machine.Type, n Node) ([]config.Document, error)
 	docs = append(docs, c.userVolumeDocuments()...)
 	// Only a control-plane node applies manifests, so a worker holds none of the keys the hosting set's carry.
 	if !role.IsControlPlane() {
-		return docs, nil
+		return append(docs, c.jobIsolationDocuments()...), nil
 	}
 	return append(docs, manifests...), nil
+}
+
+// jobIsolation names the containerd customization that lets runc give a container a cgroup it may write, which a
+// Docker daemon needs to start a container from inside a pod with its own user namespace.
+const jobIsolation = "mitstack-job-isolation"
+
+// userNamespaces is how many user namespaces the kernel allows, which Talos's hardening sets to none; the value is the
+// one Talos's user-namespace guide sets.
+const userNamespaces = "11255"
+
+const writableCgroups = "[plugins.\"io.containerd.cri.v1.runtime\".containerd.runtimes.runc]\n  cgroup_writable = true\n"
+
+func (c Cluster) jobIsolationDocuments() []config.Document {
+	if !c.IsolatesJobs {
+		return nil
+	}
+	sysctls := runtime.NewSysctlConfigV1Alpha1()
+	sysctls.Params = map[string]string{"user.max_user_namespaces": userNamespaces}
+	runc := cri.NewCRICustomizationConfigV1Alpha1(jobIsolation)
+	runc.CustomizationContent = writableCgroups
+	return []config.Document{sysctls, runc}
 }
 
 // systemVolumeDocuments encrypt STATE and EPHEMERAL with LUKS2 when a node first formats them, each under a key derived

@@ -179,6 +179,10 @@ func (r *reader) read(doc config.Document) error {
 		if addr, err := netip.ParseAddr(d.MetaName); err == nil {
 			r.registries = append(r.registries, registryTLS{addr: addr, ca: d.TLSCA})
 		}
+	case *cri.CRICustomizationConfigV1Alpha1:
+		if d.MetaName == jobIsolation {
+			c.IsolatesJobs = true
+		}
 	case *network.LinkConfigV1Alpha1:
 		if d.MetaName == cloudLink {
 			c.Profile = HCloud

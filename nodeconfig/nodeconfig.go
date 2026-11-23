@@ -57,6 +57,9 @@ type Cluster struct {
 	// RunsCIJobs puts the kubelet on image collection and soft eviction, which a node running CI jobs' images and
 	// caches needs before its disk fills, and a worker's on the static CPU manager policy, so a job's cores are its alone.
 	RunsCIJobs bool
+	// IsolatesJobs gives each worker the user namespaces and the containerd option a CI job's pod needs to run in its
+	// own user namespace.
+	IsolatesJobs bool
 	// Release names the kit release the configuration is rendered from, which Talos sets as the node's
 	// MachineConfigAnnotation; with none the node carries no such annotation.
 	Release string

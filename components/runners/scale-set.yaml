@@ -157,6 +157,10 @@ spec:
       restartPolicy: Never
       serviceAccountName: {{ .Name }}-runner
       automountServiceAccountToken: false
+{{- if .IsolateJobs }}
+      # Each job's pod runs in its own user namespace, so root inside it is an unprivileged user on its node.
+      hostUsers: false
+{{- end }}
       # Each container's requests make a job that finds no room wait, so a Cloud pool that scales grows for it.
       initContainers:
         - name: init-dind-externals
@@ -190,7 +194,19 @@ spec:
               cpu: {{ .DindSize.CPU }}
               memory: {{ .DindSize.Memory }}
           securityContext:
+{{- if .IsolateJobs }}
+            # The unprivileged daemon's settings in a user namespace; docs/runner-services.md gives each one's reason and which are unproven on Talos.
+            privileged: false
+            procMount: Unmasked
+            capabilities:
+              add: [SYS_ADMIN, NET_ADMIN, SYS_PTRACE]
+            seccompProfile:
+              type: Unconfined
+            appArmorProfile:
+              type: Unconfined
+{{- else }}
             privileged: true
+{{- end }}
           restartPolicy: Always
           startupProbe:
             exec:

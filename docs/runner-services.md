@@ -19,6 +19,7 @@ Back to [the README](../README.md).
 | Lease | A short-lived credential the platform grants a cluster, here a GitHub token |
 | ARC | actions-runner-controller, GitHub's operator for self-hosted runners |
 | Runner group | A group of an organisation's self-hosted runners, which decides the repositories they serve |
+| Scale set | ARC's `AutoscalingRunnerSet`: the runners a workflow reaches by naming the scale set in `runs-on`, which ARC starts as jobs wait |
 | dind | Docker in Docker: a Docker daemon in a sidecar container of the job's pod |
 | emptyDir | A Kubernetes volume that starts empty with its pod and is deleted with it |
 | Gateway | The kit's server in each location, which mirrors every image the cluster's nodes pull |
@@ -56,8 +57,10 @@ A block and the other workspace terms are defined in
 A cluster runs runner services when its plane names runner inputs. It then
 holds the following parts, beside every component a cluster runs anyway:
 
-- The namespace `mitstack-runners`, at the privileged Pod Security level,
-  because each job's Docker daemon runs privileged.
+- The namespace `mitstack-runners`, at the privileged Pod Security level.
+  Each job's Docker daemon runs privileged or, on a runner group that isolates
+  its jobs, holds added capabilities and unconfined profiles. The baseline
+  level refuses both.
 - ARC's controller, which watches that namespace alone and runs on the
   control plane. The kit renders it from the gha-runner-scale-set-controller
   0.15.1 chart.
@@ -71,7 +74,10 @@ holds the following parts, beside every component a cluster runs anyway:
 - A runner pod for each job. It runs the actions-runner image beside a Docker
   daemon as a sidecar, so a job can build and run containers. Every volume it
   mounts is an emptyDir, it mounts no service account token, and it may run on
-  a burst member. It never runs on a control-plane node.
+  a burst member. It never runs on a control-plane node. With the runner
+  inputs' switch `IsolateJobs` on, it runs in its own user namespace, as
+  [How a runner group isolates its jobs](#how-a-runner-group-isolates-its-jobs)
+  explains.
 - A fixed CPU and memory request on each container of the runner pod, the
   same for every block, with a limit equal to each request. Kubernetes then
   gives the pod its `Guaranteed` class, the class whose containers keep what
@@ -176,7 +182,7 @@ comes to run the static policy.
 | Kit release at the install | The kubelet's CI settings it renders | When a worker runs the static CPU manager policy |
 |---|---|---|
 | v0.117.0 or earlier, or any release on a plane without runner inputs | None | Never, since a rerender finds no disk eviction settings to read |
-| v0.118.0 to v0.128.x | The disk eviction settings, on every node | A running worker, from the node rollout of the first Update onto a kit release of the next row, with no reboot and no rebuild. A Cloud worker the cluster creates later, such as a burst member, boots from the install's worker image without the policy, and runs it from the first node rollout that reaches it |
+| v0.118.0 to v0.128.x | The disk eviction settings, on every node | A running worker, from the node rollout of the first Update onto v0.129.0 or later, with no reboot and no rebuild. A Cloud worker the cluster creates later, such as a burst member, boots from the install's worker image without the policy, and runs it from the first node rollout that reaches it |
 | v0.129.0 or later | The disk eviction settings on every node, and the static CPU manager policy on each worker | From its first boot, since its configuration or the worker image it boots from carries the policy |
 
 The platform sends an Update once the block release a subscription uses moves
@@ -184,9 +190,10 @@ to a newer one. The kit release that block release carries decides the row an
 Update moves a running worker into.
 
 A cluster in the first row takes the policy only from a new install. For a
-running cluster, that means you delete it and create it again: an unsubscribe
-removes the cluster, and a later subscribe builds it with runner inputs on a
-block release whose kit release sits in the last row.
+running cluster, that means you delete it and create it again. mitstack sends
+the operator an unsubscribe, which removes the cluster, and a later subscribe
+builds it with runner inputs on a block release whose kit release sits in the
+last row.
 
 A removal deletes every Cloud resource that carries the subscription's labels,
 as
@@ -231,7 +238,9 @@ The node report answers a narrower question, and needs no kubeconfig. The
 kit posts it to the platform, which serves it at
 `GET /v1/subscriptions/<id>/node-reports`. Each node's `machineConfig` in it
 names the release the node's machine configuration was rendered from, by the
-digest of that release's tools image. It therefore shows whether a release's
+digest of that release's tools image. The tools image is the one container
+image each kit release builds, which carries the kit's scripts and its
+`machine-config` command. The report therefore shows whether a release's
 node rollout has reached a worker. It cannot tell the row, since a node
 without the disk eviction settings takes each later release's configuration
 without them too.
@@ -268,9 +277,10 @@ gives the rollout's full rules.
 
 The runner token lets its holder register runners in the organisation's
 runner groups. A runner registered that way could take jobs queued by any
-repository of the organisation. A job's pod is privileged, so a job that
-escapes its pod can read whatever its node holds, including the service
-account tokens of the pods beside it.
+repository of the organisation. On a runner group that does not isolate its
+jobs, a job's Docker daemon runs privileged. A job that escapes its pod can
+then read whatever its node holds, including the service account tokens of
+the pods beside it.
 
 The kit therefore keeps the four pods that use the runner token on the
 control-plane nodes, where no job's pod runs:
@@ -303,6 +313,121 @@ that escapes onto that worker could use its account. Jobs from different
 repositories can also share a worker, and a job that escapes may reach what
 that node holds for the other jobs on it. Closing the first path would take workers that run CI jobs and
 nothing else, and closing the second would take one job per worker.
+
+## How a runner group isolates its jobs
+
+A runner group can run each job's pod in its own user namespace. A user
+namespace is a Linux feature that maps the users inside a pod onto other users
+of its node, so root inside the pod is an unprivileged user on the node. The
+switch is the runner inputs' field `IsolateJobs`, and it is off unless the
+block sets it. Off, the job's Docker daemon runs privileged and shares its
+node's users, as the sections above describe.
+
+### What a job's pod runs with the switch on
+
+The pod sets `hostUsers: false`, which gives it its own user namespace. Its
+Docker daemon runs with `privileged: false` and the settings in the table
+below. A local test ran the daemon with all of them on kind, a Kubernetes
+cluster whose nodes are Docker containers on one workstation, and then took
+each setting away alone. Each row gives what failed without it.
+
+Linux splits root's power into parts it calls capabilities, such as the power
+to mount a filesystem, so a process can hold some of them alone. This section
+uses the word capability only in that Linux sense. Seccomp is the kernel's filter of the system calls a process may make, and
+AppArmor is a kernel profile of the files and actions a process may use.
+
+| Setting on the `dind` container | What failed without it in the local test |
+|---|---|
+| `procMount: Unmasked`, which leaves the paths Kubernetes masks in `/proc` readable | `docker run` failed with "failed to disable IPv6 on container's interface eth0" |
+| The added capability `SYS_ADMIN` | The image's start script failed with "mount: permission denied" |
+| The added capability `NET_ADMIN` | The daemon stopped with "failed to create NAT chain DOCKER" |
+| The added capability `SYS_PTRACE` | `docker exec`, and with it a service container's health check, failed with "failed to open /proc/<pid>/ns/ipc: Permission denied" |
+| `seccompProfile` of type `Unconfined` | Under `RuntimeDefault`, `docker run` failed with "unable to join session keyring" |
+| `appArmorProfile` of type `Unconfined` | Nothing, since the test never ran without it: its nodes had no AppArmor to enforce |
+
+With these settings, `docker run`, `docker build`, `docker exec` and a
+service container with a published port all worked in the local test. A
+workflow step that runs `docker run --privileged` still fails, since the
+daemon cannot mount the kernel's `/sys` for that container. The local test
+showed this error, and which kernel rule refuses the mount is not established:
+
+```text
+docker: Error response from daemon: failed to create task for container: failed to create shim task: OCI runtime create failed: runc create failed: unable to start container process: error during container init: error mounting "sysfs" to rootfs at "/sys": mount src=sysfs, dst=/sys, dstFd=/proc/thread-self/fd/14, flags=MS_NOSUID|MS_NODEV|MS_NOEXEC: operation not permitted
+```
+
+### What each worker holds with the switch on
+
+A Talos machine configuration is a list of documents, each of a type that
+names what it sets, such as `SysctlConfig` for the kernel's settings. With the
+switch on, each worker's machine configuration carries two more documents. The
+control-plane nodes carry neither, since no job runs there.
+
+Containerd is the runtime that starts every pod's containers on a node, and
+runc is the program it starts each container with. The second document
+changes how containerd runs runc.
+
+| Document | What it sets | Why a job's pod needs it |
+|---|---|---|
+| `SysctlConfig` | The kernel setting `user.max_user_namespaces` to `11255` | Talos's kernel hardening sets the limit to 0, so the kernel would give no pod a user namespace. 11255 is the value Talos's guide to user namespaces sets |
+| `CRICustomizationConfig` named `mitstack-job-isolation` | runc's `cgroup_writable = true` in containerd's configuration | runc then gives a pod's container a cgroup it may write, which the Docker daemon needs to start a container. A cgroup is the kernel's group that limits a set of processes' CPU and memory |
+
+Talos restarts containerd whenever a `CRICustomizationConfig` is applied,
+changed or removed, as its reference for that document says.
+
+These pages of Talos v1.14, the release the kit pins, describe both
+documents and the limit:
+
+- [SysctlConfig](https://docs.siderolabs.com/talos/v1.14/reference/configuration/runtime/sysctlconfig)
+- [CRICustomizationConfig](https://docs.siderolabs.com/talos/v1.14/reference/configuration/cri/cricustomizationconfig)
+- [Talos's guide to user namespaces](https://docs.siderolabs.com/kubernetes-guides/security/usernamespace),
+  whose value Talos's own test patch `hack/test/patches/usernamespace.yaml`
+  sets too
+- [Talos's page on customising containerd](https://docs.siderolabs.com/talos/v1.14/configure-your-talos-cluster/images-container-runtime/containerd.md)
+- The hardening itself, the function `GetKernelParams` in
+  `pkg/kernel/kspp/kspp.go` of the Talos v1.14.4 source, which sets
+  `user.max_user_namespaces` to 0
+
+### How a worker comes to carry the documents
+
+The install alone decides whether the workers carry them, as it decides the
+kubelet's CI settings. The install renders both documents into the dedicated
+worker's configuration and into the worker image. Every Cloud worker boots
+from that image, so a steady Cloud worker and a burst member carry them
+alike. A rerender reads the switch back from the `mitstack-job-isolation`
+document on the node. It refuses a node that holds a `CRICustomizationConfig`
+under any other name, since the rerender would drop it.
+
+The scale set follows the plane's runner inputs instead. Each subscribe
+renders the cluster's manifests from them and commits any change for Argo CD
+to apply, once every gateway serves the images they name. An upgrade that sets
+the switch on for a cluster installed without it therefore changes the job
+pods at its next subscribe, while every worker keeps a kernel that allows no
+user namespace. No test has run such a pod, so what it does then is unproven.
+
+An upgrade that sets the switch off returns the scale set to its privileged
+daemon. Each worker keeps both documents, since nothing removes them. A
+rerender reads the switch back from the node and renders both again.
+
+For a running cluster, the switch therefore takes effect on every worker
+only from a new install. You delete the cluster and create it again, as
+[How each node comes to run the kubelet settings](#how-each-node-comes-to-run-the-kubelet-settings)
+describes.
+
+### What is unproven on Talos
+
+The local test ran on kind with containerd 2.3.4 and runc 1.4.3, so every
+finding above is unproven on Talos until a job runs there. Four questions are
+open:
+
+1. Whether Talos runs a job's pod with these settings as the local test's
+   cluster did.
+2. Whether containerd's restart, when a running worker takes the
+   `CRICustomizationConfig`, stops a job running there.
+3. Whether the pod needs the `appArmorProfile` of type `Unconfined` on
+   Talos, since the test's nodes had no AppArmor.
+4. Whether `SYS_PTRACE` is enough for `docker exec` there. Talos's hardening
+   sets `kernel.yama.ptrace_scope` to 2, which lets only a process holding
+   that capability trace another, and the workstation the test ran on reads 1.
 
 ## How the parts fit together
 
@@ -363,6 +488,7 @@ its cluster down to absent.
 | `DindImage` | The Docker daemon image each job's sidecar runs | An image without its digest |
 | `MaxRunners` | The most jobs that run at once | A value below 1 |
 | `LeaseResource` | The resource type whose GitHub token the lease job asks the platform for | An empty value |
+| `IsolateJobs` | Whether each job's pod runs in its own user namespace, as [How a runner group isolates its jobs](#how-a-runner-group-isolates-its-jobs) explains. Off by default, which runs the Docker daemon privileged | Nothing |
 
 The block's operator names the resource it requires from the platform as
 `LeaseResource`, so the platform knows which GitHub App mints the token. The
@@ -377,7 +503,8 @@ rendered from the inputs, which the build and every release carry.
 
 A build of a plane with runner inputs carries the runner services from its
 first boot. A plane that gains them on an upgrade replaces each gateway first,
-as the last section of this page shows, and its next release carries the rest.
+as [How a runner release reaches the cluster](#how-a-runner-release-reaches-the-cluster)
+shows, and its next release carries the rest.
 Its nodes keep the kubelet settings the install rendered, as
 [How each node comes to run the kubelet settings](#how-each-node-comes-to-run-the-kubelet-settings)
 explains.
@@ -514,7 +641,7 @@ GitHub answers 404 for a runner it no longer lists, as when ARC removed it
 after the list, so the sweep counts that runner removed. Whether GitHub also
 answers 404 to a token that lacks the right to remove a runner is not yet
 proven. A later sweep that removes the same runner again shows that GitHub
-still lists it, so the block's check names that runner.
+still lists it, so the block's check, described below, names that runner.
 
 The report's `runners` member says what the sweep did. This run listed three
 runners, removed one and left one busy runner for later. GitHub refused the
@@ -540,12 +667,13 @@ The fields mean this:
 - `removed` names each runner GitHub removed, or answered 404 for.
 - `unremoved` holds each refusal, with GitHub's status and its message cut to
   256 characters.
-- `busy` names each picked runner GitHub still reads busy, which waits for
-  GitHub to fail its job.
+- `busy` names each picked runner GitHub still reads busy, which the sweep
+  leaves for a later run.
 - `deferred` counts the busy runners and the picked runners the run did not
   ask about, past the 10 a run or after a rate limit, which wait for the next
-  run. The block's check reads no `deferred` count, so a backlog reads no
-  problem however many runs it takes to drain.
+  run. `Cluster.RunnersProblem`, the block's check described below, reads no
+  `deferred` count, so a backlog reads no problem however many runs it takes
+  to drain.
 - `unlisted` counts the runners GitHub lists in the group past the third page,
   which the sweep did not read.
 
@@ -565,8 +693,10 @@ own is a list of EphemeralRunners, which hold no Secret data. The Role
 `mitstack-node-report-runners` grants it in `mitstack-runners` alone, and only
 a report with runner inputs holds it. Kubernetes creates a Role only in a
 namespace that exists. The lease job's Role already lives in
-`mitstack-runners` and reaches the cluster in the same set of the kit's own
-components, so this Role needs no new step to create the namespace first.
+`mitstack-runners`. `Plane.ownComponents` in `controlplane/manifests.go`
+returns the node report's manifests and the lease job's in one list, so this
+Role reaches the cluster with the lease job's and needs no new step to create
+the namespace first.
 
 A block built on the robot cluster module reads the member through
 `Cluster.RunnersProblem`. It reads the newest report that names no failed
@@ -644,8 +774,8 @@ controller starts each later job on the new image.
 | `components/gha-runner-scale-set-controller/gha-runner-scale-set-controller.yaml` | ARC's controller and its CRDs, which `scripts/render-components.sh` renders |
 | `controlplane/runners.go` and `controlplane/manifests/runner-token.yaml` | The runner token's Secret, the sweep's Secret and the lease CronJob |
 | `controlplane/scripts/cluster-tokens.sh` | The `runner-lease` verb the CronJob runs |
-| `nodeconfig/documents.go` | The kubelet's disk eviction settings and a worker's static CPU manager policy |
-| `nodeconfig/rerender.go` | `Rerender`, which reads whether a running node carries the disk eviction settings |
+| `nodeconfig/documents.go` | The kubelet's disk eviction settings, a worker's static CPU manager policy, and the two documents of a worker whose jobs run in their own user namespace |
+| `nodeconfig/rerender.go` | `Rerender`, which reads whether a running node carries the disk eviction settings and the `mitstack-job-isolation` document |
 | `report/members.go` | The reading of a node under disk pressure |
 | `report/report.yaml` and `report/scripts/report.sh` | The runner sweep's settings, its list of EphemeralRunners and its `sweep_runners` function |
 | `operator/robotcluster/runners.go` | `Cluster.RunnersProblem`, which reads the sweep's member for a block |

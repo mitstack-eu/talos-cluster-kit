@@ -582,6 +582,18 @@ func TestPlanCloud_AJustCreatedMemberAboveThePoolsMinimumCarriesTheBurstLabelBef
 	assert.Equal(t, "mitstack.dev/burst", pools.KeyBurst, "the label each burst member and its node carry")
 }
 
+func TestPlanCloud_ABurstMemberBootsTheWorkerImageEachSteadyMemberBoots(t *testing.T) {
+	s := newSite(t)
+
+	plan, err := s.plan(scaling(2, 3))
+
+	require.NoError(t, err)
+	require.Equal(t, []string{"fsn1-2"}, burstSpecs(plan.Create), "the member created past the minimum of 2")
+	for _, spec := range plan.Create {
+		assert.Equal(t, s.image.ID, spec.ImageID, "the image member %s boots", spec.Labels[pools.KeyMember])
+	}
+}
+
 func TestPlanCloud_APoolOfASetSizeCreatesNoBurstMember(t *testing.T) {
 	s := newSite(t)
 

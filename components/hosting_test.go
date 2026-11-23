@@ -709,17 +709,13 @@ func TestHosting_LetsCertManagerReachOnlyTheAPIServerClusterDNSLetsEncryptsTwoAC
 }
 
 func TestHosting_LetsNoCertManagerPodButTheControllerReachLetsEncryptsStagingAPIAWSSTSOrRoute53(t *testing.T) {
+	before := []string{"egress to *.apps.mitstack.dev on 80/TCP", "egress to acme-v02.api.letsencrypt.org on 443/TCP", "egress to entity kube-apiserver", "egress with cluster DNS on 53/UDP 53/TCP through the DNS proxy"}
 	for name, labels := range map[string]map[string]string{
 		"the CA injector": {"app.kubernetes.io/name": "cainjector", "app.kubernetes.io/component": "cainjector", "mitstack.dev/app": "cert-manager-cainjector"},
 		"the webhook":     {"app.kubernetes.io/name": "webhook", "app.kubernetes.io/component": "webhook", "mitstack.dev/app": "cert-manager-webhook"},
 		"trust-manager":   {"app.kubernetes.io/name": "trust-manager", "mitstack.dev/app": "trust-manager"},
 	} {
-		assert.Equal(t, []string{
-			"egress to *.apps.mitstack.dev on 80/TCP",
-			"egress to acme-v02.api.letsencrypt.org on 443/TCP",
-			"egress to entity kube-apiserver",
-			"egress with cluster DNS on 53/UDP 53/TCP through the DNS proxy",
-		}, hostingEgress(t, testutil.Endpoint("cert-manager", nil, labels)), "%s's flows, since only the controller solves a DNS-01 challenge", name)
+		assert.Equal(t, before, hostingEgress(t, testutil.Endpoint("cert-manager", nil, labels)), "%s's flows, since only the controller solves a DNS-01 challenge", name)
 	}
 }
 
@@ -734,8 +730,7 @@ func TestHosting_CertManagersControllerRunsAsTheAccountTheKitNamesAndChecksADNS0
 	require.Len(t, containers, 1, "cert-manager's controller containers")
 	args := testutil.Field(t, containers[0], "args").([]any)
 	assert.Contains(t, args, "--dns01-recursive-nameservers-only", "cert-manager's controller args = %v; want its DNS-01 self-check to ask cluster DNS, since the flows let it reach no other name server", args)
-	assert.False(t, slices.ContainsFunc(args, func(a any) bool { return strings.HasPrefix(a.(string), "--dns01-recursive-nameservers=") }),
-		"cert-manager's controller args = %v; want no recursive name server named, so it asks the cluster DNS its pod resolves through", args)
+	assert.False(t, slices.ContainsFunc(args, func(a any) bool { return strings.HasPrefix(a.(string), "--dns01-recursive-nameservers=") }), "cert-manager's controller args = %v; want no recursive name server named, so it asks the cluster DNS its pod resolves through", args)
 }
 
 func TestHosting_LetsExternalSecretsReachOnlyTheAPIServerClusterDNSOpenBaoAndAWSSTSECRAndSSMByNameOn443(t *testing.T) {

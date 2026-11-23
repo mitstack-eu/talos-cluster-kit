@@ -26,11 +26,10 @@ type runnerSweep struct {
 	ScaleSet  string            `json:"scaleSet"`
 	Unread    string            `json:"unread"`
 	Unremoved []unremovedRunner `json:"unremoved"`
+	Unlisted  int               `json:"unlisted"`
 }
 
-// RunnersProblem names each runner the sweep of the newest node report that names no failed read could not remove, or
-// why the sweep removed none, or is "" when it removed every runner it found dead, waits for its first token or has
-// not reported yet.
+// RunnersProblem names each runner the newest full report's sweep could not remove, how many runners it left unread, or why it removed none, and is "" otherwise.
 func (k *Cluster) RunnersProblem(ctx context.Context, d contract.Desired) string {
 	reports, err := k.cfg.NodeReports(ctx, d, d.SubscriptionID)
 	if err != nil {
@@ -46,15 +45,22 @@ func (k *Cluster) RunnersProblem(ctx context.Context, d contract.Desired) string
 	if err := json.Unmarshal(newest.Body, &body); err != nil {
 		return "the newest node report's runners member is not the runner sweep's JSON"
 	}
-	switch sweep := body.Runners; {
+	sweep := body.Runners
+	switch {
 	case sweep == nil:
 		return ""
 	case sweep.Unread != "":
 		return "the runner sweep removed no runner: " + sweep.Unread
-	case len(sweep.Unremoved) > 0:
-		return sweep.refusals()
 	}
-	return ""
+	var problems []string
+	if len(sweep.Unremoved) > 0 {
+		problems = append(problems, sweep.refusals())
+	}
+	if sweep.Unlisted > 0 {
+		problems = append(problems, fmt.Sprintf("GitHub lists %d more runners in the runner group of the scale set %s than the sweep reads, so a dead runner among them stays listed",
+			sweep.Unlisted, sweep.ScaleSet))
+	}
+	return strings.Join(problems, "; ")
 }
 
 // fullReports drops each report that names a failed read, since such a report carries no runner sweep and would hide

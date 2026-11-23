@@ -168,6 +168,7 @@ func Manifests(in Inputs) ([]byte, error) {
 		"Gateways":           in.gateways(),
 		"EgressURL":          egressURL,
 		"Runners":            in.Runners,
+		"RunnersNamespace":   components.RunnersNamespace,
 		"SweepTokenSecret":   components.RunnerSweepTokenSecret,
 		"GitHubAPI":          githubAPI,
 	})

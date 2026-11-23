@@ -16,12 +16,12 @@
 # last runs, newest Job with its events and kept summaries, and a checks member naming each check of the platform's
 # verdict, signed with a token the API server mints for the body through block-kit's token-request.sh in
 # REPORT_PROOF_SCRIPT.
-# With RUNNERS_ORGANIZATION set, it also removes each idle runner of RUNNER_SCALE_SET that GitHub lists offline with no
-# pod or EphemeralRunner behind it, with the leased token in RUNNER_TOKEN_FILE, and its runners member names each
-# removal and each refusal.
+# With RUNNERS_ORGANIZATION set, it also removes each idle runner of RUNNER_SCALE_SET in the runner group RUNNER_GROUP
+# that GitHub lists offline with no pod or EphemeralRunner behind it in RUNNERS_NAMESPACE, with the leased token in
+# RUNNER_TOKEN_FILE, and its runners member names each removal and each refusal.
 # When a read, the body or the token request fails or times out, it posts an unsigned report whose error names it
 # instead, then exits non-zero.
-# Usage: REPORT_URL=<https url> SUBSCRIPTION_ID=<id> HOST_IP=<this pod's node> REPORT_PROOF_SCRIPT=<script> MESH_PROBE_URL=<target's url> MESH_PROBE_ANSWER=<its answer> MESH_PROBE_IDENTITY=<its SPIFFE id> MESH_PROBE_CONFIGMAP=<namespace/name> OPENBAO_MEMBERS="<name>=<https url> ..." OPENBAO_CA_FILE=<pem> ARGOCD_URL=<https url> GATEWAYS="<address> ..." EGRESS_URL=<https url> [POD_NAMESPACE=mitstack-node] [REPORT_TOKEN_FILE=/var/run/mitstack/token] [REPORT_READ_SECONDS=21] [RUNNERS_ORGANIZATION=<org> RUNNER_SCALE_SET=<name> RUNNER_TOKEN_FILE=<file> GITHUB_API_URL=<https url>] report.sh
+# Usage: REPORT_URL=<https url> SUBSCRIPTION_ID=<id> HOST_IP=<this pod's node> REPORT_PROOF_SCRIPT=<script> MESH_PROBE_URL=<target's url> MESH_PROBE_ANSWER=<its answer> MESH_PROBE_IDENTITY=<its SPIFFE id> MESH_PROBE_CONFIGMAP=<namespace/name> OPENBAO_MEMBERS="<name>=<https url> ..." OPENBAO_CA_FILE=<pem> ARGOCD_URL=<https url> GATEWAYS="<address> ..." EGRESS_URL=<https url> [POD_NAMESPACE=mitstack-node] [REPORT_TOKEN_FILE=/var/run/mitstack/token] [REPORT_READ_SECONDS=21] [RUNNERS_ORGANIZATION=<org> RUNNER_GROUP=<name> RUNNER_SCALE_SET=<name> RUNNERS_NAMESPACE=<namespace> RUNNER_TOKEN_FILE=<file> GITHUB_API_URL=<https url>] report.sh
 # It exists so the platform sees a cluster it never dials into, as ADR 0072 requires, with os:reader and no Secret right.
 set -euo pipefail
 
@@ -36,7 +36,6 @@ runners_per_page=100
 runner_pages_max=3
 runner_removals_max=10
 github_call_seconds=5
-runners_namespace=mitstack-runners
 # The outside probe writes every five minutes, so a result three runs old means it stopped.
 mesh_probe_max_age=900
 # The report dry-runs the admission fixtures in the probe namespace, and reads what the security scan last kept.
@@ -137,6 +136,7 @@ sweep_runners() {
   [ -n "${RUNNERS_ORGANIZATION:-}" ] || return 0
   sweep_reading unread "the runner sweep ended before it finished, and the report log holds why"
   : "${RUNNER_SCALE_SET:?names the runner scale set the sweep removes runners of}" "${RUNNER_TOKEN_FILE:?names the file of the leased GitHub token}"
+  : "${RUNNER_GROUP:?names the runner group the scale set registers in}" "${RUNNERS_NAMESPACE:?names the namespace ARC runs the runners in}"
   : "${GITHUB_API_URL:?names the GitHub API}"
   if [ ! -s "$RUNNER_TOKEN_FILE" ]; then
     sweep_reading skipped "no runner token is leased yet, so the sweep waits for the lease job's first run"
@@ -145,6 +145,7 @@ sweep_runners() {
   github_token=$(cat "$RUNNER_TOKEN_FILE")
   printf 'Authorization: Bearer %s\nAccept: application/vnd.github+json\nX-GitHub-Api-Version: 2022-11-28\n' \
     "$github_token" > "$work/github-headers"
+  find_runner_group || return 0
   list_runners || return 0
   read_runner_holds || return 0
   remove_stale_runners
@@ -177,18 +178,34 @@ github_failure() {
   printf 'GitHub answered %s to %s: %s' "$2" "$1" "$(jq -r '.message // empty | tostring | .[0:256]' "$3" 2> /dev/null || true)"
 }
 
-# list_runners keeps each runner of the org GitHub lists, one per line, reading pages until one holds fewer than a page.
+# find_runner_group sets runner_group_id to the id of RUNNER_GROUP, since a same-named scale set in another group is not ours.
+find_runner_group() {
+  local status
+  status=$(github_call GET "/orgs/$RUNNERS_ORGANIZATION/actions/runner-groups?per_page=$runners_per_page" "$work/runner-groups.json")
+  if [ "$status" != 200 ]; then
+    sweep_reading unread "$(github_failure "the list of the org's runner groups" "$status" "$work/runner-groups.json")"
+    return 1
+  fi
+  runner_group_id=$(jq -r --arg name "$RUNNER_GROUP" \
+    'first(.runner_groups[]? | select(.name == $name and (.id | type) == "number") | .id) // empty' \
+    "$work/runner-groups.json" 2> /dev/null || true)
+  [ -n "$runner_group_id" ] && return 0
+  sweep_reading unread "GitHub lists no runner group named $RUNNER_GROUP among the org's first $runners_per_page runner groups"
+  return 1
+}
+
+# list_runners keeps each runner of the runner group GitHub lists, one per line, reading pages until one holds fewer than a page.
 list_runners() {
   local page status
   : > "$work/github-runners.jsonl"
   for ((page = 1; page <= runner_pages_max; page++)); do
-    status=$(github_call GET "/orgs/$RUNNERS_ORGANIZATION/actions/runners?per_page=$runners_per_page&page=$page" "$work/runners-page.json")
+    status=$(github_call GET "/orgs/$RUNNERS_ORGANIZATION/actions/runner-groups/$runner_group_id/runners?per_page=$runners_per_page&page=$page" "$work/runners-page.json")
     if [ "$status" != 200 ]; then
-      sweep_reading unread "$(github_failure "the list of the org's runners" "$status" "$work/runners-page.json")"
+      sweep_reading unread "$(github_failure "the list of the runner group's runners" "$status" "$work/runners-page.json")"
       return 1
     fi
     if ! jq -c '.runners[]' "$work/runners-page.json" >> "$work/github-runners.jsonl" 2> /dev/null; then
-      sweep_reading unread "GitHub answered 200 to the list of the org's runners with no runners array"
+      sweep_reading unread "GitHub answered 200 to the list of the runner group's runners with no runners array"
       return 1
     fi
     [ "$(jq '.runners | length' "$work/runners-page.json")" -eq "$runners_per_page" ] || return 0
@@ -200,14 +217,14 @@ list_runners() {
 # GitHub listed before this read that ARC still holds has one of the two.
 read_runner_holds() {
   local status
-  read_beside runner-holds kubectl get pods,ephemeralrunners.actions.github.com -n "$runners_namespace" -o json
+  read_beside runner-holds kubectl get pods,ephemeralrunners.actions.github.com -n "$RUNNERS_NAMESPACE" -o json
   status=$(cat "$work/runner-holds.status")
   if [ "$status" != 0 ]; then
-    sweep_reading unread "the read of the pods and EphemeralRunners in $runners_namespace ended with exit status $status: $(scrubbed "$work/runner-holds.err" | tail -c 256)"
+    sweep_reading unread "the read of the pods and EphemeralRunners in $RUNNERS_NAMESPACE ended with exit status $status: $(scrubbed "$work/runner-holds.err" | tail -c 256)"
     return 1
   fi
   jq -r '.items[].metadata.name' "$work/runner-holds.out" > "$work/runner-holds.names" 2> /dev/null && return 0
-  sweep_reading unread "kubectl exited 0, and its output is not the pods and EphemeralRunners in $runners_namespace"
+  sweep_reading unread "kubectl exited 0, and its output is not the pods and EphemeralRunners in $RUNNERS_NAMESPACE"
   return 1
 }
 
@@ -228,7 +245,11 @@ remove_stale_runners() {
     sweep_reading unread "jq could not pick the runners to remove: $(tail -c 256 "$work/sweep.err")"
     return 0
   fi
-  mapfile -t stale < <(jq -c --argjson most "$runner_removals_max" '.idle[:$most][]' "$work/sweep.json")
+  # Each run starts where the run five minutes before stopped, so runners GitHub keeps refusing cannot starve the rest.
+  mapfile -t stale < <(jq -c --argjson most "$runner_removals_max" --argjson run "$(($(date +%s) / 300))" '
+    .idle as $idle | ($idle | length) as $n
+    | if $n == 0 then empty else (($run * $most) % $n) as $start | ($idle[$start:] + $idle[:$start])[:$most][] end' \
+    "$work/sweep.json")
   : > "$work/removals.jsonl"
   for runner in "${stale[@]}"; do
     remove_runner "$runner" >> "$work/removals.jsonl"

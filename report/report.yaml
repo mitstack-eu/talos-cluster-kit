@@ -79,11 +79,6 @@ rules:
   - apiGroups: [storage.k8s.io]
     resources: [storageclasses]
     verbs: [list]
-{{- if .Runners }}
-  - apiGroups: [actions.github.com]
-    resources: [ephemeralrunners]
-    verbs: [list]
-{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -146,6 +141,32 @@ subjects:
   - kind: ServiceAccount
     name: mitstack-node-report
     namespace: {{ .Namespace }}
+{{- if .Runners }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mitstack-node-report-runners
+  namespace: {{ .RunnersNamespace }}
+rules:
+  - apiGroups: [actions.github.com]
+    resources: [ephemeralrunners]
+    verbs: [list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mitstack-node-report-runners
+  namespace: {{ .RunnersNamespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mitstack-node-report-runners
+subjects:
+  - kind: ServiceAccount
+    name: mitstack-node-report
+    namespace: {{ .Namespace }}
+{{- end }}
 ---
 apiVersion: batch/v1
 kind: CronJob
@@ -227,8 +248,12 @@ spec:
 {{- if .Runners }}
                 - name: RUNNERS_ORGANIZATION
                   value: {{ printf "%q" .Runners.Organization }}
+                - name: RUNNER_GROUP
+                  value: {{ printf "%q" .Runners.Group }}
                 - name: RUNNER_SCALE_SET
                   value: {{ printf "%q" .Runners.ScaleSet }}
+                - name: RUNNERS_NAMESPACE
+                  value: {{ printf "%q" .RunnersNamespace }}
                 - name: RUNNER_TOKEN_FILE
                   value: /var/run/mitstack-runner/github_token
                 - name: GITHUB_API_URL

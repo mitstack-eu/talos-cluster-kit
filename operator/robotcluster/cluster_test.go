@@ -150,6 +150,17 @@ func TestPlanReplacements_TakesOneOrThreeServersForABlockThatDeclaresNoSize(t *t
 	}
 }
 
+func TestPlanReplacements_RefusesASignerListThePolicyCannotHoldNamingTheEntry(t *testing.T) {
+	const entry = "ghcr.io/acme/shop|https://token.actions.githubusercontent.com"
+
+	_, err := sizedCluster(3).PlanReplacements(context.Background(), sizeRequest(map[string]string{robotcluster.ParamSigners: entry}))
+
+	var refused *handler.Refused
+	require.ErrorAs(t, err, &refused, "the dry run of an upgrade shows the refusal the upgrade would meet")
+	assert.Equal(t, "invalid-param", refused.Class)
+	assert.ErrorContains(t, err, entry)
+}
+
 func TestPlanReplacements_RefusesAControlPlaneSizeOtherThanTheOneTheRunningClusterWasSubscribedWith(t *testing.T) {
 	ctx := context.Background()
 	cloud := cloudtest.New(time.Now)

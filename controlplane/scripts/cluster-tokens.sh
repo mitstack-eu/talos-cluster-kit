@@ -239,8 +239,7 @@ lease() {
 
 # runner_lease writes a new GitHub token into the scale set's Secret and deletes the listener's pods, which ARC's
 # controller rebuilds reading the new token, since a running listener keeps the token it started with. It writes the
-# token into the Secret the node report's runner sweep mounts last, so a refused write there leaves the runners
-# registering.
+# Secret the node report's runner sweep mounts last, so a refusal there still leaves the listener on the new token.
 runner_lease() {
   local status now
   now=$(date -u +%s)

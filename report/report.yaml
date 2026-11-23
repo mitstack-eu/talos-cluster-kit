@@ -270,7 +270,7 @@ spec:
             # The lease job fills the Secret within half an hour of the cluster's first boot, and the report runs before then.
             - name: runner-token
               secret:
-                secretName: {{ .RunnerTokenSecret }}
+                secretName: {{ .SweepTokenSecret }}
                 optional: true
                 defaultMode: 0440
 {{- end }}

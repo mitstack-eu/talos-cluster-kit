@@ -59,6 +59,6 @@ func (s runnerSweep) refusals() string {
 	for _, r := range s.Unremoved {
 		named = append(named, fmt.Sprintf("%s (id %d), HTTP %d: %s", r.Name, r.ID, r.Status, r.Message))
 	}
-	return fmt.Sprintf("GitHub refused to remove %d offline runners of the scale set %s that no pod runs: %s",
-		len(s.Unremoved), s.ScaleSet, strings.Join(named, "; "))
+	return fmt.Sprintf("GitHub refused to remove these offline runners of the scale set %s that no pod runs: %s",
+		s.ScaleSet, strings.Join(named, "; "))
 }

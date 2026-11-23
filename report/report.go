@@ -168,7 +168,7 @@ func Manifests(in Inputs) ([]byte, error) {
 		"Gateways":           in.gateways(),
 		"EgressURL":          egressURL,
 		"Runners":            in.Runners,
-		"RunnerTokenSecret":  components.RunnerSweepTokenSecret,
+		"SweepTokenSecret":   components.RunnerSweepTokenSecret,
 		"GitHubAPI":          githubAPI,
 	})
 	if err != nil {

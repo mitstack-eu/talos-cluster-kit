@@ -132,8 +132,8 @@ read_cluster() {
 }
 
 # sweep_runners removes each runner of RUNNER_SCALE_SET that GitHub lists offline with no pod in the runner namespace,
-# and writes what it did as the report's runners member. It reads the pods after GitHub's list, so every runner the
-# list holds has had its pod created by then unless the pod is gone.
+# and writes what it did as the report's runners member. It removes none when either read fails, since it then cannot
+# tell a dead runner from one whose pod it did not see.
 sweep_runners() {
   : > "$work/runners.json"
   [ -n "${RUNNERS_ORGANIZATION:-}" ] || return 0

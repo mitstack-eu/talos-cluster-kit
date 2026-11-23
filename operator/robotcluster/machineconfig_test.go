@@ -219,6 +219,32 @@ func TestUpdate_RefusesTheRolloutNamingTheEtcdMemberTheNewestReportReadsUnhealth
 	assert.False(t, holds(e, noderollout.Path(e.Release())), "no rollout Job is written")
 }
 
+func TestUpdate_NamesTheSettingARolloutJobRefusesAsANodeTakesItOnlyAtRebootAndChangesNoNode(t *testing.T) {
+	e := standingCluster(t)
+	e.Earlier = map[string]string{}
+	for _, name := range nodeNames(e) {
+		e.Earlier[name] = earlierRelease
+	}
+	refusal := "apply-machine-config: " + nodeNames(e)[0] + " at 10.0.0.3: machine-config: the release changes " +
+		".machine.kernel.modules: a node takes this setting only when it reboots, so no node changes"
+	e.RolloutRefuses = refusal
+	e.Now = e.Now.Add(time.Minute)
+	e.ReportNodes()
+	e.EnsureOrWait("the subscribe that writes the rollout")
+	e.Now = e.Now.Add(time.Minute)
+	e.Progress()
+
+	obs := e.Observe()
+
+	assert.Equal(t, contract.Unknown, obs.State, "the observe once the rollout Job refused the release")
+	assert.Contains(t, obs.StatusDetail, refusal, "the observe names the setting, as the Job's failed pod left it")
+	for _, name := range nodeNames(e) {
+		assert.Equal(t, earlierRelease, e.Earlier[name], "%s keeps its configuration after the refusal", name)
+	}
+	assert.True(t, holds(e, noderollout.Path(e.Release())), "the refused rollout stays on main")
+	assert.False(t, obs.Redrive, "no subscribe is asked for, since a retry renders the same refusal")
+}
+
 func TestUpdate_ReadsNoNodeOnTheReleaseFromAReportThatOmitsANodeTheClusterRunsAndKeepsTheRollout(t *testing.T) {
 	e := standingCluster(t)
 	plant(e, noderollout.Path(e.Release()))

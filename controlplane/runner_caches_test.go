@@ -88,7 +88,8 @@ func TestPlane_ReadsTheClusterUnhealthyNamingEachPackageCacheArgoCDReadsOtherTha
 				assert.Empty(t, cause, "the cause, with %s: %s", tc.name, detail)
 				return
 			}
-			assert.Equal(t, controlplane.CauseRunnerCacheDown, cause)
+			assert.Equal(t, "a runner package cache does not serve, so its jobs fetch past it from the internet, and each npm install fails while it is the npm cache; the detail names the cache, so read its pod's log", cause,
+				"the platform's catalogue lists the cause word for word, and it holds whichever cache is down")
 			for _, want := range append(tc.down, h.reportReceived().Format(time.RFC3339)) {
 				assert.Contains(t, detail, want, "the detail names the cache, its health and the report that read it")
 			}

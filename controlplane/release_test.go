@@ -689,6 +689,40 @@ func TestPlane_AnUpgradeThatAddsRunnerServicesReplacesEachGatewayAndTheReplaceme
 	}
 }
 
+func (h *harness) forwardRules(gw controlplane.Server) string {
+	h.t.Helper()
+	return decodeCloudConfig(h.t, gatewayParts(h.t, h.cloud.UserData[gw.ID])[0]).file(h.t, "/etc/nftables.conf").Content
+}
+
+func TestPlane_AnUpgradeThatOpensPort80ReplacesEachGatewayWithOneForwardingItToEveryOutsideAddress(t *testing.T) {
+	h := newHarness(t, withReports)
+	h.built()
+	old := controlplane.IDs(h.byRole(controlplane.RoleGateway), controlplane.ServerID)
+	before := h.gatewayIn(controlplane.GatewayLocation).Labels[controlplane.KeyGatewayList]
+	require.Contains(t, h.forwardRules(h.gatewayIn(controlplane.GatewayLocation)), " tcp dport { 443 } accept\n")
+	h.plane.GatewayEgressPorts = []int{80, 443}
+
+	h.upgrade(func() {})
+
+	for _, loc := range controlplane.Locations {
+		gw := h.gatewayIn(loc)
+		assert.NotContains(t, old, gw.ID, "the gateway in %s was not replaced", loc)
+		assert.NotEqual(t, before, gw.Labels[controlplane.KeyGatewayList], "the replacement in %s's list label", loc)
+		assert.Contains(t, h.forwardRules(gw), "ip saddr 10.0.0.0/16 tcp dport { 443, 80 } accept\n", "the replacement in %s's forward rules", loc)
+	}
+}
+
+func TestPlane_AnUpgradeKeepsEachGatewayBuiltWithTheSameEgressPorts(t *testing.T) {
+	h := newHarness(t, withReports, func(h *harness) { h.plane.GatewayEgressPorts = []int{80, 443} })
+	h.built()
+	old := controlplane.IDs(h.byRole(controlplane.RoleGateway), controlplane.ServerID)
+	h.plane.GatewayEgressPorts = []int{443, 80}
+
+	h.upgrade(func() {})
+
+	assert.ElementsMatch(t, old, controlplane.IDs(h.byRole(controlplane.RoleGateway), controlplane.ServerID), "the gateways after an upgrade with the same ports")
+}
+
 func TestPlane_AnInstallRendersTheNodesForCIJobsOnlyForAPlaneWithRunners(t *testing.T) {
 	for _, tc := range []struct {
 		name string

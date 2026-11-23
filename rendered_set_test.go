@@ -24,6 +24,7 @@ import (
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
+	"github.com/mitstack-eu/talos-cluster-kit/nodeconfig"
 	"github.com/mitstack-eu/talos-cluster-kit/rollout"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 	"github.com/mitstack-eu/talos-cluster-kit/tools"
@@ -380,16 +381,25 @@ func grantsSecretRead(rules []any, secret string) bool {
 	return false
 }
 
-func TestManifests_NoRoleBindingLetsARunnerJobsServiceAccountReadTheRunnerToken(t *testing.T) {
+func TestManifests_NoRoleBindingLetsARunnerJobsServiceAccountReadTheRunnerTokenOrTheSweepsCopyOfIt(t *testing.T) {
 	job := runnerPod(t)
 	account := components.RunnersNamespace + "/" + testutil.Field(t, job.spec, "serviceAccountName").(string)
+	cases := map[string]struct{ namespace, secret, witness string }{
+		"the token ARC registers the scale set with, which ARC's controller reads": {components.RunnersNamespace, components.RunnerTokenSecret,
+			components.RunnersNamespace + "/arc-gha-rs-controller"},
+		"the copy the report's sweep removes dead runners with, which the report's namespace holds": {nodeconfig.TalosAPINamespace,
+			components.RunnerSweepTokenSecret, "argocd/argocd-application-controller"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			readers := secretReaders(t, tc.namespace, tc.secret)
 
-	readers := secretReaders(t, components.RunnersNamespace, components.RunnerTokenSecret)
-
-	assert.Contains(t, readers, components.RunnersNamespace+"/arc-gha-rs-controller", "ARC's controller reads the token to register the scale set, which shows the search finds a reader")
-	assert.NotContains(t, readers, account, "the account %s each job runs as", account)
-	for _, group := range []string{"group:system:serviceaccounts", "group:system:serviceaccounts:" + components.RunnersNamespace, "group:system:authenticated"} {
-		assert.NotContains(t, readers, group, "a group that holds the account %s each job runs as", account)
+			assert.Contains(t, readers, tc.witness, "a reader the cluster needs, which shows the search finds one")
+			assert.NotContains(t, readers, account, "the account %s each job runs as", account)
+			for _, group := range []string{"group:system:serviceaccounts", "group:system:serviceaccounts:" + components.RunnersNamespace, "group:system:authenticated"} {
+				assert.NotContains(t, readers, group, "a group that holds the account %s each job runs as", account)
+			}
+		})
 	}
 }
 

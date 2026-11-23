@@ -14,9 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -52,17 +50,18 @@ type gitHubRunner struct {
 	Busy          bool   `json:"busy"`
 }
 
-// runnerAPI fakes the org's runner API, refusing a removal of an id in refusals with that status, and records each call.
+// runnerAPI fakes the org's runner API, answering a list with listBody when it is set, refusing a removal of an id in
+// refusals with that status and the headers in limit, and recording each call.
 type runnerAPI struct {
 	mu                       sync.Mutex
 	groups                   []map[string]any
 	groupsStatus, listStatus int
+	listBody                 []byte
 	runners                  []gitHubRunner
 	refusals                 map[int64]int
 	refusal                  string
+	limit                    http.Header
 	calls, bearers           []string
-	removing                 atomic.Int32
-	mostAtOnce               int32
 	url                      string
 }
 
@@ -81,6 +80,8 @@ func gitHubRunners(t *testing.T, runners ...gitHubRunner) *runnerAPI {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == runnerGroupsPath:
 			answer(w, api.groupsStatus, map[string]any{"total_count": len(api.groups), "runner_groups": api.groups})
+		case r.Method == http.MethodGet && inGroups && api.listBody != nil:
+			_, _ = w.Write(api.listBody)
 		case r.Method == http.MethodGet && inGroups && strings.HasSuffix(group, "/runners"):
 			id, _ := strconv.ParseInt(strings.TrimSuffix(group, "/runners"), 10, 64)
 			api.list(w, r, id)
@@ -132,16 +133,10 @@ func (api *runnerAPI) lists() []string { return api.callsTo("GET " + groupRunner
 
 func (api *runnerAPI) removals() []string { return api.callsTo(http.MethodDelete) }
 
-// remove holds each removal open long enough that a second one sent at the same time overlaps it.
 func (api *runnerAPI) remove(w http.ResponseWriter, r *http.Request) {
-	open := api.removing.Add(1)
-	defer api.removing.Add(-1)
-	api.mu.Lock()
-	api.mostAtOnce = max(api.mostAtOnce, open)
-	api.mu.Unlock()
-	time.Sleep(20 * time.Millisecond)
 	id, err := strconv.ParseInt(strings.TrimPrefix(r.URL.Path, runnersPath+"/"), 10, 64)
 	if status, refused := api.refusals[id]; err == nil && refused {
+		maps.Copy(w.Header(), api.limit)
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(map[string]string{"message": api.refusal})
 		return
@@ -229,7 +224,7 @@ func TestReport_RemovesARunnerOfItsScaleSetThatGitHubListsOfflineWithNoPodBehind
 			assert.Equal(t, []string{"GET " + runnerGroupsPath + "?per_page=100", "GET " + groupRunnersPath + "?per_page=100&page=1"}, api.callsTo(http.MethodGet),
 				"the sweep finds its runner group by name and reads only that group's runners")
 			want := map[string]any{"scaleSet": runnerScaleSet, "listed": float64(1), "removed": []any{}, "unremoved": []any{},
-				"deferred": float64(0), "unlisted": float64(0)}
+				"busy": []any{}, "deferred": float64(0), "unlisted": float64(0)}
 			if !strings.HasPrefix(tc.runner.Name, runnerScaleSet+"-7xk2p-runner-") || tc.runner.RunnerGroupID == otherGroupID {
 				want["listed"] = float64(0)
 			}
@@ -239,7 +234,7 @@ func TestReport_RemovesARunnerOfItsScaleSetThatGitHubListsOfflineWithNoPodBehind
 				removals = []string{fmt.Sprintf("DELETE %s/%d", runnersPath, tc.runner.ID)}
 			}
 			if tc.waits {
-				want["deferred"] = float64(1)
+				want["busy"], want["deferred"] = []any{tc.runner.Name}, float64(1)
 			}
 			assert.Equal(t, removals, api.removals(), "the removals the sweep asked GitHub for")
 			assert.Equal(t, want, sweptMember(t, posted))
@@ -262,7 +257,7 @@ func TestReport_ARemovalGitHubRefusesLeavesTheRunnerUnremovedNamingItWithGitHubs
 	assert.ElementsMatch(t, []string{"DELETE " + runnersPath + "/21", "DELETE " + runnersPath + "/22", "DELETE " + runnersPath + "/23"}, api.removals())
 	member := sweptMember(t, posted)
 	assert.ElementsMatch(t, []any{"mitstack-ci-7xk2p-runner-h5j6k", gone}, member["removed"], "a 404 means ARC removed it between the list and the removal")
-	assert.Equal(t, map[string]any{"scaleSet": runnerScaleSet, "listed": float64(3), "deferred": float64(0), "unlisted": float64(0),
+	assert.Equal(t, map[string]any{"scaleSet": runnerScaleSet, "listed": float64(3), "busy": []any{}, "deferred": float64(0), "unlisted": float64(0),
 		"removed": member["removed"], "unremoved": []any{map[string]any{"name": killedRunner, "id": float64(21), "status": float64(http.StatusForbidden),
 			"message": api.refusal[:256]}}}, member, "the refused runner by name, with GitHub's status and its message cut to 256 characters")
 }
@@ -272,11 +267,17 @@ func TestReport_RemovesNoRunnerAndNamesTheReadThatFailedWhenGitHubsListOrTheRunn
 		groupsStatus int
 		noGroup      bool
 		listStatus   int
+		listBody     []byte
+		env          []string
 		fakes        map[string]string
 		named        []string
 	}{
-		"GitHub refuses the leased token": {listStatus: http.StatusUnauthorized, fakes: withRunnerPods(), named: []string{"401", "Bad credentials"}},
-		"GitHub fails the list":           {listStatus: http.StatusBadGateway, fakes: withRunnerPods(), named: []string{"502"}},
+		"GitHub refuses the leased token":            {listStatus: http.StatusUnauthorized, fakes: withRunnerPods(), named: []string{"401", "Bad credentials"}},
+		"GitHub fails the list":                      {listStatus: http.StatusBadGateway, fakes: withRunnerPods(), named: []string{"502"}},
+		"GitHub answers the list with an empty body": {listBody: []byte{}, fakes: withRunnerPods(), named: []string{"200", "runners array"}},
+		"GitHub answers the list with runners that are not an array": {listBody: []byte(`{"total_count": 1, "runners": {}}`), fakes: withRunnerPods(),
+			named: []string{"200", "runners array"}},
+		"GitHub answers the list with no total_count": {listBody: []byte(`{"runners": []}`), fakes: withRunnerPods(), named: []string{"200", "total_count"}},
 		"GitHub refuses the list of runner groups": {groupsStatus: http.StatusForbidden, fakes: withRunnerPods(),
 			named: []string{"403", "runner groups"}},
 		"GitHub lists no runner group of the scale set's group name": {noGroup: true, fakes: withRunnerPods(),
@@ -287,17 +288,21 @@ func TestReport_RemovesNoRunnerAndNamesTheReadThatFailedWhenGitHubsListOrTheRunn
 		"the read of the runner pods and EphemeralRunners answers no list": {
 			fakes: map[string]string{"kubectl": kubectlAnswering(map[string]string{runnerHoldsRead: "echo 'not json'"})},
 			named: []string{"pods", "EphemeralRunners"}},
+		"the read of the runner pods and EphemeralRunners exits 0 and prints nothing": {
+			fakes: map[string]string{"kubectl": kubectlAnswering(map[string]string{runnerHoldsRead: "true"})}, named: []string{"pods", "EphemeralRunners"}},
+		"jq cannot pick the runners to remove": {env: []string{"RUNNER_SCALE_SET=mitstack-ci("}, fakes: withRunnerPods(), named: []string{"jq could not pick"}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			api := gitHubRunners(t, gitHubRunner{ID: 31, Name: killedRunner, Status: "offline"})
 			api.listStatus = cmp.Or(tc.listStatus, http.StatusOK)
 			api.groupsStatus = cmp.Or(tc.groupsStatus, http.StatusOK)
+			api.listBody = tc.listBody
 			if tc.noGroup {
 				api.groups = api.groups[:1]
 			}
 
-			_, posted, out, err := runReport(t, tc.fakes, append(sweeping(t, api), "REPORT_READ_SECONDS=2")...)
+			_, posted, out, err := runReport(t, tc.fakes, append(append(sweeping(t, api), "REPORT_READ_SECONDS=2"), tc.env...)...)
 
 			require.NoError(t, err, "a failed sweep is a reading of the report, which still posts: %s", out)
 			assert.Empty(t, api.removals(), "a sweep that cannot tell which runners ARC still holds removes none")
@@ -331,48 +336,61 @@ func TestReport_ReadsASweepThatStopsBeforeItFinishesAsUnreadAndSkipsItUntilTheFi
 	}
 }
 
-func TestReport_ReadsEveryPageOfItsRunnerGroupsRunnersAndRemovesAtMostTenRunnersARunOneAtATimeLeavingTheRestForTheNext(t *testing.T) {
-	var runners []gitHubRunner
-	for i := range 140 {
-		runners = append(runners, gitHubRunner{ID: int64(100 + i), Name: fmt.Sprintf("other-ci-abcde-runner-%05d", i), Status: "online"})
+func TestReport_ReadsPagesOfAHundredUntilOneHoldsFewerOrThreeAreReadAndCountsTheRunnersPastThemAsUnlisted(t *testing.T) {
+	cases := map[string]struct{ runners, pages, unlisted, removals int }{
+		"152 runners take two pages, and the dead runner last on the second is removed":               {152, 2, 0, 1},
+		"305 runners stop the sweep at three pages, so the dead runner fifth past them is never seen": {305, 3, 5, 0},
 	}
-	for i := range 12 {
-		runners = append(runners, gitHubRunner{ID: int64(500 + i), Name: fmt.Sprintf("mitstack-ci-abcde-runner-%05d", i), Status: "offline"})
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			runners := make([]gitHubRunner, tc.runners)
+			for i := range runners {
+				runners[i] = gitHubRunner{ID: int64(1000 + i), Name: fmt.Sprintf("other-ci-abcde-runner-%05d", i), Status: "online"}
+			}
+			runners[tc.runners-1] = gitHubRunner{ID: 999, Name: killedRunner, Status: "offline"}
+			api := gitHubRunners(t, runners...)
+
+			_, posted, out, err := runReport(t, withRunnerPods(), sweeping(t, api)...)
+
+			require.NoError(t, err, out)
+			lists := []string{}
+			for page := range tc.pages {
+				lists = append(lists, fmt.Sprintf("GET %s?per_page=100&page=%d", groupRunnersPath, page+1))
+			}
+			assert.Equal(t, lists, api.lists(), "one GET per page of 100, and never a fourth however many runners the group holds")
+			assert.Len(t, api.removals(), tc.removals)
+			assert.Equal(t, float64(tc.unlisted), sweptMember(t, posted)["unlisted"], "the report says how many runners the sweep did not read")
+		})
 	}
-	api := gitHubRunners(t, runners...)
-
-	_, posted, out, err := runReport(t, withRunnerPods(), sweeping(t, api)...)
-
-	require.NoError(t, err, out)
-	assert.Equal(t, []string{"GET " + groupRunnersPath + "?per_page=100&page=1", "GET " + groupRunnersPath + "?per_page=100&page=2"}, api.lists(),
-		"one GET per page of 100, until a page holds fewer")
-	assert.Len(t, api.removals(), 10, "at most ten removals a run")
-	assert.Equal(t, int32(1), api.mostAtOnce, "one removal at a time, as GitHub asks of a client")
-	member := sweptMember(t, posted)
-	assert.Equal(t, float64(12), member["listed"])
-	assert.Len(t, member["removed"], 10)
-	assert.Equal(t, float64(2), member["deferred"], "the two left wait for the next run")
-	assert.Equal(t, float64(0), member["unlisted"])
 }
 
-func TestReport_ReadsAtMostThreePagesAndCountsTheRunnersPastThemAsUnlisted(t *testing.T) {
-	var runners []gitHubRunner
-	for i := range 305 {
-		runners = append(runners, gitHubRunner{ID: int64(1000 + i), Name: fmt.Sprintf("other-ci-abcde-runner-%05d", i), Status: "online"})
+func TestReport_StopsRemovingOnceGitHubAnswersARemovalWithARateLimitAndLeavesTheRestForALaterRun(t *testing.T) {
+	cases := map[string]struct {
+		status int
+		limit  http.Header
+	}{
+		"a 429": {status: http.StatusTooManyRequests},
+		"a 403 with Retry-After, as GitHub's secondary limit answers":   {http.StatusForbidden, http.Header{"Retry-After": {"60"}}},
+		"a 403 with no request left, as GitHub's primary limit answers": {http.StatusForbidden, http.Header{"X-Ratelimit-Remaining": {"0"}}},
 	}
-	runners[304] = gitHubRunner{ID: 1304, Name: killedRunner, Status: "offline"}
-	api := gitHubRunners(t, runners...)
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			api := gitHubRunners(t, gitHubRunner{ID: 41, Name: killedRunner, Status: "offline"}, gitHubRunner{ID: 42, Name: startingRunner, Status: "offline"})
+			api.refusals[41], api.limit = tc.status, tc.limit
 
-	_, posted, out, err := runReport(t, withRunnerPods(), sweeping(t, api)...)
+			_, posted, out, err := runReport(t, withRunnerPods(), sweeping(t, api)...)
 
-	require.NoError(t, err, out)
-	assert.Len(t, api.lists(), 3, "the sweep's GitHub calls stay few however many runners the group holds")
-	assert.Empty(t, api.removals(), "a runner past the third page is never seen")
-	member := sweptMember(t, posted)
-	assert.Equal(t, float64(5), member["unlisted"], "the report says how many runners the sweep did not read")
+			require.NoError(t, err, out)
+			assert.Equal(t, []string{"DELETE " + runnersPath + "/41"}, api.removals(), "no removal after the limited one, so none is sent beside it either")
+			member := sweptMember(t, posted)
+			assert.Equal(t, []any{map[string]any{"name": killedRunner, "id": float64(41), "status": float64(tc.status), "message": forbiddenRefusal}},
+				member["unremoved"])
+			assert.Equal(t, float64(1), member["deferred"], "the runner never tried waits for a later run")
+		})
+	}
 }
 
-func TestReport_StartsEachRunsRemovalsWhereTheRunBeforeStoppedSoRunnersGitHubKeepsRefusingCannotStarveTheRest(t *testing.T) {
+func TestReport_AsksAtMostTenRemovalsARunStartingWhereTheRunBeforeStoppedSoRunnersGitHubKeepsRefusingCannotStarveTheRest(t *testing.T) {
 	var runners []gitHubRunner
 	for i := range 12 {
 		runners = append(runners, gitHubRunner{ID: int64(500 + i), Name: fmt.Sprintf("mitstack-ci-abcde-runner-%05d", i), Status: "offline"})

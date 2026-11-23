@@ -1,6 +1,6 @@
 package controlplane_test
 
-// The release a running cluster takes through its repository is the set its build applied, but what holds its keys.
+// The release a running cluster takes through its repository is the set its build applied, but what holds its keys and the database operators' zone spread.
 
 import (
 	"context"
@@ -172,6 +172,9 @@ func TestRelease_CarriesWhatTheBuildAppliedButTheHostingKeysTheEnrolmentTokenAnd
 					carriedAtBuild = append(carriedAtBuild, m)
 				}
 			}
+			spreadAtBuild, err := components.Set{Served: carriedAtBuild}.DatabaseOperatorsAcrossZones(controlplane.Locations)
+			require.NoError(t, err)
+			carriedAtBuild = spreadAtBuild.Served
 
 			release, err := plane.Release(h.read())
 
@@ -511,6 +514,22 @@ func TestRelease_SpreadsTheDatabaseOperatorsOnceTheCloudPoolGainsAWorkerInASecon
 		"the operator of a cluster whose workers sit in fsn1")
 	assert.Equal(t, spreadOver(t, components.Default(), "cloudnative-pg", "fsn1", "nbg1"), testutil.Manifest(t, "cloudnative-pg", inTwo.Components),
 		"the operator of the cluster once a worker in nbg1 joins")
+}
+
+func TestRelease_CountsNoZoneForACloudWorkerThatIsOff(t *testing.T) {
+	h := newHarness(t, appsOnWorkers)
+	h.built()
+	plane, err := h.plane.WithGatewayCA()
+	require.NoError(t, err)
+	workers := h.poolWorkers(2, "fsn1", "nbg1")
+	i := slices.IndexFunc(workers, func(s controlplane.Server) bool { return s.Location == "nbg1" })
+	require.GreaterOrEqual(t, i, 0, "the Cloud pool's workers %v hold one in nbg1", workers)
+	h.cloud.Servers[workers[i].ID].Status = controlplane.ServerOff
+
+	release := h.releaseOf(plane)
+
+	assert.Equal(t, testutil.Manifest(t, "cloudnative-pg", components.Default().Served), testutil.Manifest(t, "cloudnative-pg", release.Components),
+		"the operator of a cluster whose only worker outside fsn1 is off")
 }
 
 const (

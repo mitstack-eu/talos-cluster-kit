@@ -43,6 +43,7 @@ func (p Plane) runnerTokenManifests() ([]components.Manifest, error) {
 		"Namespace":         nodeconfig.TalosAPINamespace,
 		"RunnersNamespace":  components.RunnersNamespace,
 		"TokenSecret":       components.RunnerTokenSecret,
+		"SweepTokenSecret":  components.RunnerSweepTokenSecret,
 		"Image":             toolsImage(),
 		"Script":            clusterTokensScript,
 		"PlatformURL":       p.PlatformURL,

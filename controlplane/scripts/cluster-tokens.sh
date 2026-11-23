@@ -6,8 +6,9 @@
 # trades it, in one call, for the telemetry Collector's push token whenever
 # the one its Secret holds has 11 hours or fewer left; runner-lease trades it
 # for the runner scale set's GitHub token on every run, since each lives an
-# hour, and restarts the scale set's listener so it registers with the new
-# one. Each token goes into the Secret that uses it. A cluster whose
+# hour, restarts the scale set's listener so it registers with the new one,
+# and writes the same token for the node report's runner sweep. Each token
+# goes into the Secret that uses it. A cluster whose
 # REPOSITORY_CREDENTIAL is deploy-key reads its repository with a sealed
 # deploy key, so enrol writes no repository token.
 # Usage: PLATFORM_URL=<https origin> SUBSCRIPTION_ID=<id> REPO_URL=<url>
@@ -29,6 +30,7 @@ readonly kube_account=${KUBE_ACCOUNT_DIR:-/var/run/secrets/kubernetes.io/service
 readonly push_namespace=kube-system push_secret=mitstack-telemetry-token lease_expiry=mitstack.dev/lease-expires-at
 readonly renew_within=$((11 * 3600)) longest_lease=$((24 * 3600))
 readonly runners_namespace=mitstack-runners runner_secret=mitstack-runner-token longest_runner_lease=$((65 * 60))
+readonly sweep_secret=mitstack-runner-sweep-token
 readonly listener_selector=app.kubernetes.io%2Fcomponent%3Drunner-scale-set-listener
 
 work=$(mktemp -d)
@@ -236,7 +238,9 @@ lease() {
 }
 
 # runner_lease writes a new GitHub token into the scale set's Secret and deletes the listener's pods, which ARC's
-# controller rebuilds reading the new token, since a running listener keeps the token it started with.
+# controller rebuilds reading the new token, since a running listener keeps the token it started with. It writes the
+# token into the Secret the node report's runner sweep mounts last, so a refused write there leaves the runners
+# registering.
 runner_lease() {
   local status now
   now=$(date -u +%s)
@@ -245,6 +249,7 @@ runner_lease() {
   write_leased_token "$runners_namespace" "$runner_secret" github_token
   status=$(kube_call DELETE "/api/v1/namespaces/$runners_namespace/pods?labelSelector=$listener_selector")
   [ "$status" = 200 ] || fail "wrote the GitHub token but could not restart the listener in $runners_namespace: HTTP $status"
+  write_leased_token "$node_namespace" "$sweep_secret" github_token
   echo "cluster-tokens: leased a GitHub token for $LEASE_RESOURCE until $(jq -r .expiresAt "$work/answer")"
 }
 

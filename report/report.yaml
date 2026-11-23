@@ -219,6 +219,16 @@ spec:
                   value: {{ printf "%q" .EgressURL }}
                 - name: HOME
                   value: /tmp
+{{- if .Runners }}
+                - name: RUNNERS_ORGANIZATION
+                  value: {{ printf "%q" .Runners.Organization }}
+                - name: RUNNER_SCALE_SET
+                  value: {{ printf "%q" .Runners.ScaleSet }}
+                - name: RUNNER_TOKEN_FILE
+                  value: /var/run/mitstack-runner/github_token
+                - name: GITHUB_API_URL
+                  value: {{ printf "%q" .GitHubAPI }}
+{{- end }}
               securityContext:
                 allowPrivilegeEscalation: false
                 readOnlyRootFilesystem: true
@@ -236,6 +246,11 @@ spec:
                 - name: openbao-ca
                   mountPath: /var/run/openbao-ca
                   readOnly: true
+{{- if .Runners }}
+                - name: runner-token
+                  mountPath: /var/run/mitstack-runner
+                  readOnly: true
+{{- end }}
           volumes:
             - name: tmp
               emptyDir: {}
@@ -251,3 +266,11 @@ spec:
               configMap:
                 name: openbao-ca
                 optional: true
+{{- if .Runners }}
+            # The lease job fills the Secret within half an hour of the cluster's first boot, and the report runs before then.
+            - name: runner-token
+              secret:
+                secretName: {{ .RunnerTokenSecret }}
+                optional: true
+                defaultMode: 0440
+{{- end }}

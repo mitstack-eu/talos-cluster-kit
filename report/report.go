@@ -114,7 +114,12 @@ type Inputs struct {
 	Gateways []netip.Addr
 	// GatewayCA is the PEM certificate of the CA that signs every gateway's certificate, without its key.
 	GatewayCA []byte
+	// Runners, when set, has the report remove each runner of the scale set that GitHub lists offline with no pod.
+	Runners *components.RunnerInputs
 }
+
+// githubAPI is where the runner sweep lists and removes the org's runners.
+const githubAPI = "https://api.github.com"
 
 // egressURL is Let's Encrypt's ACME directory, which cert-manager reaches for every app's certificate, so a TLS
 // connection to it reads the egress the network's default route gives the nodes.
@@ -147,7 +152,7 @@ func Manifests(in Inputs) ([]byte, error) {
 	if err := in.validate(); err != nil {
 		return nil, err
 	}
-	report, err := tmpl.Execute(manifests, map[string]string{
+	report, err := tmpl.Execute(manifests, map[string]any{
 		"Namespace":          nodeconfig.TalosAPINamespace,
 		"Image":              in.ToolsImage,
 		"ReportURL":          in.URL,
@@ -162,6 +167,9 @@ func Manifests(in Inputs) ([]byte, error) {
 		"OpenBaoMembers":     openBaoMembers(),
 		"Gateways":           in.gateways(),
 		"EgressURL":          egressURL,
+		"Runners":            in.Runners,
+		"RunnerTokenSecret":  components.RunnerSweepTokenSecret,
+		"GitHubAPI":          githubAPI,
 	})
 	if err != nil {
 		return nil, err
@@ -243,6 +251,11 @@ func (in Inputs) validate() error {
 	}
 	if len(in.ProofScript) > ProofScriptLimit {
 		return fmt.Errorf("the proof script is %d bytes, over the %d a report takes", len(in.ProofScript), ProofScriptLimit)
+	}
+	if in.Runners != nil {
+		if err := in.Runners.Validate(); err != nil {
+			return fmt.Errorf("the report's runner sweep: %w", err)
+		}
 	}
 	if len(in.Gateways) == 0 {
 		return nil

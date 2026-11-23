@@ -37,6 +37,7 @@ type runnerSweep struct {
 	Listed    *int              `json:"listed"`
 	Unread    string            `json:"unread"`
 	Skipped   string            `json:"skipped"`
+	Removed   []string          `json:"removed"`
 	Unremoved []unremovedRunner `json:"unremoved"`
 	Busy      []string          `json:"busy"`
 	Unlisted  int               `json:"unlisted"`
@@ -90,7 +91,12 @@ func (k *Cluster) RunnersProblem(ctx context.Context, d contract.Desired) string
 		problems = append(problems, fmt.Sprintf("GitHub lists %d more runners in the runner group of the scale set %s than the sweep reads, so a dead runner among them stays listed",
 			sweep.Unlisted, sweep.ScaleSet))
 	}
-	if stuck := stuckRunners(*sweep, full, newest.ReceivedAt); len(stuck) > 0 {
+	// The sweep counts GitHub's 404 as removed, so a runner a later sweep removes again is one GitHub went on listing.
+	if again := namedEarlier(sweep.Removed, full, newest.ReceivedAt, 0, func(s runnerSweep) []string { return s.Removed }); len(again) > 0 {
+		problems = append(problems, fmt.Sprintf("GitHub still lists these offline runners of the scale set %s, though it answered an earlier sweep's removal of each with 204 or 404: %s",
+			sweep.ScaleSet, strings.Join(again, ", ")))
+	}
+	if stuck := namedEarlier(sweep.Busy, full, newest.ReceivedAt, stuckRunnerBound, func(s runnerSweep) []string { return s.Busy }); len(stuck) > 0 {
 		problems = append(problems, fmt.Sprintf("these offline runners of the scale set %s have read busy with no pod behind them for %d minutes or more, and the sweep removes no busy runner: %s",
 			sweep.ScaleSet, int(stuckRunnerBound/time.Minute), strings.Join(stuck, ", ")))
 	}
@@ -116,22 +122,22 @@ func sweepOf(r observe.NodeReport) (*runnerSweep, error) {
 	return body.Runners, err
 }
 
-// stuckRunners is each runner sweep reads busy that the sweep of a full report received stuckRunnerBound or more
-// before at also read busy.
-func stuckRunners(sweep runnerSweep, full []observe.NodeReport, at time.Time) []string {
-	var stuck []string
+// namedEarlier is each of names that list also finds in the sweep of a full report received before at, at least apart
+// earlier.
+func namedEarlier(names []string, full []observe.NodeReport, at time.Time, apart time.Duration, list func(runnerSweep) []string) []string {
+	var named []string
 	for _, r := range full {
 		older, err := sweepOf(r)
-		if err != nil || older == nil || r.ReceivedAt.After(at.Add(-stuckRunnerBound)) {
+		if err != nil || older == nil || !r.ReceivedAt.Before(at) || at.Sub(r.ReceivedAt) < apart {
 			continue
 		}
-		for _, name := range sweep.Busy {
-			if slices.Contains(older.Busy, name) && !slices.Contains(stuck, name) {
-				stuck = append(stuck, name)
+		for _, name := range names {
+			if slices.Contains(list(*older), name) && !slices.Contains(named, name) {
+				named = append(named, name)
 			}
 		}
 	}
-	return stuck
+	return named
 }
 
 func (s runnerSweep) refusals() string {

@@ -173,6 +173,7 @@ func TestRender_ForwardsTheEgressPortsToEveryOutsideAddressBesideHTTPSAndNamesTh
 		{"80 and 443 add port 80", []int{80, 443}, []string{"443", "80", "4317"}, "80"},
 		{"8080 joins 80 in ascending order", []int{443, 8080, 80}, []string{"443", "80", "8080", "4317"}, "80, 8080"},
 		{"a repeated port and the log port are forwarded once", []int{80, 4317, 80}, []string{"443", "80", "4317"}, "80, 4317"},
+		{"the lowest and highest ports are accepted", []int{65535, 1}, []string{"443", "1", "65535", "4317"}, "1, 65535"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			in := inputs(t)

@@ -723,6 +723,28 @@ func TestPlane_AnUpgradeKeepsEachGatewayBuiltWithTheSameEgressPorts(t *testing.T
 	assert.ElementsMatch(t, old, controlplane.IDs(h.byRole(controlplane.RoleGateway), controlplane.ServerID), "the gateways after an upgrade with the same ports")
 }
 
+func TestPlane_AnUpgradeWithNoEgressPortBeyondHTTPSKeepsEachGatewayLabelledWithTheListsDigest(t *testing.T) {
+	for name, ports := range map[string][]int{"unset": nil, "empty": {}, "443 alone": {443}} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, withReports)
+			h.built()
+			digest, err := h.plane.GatewayListDigest()
+			require.NoError(t, err)
+			for _, gw := range h.byRole(controlplane.RoleGateway) {
+				labels := maps.Clone(gw.Labels)
+				labels[controlplane.KeyGatewayList] = digest
+				require.NoError(t, h.cloud.SetServerLabels(context.Background(), gw.ID, labels))
+			}
+			old := controlplane.IDs(h.byRole(controlplane.RoleGateway), controlplane.ServerID)
+			h.plane.GatewayEgressPorts = ports
+
+			h.upgrade(func() {})
+
+			assert.ElementsMatch(t, old, controlplane.IDs(h.byRole(controlplane.RoleGateway), controlplane.ServerID), "the gateways after an upgrade with %v", ports)
+		})
+	}
+}
+
 func TestPlane_AnInstallRendersTheNodesForCIJobsOnlyForAPlaneWithRunners(t *testing.T) {
 	for _, tc := range []struct {
 		name string

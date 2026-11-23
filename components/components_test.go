@@ -193,6 +193,111 @@ func TestCoreDNS_RunsTalossDeploymentWithOneReplicaInEachLocationAndLeavesAClust
 	}
 }
 
+// databaseOperator is one Deployment the spread runs twice, with the update strategy it is replaced under.
+type databaseOperator struct {
+	manifest, deployment string
+	strategy             map[string]any
+}
+
+// The plugin keeps its chart's Recreate strategy, which its installation guide keeps so no two versions serve at once.
+var databaseOperators = []databaseOperator{
+	{"cloudnative-pg", "cloudnative-pg", map[string]any{"type": "RollingUpdate", "rollingUpdate": map[string]any{"maxSurge": 0, "maxUnavailable": 1}}},
+	{"plugin-barman-cloud", "plugin-barman-cloud", map[string]any{"type": "Recreate"}},
+}
+
+func TestDatabaseOperatorsAcrossZones_RunTwoReplicasInDistinctZonesUnderADisruptionBudgetOfOneAndLeaveOneZoneAsBuilt(t *testing.T) {
+	built := components.HostingServed()
+	for _, tc := range []struct {
+		name    string
+		zones   []string
+		spreads bool
+	}{
+		{"workers in three zones run two replicas of each, no two in one zone", []string{"fsn1", "nbg1", "hel1"}, true},
+		{"workers in two zones, one named twice, run two replicas of each, one in each zone", []string{"nbg1", "fsn1", "nbg1"}, true},
+		{"workers in one zone keep one replica of each and no disruption budget", []string{"hel1", "hel1"}, false},
+		{"a cluster that names no worker zone keeps the set as built", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			set, err := built.DatabaseOperatorsAcrossZones(tc.zones)
+
+			require.NoError(t, err)
+			if !tc.spreads {
+				assert.Equal(t, built, set, "the set of a cluster whose workers sit in %v", tc.zones)
+				return
+			}
+			for _, op := range databaseOperators {
+				assertSpread(t, op, testutil.Manifest(t, op.manifest, built.Served), testutil.Manifest(t, op.manifest, set.Served))
+			}
+		})
+	}
+}
+
+func assertSpread(t *testing.T, op databaseOperator, built, spread components.Manifest) {
+	t.Helper()
+	builtDocs, spreadDocs := testutil.Documents(t, built.Bytes), testutil.Documents(t, spread.Bytes)
+	before := testutil.Named(t, builtDocs, "Deployment", op.deployment)
+	after := testutil.Named(t, spreadDocs, "Deployment", op.deployment)
+	selector := testutil.Field(t, before, "spec", "selector")
+	affinity := testutil.Field(t, after, "spec", "template", "spec", "affinity")
+
+	assert.Equal(t, 2, testutil.Field(t, after, "spec", "replicas"), "the replicas of %s", op.deployment)
+	assert.Equal(t, []any{map[string]any{"labelSelector": selector, "topologyKey": "topology.kubernetes.io/zone"}},
+		testutil.Field(t, affinity, "podAntiAffinity", "requiredDuringSchedulingIgnoredDuringExecution"), "the zone rule of %s", op.deployment)
+	assert.Equal(t, withZoneLabel(t, testutil.Field(t, before, "spec", "template", "spec", "affinity", "nodeAffinity")), testutil.Field(t, affinity, "nodeAffinity"),
+		"the node rule of %s, which keeps it off burst members and off a node the labeller has not given a zone yet", op.deployment)
+	assert.Equal(t, op.strategy, testutil.Field(t, after, "spec", "strategy"), "the update strategy of %s", op.deployment)
+	budget := testutil.Named(t, spreadDocs, "PodDisruptionBudget", op.deployment)
+	assert.Equal(t, "cnpg-system", testutil.Field(t, budget, "metadata", "namespace"), "the namespace of %s's disruption budget", op.deployment)
+	assert.Equal(t, map[string]any{"maxUnavailable": 1, "selector": selector}, budget["spec"], "the disruption budget of %s", op.deployment)
+	assert.Equal(t, withoutDeployment(builtDocs, op.deployment), withoutDeployment(withoutKind(spreadDocs, "PodDisruptionBudget"), op.deployment),
+		"every other document of %s as built", op.manifest)
+}
+
+// withZoneLabel is nodeAffinity's one node term with a zone label required, since the scheduler skips a zone rule on a
+// node without one.
+func withZoneLabel(t *testing.T, nodeAffinity any) map[string]any {
+	t.Helper()
+	terms, ok := testutil.Field(t, nodeAffinity, "requiredDuringSchedulingIgnoredDuringExecution", "nodeSelectorTerms").([]any)
+	require.True(t, ok && len(terms) == 1, "the chart's node rule holds one term: %v", nodeAffinity)
+	expressions, ok := testutil.Field(t, terms[0], "matchExpressions").([]any)
+	require.True(t, ok, "the chart's node term matches expressions: %v", terms[0])
+	zoned := append(slices.Clone(expressions), map[string]any{"key": "topology.kubernetes.io/zone", "operator": "Exists"})
+	return map[string]any{"requiredDuringSchedulingIgnoredDuringExecution": map[string]any{
+		"nodeSelectorTerms": []any{map[string]any{"matchExpressions": zoned}}}}
+}
+
+func TestDatabaseOperatorsAcrossZones_RefusesASetThatLacksAnOperatorItMustSpread(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		set     components.Set
+		missing string
+	}{
+		{"the default set without its CloudNativePG operator", components.Default(), "cloudnative-pg"},
+		{"the hosting set without its CloudNativePG operator", components.HostingServed(), "cloudnative-pg"},
+		{"the hosting set, which serves cert-manager, without its Barman Cloud plugin", components.HostingServed(), "plugin-barman-cloud"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			set := tc.set
+			set.Served = slices.DeleteFunc(slices.Clone(set.Served), func(m components.Manifest) bool { return m.Name == tc.missing })
+
+			_, err := set.DatabaseOperatorsAcrossZones([]string{"fsn1", "nbg1"})
+
+			assert.ErrorContains(t, err, tc.missing, "the spread of %s over two zones", tc.name)
+		})
+	}
+}
+
+func withoutKind(docs []map[string]any, kind string) []map[string]any {
+	return slices.DeleteFunc(slices.Clone(docs), func(doc map[string]any) bool { return doc["kind"] == kind })
+}
+
+func withoutDeployment(docs []map[string]any, name string) []map[string]any {
+	return slices.DeleteFunc(slices.Clone(docs), func(doc map[string]any) bool {
+		meta, _ := doc["metadata"].(map[string]any)
+		return doc["kind"] == "Deployment" && meta["name"] == name
+	})
+}
+
 func manifestSums(set components.Set) []byte {
 	var out strings.Builder
 	for _, m := range set.Served {

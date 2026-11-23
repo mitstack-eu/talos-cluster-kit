@@ -1,6 +1,6 @@
 package controlplane_test
 
-// The release a running cluster takes through its repository is the set its build applied, but what holds its keys.
+// The release a running cluster takes through its repository is the set its build applied, but what holds its keys and the database operators' zone spread.
 
 import (
 	"context"
@@ -19,6 +19,7 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
 	"github.com/mitstack-eu/talos-cluster-kit/etcd"
 	"github.com/mitstack-eu/talos-cluster-kit/internal/redundanttest"
+	"github.com/mitstack-eu/talos-cluster-kit/pools"
 	"github.com/mitstack-eu/talos-cluster-kit/report"
 	"github.com/mitstack-eu/talos-cluster-kit/rollout"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
@@ -171,6 +172,9 @@ func TestRelease_CarriesWhatTheBuildAppliedButTheHostingKeysTheEnrolmentTokenAnd
 					carriedAtBuild = append(carriedAtBuild, m)
 				}
 			}
+			spreadAtBuild, err := components.Set{Served: carriedAtBuild}.DatabaseOperatorsAcrossZones(controlplane.Locations)
+			require.NoError(t, err)
+			carriedAtBuild = spreadAtBuild.Served
 
 			release, err := plane.Release(h.read())
 
@@ -439,6 +443,93 @@ func TestRelease_AClusterInFsn1Nbg1AndHel1RunsThreeCoreDNSReplicasWithASpreadTha
 	want, err := components.CoreDNS(controlplane.Locations)
 	require.NoError(t, err)
 	assert.Equal(t, want, []components.Manifest{testutil.Manifest(t, "coredns", release.Components)}, "the Deployment the golden coredns-3-locations.yaml pins")
+}
+
+// spreadOver is the manifest of set named name once its database operators are spread over zones.
+func spreadOver(t *testing.T, set components.Set, name string, zones ...string) components.Manifest {
+	t.Helper()
+	spread, err := set.DatabaseOperatorsAcrossZones(zones)
+	require.NoError(t, err)
+	return testutil.Manifest(t, name, spread.Served)
+}
+
+func TestRelease_SpreadsTheDatabaseOperatorsOverTheZonesOfTheNodesAPodWithoutATolerationRunsOn(t *testing.T) {
+	steadyAndBurst := func(h *harness) []controlplane.Server {
+		return h.grow(pools.CloudPool{ServerTypes: []string{controlplane.DefaultServerType}, Locations: []string{"fsn1", "nbg1"}, Min: 1, Max: 2})
+	}
+	for _, tc := range []struct {
+		name  string
+		opts  []func(*harness)
+		pool  func(h *harness) []controlplane.Server
+		set   components.Set
+		zones []string
+	}{
+		{"a hosting plane whose apps run on workers and whose Cloud pool sits in fsn1 and nbg1 runs both operators in those two",
+			[]func(*harness){hosting, appsOnWorkers}, func(h *harness) []controlplane.Server { return h.poolWorkers(2, "fsn1", "nbg1") },
+			components.HostingServed(), []string{"fsn1", "nbg1"}},
+		{"a plane whose apps run on workers in fsn1 alone keeps one replica, since its control-plane nodes are tainted",
+			[]func(*harness){appsOnWorkers}, func(h *harness) []controlplane.Server { return h.poolWorkers(1, "fsn1") },
+			components.Default(), nil},
+		{"a plane whose apps run on workers counts no zone that holds only a burst member of its Cloud pool",
+			[]func(*harness){appsOnWorkers}, steadyAndBurst, components.Default(), nil},
+		{"a plane whose apps run on its control-plane nodes spreads over their three locations",
+			nil, func(*harness) []controlplane.Server { return nil }, components.Default(), controlplane.Locations},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, tc.opts...)
+			h.built()
+			plane, err := h.plane.WithGatewayCA()
+			require.NoError(t, err)
+			workers := tc.pool(h)
+			locations := map[string]bool{}
+			for _, w := range workers {
+				locations[w.Location] = true
+			}
+			require.Len(t, locations, len(workers), "the Cloud pool's workers %v each sit in their own location", workers)
+
+			release := h.releaseOf(plane)
+
+			for _, m := range tc.set.Served {
+				if m.Name == "cloudnative-pg" || m.Name == "plugin-barman-cloud" {
+					assert.Equal(t, spreadOver(t, tc.set, m.Name, tc.zones...), testutil.Manifest(t, m.Name, release.Components),
+						"the %s manifest of a cluster whose pods may run in %v", m.Name, tc.zones)
+				}
+			}
+		})
+	}
+}
+
+func TestRelease_SpreadsTheDatabaseOperatorsOnceTheCloudPoolGainsAWorkerInASecondZone(t *testing.T) {
+	h := newHarness(t, appsOnWorkers)
+	h.built()
+	plane, err := h.plane.WithGatewayCA()
+	require.NoError(t, err)
+	h.poolWorkers(1, "fsn1")
+	inOne := h.releaseOf(plane)
+
+	h.poolWorkers(2, "fsn1", "nbg1")
+	inTwo := h.releaseOf(plane)
+
+	assert.Equal(t, testutil.Manifest(t, "cloudnative-pg", components.Default().Served), testutil.Manifest(t, "cloudnative-pg", inOne.Components),
+		"the operator of a cluster whose workers sit in fsn1")
+	assert.Equal(t, spreadOver(t, components.Default(), "cloudnative-pg", "fsn1", "nbg1"), testutil.Manifest(t, "cloudnative-pg", inTwo.Components),
+		"the operator of the cluster once a worker in nbg1 joins")
+}
+
+func TestRelease_CountsNoZoneForACloudWorkerThatIsOff(t *testing.T) {
+	h := newHarness(t, appsOnWorkers)
+	h.built()
+	plane, err := h.plane.WithGatewayCA()
+	require.NoError(t, err)
+	workers := h.poolWorkers(2, "fsn1", "nbg1")
+	i := slices.IndexFunc(workers, func(s controlplane.Server) bool { return s.Location == "nbg1" })
+	require.GreaterOrEqual(t, i, 0, "the Cloud pool's workers %v hold one in nbg1", workers)
+	h.cloud.Servers[workers[i].ID].Status = controlplane.ServerOff
+
+	release := h.releaseOf(plane)
+
+	assert.Equal(t, testutil.Manifest(t, "cloudnative-pg", components.Default().Served), testutil.Manifest(t, "cloudnative-pg", release.Components),
+		"the operator of a cluster whose only worker outside fsn1 is off")
 }
 
 const (

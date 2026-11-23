@@ -18,8 +18,8 @@ var ErrNoIngressAddress = errors.New("the release's Traefik has no ingress addre
 // Release is every manifest the build applies but those only an install's keys render and the cluster's own
 // Application, through which the carriage runs, with the credentials rendered without the enrolment token, Traefik
 // publishing the address st holds for the ingress load balancer and the labeller naming each Cloud pool worker st
-// holds, plus two the build cannot apply: the telemetry Collector of a plane that names a backend, and Talos's CoreDNS
-// spread over the plane's node locations.
+// holds, plus what the build cannot apply: the telemetry Collector of a plane that names a backend, Talos's CoreDNS
+// spread over the plane's node locations, and the database operators spread over the zones their pods may run in.
 func (p Plane) Release(st State) (rollout.Release, error) {
 	address, _ := p.repositoryAccess()
 	if address == "" {
@@ -34,6 +34,9 @@ func (p Plane) Release(st State) (rollout.Release, error) {
 		return rollout.Release{}, err
 	}
 	if set, err = publishingIngress(set, st); err != nil {
+		return rollout.Release{}, err
+	}
+	if set, err = set.DatabaseOperatorsAcrossZones(p.podZones(st.Servers[RoleCloudWorker])); err != nil {
 		return rollout.Release{}, err
 	}
 	own, _, err := p.ownComponents("", st.Servers[RoleCloudWorker])
@@ -53,6 +56,22 @@ func (p Plane) Release(st State) (rollout.Release, error) {
 		ToolsImage: toolsImage(),
 		RepoURL:    address,
 	}, nil
+}
+
+// podZones are the locations of the nodes a kit pod without a toleration may run on, the control-plane nodes unless
+// AppsOnWorkers taints them and each running Cloud pool worker but a burst member, since a zone counted without a node a
+// pod may use would leave the second replica Pending.
+func (p Plane) podZones(poolWorkers []Server) []string {
+	var zones []string
+	if !p.AppsOnWorkers {
+		zones = p.NodeLocations()
+	}
+	for _, worker := range poolWorkers {
+		if worker.Status == ServerRunning && worker.Labels[components.BurstLabel] != components.BurstValue {
+			zones = append(zones, worker.Location)
+		}
+	}
+	return zones
 }
 
 // The gateways serve the set without an address, since one tools image is built for every cluster.

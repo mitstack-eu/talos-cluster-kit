@@ -37,14 +37,25 @@ func sweepingCluster(reports []observe.NodeReport, err error) *robotcluster.Clus
 		NodeReports: func(context.Context, contract.Desired, string) ([]observe.NodeReport, error) { return reports, err }})
 }
 
+// failedReport is the unsigned report the node report posts when one of its reads fails, which names the read and
+// carries no runners member.
+func failedReport(t *testing.T, at time.Time) observe.NodeReport {
+	t.Helper()
+	data, err := json.Marshal(map[string]any{"subscriptionId": runnersSubscription, "reportedAt": at.Format(time.RFC3339),
+		"error": map[string]any{"read": "kubectl get nodes", "exitStatus": 3, "stderr": "error: the server is gone"}})
+	require.NoError(t, err)
+	return observe.NodeReport{ReceivedAt: at, Body: data}
+}
+
 func refused(name string, id, status int, message string) map[string]any {
 	return map[string]any{"name": name, "id": id, "status": status, "message": message}
 }
 
 func TestCluster_RunnersProblemNamesEachRunnerTheNewestReportsSweepCouldNotRemoveOrWhyItReadNone(t *testing.T) {
-	cleanSweep := map[string]any{"scaleSet": "mitstack-ci", "listed": 3, "removed": []any{"mitstack-ci-7xk2p-runner-q8w4z"}, "unremoved": []any{}, "deferred": 0}
-	refusedSweep := map[string]any{"scaleSet": "mitstack-ci", "listed": 2, "removed": []any{}, "deferred": 0, "unremoved": []any{
-		refused("mitstack-ci-7xk2p-runner-q8w4z", 21, 422, "Runner is still running a job"),
+	cleanSweep := map[string]any{"scaleSet": "mitstack-ci", "listed": 3, "removed": []any{"mitstack-ci-7xk2p-runner-q8w4z"}, "unremoved": []any{},
+		"deferred": 0, "unlisted": 0}
+	refusedSweep := map[string]any{"scaleSet": "mitstack-ci", "listed": 2, "removed": []any{}, "deferred": 0, "unlisted": 0, "unremoved": []any{
+		refused("mitstack-ci-7xk2p-runner-q8w4z", 21, 403, "Resource not accessible by integration"),
 		refused("mitstack-ci-7xk2p-runner-h5j6k", 22, 500, "Server Error")}}
 	cases := map[string]struct {
 		reports []observe.NodeReport
@@ -53,11 +64,16 @@ func TestCluster_RunnersProblemNamesEachRunnerTheNewestReportsSweepCouldNotRemov
 	}{
 		"a removal GitHub refuses reads unhealthy naming each runner with GitHub's status and message": {
 			[]observe.NodeReport{sweepReport(t, sweptAt, refusedSweep)},
-			nil, []string{"mitstack-ci-7xk2p-runner-q8w4z", "422", "Runner is still running a job", "mitstack-ci-7xk2p-runner-h5j6k", "500"}},
+			nil, []string{"mitstack-ci-7xk2p-runner-q8w4z", "403", "Resource not accessible by integration", "mitstack-ci-7xk2p-runner-h5j6k", "500"}},
 		"a sweep that removed every offline runner reads no problem": {
 			[]observe.NodeReport{sweepReport(t, sweptAt, cleanSweep)}, nil, nil},
 		"a later sweep that removed the runner GitHub refused before reads no problem": {
 			[]observe.NodeReport{sweepReport(t, sweptAt, refusedSweep), sweepReport(t, sweptAt.Add(5*time.Minute), cleanSweep)}, nil, nil},
+		"a later report whose other read failed carries no sweep, so the refusal before it still reads unhealthy": {
+			[]observe.NodeReport{sweepReport(t, sweptAt, refusedSweep), failedReport(t, sweptAt.Add(5*time.Minute))},
+			nil, []string{"mitstack-ci-7xk2p-runner-q8w4z", "403"}},
+		"a cluster whose only reports name a failed read reads no problem, since no sweep has reported": {
+			[]observe.NodeReport{failedReport(t, sweptAt)}, nil, nil},
 		"a sweep that could not read GitHub's runners or the runner pods reads unhealthy naming why": {
 			[]observe.NodeReport{sweepReport(t, sweptAt, map[string]any{"scaleSet": "mitstack-ci", "unread": "GitHub answered 401 to the runner list: Bad credentials"})},
 			nil, []string{"GitHub answered 401 to the runner list: Bad credentials"}},

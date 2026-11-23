@@ -1,0 +1,248 @@
+# The org's one runner scale set in ARC's dind mode, as the gha-runner-scale-set chart renders it for containerMode
+# dind. Each job's pod mounts emptyDir volumes alone and reaches no cluster token. ARC's controller refuses a scale set
+# whose version label differs from its own release.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mitstack-ci-runner
+  namespace: mitstack-runners
+  finalizers:
+    - actions.github.com/cleanup-protection
+automountServiceAccountToken: false
+---
+# ARC's controller creates each listener's Role and RoleBinding in this namespace, so it needs the chart's manager Role
+# here; the finalizers hold the Role, its binding and the job pods' account until ARC has cleaned up the scale set.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mitstack-ci-gha-rs-manager
+  namespace: mitstack-runners
+  labels:
+    app.kubernetes.io/name: mitstack-ci
+    app.kubernetes.io/instance: mitstack-ci
+    app.kubernetes.io/version: "0.15.1"
+    app.kubernetes.io/part-of: gha-rs
+    app.kubernetes.io/component: manager-role
+    actions.github.com/scale-set-name: mitstack-ci
+    actions.github.com/scale-set-namespace: mitstack-runners
+  finalizers:
+    - actions.github.com/cleanup-protection
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [create, delete, get]
+  - apiGroups: [""]
+    resources: [pods/status]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create, delete, get, list, patch, update]
+  - apiGroups: [""]
+    resources: [serviceaccounts]
+    verbs: [create, delete, get, list, patch, update]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [rolebindings]
+    verbs: [create, delete, get, patch, update]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [roles]
+    verbs: [create, delete, get, patch, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mitstack-ci-gha-rs-manager
+  namespace: mitstack-runners
+  labels:
+    app.kubernetes.io/name: mitstack-ci
+    app.kubernetes.io/instance: mitstack-ci
+    app.kubernetes.io/version: "0.15.1"
+    app.kubernetes.io/part-of: gha-rs
+    app.kubernetes.io/component: manager-role-binding
+    actions.github.com/scale-set-name: mitstack-ci
+    actions.github.com/scale-set-namespace: mitstack-runners
+  finalizers:
+    - actions.github.com/cleanup-protection
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mitstack-ci-gha-rs-manager
+subjects:
+  - kind: ServiceAccount
+    name: arc-gha-rs-controller
+    namespace: mitstack-runners
+---
+apiVersion: actions.github.com/v1alpha1
+kind: AutoscalingRunnerSet
+metadata:
+  name: mitstack-ci
+  namespace: mitstack-runners
+  labels:
+    app.kubernetes.io/component: autoscaling-runner-set
+    app.kubernetes.io/name: mitstack-ci
+    app.kubernetes.io/instance: mitstack-ci
+    app.kubernetes.io/version: "0.15.1"
+    app.kubernetes.io/part-of: gha-rs
+    actions.github.com/scale-set-name: mitstack-ci
+    actions.github.com/scale-set-namespace: mitstack-runners
+  annotations:
+    actions.github.com/cleanup-manager-role-name: mitstack-ci-gha-rs-manager
+    actions.github.com/cleanup-manager-role-binding: mitstack-ci-gha-rs-manager
+    actions.github.com/cleanup-no-permission-service-account-name: mitstack-ci-runner
+spec:
+  githubConfigUrl: "https://github.com/acme-org"
+  githubConfigSecret: mitstack-runner-token
+  runnerGroup: mitstack-shared
+  runnerScaleSetName: mitstack-ci
+  minRunners: 0
+  maxRunners: 4
+  listenerTemplate:
+    metadata:
+      labels:
+        mitstack.dev/app: mitstack-runners
+    # The listener holds the runner token, so it runs on the control plane, where no job's pod runs.
+    spec:
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: mitstack.dev/burst
+                    operator: DoesNotExist
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: listener
+          image: ghcr.io/actions/gha-runner-scale-set-controller:0.15.1@sha256:4b51a20db717b194e2f3fa96cfe2ddcb21602811f79053c75fd1a383517b9f90
+          resources:
+            requests:
+              cpu: 20m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+  template:
+    metadata:
+      labels:
+        mitstack.dev/app: mitstack-runners
+    # A job that escapes its pod reaches its node, so a job never runs on the control plane beside the runner token.
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: DoesNotExist
+      restartPolicy: Never
+      serviceAccountName: mitstack-ci-runner
+      automountServiceAccountToken: false
+      # Each job's pod runs in its own user namespace, so root inside it is an unprivileged user on its node.
+      hostUsers: false
+      # Each container's requests make a job that finds no room wait, so a Cloud pool that scales grows for it.
+      initContainers:
+        - name: init-dind-externals
+          image: ghcr.io/actions/actions-runner:2.338.2@sha256:6d0b2d80d80f143f77dcb676e50920100bbb547e39e883454d57f45ab8c31300
+          command: ["cp"]
+          args: ["-r", "/home/runner/externals/.", "/home/runner/tmpDir/"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+          volumeMounts:
+            - name: dind-externals
+              mountPath: /home/runner/tmpDir
+        - name: dind
+          image: docker.io/library/docker:29.10.0-dind@sha256:4bbc7223f81db790097c6dea42fb93e05b8fead4f0431fbe6ccaba6e8473201c
+          args:
+            - dockerd
+            - --host=unix:///var/run/docker.sock
+            - --group=$(DOCKER_GROUP_GID)
+          env:
+            - name: DOCKER_GROUP_GID
+              value: "123"
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: 250m
+              memory: 512Mi
+          securityContext:
+            # What Docker needs inside the pod's user namespace; docs/runner-services.md gives each setting's reason.
+            privileged: false
+            procMount: Unmasked
+            capabilities:
+              add: [SYS_ADMIN, NET_ADMIN, SYS_PTRACE]
+            seccompProfile:
+              type: Unconfined
+            appArmorProfile:
+              type: Unconfined
+          restartPolicy: Always
+          startupProbe:
+            exec:
+              command:
+                - docker
+                - info
+            initialDelaySeconds: 0
+            failureThreshold: 24
+            periodSeconds: 5
+          volumeMounts:
+            - name: work
+              mountPath: /home/runner/_work
+            - name: dind-sock
+              mountPath: /var/run
+            - name: dind-externals
+              mountPath: /home/runner/externals
+      containers:
+        - name: runner
+          image: ghcr.io/actions/actions-runner:2.338.2@sha256:6d0b2d80d80f143f77dcb676e50920100bbb547e39e883454d57f45ab8c31300
+          command:
+            - /home/runner/run.sh
+          env:
+            - name: DOCKER_HOST
+              value: unix:///var/run/docker.sock
+            - name: RUNNER_WAIT_FOR_DOCKER_IN_SECONDS
+              value: "120"
+          resources:
+            requests:
+              cpu: 1000m
+              memory: 1536Mi
+            limits:
+              cpu: 1000m
+              memory: 1536Mi
+          volumeMounts:
+            - name: work
+              mountPath: /home/runner/_work
+            - name: dind-sock
+              mountPath: /var/run
+      volumes:
+        - name: dind-sock
+          emptyDir: {}
+        - name: dind-externals
+          emptyDir: {}
+        - name: work
+          emptyDir: {}

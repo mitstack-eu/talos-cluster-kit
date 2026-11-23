@@ -123,6 +123,13 @@ func TestWithRunners_RunsEachJobInADindPodWithNoServiceAccountTokenAndOnlyEmptyD
 	assert.Equal(t, false, account["automountServiceAccountToken"], "a job reaches no cluster token")
 }
 
+func TestWithRunners_RunsEachJobInItsOwnUserNamespaceWithAnUnprivilegedDaemonWhileTheSwitchIsOnAndAsBeforeOnceItIsOff(t *testing.T) {
+	isolated := testutil.Manifest(t, "mitstack-runner-scale-set", runnerSet(t, func(in *components.RunnerInputs) { in.IsolateJobs = true }).Inline)
+
+	testutil.Golden(t, "testdata/golden/isolated-runner-scale-set.yaml", isolated.Bytes)
+	testutil.Golden(t, "testdata/golden/runner-manifests.txt", manifestSums(runnerSet(t)))
+}
+
 func TestWithRunners_ReservesEachJobContainersCPUAndMemoryAsItsLimitAndWholeCoresForTheRunnerSoTheJobPodIsGuaranteed(t *testing.T) {
 	containers := jobContainers(t, testutil.Field(t, scaleSetIn(t, runnerSet(t)), "spec", "template", "spec"))
 

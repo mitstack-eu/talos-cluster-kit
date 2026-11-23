@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane/cloudtest"
 	"github.com/mitstack-eu/talos-cluster-kit/nodeconfig"
@@ -61,6 +62,43 @@ func TestPlane_TheWorkerImageHoldsNoneOfTheClustersCAKeysAndItsUserDataFitsHetzn
 	assert.Equal(t, "worker", testutil.Field(t, testutil.Documents(t, []byte(config))[0], "machine", "type"), "the worker image's machine type")
 	for name, key := range keys {
 		assert.False(t, strings.Contains(config, key), "the worker image holds the control plane's %s", name)
+	}
+}
+
+func isolationKinds(docs []map[string]any) []any {
+	var kinds []any
+	for _, doc := range docs {
+		if doc["kind"] == "SysctlConfig" || doc["kind"] == "CRICustomizationConfig" {
+			kinds = append(kinds, doc["kind"])
+		}
+	}
+	return kinds
+}
+
+func TestPlane_AnInstallGivesTheWorkerImageEveryPoolMemberBootsTheJobIsolationDocumentsOnlyWhenItsRunnersIsolateJobs(t *testing.T) {
+	isolating := func(h *harness) {
+		h.plane.Runners = runnerInputs(func(in *components.RunnerInputs) { in.IsolateJobs = true })
+	}
+	for _, tc := range []struct {
+		name string
+		opts []func(*harness)
+		want []any
+	}{
+		{"runners that isolate each job", []func(*harness){isolating}, []any{"SysctlConfig", "CRICustomizationConfig"}},
+		{"runners with the switch unset", []func(*harness){runners}, nil},
+		{"no runners", nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, tc.opts...)
+
+			require.NoError(t, h.converge())
+
+			workerImage := decodeCloudConfig(t, h.cloud.SpecFor(t, controlplane.RoleWorkerBuilder).UserData).file(t, controlplane.BuilderConfigPath).Content
+			assert.Equal(t, tc.want, isolationKinds(testutil.Documents(t, []byte(workerImage))), "the worker image's isolation documents")
+			assert.Empty(t, isolationKinds(builderConfiguration(t, h)), "the control plane's isolation documents")
+			require.NotEmpty(t, h.installed, "the clusters the plane installed")
+			assert.Equal(t, tc.want != nil, h.installed[0].IsolatesJobs, "the cluster the install rendered")
+		})
 	}
 }
 

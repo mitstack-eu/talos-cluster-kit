@@ -820,6 +820,11 @@ func renderedNodes(t *testing.T) []renderedNode {
 			c.RunsCIJobs = true
 			return c
 		}},
+		{name: "a Cloud worker of a cluster that runs each CI job in its own user namespace", render: worker(nodeconfig.Node{}), cluster: func() nodeconfig.Cluster {
+			c := testutil.NewCluster(t)
+			c.RunsCIJobs, c.IsolatesJobs = true, true
+			return c
+		}},
 		{name: "a dedicated worker on a vSwitch with its own labels", render: worker(dedicated), cluster: func() nodeconfig.Cluster {
 			return testutil.NewCluster(t, testutil.WithProfile(nodeconfig.Metal), testutil.WithLocations(3))
 		}},
@@ -990,6 +995,9 @@ func TestRerender_RefusesARunningConfigurationItCannotReadBackWholeNamingWhatItC
 		{"a worker running the control plane's taint", edit(worker, "KubeNodeConfig", func(doc map[string]any) {
 			doc["taints"] = map[string]any{"node-role.kubernetes.io/control-plane": "NoSchedule"}
 		}), "worker"},
+		{"a containerd customization of a name this release does not render", withDocument(t, worker, map[string]any{
+			"apiVersion": "v1alpha1", "kind": "CRICustomizationConfig", "name": "enable-metrics", "content": "[plugins.\"io.containerd.server.v1.metrics\"]\n  address = \"0.0.0.0:11234\"\n",
+		}), "enable-metrics"},
 		{"no gateway roots, with registries that trust no CA", editDocuments(t, controlPlane, func(doc map[string]any) {
 			switch doc["kind"] {
 			case "TrustedRootsConfig":
@@ -1104,6 +1112,44 @@ func TestRerender_GivesARunningNodeRenderedBeforeTheStaticCPUManagerPolicyThisRe
 
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, kubeletSettings(t, got), "the kubelet's settings after the rerender")
+		})
+	}
+}
+
+// isolationDocuments are what a node holds for jobs that each run in their own user namespace: the user namespaces the
+// kernel allows, which Talos sets to none, and containerd's option that lets runc give a container a cgroup it may write.
+var isolationDocuments = []map[string]any{
+	{"apiVersion": "v1alpha1", "kind": "SysctlConfig", "params": map[string]any{"user.max_user_namespaces": "11255"}},
+	{"apiVersion": "v1alpha1", "kind": "CRICustomizationConfig", "name": "mitstack-job-isolation",
+		"content": "[plugins.\"io.containerd.cri.v1.runtime\".containerd.runtimes.runc]\n  cgroup_writable = true\n"},
+}
+
+func isolationDocumentsIn(t *testing.T, config []byte) []map[string]any {
+	t.Helper()
+	docs := testutil.Documents(t, config)
+	return slices.Concat(testutil.Kind(docs, "SysctlConfig"), testutil.Kind(docs, "CRICustomizationConfig"))
+}
+
+func TestRender_GivesEachWorkerOfAClusterThatIsolatesJobsTheUserNamespacesAndCgroupsItsJobsNeedAndNoOtherNode(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		isolates bool
+		render   func(nodeconfig.Cluster) ([]byte, error)
+		want     []map[string]any
+	}{
+		{"a worker of a cluster that isolates jobs, whose configuration steady and burst members alike boot", true, worker(nodeconfig.Node{}), isolationDocuments},
+		{"a control-plane node of a cluster that isolates jobs, where no job runs", true, controlPlane(nodeconfig.Node{}), nil},
+		{"a worker of a cluster whose jobs share their node's users", false, worker(nodeconfig.Node{}), nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cluster := testutil.NewCluster(t)
+			cluster.RunsCIJobs = true
+			cluster.IsolatesJobs = tc.isolates
+
+			got, err := tc.render(cluster)
+
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, isolationDocumentsIn(t, got), "the isolation documents of the node's configuration")
 		})
 	}
 }

@@ -1655,9 +1655,9 @@ of this table.
 | Field | Required | What it holds | Example |
 |---|---|---|---|
 | Repository | Yes | The image repository, written without a tag | `123456789012.dkr.ecr.eu-central-1.amazonaws.com/shop-api` |
-| Issuer | Yes | The address of the CI provider that issued the build's short-lived identity token, which the keyless signature's certificate names | `https://token.actions.githubusercontent.com` |
-| Subject | Yes | The build pipeline that token names | `https://github.com/acme/shop/.github/workflows/build.yml@refs/heads/main` |
-| Pull Secret | Only for a private registry | The Secret holding the registry's login, as `namespace/name` | `app-shop/ecr-pull` |
+| Issuer | Yes | The address of the CI provider that issued the build's short-lived identity token, which the keyless signature's certificate names. The certificate must name it exactly, since it is no pattern | `https://token.actions.githubusercontent.com` |
+| Subject | Yes | The build pipeline that token names, matched exactly as the issuer is | `https://github.com/acme/shop/.github/workflows/build.yml@refs/heads/main` |
+| Pull Secret | Only for a private registry | A Secret in the cluster holding the registry's login, as `namespace/name`, which [the section on private registries](#how-kyverno-reads-a-private-registry) describes | `app-shop/ecr-pull` |
 
 A list of two entries, the first for a public repository on GitHub's registry
 and the second for a private one in Amazon Elastic Container Registry (ECR),
@@ -1667,12 +1667,14 @@ is this one line.
 ghcr.io/acme/shop-web|https://token.actions.githubusercontent.com|https://github.com/acme/shop/.github/workflows/build.yml@refs/heads/main,123456789012.dkr.ecr.eu-central-1.amazonaws.com/shop-api|https://token.actions.githubusercontent.com|https://github.com/acme/shop/.github/workflows/build.yml@refs/heads/main|app-shop/ecr-pull
 ```
 
-An empty `signers` param, or a request with none, is an empty list.
+An empty `signers` param, or a request with none, is an empty list. Each
+request therefore names the whole list, not only the entries that changed.
 
 The module refuses a list the signature policy cannot hold before it changes
 anything. It refuses each list `components.SignaturePolicy` refuses, such as
 an entry missing a field, a repository named twice, or a private registry's
-entry with no pull Secret. It also refuses a pull Secret on a cluster that
+entry with no pull Secret, and the paragraph after the table of hosts below
+lists every limit it applies. It also refuses a pull Secret on a cluster that
 does not host the platform, which is a cluster whose request does not set the
 `hostsPlatform` param to `true`. Only a cluster that hosts the platform runs
 External Secrets, which copies each pull Secret into Kyverno's namespace, as
@@ -1683,17 +1685,21 @@ and why.
 
 mitstack also asks the module to read the cluster's state, a call the module
 names its observe. While the list stays refused, the observe reports the
-cluster's state to mitstack as unknown, with the same reason. Before mitstack sends an upgrade, it runs the upgrade's dry run,
-the module's `PlanReplacements`, which says what the upgrade would replace.
-The dry run refuses each list the module refuses, so mitstack shows the
-refusal before it sends the upgrade.
+cluster's state to mitstack as unknown, with the same reason.
+
+An upgrade is a request that changes the params of a cluster that already
+runs. Before mitstack sends one, it runs the upgrade's dry run, the module's
+`PlanReplacements`, which says what the upgrade would replace. The dry run
+refuses each list the module refuses, so mitstack shows the refusal before it
+sends the upgrade.
 
 An upgrade that changes the list puts the new signature policy in the
 cluster's next release, the set of files the module commits to the cluster
 repository for Argo CD to apply, as
 [How a running cluster takes a release's components](#how-a-running-cluster-takes-a-releases-components)
 explains. An upgrade whose `signers` param is empty takes the policy out of
-that release.
+that release, so the cluster then checks no signature, as with any empty
+list.
 
 Kyverno reads each signature from the registry that holds the image. It
 checks the signature's certificate against Sigstore's trust root, the keys

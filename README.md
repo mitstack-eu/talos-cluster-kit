@@ -1751,6 +1751,65 @@ list. An image outside the list passes on its digest alone, and so does every
 image once a repository leaves the list. An empty list renders no manifest, so
 such a cluster checks no signature and its Kyverno keeps the reach it had.
 
+The robot cluster module sets `Plane.Signers`, the signer list this section
+describes, from the request mitstack sends it. That module, in
+`operator/robotcluster/`, is the Go code that the block
+`hcloud-hrobot-talos-cluster` runs. A request names the cluster mitstack wants
+and carries its settings as params, which are string values by name. The list
+arrives in the `signers` param, one string in which a comma separates one
+entry from the next. Within an entry, `|` separates the fields, in the order
+of this table.
+
+| Field | Required | What it holds | Example |
+|---|---|---|---|
+| Repository | Yes | The image repository, written without a tag | `123456789012.dkr.ecr.eu-central-1.amazonaws.com/shop-api` |
+| Issuer | Yes | The address of the CI provider that issued the build's short-lived identity token, which the keyless signature's certificate names. The certificate must name it exactly, since the issuer is not a pattern | `https://token.actions.githubusercontent.com` |
+| Subject | Yes | The build pipeline that token names, matched exactly as the issuer is | `https://github.com/acme/shop/.github/workflows/build.yml@refs/heads/main` |
+| Pull Secret | Only for a private registry | A Secret in the cluster holding the registry's login, as `namespace/name`, which [the section on private registries](#how-kyverno-reads-a-private-registry) describes | `app-shop/ecr-pull` |
+
+A list of two entries, the first for a public repository on GitHub's registry
+and the second for a private one in Amazon Elastic Container Registry (ECR),
+is this one line.
+
+```text
+ghcr.io/acme/shop-web|https://token.actions.githubusercontent.com|https://github.com/acme/shop/.github/workflows/build.yml@refs/heads/main,123456789012.dkr.ecr.eu-central-1.amazonaws.com/shop-api|https://token.actions.githubusercontent.com|https://github.com/acme/shop/.github/workflows/build.yml@refs/heads/main|app-shop/ecr-pull
+```
+
+An empty `signers` param, or a request that carries no `signers` param, is an
+empty list. Each
+request therefore names the whole list, not only the entries that changed.
+
+The module refuses a list the signature policy cannot hold before it changes
+anything. It refuses each list `components.SignaturePolicy` refuses, such as
+an entry missing a field, a repository named twice, or a private registry's
+entry with no pull Secret, and the paragraph before the table of hosts below
+lists every limit it applies. It also refuses a pull Secret on a cluster that
+does not host the platform. A cluster hosts the platform when its request sets
+the `hostsPlatform` param to `true`. Only a cluster that hosts the platform runs
+External Secrets, which copies each pull Secret into Kyverno's namespace, as
+[the section on private registries](#how-kyverno-reads-a-private-registry)
+explains. The refusal reaches mitstack with the class `invalid-param`, which
+marks a param the block cannot act on, and its reason says which entry fails
+and why.
+
+mitstack also asks the module to read the cluster's state, a call the module
+names its observe. While the list stays refused, the observe reports the
+cluster's state to mitstack as unknown, with the same reason.
+
+An upgrade is a request that changes the params of a cluster that already
+runs. Before mitstack sends one, it runs the upgrade's dry run, the module's
+`PlanReplacements`, which says what the upgrade would replace. The dry run
+refuses each list the module refuses, so mitstack shows the refusal before it
+sends the upgrade.
+
+An upgrade that changes the list puts the new signature policy in the
+cluster's next release, the set of files the module commits to the cluster
+repository for Argo CD to apply, as
+[How a running cluster takes a release's components](#how-a-running-cluster-takes-a-releases-components)
+explains. An upgrade whose `signers` param is empty takes the policy out of
+that release, so the cluster then checks no signature, as with any empty
+list.
+
 Kyverno reads each signature from the registry that holds the image. It
 checks the signature's certificate against Sigstore's trust root, the keys
 Sigstore publishes at `tuf-repo-cdn.sigstore.dev`. Sigstore records every

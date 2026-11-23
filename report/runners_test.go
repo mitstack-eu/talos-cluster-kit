@@ -1,6 +1,7 @@
 package report_test
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -8,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -20,52 +22,74 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
+	"github.com/mitstack-eu/talos-cluster-kit/nodeconfig"
 	"github.com/mitstack-eu/talos-cluster-kit/report"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 )
 
 const (
 	runnerOrg        = "acme-org"
+	runnerGroup      = "acme-ci-runners"
+	runnerGroupID    = 7
+	otherGroupID     = 9
 	runnerScaleSet   = "mitstack-ci"
 	runnerToken      = "ghs_leasedRunnerToken0123456789"
-	runnerHoldsRead  = "get pods,ephemeralrunners.actions.github.com -n mitstack-runners -o json"
-	runnersListPath  = "/orgs/" + runnerOrg + "/actions/runners"
+	runnerHoldsRead  = "get pods,ephemeralrunners.actions.github.com -n " + components.RunnersNamespace + " -o json"
+	runnersPath      = "/orgs/" + runnerOrg + "/actions/runners"
+	runnerGroupsPath = "/orgs/" + runnerOrg + "/actions/runner-groups"
+	groupRunnersPath = runnerGroupsPath + "/7/runners"
 	forbiddenRefusal = "Resource not accessible by integration"
 )
 
-// gitHubRunner is one self-hosted runner as GitHub's runner list answers it.
+// gitHubRunner is one self-hosted runner as GitHub's runner list answers it, in the scale set's runner group unless
+// RunnerGroupID names another.
 type gitHubRunner struct {
-	ID     int64  `json:"id"`
-	Name   string `json:"name"`
-	Status string `json:"status"`
-	Busy   bool   `json:"busy"`
+	ID            int64  `json:"id"`
+	RunnerGroupID int64  `json:"runner_group_id"`
+	Name          string `json:"name"`
+	Status        string `json:"status"`
+	Busy          bool   `json:"busy"`
 }
 
-// runnerAPI fakes GitHub's runner list and removal for the org, answering a removal of an id in refusals with that
-// status and refusal as GitHub's message, and recording each call with its bearer and the most removals open at once.
+// runnerAPI fakes GitHub's runner groups, each group's runner list and the removal of a runner for the org, answering
+// a removal of an id in refusals with that status and refusal as GitHub's message, and recording each call with its
+// bearer and the most removals open at once.
 type runnerAPI struct {
-	mu         sync.Mutex
-	runners    []gitHubRunner
-	listStatus int
-	refusals   map[int64]int
-	refusal    string
-	calls      []string
-	bearers    []string
-	removing   atomic.Int32
-	mostAtOnce int32
-	url        string
+	mu           sync.Mutex
+	groups       []map[string]any
+	groupsStatus int
+	runners      []gitHubRunner
+	listStatus   int
+	refusals     map[int64]int
+	refusal      string
+	calls        []string
+	bearers      []string
+	removing     atomic.Int32
+	mostAtOnce   int32
+	url          string
 }
 
 func gitHubRunners(t *testing.T, runners ...gitHubRunner) *runnerAPI {
 	t.Helper()
-	api := &runnerAPI{runners: runners, listStatus: http.StatusOK, refusals: map[int64]int{}, refusal: forbiddenRefusal}
+	for i := range runners {
+		if runners[i].RunnerGroupID == 0 {
+			runners[i].RunnerGroupID = runnerGroupID
+		}
+	}
+	api := &runnerAPI{runners: runners, listStatus: http.StatusOK, groupsStatus: http.StatusOK, refusals: map[int64]int{},
+		refusal: forbiddenRefusal, groups: []map[string]any{{"id": 1, "name": "Default"}, {"id": runnerGroupID, "name": runnerGroup},
+			{"id": otherGroupID, "name": "another-cluster"}}}
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		api.record(r)
 		w.Header().Set("Content-Type", "application/json")
+		group, inGroups := strings.CutPrefix(r.URL.Path, runnerGroupsPath+"/")
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == runnersListPath:
-			api.list(w, r)
-		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, runnersListPath+"/"):
+		case r.Method == http.MethodGet && r.URL.Path == runnerGroupsPath:
+			api.listGroups(w)
+		case r.Method == http.MethodGet && inGroups && strings.HasSuffix(group, "/runners"):
+			id, _ := strconv.ParseInt(strings.TrimSuffix(group, "/runners"), 10, 64)
+			api.list(w, r, id)
+		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, runnersPath+"/"):
 			api.remove(w, r)
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -84,16 +108,33 @@ func (api *runnerAPI) record(r *http.Request) {
 	api.bearers = append(api.bearers, r.Header.Get("Authorization"))
 }
 
-func (api *runnerAPI) list(w http.ResponseWriter, r *http.Request) {
+func (api *runnerAPI) listGroups(w http.ResponseWriter) {
+	if api.groupsStatus != http.StatusOK {
+		w.WriteHeader(api.groupsStatus)
+		_ = json.NewEncoder(w).Encode(map[string]string{"message": "Bad credentials"})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"total_count": len(api.groups), "runner_groups": api.groups})
+}
+
+func (api *runnerAPI) list(w http.ResponseWriter, r *http.Request, group int64) {
 	if api.listStatus != http.StatusOK {
 		w.WriteHeader(api.listStatus)
 		_ = json.NewEncoder(w).Encode(map[string]string{"message": "Bad credentials"})
 		return
 	}
+	inGroup := slices.DeleteFunc(slices.Clone(api.runners), func(runner gitHubRunner) bool { return runner.RunnerGroupID != group })
 	perPage, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	from := min(max(page-1, 0)*perPage, len(api.runners))
-	_ = json.NewEncoder(w).Encode(map[string]any{"total_count": len(api.runners), "runners": api.runners[from:min(from+perPage, len(api.runners))]})
+	from := min(max(page-1, 0)*perPage, len(inGroup))
+	_ = json.NewEncoder(w).Encode(map[string]any{"total_count": len(inGroup), "runners": inGroup[from:min(from+perPage, len(inGroup))]})
+}
+
+// lists is each GET the sweep sent for a page of its runner group's runners.
+func (api *runnerAPI) lists() []string {
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	return slices.DeleteFunc(slices.Clone(api.calls), func(call string) bool { return !strings.HasPrefix(call, "GET "+groupRunnersPath) })
 }
 
 // remove holds each removal open long enough that a second one sent at the same time overlaps it.
@@ -104,7 +145,7 @@ func (api *runnerAPI) remove(w http.ResponseWriter, r *http.Request) {
 	api.mostAtOnce = max(api.mostAtOnce, open)
 	api.mu.Unlock()
 	time.Sleep(20 * time.Millisecond)
-	id, err := strconv.ParseInt(strings.TrimPrefix(r.URL.Path, runnersListPath+"/"), 10, 64)
+	id, err := strconv.ParseInt(strings.TrimPrefix(r.URL.Path, runnersPath+"/"), 10, 64)
 	if status, refused := api.refusals[id]; err == nil && refused {
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(map[string]string{"message": api.refusal})
@@ -124,8 +165,16 @@ func sweeping(t *testing.T, api *runnerAPI) []string {
 	t.Helper()
 	token := filepath.Join(t.TempDir(), "github_token")
 	require.NoError(t, os.WriteFile(token, []byte(runnerToken), 0o600))
-	return []string{"RUNNERS_ORGANIZATION=" + runnerOrg, "RUNNER_SCALE_SET=" + runnerScaleSet, "RUNNER_TOKEN_FILE=" + token,
-		"GITHUB_API_URL=" + api.url}
+	return []string{"RUNNERS_ORGANIZATION=" + runnerOrg, "RUNNER_GROUP=" + runnerGroup, "RUNNER_SCALE_SET=" + runnerScaleSet,
+		"RUNNERS_NAMESPACE=" + components.RunnersNamespace, "RUNNER_TOKEN_FILE=" + token, "GITHUB_API_URL=" + api.url}
+}
+
+// atRun answers date +%s as the start of the report run with that index, five minutes apart as the CronJob runs, and
+// passes every other date call to the system's date.
+func atRun(fakes map[string]string, run int) map[string]string {
+	fakes = maps.Clone(fakes)
+	fakes["date"] = fmt.Sprintf(`if [ "$*" = +%%s ]; then echo %d; else PATH=${PATH#*:} exec date "$@"; fi`, run*300)
+	return fakes
 }
 
 // withRunnerPods answers the runner namespace's read with a pod of each name and no EphemeralRunner.
@@ -187,6 +236,8 @@ func TestReport_RemovesARunnerOfItsScaleSetThatGitHubListsOfflineWithNoPodBehind
 			runner: gitHubRunner{ID: 18, Name: "other-ci-7xk2p-runner-q8w4z", Status: "offline"}},
 		"an offline runner named after the scale set but not as ARC names a runner is kept": {
 			runner: gitHubRunner{ID: 19, Name: runnerScaleSet + "-laptop", Status: "offline"}},
+		"an offline runner of a same-named scale set in another runner group, as another cluster registers, is kept unread": {
+			runner: gitHubRunner{ID: 20, RunnerGroupID: otherGroupID, Name: killedRunner, Status: "offline"}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -195,15 +246,18 @@ func TestReport_RemovesARunnerOfItsScaleSetThatGitHubListsOfflineWithNoPodBehind
 			_, posted, out, err := runReport(t, withRunnerHolds(tc.pods, tc.ephemeral), sweeping(t, api)...)
 
 			require.NoError(t, err, out)
+			gets := slices.DeleteFunc(slices.Clone(api.calls), func(call string) bool { return !strings.HasPrefix(call, http.MethodGet) })
+			assert.Equal(t, []string{"GET " + runnerGroupsPath + "?per_page=100", "GET " + groupRunnersPath + "?per_page=100&page=1"}, gets,
+				"the sweep finds its runner group by name and reads only that group's runners")
 			want := map[string]any{"scaleSet": runnerScaleSet, "listed": float64(1), "removed": []any{}, "unremoved": []any{},
 				"deferred": float64(0), "unlisted": float64(0)}
-			if !strings.HasPrefix(tc.runner.Name, runnerScaleSet+"-7xk2p-runner-") {
+			if !strings.HasPrefix(tc.runner.Name, runnerScaleSet+"-7xk2p-runner-") || tc.runner.RunnerGroupID == otherGroupID {
 				want["listed"] = float64(0)
 			}
 			removals := []string{}
 			if tc.removed {
 				want["removed"] = []any{tc.runner.Name}
-				removals = []string{fmt.Sprintf("DELETE %s/%d", runnersListPath, tc.runner.ID)}
+				removals = []string{fmt.Sprintf("DELETE %s/%d", runnersPath, tc.runner.ID)}
 			}
 			if tc.waits {
 				want["deferred"] = float64(1)
@@ -227,7 +281,7 @@ func TestReport_ARemovalGitHubRefusesLeavesTheRunnerUnremovedNamingItWithGitHubs
 	_, posted, out, err := runReport(t, withRunnerPods(), sweeping(t, api)...)
 
 	require.NoError(t, err, "a refused removal is a reading of the report, which still posts: %s", out)
-	assert.ElementsMatch(t, []string{"DELETE " + runnersListPath + "/21", "DELETE " + runnersListPath + "/22"}, api.removals())
+	assert.ElementsMatch(t, []string{"DELETE " + runnersPath + "/21", "DELETE " + runnersPath + "/22"}, api.removals())
 	assert.Equal(t, map[string]any{"scaleSet": runnerScaleSet, "listed": float64(2), "deferred": float64(0), "unlisted": float64(0),
 		"removed": []any{"mitstack-ci-7xk2p-runner-h5j6k"},
 		"unremoved": []any{map[string]any{"name": killedRunner, "id": float64(21), "status": float64(http.StatusForbidden),
@@ -242,7 +296,7 @@ func TestReport_CountsARunnerGitHubAnswersNotFoundForAsRemovedSinceGitHubNoLonge
 	_, posted, out, err := runReport(t, withRunnerPods(), sweeping(t, api)...)
 
 	require.NoError(t, err, out)
-	assert.Equal(t, []string{"DELETE " + runnersListPath + "/23"}, api.removals())
+	assert.Equal(t, []string{"DELETE " + runnersPath + "/23"}, api.removals())
 	member := sweptMember(t, posted)
 	assert.Equal(t, []any{killedRunner}, member["removed"], "ARC removed it between the list and the removal")
 	assert.Equal(t, []any{}, member["unremoved"])
@@ -250,23 +304,33 @@ func TestReport_CountsARunnerGitHubAnswersNotFoundForAsRemovedSinceGitHubNoLonge
 
 func TestReport_RemovesNoRunnerAndNamesTheReadThatFailedWhenGitHubsListOrTheRunnerNamespacesReadFails(t *testing.T) {
 	cases := map[string]struct {
-		listStatus int
-		fakes      map[string]string
-		named      []string
+		groupsStatus int
+		noGroup      bool
+		listStatus   int
+		fakes        map[string]string
+		named        []string
 	}{
-		"GitHub refuses the leased token": {http.StatusUnauthorized, withRunnerPods(), []string{"401", "Bad credentials"}},
-		"GitHub fails the list":           {http.StatusBadGateway, withRunnerPods(), []string{"502"}},
-		"the read of the runner pods and EphemeralRunners fails": {http.StatusOK,
-			map[string]string{"kubectl": kubectlAnswering(map[string]string{runnerHoldsRead: failedRead})},
-			[]string{"pods", "EphemeralRunners", "exit status 3", "the server is gone"}},
-		"the read of the runner pods and EphemeralRunners answers no list": {http.StatusOK,
-			map[string]string{"kubectl": kubectlAnswering(map[string]string{runnerHoldsRead: "echo 'not json'"})},
-			[]string{"pods", "EphemeralRunners"}},
+		"GitHub refuses the leased token": {listStatus: http.StatusUnauthorized, fakes: withRunnerPods(), named: []string{"401", "Bad credentials"}},
+		"GitHub fails the list":           {listStatus: http.StatusBadGateway, fakes: withRunnerPods(), named: []string{"502"}},
+		"GitHub refuses the list of runner groups": {groupsStatus: http.StatusForbidden, fakes: withRunnerPods(),
+			named: []string{"403", "runner groups"}},
+		"GitHub lists no runner group of the scale set's group name": {noGroup: true, fakes: withRunnerPods(),
+			named: []string{runnerGroup}},
+		"the read of the runner pods and EphemeralRunners fails": {
+			fakes: map[string]string{"kubectl": kubectlAnswering(map[string]string{runnerHoldsRead: failedRead})},
+			named: []string{"pods", "EphemeralRunners", "exit status 3", "the server is gone"}},
+		"the read of the runner pods and EphemeralRunners answers no list": {
+			fakes: map[string]string{"kubectl": kubectlAnswering(map[string]string{runnerHoldsRead: "echo 'not json'"})},
+			named: []string{"pods", "EphemeralRunners"}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			api := gitHubRunners(t, gitHubRunner{ID: 31, Name: killedRunner, Status: "offline"})
-			api.listStatus = tc.listStatus
+			api.listStatus = cmp.Or(tc.listStatus, http.StatusOK)
+			api.groupsStatus = cmp.Or(tc.groupsStatus, http.StatusOK)
+			if tc.noGroup {
+				api.groups = api.groups[:1]
+			}
 
 			_, posted, out, err := runReport(t, tc.fakes, append(sweeping(t, api), "REPORT_READ_SECONDS=2")...)
 
@@ -308,7 +372,7 @@ func TestReport_SkipsTheSweepWithoutAnyGitHubCallUntilTheFirstRunnerTokenIsLease
 	assert.Contains(t, member["skipped"], "leased", "the reason says no token is leased yet")
 }
 
-func TestReport_ReadsEveryPageOfTheOrgsRunnersAndRemovesAtMostTenRunnersARunOneAtATimeLeavingTheRestForTheNext(t *testing.T) {
+func TestReport_ReadsEveryPageOfItsRunnerGroupsRunnersAndRemovesAtMostTenRunnersARunOneAtATimeLeavingTheRestForTheNext(t *testing.T) {
 	var runners []gitHubRunner
 	for i := range 140 {
 		runners = append(runners, gitHubRunner{ID: int64(100 + i), Name: fmt.Sprintf("other-ci-abcde-runner-%05d", i), Status: "online"})
@@ -321,8 +385,7 @@ func TestReport_ReadsEveryPageOfTheOrgsRunnersAndRemovesAtMostTenRunnersARunOneA
 	_, posted, out, err := runReport(t, withRunnerPods(), sweeping(t, api)...)
 
 	require.NoError(t, err, out)
-	lists := slices.DeleteFunc(slices.Clone(api.calls), func(call string) bool { return !strings.HasPrefix(call, http.MethodGet) })
-	assert.Equal(t, []string{"GET " + runnersListPath + "?per_page=100&page=1", "GET " + runnersListPath + "?per_page=100&page=2"}, lists,
+	assert.Equal(t, []string{"GET " + groupRunnersPath + "?per_page=100&page=1", "GET " + groupRunnersPath + "?per_page=100&page=2"}, api.lists(),
 		"one GET per page of 100, until a page holds fewer")
 	assert.Len(t, api.removals(), 10, "at most ten removals a run")
 	assert.Equal(t, int32(1), api.mostAtOnce, "one removal at a time, as GitHub asks of a client")
@@ -344,11 +407,46 @@ func TestReport_ReadsAtMostThreePagesAndCountsTheRunnersPastThemAsUnlisted(t *te
 	_, posted, out, err := runReport(t, withRunnerPods(), sweeping(t, api)...)
 
 	require.NoError(t, err, out)
-	lists := slices.DeleteFunc(slices.Clone(api.calls), func(call string) bool { return !strings.HasPrefix(call, http.MethodGet) })
-	assert.Len(t, lists, 3, "the sweep's GitHub calls stay few however many runners the org registers")
+	assert.Len(t, api.lists(), 3, "the sweep's GitHub calls stay few however many runners the group holds")
 	assert.Empty(t, api.removals(), "a runner past the third page is never seen")
 	member := sweptMember(t, posted)
 	assert.Equal(t, float64(5), member["unlisted"], "the report says how many runners the sweep did not read")
+}
+
+func TestReport_StartsEachRunsRemovalsWhereTheRunBeforeStoppedSoRunnersGitHubKeepsRefusingCannotStarveTheRest(t *testing.T) {
+	var runners []gitHubRunner
+	for i := range 12 {
+		runners = append(runners, gitHubRunner{ID: int64(500 + i), Name: fmt.Sprintf("mitstack-ci-abcde-runner-%05d", i), Status: "offline"})
+	}
+	removal := func(id int) string { return fmt.Sprintf("DELETE %s/%d", runnersPath, id) }
+	cases := map[string]struct {
+		run      int
+		removals []string
+		removed  []any
+	}{
+		"the first run tries the first ten, which GitHub all refuses": {run: 0,
+			removals: []string{removal(500), removal(501), removal(502), removal(503), removal(504), removal(505), removal(506),
+				removal(507), removal(508), removal(509)}, removed: []any{}},
+		"the next run starts at the eleventh and wraps round, so the two left are removed": {run: 1,
+			removals: []string{removal(510), removal(511), removal(500), removal(501), removal(502), removal(503), removal(504),
+				removal(505), removal(506), removal(507)}, removed: []any{"mitstack-ci-abcde-runner-00010", "mitstack-ci-abcde-runner-00011"}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			api := gitHubRunners(t, slices.Clone(runners)...)
+			for id := range 10 {
+				api.refusals[int64(500+id)] = http.StatusForbidden
+			}
+
+			_, posted, out, err := runReport(t, atRun(withRunnerPods(), tc.run), sweeping(t, api)...)
+
+			require.NoError(t, err, out)
+			assert.Equal(t, tc.removals, api.removals(), "the removals in the order the sweep asked them")
+			member := sweptMember(t, posted)
+			assert.Equal(t, tc.removed, member["removed"])
+			assert.Equal(t, float64(2), member["deferred"], "two idle runners wait for a later run")
+		})
+	}
 }
 
 func TestReport_CarriesNoRunnersMemberAndCallsNoGitHubWithoutTheSweepConfigured(t *testing.T) {
@@ -360,7 +458,7 @@ func TestReport_CarriesNoRunnersMemberAndCallsNoGitHubWithoutTheSweepConfigured(
 
 func runnerReportInputs() report.Inputs {
 	in := inputs(reportURL)
-	in.Runners = &components.RunnerInputs{Organization: runnerOrg, Group: "mitstack-runners", ScaleSet: runnerScaleSet,
+	in.Runners = &components.RunnerInputs{Organization: runnerOrg, Group: runnerGroup, ScaleSet: runnerScaleSet,
 		RunnerImage: "ghcr.io/actions/actions-runner:2.338.2@sha256:6d0b2d80d80f143f77dcb676e50920100bbb547e39e883454d57f45ab8c31300",
 		DindImage:   "docker.io/library/docker:29.10.0-dind@sha256:4bbc7223f81db790097c6dea42fb93e05b8fead4f0431fbe6ccaba6e8473201c",
 		MaxRunners:  4, LeaseResource: "github-runner-token"}
@@ -376,7 +474,9 @@ func TestManifests_GivesTheReportTheRunnerSweepsSettingsAndItsTokenAsAnOptionalM
 
 	env := testutil.ContainerEnv(t, container)
 	assert.Equal(t, runnerOrg, env["RUNNERS_ORGANIZATION"])
+	assert.Equal(t, runnerGroup, env["RUNNER_GROUP"])
 	assert.Equal(t, runnerScaleSet, env["RUNNER_SCALE_SET"])
+	assert.Equal(t, components.RunnersNamespace, env["RUNNERS_NAMESPACE"], "the namespace ARC runs in, from its one owner")
 	assert.Equal(t, "https://api.github.com", env["GITHUB_API_URL"])
 	assert.Equal(t, "/var/run/mitstack-runner/github_token", env["RUNNER_TOKEN_FILE"])
 	assert.Contains(t, testutil.Field(t, container, "volumeMounts"), map[string]any{"name": "runner-token", "mountPath": "/var/run/mitstack-runner", "readOnly": true})
@@ -384,28 +484,36 @@ func TestManifests_GivesTheReportTheRunnerSweepsSettingsAndItsTokenAsAnOptionalM
 	assert.Contains(t, testutil.Field(t, pod, "volumes"), map[string]any{"name": "runner-token", "secret": map[string]any{
 		"secretName": components.RunnerSweepTokenSecret, "optional": true, "defaultMode": 0o440}},
 		"the Secret the lease job fills, optional so the report runs before the first lease")
-	for _, name := range []string{"RUNNERS_ORGANIZATION", "RUNNER_SCALE_SET", "GITHUB_API_URL", "RUNNER_TOKEN_FILE"} {
+	for _, name := range []string{"RUNNERS_ORGANIZATION", "RUNNER_GROUP", "RUNNER_SCALE_SET", "RUNNERS_NAMESPACE", "GITHUB_API_URL", "RUNNER_TOKEN_FILE"} {
 		assert.NotContains(t, testutil.ContainerEnv(t, without), name, "a report without runner inputs sweeps nothing")
 	}
 	assert.NotContains(t, fmt.Sprint(testutil.Field(t, without, "volumeMounts")), "runner-token")
 }
 
-func TestManifests_GrantsTheReportOnlyAListOfARCsEphemeralRunnersBeyondItsRightsWithoutRunnerInputs(t *testing.T) {
+func TestManifests_GrantsTheReportOnlyAListOfARCsEphemeralRunnersInTheRunnerNamespaceBeyondItsRightsWithoutRunnerInputs(t *testing.T) {
 	rendered, err := report.Manifests(runnerReportInputs())
 	require.NoError(t, err)
 	with, without := testutil.Documents(t, rendered), testutil.Documents(t, manifests(t, reportURL))
-	bindings := func(docs []map[string]any) []map[string]any {
-		return slices.Concat(testutil.Kind(docs, "Role"), testutil.Kind(docs, "ClusterRoleBinding"), testutil.Kind(docs, "RoleBinding"))
+	rbac := func(docs []map[string]any) []map[string]any {
+		return slices.Concat(testutil.Kind(docs, "ClusterRole"), testutil.Kind(docs, "ClusterRoleBinding"), testutil.Kind(docs, "Role"),
+			testutil.Kind(docs, "RoleBinding"))
 	}
-	rules := func(docs []map[string]any) []any {
-		return testutil.Field(t, testutil.Named(t, testutil.Kind(docs, "ClusterRole"), "ClusterRole", "mitstack-node-report"), "rules").([]any)
-	}
+	added := slices.DeleteFunc(rbac(with), func(doc map[string]any) bool {
+		return slices.ContainsFunc(rbac(without), func(other map[string]any) bool { return reflect.DeepEqual(doc, other) })
+	})
 
-	assert.Equal(t, bindings(without), bindings(with), "the sweep's token arrives as a mounted Secret, so the report gains no Role")
-	assert.Len(t, testutil.Kind(with, "ClusterRole"), len(testutil.Kind(without, "ClusterRole")))
-	assert.Equal(t, append(rules(without),
-		map[string]any{"apiGroups": []any{"actions.github.com"}, "resources": []any{"ephemeralrunners"}, "verbs": []any{"list"}}), rules(with),
-		"the one read the sweep adds, of the objects ARC holds for each runner, which carry no Secret data")
+	assert.Len(t, rbac(with), len(rbac(without))+2, "the sweep adds one Role and its binding, and changes no other right")
+	assert.Len(t, added, 2, "the ClusterRole and every other right render as they do without runner inputs")
+	role := testutil.Named(t, testutil.Kind(added, "Role"), "Role", "mitstack-node-report-runners")
+	assert.Equal(t, components.RunnersNamespace, testutil.Field(t, role, "metadata", "namespace"), "the one namespace the sweep reads")
+	assert.Equal(t, []any{map[string]any{"apiGroups": []any{"actions.github.com"}, "resources": []any{"ephemeralrunners"}, "verbs": []any{"list"}}},
+		testutil.Field(t, role, "rules"), "the objects ARC holds for each runner, which carry no Secret data")
+	binding := testutil.Named(t, testutil.Kind(added, "RoleBinding"), "RoleBinding", "mitstack-node-report-runners")
+	assert.Equal(t, components.RunnersNamespace, testutil.Field(t, binding, "metadata", "namespace"))
+	assert.Equal(t, map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": "mitstack-node-report-runners"},
+		testutil.Field(t, binding, "roleRef"))
+	assert.Equal(t, []any{map[string]any{"kind": "ServiceAccount", "name": "mitstack-node-report", "namespace": nodeconfig.TalosAPINamespace}},
+		testutil.Field(t, binding, "subjects"), "only the report's own service account")
 }
 
 func TestManifests_RefusesRunnerInputsNamingNoGitHubOrganisation(t *testing.T) {

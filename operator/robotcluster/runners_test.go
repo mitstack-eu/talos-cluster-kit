@@ -77,6 +77,14 @@ func TestCluster_RunnersProblemNamesEachRunnerTheNewestReportsSweepCouldNotRemov
 		"a sweep that could not read GitHub's runners or the runner pods reads unhealthy naming why": {
 			[]observe.NodeReport{sweepReport(t, sweptAt, map[string]any{"scaleSet": "mitstack-ci", "unread": "GitHub answered 401 to the runner list: Bad credentials"})},
 			nil, []string{"GitHub answered 401 to the runner list: Bad credentials"}},
+		"a sweep that read three pages while GitHub lists more runners reads unhealthy naming how many it left unread": {
+			[]observe.NodeReport{sweepReport(t, sweptAt, map[string]any{"scaleSet": "mitstack-ci", "listed": 0, "removed": []any{},
+				"unremoved": []any{}, "deferred": 0, "unlisted": 5})},
+			nil, []string{"5 more runners", "mitstack-ci"}},
+		"a sweep with a refusal and runners past its pages names both": {
+			[]observe.NodeReport{sweepReport(t, sweptAt, map[string]any{"scaleSet": "mitstack-ci", "listed": 2, "removed": []any{},
+				"deferred": 0, "unlisted": 7, "unremoved": []any{refused("mitstack-ci-7xk2p-runner-q8w4z", 21, 403, "Resource not accessible by integration")}})},
+			nil, []string{"mitstack-ci-7xk2p-runner-q8w4z", "403", "7 more runners"}},
 		"a sweep skipped before the first runner token is leased reads no problem": {
 			[]observe.NodeReport{sweepReport(t, sweptAt, map[string]any{"scaleSet": "mitstack-ci", "skipped": "no runner token is leased yet"})}, nil, nil},
 		"a report from a kit that sweeps nothing reads no problem": {

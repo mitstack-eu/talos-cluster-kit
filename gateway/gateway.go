@@ -278,9 +278,8 @@ func encodeDigest(sum []byte) string {
 // Digest names the list's images and manifests by their digests.
 func (l List) Digest() string { return l.digest }
 
-// Mark labels a gateway built from the list that forwards egressPorts, so the gateway is replaced only when the pinned
-// list or its ports beyond 443 change. With no port beyond 443 it is the list's digest, the label such a gateway
-// already carries.
+// Mark labels a gateway built from the list that forwards egressPorts: the list's digest while no port beyond 443 is
+// set, so a gateway built without the setting keeps its label, and a digest of both once one is.
 func (l List) Mark(egressPorts []int) string {
 	extra := beyondHTTPS(egressPorts)
 	if len(extra) == 0 {

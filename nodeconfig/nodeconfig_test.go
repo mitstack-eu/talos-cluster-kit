@@ -1059,14 +1059,12 @@ func ciWorkerSettings() map[string]any {
 	return settings
 }
 
-// withoutCPUManagerPolicy makes a node's kubelet settings those of a node with disk eviction and no CPU manager policy.
 func withoutCPUManagerPolicy(doc map[string]any) {
 	if settings, ok := doc["config"].(map[string]any); ok && doc["kind"] == "KubeletConfig" {
 		delete(settings, "cpuManagerPolicy")
 	}
 }
 
-// kubeletNodes are each role of a cluster that does and does not run CI jobs, and the kubelet settings this release renders for it.
 var kubeletNodes = []struct {
 	name   string
 	ciJobs bool

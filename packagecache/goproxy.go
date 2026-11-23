@@ -2,6 +2,7 @@ package packagecache
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -16,9 +17,9 @@ import (
 	"golang.org/x/mod/sumdb/dirhash"
 )
 
-// GoProxy serves the Go module proxy protocol in front of Upstream. It keeps a go.mod or a zip only once the checksum
-// database holds its hash, and passes the version list, a version's info and @latest through, since they change and
-// no hash covers them.
+// GoProxy serves the Go module proxy protocol in front of Upstream, keeping a go.mod or a zip only once the checksum
+// database holds its hash and passing the version list, a version's info and @latest through, since no hash covers
+// them.
 type GoProxy struct {
 	Upstream string
 	Sums     *ChecksumDB
@@ -78,7 +79,7 @@ func (p GoProxy) serveChecked(w http.ResponseWriter, r *http.Request, m module.V
 	}
 	entry, ok := p.Store.Open(key)
 	if !ok {
-		refuse(fmt.Errorf("the entry it stored is gone"))
+		refuse(errors.New("the entry it stored is gone"))
 		return
 	}
 	serveEntry(w, r, entry, goContentTypes[ext])

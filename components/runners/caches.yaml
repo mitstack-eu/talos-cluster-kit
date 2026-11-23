@@ -1,7 +1,4 @@
-# The runner services' shared package caches, which the jobs of every repository take from: a Go module cache, an npm
-# cache and a Docker Hub pull-through mirror. Each keeps its entries on an emptyDir of its own and sweeps them under a
-# size below the disk's limit, so the kubelet never evicts the pod for filling it. A burst member goes with the idle
-# window and takes its disks with it, so every cache refuses one.
+# A burst member goes with the idle window and takes its disks with it, so every cache refuses one.
 {{- define "pod" }}
       automountServiceAccountToken: false
       enableServiceLinks: false
@@ -32,7 +29,6 @@
 {{- end }}
 {{- range .Servers }}
 ---
-# The {{ .Kind }} cache keeps what it serves only once its digest matches, and passes through what no digest covers.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -93,9 +89,7 @@ spec:
             sizeLimit: {{ .Disk }}
 {{- end }}
 ---
-# The image cache mirrors Docker Hub for each job's Docker daemon. The registry drops what it pulled once the age limit
-# passes, and the sweep removes the least recently used blobs past the size limit. The registry keeps no blob
-# descriptor cache, which would name a blob the sweep removed as present.
+# The registry keeps no blob descriptor cache, which would name a blob the sweep removed as present.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -214,8 +208,7 @@ spec:
       protocol: TCP
 {{- end }}
 ---
-# A job's pod reaches each cache, and each cache answers job pods alone and reaches its own upstreams alone, beside the
-# API server, DNS and GitHub that mitstack-runners-flows gives every pod of the namespace.
+# Each cache also keeps the API server, DNS and GitHub that mitstack-runners-flows gives every pod of the namespace.
 apiVersion: cilium.io/v2
 kind: CiliumClusterwideNetworkPolicy
 metadata:

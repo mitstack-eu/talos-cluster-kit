@@ -19,8 +19,8 @@ import (
 	"strings"
 )
 
-// NPMProxy serves the npm registry protocol in front of Upstream. It keeps a tarball only once it matches the digest
-// its package's metadata names for it, and passes every other request through, since a publish changes the metadata.
+// NPMProxy serves the npm registry protocol in front of Upstream, keeping a tarball only once it matches the digest its
+// package's metadata names and passing every other request through, since a publish changes the metadata.
 type NPMProxy struct {
 	Upstream string
 	Store    *Store
@@ -98,7 +98,7 @@ func (p NPMProxy) serveChecked(w http.ResponseWriter, r *http.Request, name stri
 }
 
 // dist reads the package's metadata for the version whose tarball r asks for, answering w itself when the upstream
-// holds no such package.
+// does not answer 200.
 func (p NPMProxy) dist(w http.ResponseWriter, r *http.Request, name string) (npmDist, bool, error) {
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, strings.TrimSuffix(p.Upstream, "/")+"/"+strings.Replace(name, "/", "%2f", 1), nil)
 	if err != nil {

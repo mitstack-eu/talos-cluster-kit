@@ -21,8 +21,7 @@ type Store struct {
 }
 
 // NewStore keeps entries under root, which it creates, writing each to root's incoming directory until its check
-// passes, so a refused or half-written entry never sits beside the entries. It empties the incoming directory, since
-// what an earlier process left there was never checked.
+// passes and emptying that directory first, since what an earlier process left there was never checked.
 func NewStore(root string, now func() time.Time) (*Store, error) {
 	s := &Store{entries: filepath.Join(root, "entries"), incoming: filepath.Join(root, "incoming"), now: now}
 	if err := os.RemoveAll(s.incoming); err != nil {

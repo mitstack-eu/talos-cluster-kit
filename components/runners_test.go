@@ -46,6 +46,11 @@ func inSet(t *testing.T, set components.Set, name string) components.Manifest {
 	return testutil.Manifest(t, name, set.Served, set.Inline)
 }
 
+func scaleSetIn(t *testing.T, set components.Set) map[string]any {
+	t.Helper()
+	return testutil.Named(t, testutil.Documents(t, testutil.Manifest(t, "mitstack-runner-scale-set", set.Inline).Bytes), "AutoscalingRunnerSet", "mitstack-ci")
+}
+
 func jobContainers(t *testing.T, pod any) map[string]map[string]any {
 	t.Helper()
 	byName := map[string]map[string]any{}
@@ -70,7 +75,7 @@ func TestWithRunners_HoldsTheControllerTheRunnersNamespaceAndTheScaleSetTheInput
 
 	controller := testutil.Named(t, testutil.Documents(t, inSet(t, set, "gha-runner-scale-set-controller").Bytes), "Deployment", "arc-gha-rs-controller")
 	namespace := testutil.Named(t, testutil.Documents(t, inSet(t, set, "mitstack-runners").Bytes), "Namespace", components.RunnersNamespace)
-	scaleSet := testutil.Named(t, testutil.Documents(t, testutil.Manifest(t, "mitstack-runner-scale-set", set.Inline).Bytes), "AutoscalingRunnerSet", "mitstack-ci")
+	scaleSet := scaleSetIn(t, set)
 
 	containers := testutil.Field(t, controller, "spec", "template", "spec", "containers").([]any)
 	require.Len(t, containers, 1, "the controller's containers")
@@ -86,14 +91,12 @@ func TestWithRunners_HoldsTheControllerTheRunnersNamespaceAndTheScaleSetTheInput
 }
 
 func TestWithRunners_ReadsTheGitHubTokenFromTheLeasedSecretAndRendersNoKeyOrTokenValue(t *testing.T) {
-	scaleSet := testutil.Manifest(t, "mitstack-runner-scale-set", runnerSet(t).Inline)
+	set := runnerSet(t)
 
-	doc := testutil.Named(t, testutil.Documents(t, scaleSet.Bytes), "AutoscalingRunnerSet", "mitstack-ci")
-
-	assert.Equal(t, components.RunnerTokenSecret, testutil.Field(t, doc, "spec", "githubConfigSecret"), "the Secret the controller reads, named and never inlined")
+	assert.Equal(t, components.RunnerTokenSecret, testutil.Field(t, scaleSetIn(t, set), "spec", "githubConfigSecret"), "the Secret the controller reads, named and never inlined")
 	assert.Equal(t, "mitstack-runner-token", components.RunnerTokenSecret)
 	for _, secret := range []string{"PRIVATE KEY", "github_app_private_key", "ghp_", "github_pat_"} {
-		assert.NotContains(t, string(scaleSet.Bytes), secret, "the scale set holds no GitHub credential")
+		assert.NotContains(t, string(testutil.Manifest(t, "mitstack-runner-scale-set", set.Inline).Bytes), secret, "the scale set holds no GitHub credential")
 	}
 }
 
@@ -121,9 +124,7 @@ func TestWithRunners_RunsEachJobInADindPodWithNoServiceAccountTokenAndOnlyEmptyD
 }
 
 func TestWithRunners_ReservesEachJobContainersCPUAndMemoryAsItsLimitAndWholeCoresForTheRunnerSoTheJobPodIsGuaranteed(t *testing.T) {
-	scaleSet := testutil.Named(t, testutil.Documents(t, testutil.Manifest(t, "mitstack-runner-scale-set", runnerSet(t).Inline).Bytes), "AutoscalingRunnerSet", "mitstack-ci")
-
-	containers := jobContainers(t, testutil.Field(t, scaleSet, "spec", "template", "spec"))
+	containers := jobContainers(t, testutil.Field(t, scaleSetIn(t, runnerSet(t)), "spec", "template", "spec"))
 
 	require.ElementsMatch(t, []string{"init-dind-externals", "dind", "runner"}, slices.Collect(maps.Keys(containers)), "the job pod's containers")
 	for _, name := range slices.Sorted(maps.Keys(containers)) {
@@ -138,9 +139,7 @@ func TestWithRunners_ReservesEachJobContainersCPUAndMemoryAsItsLimitAndWholeCore
 }
 
 func TestWithRunners_KeepsTheListenerOffBurstMembersAndLabelsIt(t *testing.T) {
-	scaleSet := testutil.Named(t, testutil.Documents(t, testutil.Manifest(t, "mitstack-runner-scale-set", runnerSet(t).Inline).Bytes), "AutoscalingRunnerSet", "mitstack-ci")
-
-	listener := testutil.Field(t, scaleSet, "spec", "listenerTemplate")
+	listener := testutil.Field(t, scaleSetIn(t, runnerSet(t)), "spec", "listenerTemplate")
 
 	terms := testutil.Field(t, listener, "spec", "affinity", "nodeAffinity", "requiredDuringSchedulingIgnoredDuringExecution", "nodeSelectorTerms").([]any)
 	require.NotEmpty(t, terms, "the listener's node selector terms")

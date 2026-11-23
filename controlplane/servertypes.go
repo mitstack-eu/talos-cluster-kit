@@ -5,7 +5,23 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+
+	"github.com/siderolabs/talos/pkg/machinery/constants"
+	"k8s.io/apimachinery/pkg/api/resource"
+
+	"github.com/mitstack-eu/talos-cluster-kit/report"
 )
+
+// KubeletHardEvictionMemory is the kubelet's default memory.available hard eviction threshold in bytes, which a node's
+// allocatable memory leaves out.
+const KubeletHardEvictionMemory = 100 << 20
+
+// Offers is what a Talos worker of t offers pods by Hetzner's published size, after the system reservation Talos gives
+// the kubelet and the hard eviction threshold.
+func (t ServerType) Offers() report.Request {
+	cpu, memory := resource.MustParse(constants.KubeletSystemReservedCPU), resource.MustParse(constants.KubeletSystemReservedMemoryWorker)
+	return report.Request{MilliCPU: int64(t.Cores)*1000 - cpu.MilliValue(), Memory: int64(t.MemoryGB*(1<<30)) - memory.Value() - KubeletHardEvictionMemory}
+}
 
 // OrderableTypes picks the first of a list of server types Hetzner can order in a location, reading each location once.
 type OrderableTypes struct {

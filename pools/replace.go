@@ -49,11 +49,17 @@ type workerReplacement struct {
 	old     int64
 	asked   time.Time
 	removal bool
+	// serverType is the type of the worker a replacement replaces, empty in a record that names none.
+	serverType string
 }
 
 // record is the label value that holds r, which workerReplacePlan prefixes to give the plan its worker's removal labels name.
 func (r workerReplacement) record() string {
-	return strconv.FormatInt(r.old, 10) + "-" + strconv.FormatInt(r.asked.Unix(), 10)
+	record := strconv.FormatInt(r.old, 10) + "-" + strconv.FormatInt(r.asked.Unix(), 10)
+	if r.serverType != "" {
+		record += "-" + r.serverType
+	}
+	return record
 }
 
 func (r workerReplacement) plan() string {
@@ -153,7 +159,8 @@ func workerReplacements(network controlplane.Network) ([]workerReplacement, erro
 		if !replaces && !removes {
 			continue
 		}
-		id, unix, _ := strings.Cut(network.Labels[label], "-")
+		id, rest, _ := strings.Cut(network.Labels[label], "-")
+		unix, serverType, _ := strings.Cut(rest, "-")
 		old, idErr := strconv.ParseInt(id, 10, 64)
 		at, atErr := strconv.ParseInt(unix, 10, 64)
 		if idErr != nil || atErr != nil {
@@ -162,7 +169,7 @@ func workerReplacements(network controlplane.Network) ([]workerReplacement, erro
 		if removes {
 			key = removed
 		}
-		asked = append(asked, workerReplacement{key: key, old: old, asked: time.Unix(at, 0).UTC(), removal: removes})
+		asked = append(asked, workerReplacement{key: key, old: old, asked: time.Unix(at, 0).UTC(), removal: removes, serverType: serverType})
 	}
 	return asked, nil
 }
@@ -213,7 +220,7 @@ func ReplaceWorkers(pool CloudPool, keys []string) controlplane.Record {
 			if _, err := site.serverType(ctx, pool, worker.Location); err != nil {
 				return "", err
 			}
-			labels[KeyWorkerReplace+key] = workerReplacement{key: key, old: worker.ID, asked: now(plane)}.record()
+			labels[KeyWorkerReplace+key] = workerReplacement{key: key, old: worker.ID, asked: now(plane), serverType: worker.ServerType}.record()
 			named = append(named, key)
 		}
 		if len(named) == 0 {
@@ -775,12 +782,12 @@ func (x replacer) createSuccessor(ctx context.Context, held []string) (progress,
 		return progress{}, err
 	}
 	loc := x.r.location()
-	spec, err := site.specAt(ctx, x.plane, x.pool, loc, x.r.key)
+	spec, kept, err := x.successorSpec(ctx, site, loc)
 	if err != nil {
 		return progress{}, err
 	}
 	why := ""
-	if i := slices.Index(x.pool.ServerTypes, spec.ServerType); i > 0 {
+	if i := slices.Index(x.pool.ServerTypes, spec.ServerType); i > 0 && !kept {
 		why = fmt.Sprintf(", since Hetzner can order no %s there now whose disk holds the worker image's %g GB",
 			strings.Join(x.pool.ServerTypes[:i], " or "), site.image.DiskGB)
 	}
@@ -795,6 +802,23 @@ func (x replacer) createSuccessor(ctx context.Context, held []string) (progress,
 		x.notify(ctx, "took %s out of the cluster repository and created the successor of Cloud worker %s in %s as %s%s", path, x.r.key, loc, spec.ServerType, why)
 		return nil
 	})
+}
+
+// successorSpec boots the successor in loc on the type of the worker it replaces while the pool lists that type and
+// Hetzner can order it there with a disk holding the worker image, reporting it kept, and else on the pool's first
+// such type.
+func (x replacer) successorSpec(ctx context.Context, site *creation, loc string) (controlplane.ServerSpec, bool, error) {
+	if kept := x.r.serverType; slices.Contains(x.pool.ServerTypes, kept) {
+		offered, err := site.orderable.Offered(ctx, loc)
+		if err != nil {
+			return controlplane.ServerSpec{}, false, err
+		}
+		if controlplane.FirstFitting(offered, []string{kept}, site.image.DiskGB) != "" {
+			return site.spec(x.plane, kept, loc, x.r.key), true, nil
+		}
+	}
+	spec, err := site.specAt(ctx, x.plane, x.pool, loc, x.r.key)
+	return spec, false, err
 }
 
 // endStep takes the record off the network once a node report since the successor's creation reads its Node object

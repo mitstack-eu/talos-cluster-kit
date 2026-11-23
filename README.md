@@ -64,7 +64,7 @@ the order a block uses them.
 | `controlplane` | Builds and deletes a Talos control plane on Hetzner Cloud: a network, a firewall, a builder that makes the cluster's own snapshot, one or three nodes with a gateway beside each, and an API and an ingress load balancer. Three nodes run in `fsn1`, `nbg1` and `hel1`, and one node runs in `fsn1`. Each call reads the resources by their labels and takes the one change still missing, and [How a request reads the Cloud once](#how-a-request-reads-the-cloud-once) says how one request lists each kind once. A refusal is a `*Refusal` with a `Class` and a `Message`, which the block answers as its own framework's refusal | `Plane`, `Plane.NodeLocations`, `DefaultSize`, `KeySize`, `Plane.Read`, `ReadOncePerRequest`, `RequestReads`, `NewRequestReads`, `WithoutRequestReads`, `Plane.EnsureNetwork`, `Plane.SizeRefusal`, `Plane.NextStep`, `Plane.Problems`, `Plane.Unhealthy`, `Plane.Outputs`, `Plane.CopyIdentityStep`, `State.IngressAddresses`, `Plane.Release`, `ErrNoIngressAddress`, `Plane.GatewaysAwaitRelease`, `Plane.GatewaysServeRelease`, `Plane.Delete`, `Plane.Busy`, `Plane.Unsettled`, `NewAPI`, `Calls`, `Refusal`, `TopologyLabels`, `GatewayUpgradeBound`, `GatewayCertRenewBefore`, `KeyGatewayCertExpires` |
 | `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image carries and the gateway copies out of it, `tools/jq.env`, which pins the tools image's jq, and `tools/kube-bench-talos.yaml`, the settings kube-bench reads over its own on Talos. Its Dockerfile builds `cmd/machine-config` into the tools image. It names the tools image a release published and the directory in that image that holds the node report's, its outside probe's, the labeller's, the cluster tokens', the handover's and OpenBao's rollout's scripts, and where in that image each served manifest sits | `Env`, `Pin`, `Image`, `ScriptDir`, `ManifestPath` |
 | `redundant` | Carries a removal's redundant set, each member with its reading, to the guard the block passes, block-kit's `redundancy.Set.AllowRemoval`, which this module does not import. A set's `Minimum` is how many members it keeps serving: `Majority`, `AllButOne`, or `NoRedundancy`, which lets the one member of a set of one go | `Set`, `Guard`, `Held`, `Minimum` |
-| `scaling` | Decides from the node reports alone how a Cloud pool whose minimum is below its maximum follows its cluster's load, so only the block's operator, which holds the Hetzner token, changes the pool. [How a Cloud pool scales with the load](#how-a-cloud-pool-scales-with-the-load) gives the rules | `Decide`, `Decision`, `CauseAtMaximum` |
+| `scaling` | Decides from the node reports alone how a Cloud pool whose minimum is below its maximum follows its cluster's load, so only the block's operator, which holds the Hetzner token, changes the pool. [How a Cloud pool scales with the load](#how-a-cloud-pool-scales-with-the-load) gives the rules | `Decide`, `Decision`, `CauseAtMaximum`, `CauseNoTypeHolds` |
 | `testutil` | Holds the fixtures, fakes and decoders this module's tests and a block's tests share | `NewCluster`, `NewTools`, `Golden` |
 
 For example, this renders the configuration a Cloud cluster's image embeds,
@@ -541,12 +541,21 @@ From then on, the plane reads in three steps.
    write is any API method that changes the project, such as `CreateServers`
    or `SetServerLabels`. An API method that only lists or checks something,
    such as `ListServers` or `ServerStarted`, is no write. The wrapper sends
-   such a call to Hetzner each time and keeps nothing it returns. A list that
+   such a call to Hetzner each time and keeps nothing it returns, apart from
+   each location's server types, as described below. A list that
    a write overlapped is not kept either, since it may have run before the
    write took effect.
 
 Two `Plane.Read` calls that run at the same time in one request may each list,
 because neither waits on the other's calls to Hetzner.
+
+`AvailableServerTypes`, the server types Hetzner sells in a location, is the
+one list method the wrapper keeps. The first call for a location in a request
+lists, and every later one answers a copy of that list. A write keeps it,
+since what Hetzner sells does not follow the project's own writes. So a Cloud
+pool that weighs three waiting pods lists each location's types once. A
+context with no `RequestReads`, or one marked by `WithoutRequestReads`, lists
+the types on every call.
 
 A context without a `RequestReads`, or a plane whose API is not wrapped, makes
 all five lists on every `Plane.Read`. `ReadOncePerRequest` must be the
@@ -2268,7 +2277,7 @@ change `report/scripts/report.sh`.
 | `systemVolumes` | How each node's `STATE` and `EPHEMERAL` volumes are encrypted | `talosctl get volumestatus` |
 | `argocd` | Each Application's health, sync, `revision`, the `operation` of its last sync and its applied objects, each object with Argo CD's health of it, as [the section on the revision](#how-the-report-names-the-revision-each-application-was-compared-against) and [the section on object health](#how-the-report-shows-each-objects-health-and-each-containers-state) describe, under `routes` the answer each of 17 routes gives a caller with no session, and the `argocd` namespace's Services and Ingresses. The settings route's entry also says [whether any account can sign in with a password](#how-the-report-shows-whether-a-password-signs-in-to-argo-cd) | The Applications, `ARGOCD_URL` and the Ingress read |
 | `kubernetes.argocdPods` | Each pod in `argocd` with its containers' images | The pod read |
-| `pods` | Every pod's namespace, name, node or `null`, phase, `ownerKind`, the kind of its controller or `null`, `unschedulable`, whether the scheduler found no node to take it, and `containers`, each init and app container with its state and reason. An unschedulable pod also gives its `placement`: its `nodeSelector` and the `nodeSelectorTerms` of its required node affinity, each `null` when it sets none. The newest failed pod of each Job the kit renders also gives each container that exited non-zero its `message`, as [the section on a failed kit Job](#how-the-report-carries-the-reason-a-kit-job-failed) describes | `kubectl get pods -A`, and the Jobs of the workload read |
+| `pods` | Every pod's namespace, name, node or `null`, phase, `ownerKind`, the kind of its controller or `null`, `unschedulable`, whether the scheduler found no node to take it, and `containers`, each init and app container with its state and reason. An unschedulable pod also gives its `placement`: its `nodeSelector` and the `nodeSelectorTerms` of its required node affinity, each `null` when it sets none. It gives its `requests` too: each init container with its `restartPolicy` or `null`, and each app container, each with the `cpu` and `memory` its `resources.requests` name. The newest failed pod of each Job the kit renders also gives each container that exited non-zero its `message`, as [the section on a failed kit Job](#how-the-report-carries-the-reason-a-kit-job-failed) describes | `kubectl get pods -A`, and the Jobs of the workload read |
 | `images` | Each image reference a pod or the pod template of a Deployment, StatefulSet, DaemonSet, Job or CronJob names, once, as `image` with the `digest` it names or that a pod's status reports it runs by, and otherwise `null`. A failed read leaves `{exitStatus, stderr}` with `read` naming `pods` or `workloads`, in place of a partial list | The pod read and `kubectl get deployments,statefulsets,daemonsets,jobs,cronjobs -A` |
 | `cloudNativePG` | Each Cluster with its phase, instance counts and `currentPrimary`, and each Database and DatabaseRole with whether it applied. A Cluster also carries `continuousArchiving` and `lastBackup`, its conditions `ContinuousArchiving` and `LastBackupSucceeded`, each as `{status, reason, message}` with the message cut to 256 characters, or `null` while the Cluster holds no such condition. The report cuts no entry from this list: it holds every object the read returned, or the read's failure in the list's place | CloudNativePG's objects |
 | `cloudNativePGPlugins` | The name of each plugin CloudNativePG can find, sorted: the `cnpg.io/pluginName` label of each Service in `cnpg-system`. A cluster with no plugin carries an empty list | The read of claims, StorageClasses and Services |
@@ -4609,7 +4618,16 @@ lists with the subscription's labels and the role `cloud-worker`, and answers a
   `hel1` whose worker image holds 160 GB grows in `hel1` on `cx43` while `nbg1`
   sells only `cx33`, whose disk holds 80 GB. When no listed location sells such
   a type, the plan refuses with the class `no-server-type-available`, naming
-  each location, the image's disk and each type's disk. A server created
+  each location, the image's disk and each type's disk.
+- The block may pass `PlanCloud` the pods a scaling decision grows for, with
+  the room it measured, as `Decision.Waiting` and `Decision.Measured`. Each of
+  the first servers the plan creates is then for one of those pods, in turn.
+  It goes to the location holding the fewest members where one of the pool's
+  types on sale holds the pod, and takes the smallest such type there: the
+  fewest vCPUs, then the least memory, then the one listed first.
+  [How a server type holds a waiting pod](#how-a-server-type-holds-a-waiting-pod)
+  says what holds means. When no location has one, the plan refuses with the
+  class `no-server-type-available`, naming the pod. A server created
   once the pool already holds its minimum of steady members carries the burst
   label, as [Steady and burst members](#steady-and-burst-members) describes.
 - `Mark` lists the member whose removal begins, labelled with the time it
@@ -4676,8 +4694,9 @@ network's before the upgrade writes them. The plane runs each of
 `Plane.Records` inside the upgrade's one network write, so the record joins the
 labels a node replacement and a gateway list set.
 `ReplaceWorkers` labels the network with `mitstack.dev/worker-replace-<key>`,
-holding the id Hetzner gives the worker's server and the time of that call. A
-key already recorded keeps its first record. Every later call reads the label,
+holding the id Hetzner gives the worker's server, the time of that call and
+the worker's server type, as in `104857321-1795435200-cx33`. A key already
+recorded keeps its first record. Every later call reads the label,
 so a replacement stopped part way resumes where it stood. Once a server of
 another id holds the key, `ReplaceStep` takes it for the worker's successor.
 
@@ -4736,10 +4755,13 @@ takes one of these changes:
    of the worker, it deletes the server.
 7. In one step it takes the removal file out and creates the successor in the
    same location, under the same key and name, from the worker image with no
-   user data. The successor takes the first of the pool's `ServerTypes` its
-   location can order whose disk holds the worker image. When that is not the
-   list's first, the event names the type, the types it skipped and the
-   image's disk.
+   user data. The successor keeps the type of the worker it replaces, which
+   the network label records, while the pool still lists that type and its
+   location can order it with a disk that holds the worker image. Otherwise it
+   takes the first of the pool's `ServerTypes` its location can order whose
+   disk holds the worker image, as it does for a record that names no type.
+   When that is not the list's first, the event names the type, the types it
+   skipped and the image's disk.
 8. Once a node report received since the successor's creation reads its Node
    object Ready, it takes the label off the network, and the next named
    worker begins. With `RollsOutMachineConfig` set, that report must also read
@@ -4843,8 +4865,10 @@ counts for nothing.
 
 ### How the pool decides
 
-`scaling.Decide` takes the pool, its members and every node report the
-platform keeps, in any order, and answers a `Decision`:
+`scaling.Decide` takes the pool, its members, every node report the platform
+keeps, in any order, and a function that says whether one of the pool's types
+holds a waiting pod. A block passes `pools.Holds` as that function. The
+decision answers a `Decision`:
 
 1. A pool of a set size answers its maximum and nothing else, so a block that
    takes this release sees no change in such a pool.
@@ -4869,29 +4893,41 @@ platform keeps, in any order, and answers a `Decision`:
    in the cluster resource's health while the pool holds this way. The cause
    names `cloudPoolMin`, since only a steady member takes such a pod, and it
    starts no change.
-4. A pool that holds its maximum while pods wait answers `AtMaximum`, with a
+4. Below its maximum, the pool grows only for the pods a burst member of one
+   of its types would hold, as
+   [How a server type holds a waiting pod](#how-a-server-type-holds-a-waiting-pod)
+   describes. `Waiting` lists those pods, and `Measured` the room it judged
+   them by, which the block hands `PlanCloud`. `Unheld` names each pod no such
+   type holds, as "1 pods wait for a node that no server type the Cloud pool
+   lists and Hetzner sells holds: ci/huge". When no waiting pod is held, the
+   pool holds its size. Whenever `Unheld` names a pod, the robot cluster
+   module shows `scaling.CauseNoTypeHolds` in the cluster resource's health
+   with that text, and the cause names the pod's requests and
+   `cloudPoolServerTypes` as what to change.
+5. A pool that holds its maximum while pods wait answers `AtMaximum`, with a
    `Detail` such as "2 pods wait for a node, and the Cloud pool holds its
    maximum of 3: ci/d, ci/e", which names the first three pods. The block shows `CauseAtMaximum` in the cluster resource's
    health, and that cause starts no change.
-5. With no pod waiting, a burst member goes when every report from the
+6. With no pod waiting, a burst member goes when every report from the
    newest back over the idle window reads it running none but the cluster's
    own pods. One member goes at a time, and a steady member never goes this
    way. Of several idle burst members,
    `pools.NewestOfFullest` picks the newest of the location holding the most,
    the rule `PlanCloud` uses for a lowered maximum.
-6. An older report whose nodes or pods could not be read counts as no idle
+7. An older report whose nodes or pods could not be read counts as no idle
    time, and proves no member joined, so one failed read stalls no later
    decision. A newest report that cannot be read fails the decision, naming it.
 
 The decision cannot tell two things, so a builder plans for them:
 
-- The decision reads a pod's node selector and required node affinity, and
-  nothing else that keeps a pod off a node. A pod that a burst member meets
-  but cannot take, such as one asking more memory than any listed server type
-  holds, still counts as waiting. One such pod grows the pool by one worker
-  each decision up to its maximum and keeps it there. The held `Detail` then
-  names the pod, and the cause's advice to raise the maximum does not apply to
-  it: the pod's own request is what to change.
+- The decision reads a pod's node selector, its required node affinity and
+  the CPU and memory it requests, and nothing else that keeps a pod off a node.
+  A pod that a burst member meets but cannot take for another reason, such as
+  one asking more ephemeral storage than a listed type's disk holds, still
+  counts as waiting. One such pod grows the pool by one worker each decision
+  up to its maximum and keeps it there. The held `Detail` then names the pod,
+  and the cause's advice to raise the maximum does not apply to it: the pod's
+  own request is what to change.
 - A pod outside kube-system that a Deployment or a StatefulSet controls is a
   workload. A Cloud worker that runs one stays until the pod moves. The kit's
   own Deployments and StatefulSets stay off burst members, so such a pod on a
@@ -4900,6 +4936,50 @@ The decision cannot tell two things, so a builder plans for them:
   members the same way, but the decision counts every kube-system pod as the
   cluster's own, so a burst member that runs one can still stand idle, and its
   drain moves the pod under its disruption budget.
+
+### How a server type holds a waiting pod
+
+A burst member of a server type holds a waiting pod when the room the type
+offers, less what the DaemonSets running beside the job take, covers what the
+scheduler reserves for the pod, in both CPU and memory. `pools.Holds` answers
+this for each pod the decision weighs, and `PlanCloud` takes the smallest type
+that holds the pod. A type holds a pod only where Hetzner sells it in one of
+the pool's locations with a disk that holds the worker image.
+
+1. The scheduler reserves the larger of two sums in each of CPU and memory:
+   the app containers with every sidecar, which is an init container whose
+   `restartPolicy` is `Always`, or the largest plain init container with the
+   sidecars started before it. `report.Read.Unschedulable` reads that from the
+   `requests` the node report carries for each waiting pod. A runner pod whose
+   `dind` sidecar requests 1 CPU and 2Gi beside a runner container of 1500m
+   and 3Gi reserves 2500m and 5120Mi.
+2. The room a type offers is what the serving, uncordoned nodes of the pool's
+   members of that type report as allocatable in the newest node report, the
+   least of them in each of CPU and memory. `pools.MeasuredBy` reads it. It
+   leaves out a member whose removal has begun, and a node that is not Ready,
+   is under disk pressure or is cordoned.
+3. When no such node of the type reports, the room is Hetzner's published
+   size, which `ServerType.Offers` gives. It takes Talos's kubelet reservation,
+   `KubeletSystemReservedCPU` and `KubeletSystemReservedMemoryWorker` from
+   Talos's machinery constants, off the type's vCPUs and memory. It also takes
+   off the kubelet's hard eviction threshold of 100Mi of memory,
+   `controlplane.KubeletHardEvictionMemory`.
+4. The DaemonSets are the ones the plane's release renders, which
+   `Plane.DaemonSetPods` reads from the same component set the release
+   carries, with the telemetry collector when the cluster runs one. Only a
+   DaemonSet whose placement admits a burst member's node labels counts, by
+   the requests its pod template names.
+
+A running node of a type can report less room than its published size gives,
+and its report then decides. So the first order of a type no node has yet
+reported can still be one server too small for a pod inside that gap. Once
+that server runs, its node's report sets the type's room, and the next
+decision takes a larger type for the pod or names it in `Unheld`. The server too small leaves as any idle burst member
+does, once no pod waits and it has stood idle for the pool's idle window.
+
+A node report from a cluster whose report script carries no `requests` gives
+each waiting pod a request of zero, so such a pod takes the smallest type on
+sale.
 
 ### Steady and burst members
 
@@ -4959,7 +5039,7 @@ every node report the platform keeps:
 if pools.ChangeUnderWay(st) {
 	return pools.ReplaceStep(ctx, plane, pool)
 }
-decision, err := scaling.Decide(pool, st.Servers[pools.RoleCloudWorker], reads)
+decision, err := scaling.Decide(pool, st.Servers[pools.RoleCloudWorker], reads, pools.Holds(ctx, plane, pool))
 if err != nil {
 	return controlplane.Step{}, false, err
 }
@@ -4969,11 +5049,12 @@ if decision.Remove != nil {
 }
 sized := pool
 sized.Max = decision.Want
-plan, err := pools.PlanCloud(ctx, plane, sized, drained)
+plan, err := pools.PlanCloud(ctx, plane, sized, drained, decision.Measured, decision.Waiting...)
 ```
 
 A removal or a replacement already in flight goes first, and `PlanCloud`
-then creates the members a pool of `Want` lacks.
+then creates the members a pool of `Want` lacks, each of the first for one of
+the waiting pods.
 
 ### How a removal differs from a replacement
 

@@ -8,6 +8,8 @@ import (
 	"slices"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/resource"
+
 	"github.com/mitstack-eu/talos-cluster-kit/redundant"
 )
 
@@ -52,10 +54,12 @@ const openBaoNamespace = "openbao"
 const diskPressureTaint = "node.kubernetes.io/disk-pressure"
 
 type node struct {
-	Name          string  `json:"name"`
-	Ready         bool    `json:"ready"`
-	MachineConfig string  `json:"machineConfig"`
-	Taints        []taint `json:"taints"`
+	Name          string            `json:"name"`
+	Ready         bool              `json:"ready"`
+	MachineConfig string            `json:"machineConfig"`
+	Taints        []taint           `json:"taints"`
+	Allocatable   map[string]string `json:"allocatable"`
+	Unschedulable bool              `json:"unschedulable"`
 }
 
 type taint struct {
@@ -95,7 +99,8 @@ type reportedPod struct {
 	Containers    []struct {
 		Message string `json:"message"`
 	} `json:"containers"`
-	Placement *placement `json:"placement"`
+	Placement *placement  `json:"placement"`
+	Requests  podRequests `json:"requests"`
 }
 
 func (p reportedPod) qualifiedName() string { return p.Namespace + "/" + p.Name }
@@ -123,7 +128,8 @@ func (r Read) WorkloadPods() (map[string][]string, error) {
 	return out, nil
 }
 
-// Unschedulable lists each pod the scheduler found no node for, with the placement it asks of a node.
+// Unschedulable lists each pod the scheduler found no node for, with the placement it asks of a node and what the
+// scheduler reserves for it.
 func (r Read) Unschedulable() ([]WaitingPod, error) {
 	m, err := r.members()
 	if err != nil {
@@ -132,8 +138,35 @@ func (r Read) Unschedulable() ([]WaitingPod, error) {
 	var out []WaitingPod
 	for _, p := range m.Pods {
 		if p.Unschedulable && !p.finished() {
-			out = append(out, WaitingPod{Name: p.qualifiedName(), placement: p.Placement})
+			out = append(out, WaitingPod{Name: p.qualifiedName(), placement: p.Placement, request: p.Requests.reserved()})
 		}
+	}
+	return out, nil
+}
+
+// Allocatable is what each serving, uncordoned node offers pods by its name, of the nodes that report both CPU and
+// memory, failing on a figure that is no quantity.
+func (r Read) Allocatable() (map[string]Request, error) {
+	m, err := r.members()
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]Request{}
+	for _, n := range m.Nodes {
+		cpu, hasCPU := n.Allocatable["cpu"]
+		memory, hasMemory := n.Allocatable["memory"]
+		if !n.serving() || n.Unschedulable || !hasCPU || !hasMemory {
+			continue
+		}
+		c, err := resource.ParseQuantity(cpu)
+		if err != nil {
+			return nil, fmt.Errorf("the node report read at %s gives node %s %q CPU to offer: %w", r.At.UTC().Format(time.RFC3339), n.Name, cpu, err)
+		}
+		b, err := resource.ParseQuantity(memory)
+		if err != nil {
+			return nil, fmt.Errorf("the node report read at %s gives node %s %q memory to offer: %w", r.At.UTC().Format(time.RFC3339), n.Name, memory, err)
+		}
+		out[n.Name] = Request{MilliCPU: c.MilliValue(), Memory: b.Value()}
 	}
 	return out, nil
 }

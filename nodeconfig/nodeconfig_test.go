@@ -1116,8 +1116,6 @@ func TestRerender_GivesARunningNodeRenderedBeforeTheStaticCPUManagerPolicyThisRe
 	}
 }
 
-// isolationDocuments are what a node holds for jobs that each run in their own user namespace: the user namespaces the
-// kernel allows, which Talos sets to none, and containerd's option that lets runc give a container a cgroup it may write.
 var isolationDocuments = []map[string]any{
 	{"apiVersion": "v1alpha1", "kind": "SysctlConfig", "params": map[string]any{"user.max_user_namespaces": "11255"}},
 	{"apiVersion": "v1alpha1", "kind": "CRICustomizationConfig", "name": "mitstack-job-isolation",

@@ -51,9 +51,9 @@ func BurstNodeLabels(loc string) map[string]string {
 // Holds reports whether a burst member of one of pool's types, created in one of its locations, holds a waiting pod,
 // reading the cluster, each location's server types and the release's DaemonSets once.
 func Holds(ctx context.Context, plane controlplane.Plane, pool CloudPool) func(report.WaitingPod, Measured) (bool, error) {
-	var sizing *sizing
+	var sizer *sizing
 	return func(w report.WaitingPod, measured Measured) (bool, error) {
-		if sizing == nil {
+		if sizer == nil {
 			st, err := plane.Read(ctx)
 			if err != nil {
 				return false, err
@@ -62,10 +62,10 @@ func Holds(ctx context.Context, plane controlplane.Plane, pool CloudPool) func(r
 			if worker, ok := st.WorkerSnapshot(); ok {
 				diskGB = worker.DiskGB
 			}
-			sizing = newSizing(plane, diskGB)
+			sizer = newSizing(plane, diskGB)
 		}
 		for _, loc := range pool.Locations {
-			serverType, err := sizing.smallest(ctx, pool, loc, w, measured)
+			serverType, err := sizer.smallest(ctx, pool, loc, w, measured)
 			if err != nil || serverType != "" {
 				return serverType != "", err
 			}
@@ -77,11 +77,11 @@ func Holds(ctx context.Context, plane controlplane.Plane, pool CloudPool) func(r
 // sizing judges which server type holds a pod on a new burst member, reading each location's server types and the
 // release's DaemonSets once.
 type sizing struct {
-	plane     controlplane.Plane
-	diskGB    float64
-	orderable *controlplane.OrderableTypes
-	daemons   []report.WaitingPod
-	read      bool
+	plane       controlplane.Plane
+	diskGB      float64
+	orderable   *controlplane.OrderableTypes
+	daemons     []report.WaitingPod
+	daemonsRead bool
 }
 
 func newSizing(plane controlplane.Plane, diskGB float64) *sizing {
@@ -129,12 +129,12 @@ func (s *sizing) smallest(ctx context.Context, pool CloudPool, loc string, w rep
 
 // daemonsOn is what the release's DaemonSets whose placement admits a node of labels request of it.
 func (s *sizing) daemonsOn(labels map[string]string) (report.Request, error) {
-	if !s.read {
+	if !s.daemonsRead {
 		daemons, err := s.plane.DaemonSetPods()
 		if err != nil {
 			return report.Request{}, err
 		}
-		s.daemons, s.read = daemons, true
+		s.daemons, s.daemonsRead = daemons, true
 	}
 	var taken report.Request
 	for _, d := range s.daemons {

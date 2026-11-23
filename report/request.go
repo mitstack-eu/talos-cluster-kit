@@ -55,21 +55,21 @@ type containerRequests struct {
 // reserved is what the scheduler reserves for the pod: its containers and sidecars together, or an init container
 // with the sidecars started before it, whichever asks more, in each of CPU and memory.
 func (p podRequests) reserved() Request {
-	var sidecars, init Request
+	var sidecars, starting Request
 	for _, c := range p.InitContainers {
 		asks := quantities(c.Resources.Requests)
 		if c.RestartPolicy != nil && *c.RestartPolicy == "Always" {
 			sidecars = sidecars.Plus(asks)
-			init = init.max(sidecars)
+			starting = starting.max(sidecars)
 			continue
 		}
-		init = init.max(asks.Plus(sidecars))
+		starting = starting.max(asks.Plus(sidecars))
 	}
 	running := sidecars
 	for _, c := range p.Containers {
 		running = running.Plus(quantities(c.Resources.Requests))
 	}
-	return running.max(init)
+	return running.max(starting)
 }
 
 // TemplatePod is the pod a pod template's spec makes, named name, with the placement it asks of a node and what the

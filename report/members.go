@@ -158,15 +158,15 @@ func (r Read) Allocatable() (map[string]Request, error) {
 		if !n.serving() || n.Unschedulable || !hasCPU || !hasMemory {
 			continue
 		}
-		c, err := resource.ParseQuantity(cpu)
+		cpuOffered, err := resource.ParseQuantity(cpu)
 		if err != nil {
 			return nil, fmt.Errorf("the node report read at %s gives node %s %q CPU to offer: %w", r.At.UTC().Format(time.RFC3339), n.Name, cpu, err)
 		}
-		b, err := resource.ParseQuantity(memory)
+		memoryOffered, err := resource.ParseQuantity(memory)
 		if err != nil {
 			return nil, fmt.Errorf("the node report read at %s gives node %s %q memory to offer: %w", r.At.UTC().Format(time.RFC3339), n.Name, memory, err)
 		}
-		out[n.Name] = Request{MilliCPU: c.MilliValue(), Memory: b.Value()}
+		out[n.Name] = Request{MilliCPU: cpuOffered.MilliValue(), Memory: memoryOffered.Value()}
 	}
 	return out, nil
 }

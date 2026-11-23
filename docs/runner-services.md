@@ -332,9 +332,8 @@ cluster whose nodes are Docker containers on one workstation, and then took
 each setting away alone. Each row gives what failed without it.
 
 Linux splits root's power into parts it calls capabilities, such as the power
-to mount a filesystem, so a process can hold some of them alone. A Linux
-capability has nothing to do with a block's capability in the terms above.
-Seccomp is the kernel's filter of the system calls a process may make, and
+to mount a filesystem, so a process can hold some of them alone. This section
+uses the word capability only in that Linux sense. Seccomp is the kernel's filter of the system calls a process may make, and
 AppArmor is a kernel profile of the files and actions a process may use.
 
 | Setting on the `dind` container | What failed without it in the local test |
@@ -358,18 +357,22 @@ docker: Error response from daemon: failed to create task for container: failed 
 
 ### What each worker holds with the switch on
 
-Each worker's machine configuration carries two more Talos documents. The
+A Talos machine configuration is a list of documents, each of a type that
+names what it sets, such as `SysctlConfig` for the kernel's settings. With the
+switch on, each worker's machine configuration carries two more documents. The
 control-plane nodes carry neither, since no job runs there.
+
+Containerd is the runtime that starts every pod's containers on a node, and
+runc is the program it starts each container with. The second document
+changes how containerd runs runc.
 
 | Document | What it sets | Why a job's pod needs it |
 |---|---|---|
 | `SysctlConfig` | The kernel setting `user.max_user_namespaces` to `11255` | Talos's kernel hardening sets the limit to 0, so the kernel would give no pod a user namespace. 11255 is the value Talos's guide to user namespaces sets |
 | `CRICustomizationConfig` named `mitstack-job-isolation` | runc's `cgroup_writable = true` in containerd's configuration | runc then gives a pod's container a cgroup it may write, which the Docker daemon needs to start a container. A cgroup is the kernel's group that limits a set of processes' CPU and memory |
 
-Containerd is the runtime that starts every pod's containers on a node, and
-runc is the program it starts each container with. Talos restarts containerd
-whenever a `CRICustomizationConfig` is applied, changed or removed, as its
-reference for that document says.
+Talos restarts containerd whenever a `CRICustomizationConfig` is applied,
+changed or removed, as its reference for that document says.
 
 These pages of Talos v1.14, the release the kit pins, describe both
 documents and the limit:
@@ -380,8 +383,9 @@ documents and the limit:
   whose value Talos's own test patch `hack/test/patches/usernamespace.yaml`
   sets too
 - [Talos's page on customising containerd](https://docs.siderolabs.com/talos/v1.14/configure-your-talos-cluster/images-container-runtime/containerd.md)
-- The hardening itself, in `pkg/kernel/kspp/kspp.go` of the Talos v1.14.4
-  source, which sets `user.max_user_namespaces` to 0
+- The hardening itself, the function `GetKernelParams` in
+  `pkg/kernel/kspp/kspp.go` of the Talos v1.14.4 source, which sets
+  `user.max_user_namespaces` to 0
 
 ### How a worker comes to carry the documents
 
@@ -391,15 +395,18 @@ worker's configuration and into the worker image. Every Cloud worker boots
 from that image, so a steady Cloud worker and a burst member carry them
 alike. A rerender reads the switch back from the `mitstack-job-isolation`
 document on the node. It refuses a node that holds a `CRICustomizationConfig`
-under any other name, since the release would drop it.
+under any other name, since the rerender would drop it.
 
-The scale set follows the plane's runner inputs at every release instead. An
-upgrade that sets the switch on a cluster installed without it therefore
-changes the job pods at the next release, while every worker keeps a kernel
-that allows no user namespace. No test has run such a pod, so what it does
-then is unproven. An upgrade that unsets the switch returns the scale set to
-its privileged daemon, and each worker keeps both documents, since a rerender
-reads them back.
+The scale set follows the plane's runner inputs instead. Each subscribe
+renders the cluster's manifests from them and commits any change for Argo CD
+to apply, once every gateway serves the images they name. An upgrade that sets
+the switch on for a cluster installed without it therefore changes the job
+pods at its next subscribe, while every worker keeps a kernel that allows no
+user namespace. No test has run such a pod, so what it does then is unproven.
+
+An upgrade that sets the switch off returns the scale set to its privileged
+daemon. Each worker keeps both documents, since nothing removes them. A
+rerender reads the switch back from the node and renders both again.
 
 For a running cluster, the switch therefore takes effect on every worker
 only from a new install. You delete the cluster and create it again, as
@@ -481,7 +488,7 @@ its cluster down to absent.
 | `DindImage` | The Docker daemon image each job's sidecar runs | An image without its digest |
 | `MaxRunners` | The most jobs that run at once | A value below 1 |
 | `LeaseResource` | The resource type whose GitHub token the lease job asks the platform for | An empty value |
-| `IsolateJobs` | Whether each job's pod runs in its own user namespace, as [How a runner group isolates its jobs](#how-a-runner-group-isolates-its-jobs) explains. Unset, the Docker daemon runs privileged | Nothing |
+| `IsolateJobs` | Whether each job's pod runs in its own user namespace, as [How a runner group isolates its jobs](#how-a-runner-group-isolates-its-jobs) explains. Off by default, which runs the Docker daemon privileged | Nothing |
 
 The block's operator names the resource it requires from the platform as
 `LeaseResource`, so the platform knows which GitHub App mints the token. The

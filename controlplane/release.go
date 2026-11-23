@@ -36,6 +36,9 @@ func (p Plane) Release(st State) (rollout.Release, error) {
 	if set, err = publishingIngress(set, st); err != nil {
 		return rollout.Release{}, err
 	}
+	if set, err = set.DatabaseOperatorsAcrossZones(p.podZones(st.Servers[RoleCloudWorker])); err != nil {
+		return rollout.Release{}, err
+	}
 	own, _, err := p.ownComponents("", st.Servers[RoleCloudWorker])
 	if err != nil {
 		return rollout.Release{}, err
@@ -53,6 +56,22 @@ func (p Plane) Release(st State) (rollout.Release, error) {
 		ToolsImage: toolsImage(),
 		RepoURL:    address,
 	}, nil
+}
+
+// podZones are the locations of the nodes a kit pod without a toleration may run on: the control-plane nodes unless
+// AppsOnWorkers taints them, and each Cloud pool worker but a burst member, which every kit pod refuses. A Robot worker
+// counts in none, since the plane holds no location for it.
+func (p Plane) podZones(poolWorkers []Server) []string {
+	var zones []string
+	if !p.AppsOnWorkers {
+		zones = p.NodeLocations()
+	}
+	for _, worker := range poolWorkers {
+		if worker.Labels[components.BurstLabel] != components.BurstValue {
+			zones = append(zones, worker.Location)
+		}
+	}
+	return zones
 }
 
 // The gateways serve the set without an address, since one tools image is built for every cluster.

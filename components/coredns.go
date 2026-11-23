@@ -2,7 +2,6 @@ package components
 
 import (
 	_ "embed"
-	"slices"
 
 	"github.com/mitstack-eu/talos-cluster-kit/internal/tmpl"
 )
@@ -17,7 +16,7 @@ var coreDNSDeployment = tmpl.Must("the CoreDNS Deployment", coreDNSTemplate)
 // CoreDNS renders the Deployment Talos creates for CoreDNS with one replica in each distinct location of locations,
 // or nothing for a cluster in one location, which keeps the Deployment as Talos created it.
 func CoreDNS(locations []string) ([]Manifest, error) {
-	distinct := slices.Compact(slices.Sorted(slices.Values(locations)))
+	distinct := distinctZones(locations)
 	if len(distinct) < 2 {
 		return nil, nil
 	}

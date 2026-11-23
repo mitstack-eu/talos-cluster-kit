@@ -1336,6 +1336,69 @@ in `controlplane/release_test.go` finds in a release the Deployment that
 in `components/components_test.go` compares the render for two and three
 locations with those recordings byte for byte, and finds none for one.
 
+## How the database operators keep a replica in a second zone
+
+This section is for an engineer who changes where a cluster's system pods run.
+The CloudNativePG operator runs every Postgres database on a cluster, and the
+[Barman Cloud plugin](#how-a-postgres-cluster-backs-up) backs those databases
+up. When the nodes their pods may run on span two zones or more, each runs two
+replicas in two different zones, so losing one zone leaves the other replica
+to promote a Postgres standby. A zone here is a Hetzner location such as
+`fsn1`, which [the topology labeller](#how-each-node-is-labelled-with-its-zone)
+writes on each node as `topology.kubernetes.io/zone`.
+
+Only one replica of each acts at a time. Both programs elect a leader through
+a Kubernetes Lease, the lock object each replica tries to hold, and only the
+holder reconciles. The other replica takes the Lease over within its
+15-second lease duration once the holder stops renewing it. CloudNativePG
+documents multiple replicas under its
+[installation guide](https://github.com/cloudnative-pg/cloudnative-pg/blob/v1.30.1/docs/src/installation_upgrade.md),
+and every replica serves its webhook from the one Secret `cnpg-webhook-cert`.
+The plugin serves the operator's calls from every replica, since its call
+server needs no leader, as the
+[plugin's guide](https://github.com/cloudnative-pg/plugin-barman-cloud/blob/v0.16.0/web/docs/installation.mdx)
+describes under "Running Multiple Replicas". Both replicas read the same two
+cert-manager Secrets and answer behind the one Service `barman-cloud`.
+
+`Plane.Release` counts the zones from two kinds of node:
+
+| Node | Counts when | Why |
+|---|---|---|
+| A control-plane node | The plane keeps apps on its control-plane nodes | A plane that runs apps on workers taints these nodes, and neither Deployment tolerates the taint |
+| A Cloud pool worker | It is not a burst member | Every kit pod refuses a burst member, which idle removal may take away |
+| A Robot worker | Never | The plane holds no location for it, so a cluster counts one zone fewer than it may have |
+
+For two zones or more, `Set.DatabaseOperatorsAcrossZones` in
+`components/zones.go` changes each Deployment as the chart renders it:
+
+| Field | The chart | The kit | Why |
+|---|---|---|---|
+| `replicas` | 1 | 2 | One replica holds the Lease and the other waits in another zone |
+| `podAntiAffinity` | None | Required over `topology.kubernetes.io/zone`, counting the Deployment's own pods | The scheduler never places both replicas in one zone |
+| `strategy` of the operator | Unset, which Kubernetes reads as a rolling update of 25 percent | `RollingUpdate` with `maxSurge: 0` and `maxUnavailable: 1` | A rollout stops one replica before it starts the next, so the new one finds a zone free |
+| `strategy` of the plugin | `Recreate` | `Recreate` | The plugin's guide keeps it, so no two versions of the plugin serve the operator at once |
+
+Each Deployment also gets a PodDisruptionBudget of the same name with
+`maxUnavailable: 1`, so a node drain evicts one replica at a time. The node
+affinity that keeps both off a burst member stays as rendered. For one zone,
+the set stays as the chart renders it, with one replica and no budget, since
+the anti-affinity would leave a second replica Pending.
+
+The gateways serve the set as the chart renders it, and the release alone
+carries the change. A cluster's gateway list therefore does not change with
+its zones. A cluster whose Cloud pool gains a worker in a second zone takes
+the spread at its next release.
+
+When the plugin rolls, both of its replicas stop before the new ones start,
+so for the time a pod takes to start the operator finds no plugin. A Cluster
+that names it then fails its reconcile and is retried.
+
+`TestDatabaseOperatorsAcrossZones_RunTwoReplicasInDistinctZonesUnderADisruptionBudgetOfOneAndLeaveOneZoneAsBuilt`
+in `components/components_test.go` checks each field above for two and three
+zones, and the unchanged set for one.
+`TestRelease_SpreadsTheDatabaseOperatorsOverTheZonesOfTheNodesAPodWithoutATolerationRunsOn`
+in `controlplane/release_test.go` checks which nodes count.
+
 ## How AWS comes to trust a cluster's tokens
 
 A pod on the cluster can call AWS, such as to pull an image from a private

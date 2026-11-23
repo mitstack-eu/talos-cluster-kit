@@ -67,8 +67,7 @@ type clusterParams struct {
 	// hosting is whether the cluster hosts the platform, and recipient the key its recovery files are encrypted to.
 	hosting   bool
 	recipient []byte
-	// signers is the list whose signature policy the cluster's release carries.
-	signers []components.Signer
+	signers   []components.Signer
 }
 
 // HostsPlatform is whether the request asks for a cluster that hosts the platform.

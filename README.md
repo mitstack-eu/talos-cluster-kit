@@ -1643,19 +1643,32 @@ list. An image outside the list passes on its digest alone, and so does every
 image once a repository leaves the list. An empty list renders no manifest, so
 such a cluster checks no signature and its Kyverno keeps the reach it had.
 
-The robot cluster module, which hcloud-hrobot-talos-cluster runs, reads the
-list from its request's `signers` param. A comma separates one entry from the
-next, and `|` separates an entry's fields: the repository, the issuer and the
-subject. An entry for a private registry adds its pull Secret as
-`namespace/name` in a fourth field. An example is
-`123456789012.dkr.ecr.eu-central-1.amazonaws.com/shop-api|https://token.actions.githubusercontent.com|https://github.com/acme/shop/.github/workflows/build.yml@refs/heads/main|app-shop/ecr-pull`.
-The module refuses with `invalid-param`, before any change, a list that
-`SignaturePolicy` refuses and a pull Secret on a cluster that hosts no
-platform, and its observe then reads unknown and names the entry. The dry
-run of an upgrade, `PlanReplacements`, refuses the same list, so mitstack
-shows the refusal before it sends anything. An Update
-that changes the list carries the new policy in the cluster's next release,
-and one that empties it takes the policy out.
+The robot cluster module fills `Plane.Signers` from the request mitstack
+sends it. That module, in `operator/robotcluster/`, is the Go code the block
+hcloud-hrobot-talos-cluster runs. The request carries the list in its
+`signers` param, one string in which a comma separates one entry from the
+next. Within an entry, `|` separates the fields in this order.
+
+| Field | What it holds | Example |
+|---|---|---|
+| Repository | The image repository, with no tag | `123456789012.dkr.ecr.eu-central-1.amazonaws.com/shop-api` |
+| Issuer | The CI provider that issued the build's token | `https://token.actions.githubusercontent.com` |
+| Subject | The build pipeline the token names | `https://github.com/acme/shop/.github/workflows/build.yml@refs/heads/main` |
+| Pull Secret | For a private registry only, the Secret holding its login, as `namespace/name` | `app-shop/ecr-pull` |
+
+The module refuses a list it cannot render before it changes anything. That
+covers a list `SignaturePolicy` refuses, and a pull Secret on a cluster that
+does not host the mitstack platform, since only a hosting cluster copies the
+Secret for Kyverno. The refusal reaches mitstack with the class
+`invalid-param`, which marks a param the block cannot act on, and its reason
+says which entry fails and why. While the list stays refused, the module's
+observe, its reading of the cluster, reports the cluster unknown with the
+same reason. The dry run of an upgrade, `PlanReplacements`, refuses the same
+list, so mitstack shows the refusal before it sends the upgrade.
+
+An upgrade that changes the list carries the new policy in the release it
+commits to the cluster repository. An upgrade that empties the list takes the
+policy out of that release.
 
 Kyverno reads each signature from the registry that holds the image. It
 checks the signature's certificate against Sigstore's trust root, the keys

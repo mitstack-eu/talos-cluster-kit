@@ -80,7 +80,8 @@ func (p Plane) ownComponents(enrolmentToken string, poolWorkers []Server) ([]com
 		return nil, nil, errors.New("the node report reads each gateway's mirror under the gateway CA, and the plane holds none")
 	}
 	reportManifests, err := report.Manifests(report.Inputs{URL: p.PlatformURL + clusterReportsPath, SubscriptionID: p.Subscription,
-		ToolsImage: toolsImage(), ProofScript: p.ReportProofScript, Gateways: p.gatewayAddrs(), GatewayCA: p.GatewayCA.Cert})
+		ToolsImage: toolsImage(), ProofScript: p.ReportProofScript, Gateways: p.gatewayAddrs(), GatewayCA: p.GatewayCA.Cert,
+		Runners: p.Runners})
 	if err != nil {
 		return nil, nil, err
 	}

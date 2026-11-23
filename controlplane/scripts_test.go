@@ -1076,6 +1076,7 @@ func TestClusterTokens_LeaseFailsNamingTheStatusWhenTheSecretRefusesThePatch(t *
 const (
 	runnerTokenSecretPath = "/api/v1/namespaces/mitstack-runners/secrets/mitstack-runner-token"
 	runnerPodsPath        = "/api/v1/namespaces/mitstack-runners/pods"
+	sweepTokenSecretPath  = "/api/v1/namespaces/mitstack-node/secrets/mitstack-runner-sweep-token"
 	listenerSelector      = "app.kubernetes.io/component=runner-scale-set-listener"
 	runnerLeaseResource   = "github-runner-token"
 )
@@ -1089,11 +1090,13 @@ type runnerLeaseStandIn struct {
 	patchTypes  []string
 	deletions   []string
 	patchStatus int
+	sweepStatus int
+	sweeps      []map[string]any
 }
 
 func runnerLeasePlatform(t *testing.T, status int, answer map[string]any) *runnerLeaseStandIn {
 	t.Helper()
-	s := &runnerLeaseStandIn{patchStatus: http.StatusOK}
+	s := &runnerLeaseStandIn{patchStatus: http.StatusOK, sweepStatus: http.StatusOK}
 	decode := func(r *http.Request) map[string]any {
 		var body map[string]any
 		assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
@@ -1115,6 +1118,11 @@ func runnerLeasePlatform(t *testing.T, status int, answer map[string]any) *runne
 			s.deletions = append(s.deletions, r.URL.Query().Get("labelSelector"))
 			_ = json.NewEncoder(w).Encode(map[string]any{"kind": "PodList"})
 		},
+		"PATCH " + sweepTokenSecretPath: func(w http.ResponseWriter, r *http.Request) {
+			s.sweeps = append(s.sweeps, decode(r))
+			w.WriteHeader(s.sweepStatus)
+			_ = json.NewEncoder(w).Encode(map[string]any{"kind": "Secret"})
+		},
 	})
 	return s
 }
@@ -1128,7 +1136,7 @@ func runRunnerLease(t *testing.T, s *runnerLeaseStandIn) scriptRun {
 		"KUBE_ACCOUNT_DIR="+account, "SUBSCRIPTION_ID=", "REPO_URL=", "REPOSITORY_CREDENTIAL=", "CALL_ATTEMPTS=")
 }
 
-func TestClusterTokens_RunnerLeaseWritesTheTokenAndItsExpiryIntoTheRunnerSecretAndDeletesTheListenerPods(t *testing.T) {
+func TestClusterTokens_RunnerLeaseWritesTheTokenAndItsExpiryIntoTheRunnerSecretDeletesTheListenerPodsAndThenWritesTheSweepsSecret(t *testing.T) {
 	s := runnerLeasePlatform(t, http.StatusOK, leaseAnswer("runner-token-value", leaseClock(time.Hour)))
 
 	run := runRunnerLease(t, s)
@@ -1138,7 +1146,9 @@ func TestClusterTokens_RunnerLeaseWritesTheTokenAndItsExpiryIntoTheRunnerSecretA
 		"POST /v1/cluster-leases Bearer " + reportBearer,
 		"PATCH " + runnerTokenSecretPath + " Bearer " + accountBearer,
 		"DELETE " + runnerPodsPath + " Bearer " + accountBearer,
-	}, *s.seen, "the report token goes to the platform alone, and the job's own account patches the Secret before it deletes the listener pods")
+		"PATCH " + sweepTokenSecretPath + " Bearer " + accountBearer,
+	}, *s.seen, "the report token goes to the platform alone, and the job's own account patches the Secret, deletes the listener pods, then patches the sweep's Secret")
+	assert.Equal(t, s.patches, s.sweeps, "the sweep's Secret holds the same token and expiry under the same key")
 	assert.Equal(t, []map[string]any{{"resource": runnerLeaseResource, "want": map[string]any{}}}, s.asks, "the one lease asked, whatever the Secret holds")
 	assert.Equal(t, []map[string]any{{
 		"metadata":   map[string]any{"annotations": map[string]any{"mitstack.dev/lease-expires-at": leaseClock(time.Hour)}},
@@ -1161,9 +1171,23 @@ func TestClusterTokens_RunnerLeaseFailsNamingTheStatusAndTheLeaseAndWritesNothin
 			assert.Contains(t, run.out, runnerLeaseResource, "the lease the failure names")
 			assert.Len(t, s.asks, 1, "a refused lease is asked once, and the next run is the retry")
 			assert.Empty(t, s.patches, "a refusal leaves the Secret as it was")
+			assert.Empty(t, s.sweeps, "a refusal leaves the sweep's Secret as it was")
 			assert.Empty(t, s.deletions, "a refusal leaves the listener running")
 		})
 	}
+}
+
+func TestClusterTokens_RunnerLeaseFailsNamingTheSweepsSecretWhenItRefusesThePatchOnceTheListenerHasTheNewToken(t *testing.T) {
+	s := runnerLeasePlatform(t, http.StatusOK, leaseAnswer("runner-token-value", leaseClock(time.Hour)))
+	s.sweepStatus = http.StatusForbidden
+
+	run := runRunnerLease(t, s)
+
+	require.Error(t, run.err, "a lease whose sweep patch was refused passed: %s", run.out)
+	assert.Contains(t, run.out, "mitstack-runner-sweep-token")
+	assert.Contains(t, run.out, "403")
+	assert.Len(t, s.patches, 1, "the runners' Secret holds the new token")
+	assert.Equal(t, []string{listenerSelector}, s.deletions, "the listener restarted with it before the sweep's patch")
 }
 
 func TestClusterTokens_RunnerLeaseRefusesAnAnswerWithoutATokenOrWithAnExpiryNotWithinSixtyFiveMinutesBeforeWriting(t *testing.T) {
@@ -1194,6 +1218,7 @@ func TestClusterTokens_RunnerLeaseRefusesAnAnswerWithoutATokenOrWithAnExpiryNotW
 			assert.Contains(t, run.out, tc.named, "the failure names what the answer lacks")
 			assert.Empty(t, s.patches, "the Secret was written from an answer with %s", tc.name)
 			assert.Empty(t, s.deletions, "the listener was deleted on an answer with %s", tc.name)
+			assert.Empty(t, s.sweeps, "the sweep's Secret was written from an answer with %s", tc.name)
 		})
 	}
 }

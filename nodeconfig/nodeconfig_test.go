@@ -781,12 +781,10 @@ type renderedNode struct {
 	render  func(nodeconfig.Cluster) ([]byte, error)
 }
 
-// controlPlane renders n as a control-plane node.
 func controlPlane(n nodeconfig.Node) func(nodeconfig.Cluster) ([]byte, error) {
 	return func(c nodeconfig.Cluster) ([]byte, error) { return nodeconfig.Render(c, n) }
 }
 
-// worker renders n as a worker.
 func worker(n nodeconfig.Node) func(nodeconfig.Cluster) ([]byte, error) {
 	return func(c nodeconfig.Cluster) ([]byte, error) { return nodeconfig.RenderWorker(c, n) }
 }

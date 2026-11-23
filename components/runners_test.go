@@ -44,13 +44,6 @@ func inSet(t *testing.T, set components.Set, name string) components.Manifest {
 	return testutil.Manifest(t, name, set.Served, set.Inline)
 }
 
-// runnerScaleSet is the scale set the runner set holds.
-func runnerScaleSet(t *testing.T) map[string]any {
-	t.Helper()
-	return testutil.Named(t, testutil.Documents(t, testutil.Manifest(t, "mitstack-runner-scale-set", runnerSet(t).Inline).Bytes), "AutoscalingRunnerSet", "mitstack-ci")
-}
-
-// jobContainers are a job pod's init containers and containers by name.
 func jobContainers(t *testing.T, pod any) map[string]map[string]any {
 	t.Helper()
 	byName := map[string]map[string]any{}
@@ -75,7 +68,7 @@ func TestWithRunners_HoldsTheControllerTheRunnersNamespaceAndTheScaleSetTheInput
 
 	controller := testutil.Named(t, testutil.Documents(t, inSet(t, set, "gha-runner-scale-set-controller").Bytes), "Deployment", "arc-gha-rs-controller")
 	namespace := testutil.Named(t, testutil.Documents(t, inSet(t, set, "mitstack-runners").Bytes), "Namespace", components.RunnersNamespace)
-	scaleSet := runnerScaleSet(t)
+	scaleSet := testutil.Named(t, testutil.Documents(t, testutil.Manifest(t, "mitstack-runner-scale-set", set.Inline).Bytes), "AutoscalingRunnerSet", "mitstack-ci")
 
 	containers := testutil.Field(t, controller, "spec", "template", "spec", "containers").([]any)
 	require.Len(t, containers, 1, "the controller's containers")
@@ -128,7 +121,7 @@ func TestWithRunners_RunsEachJobInADindPodWithNoServiceAccountTokenAndOnlyEmptyD
 }
 
 func TestWithRunners_ReservesEachJobContainersCPUAndMemoryAsItsLimitAndWholeCoresForTheRunnerSoTheJobPodIsGuaranteed(t *testing.T) {
-	scaleSet := runnerScaleSet(t)
+	scaleSet := testutil.Named(t, testutil.Documents(t, testutil.Manifest(t, "mitstack-runner-scale-set", runnerSet(t).Inline).Bytes), "AutoscalingRunnerSet", "mitstack-ci")
 
 	containers := jobContainers(t, testutil.Field(t, scaleSet, "spec", "template", "spec"))
 
@@ -143,7 +136,8 @@ func TestWithRunners_ReservesEachJobContainersCPUAndMemoryAsItsLimitAndWholeCore
 }
 
 func TestWithRunners_KeepsTheListenerOffBurstMembersAndLabelsIt(t *testing.T) {
-	scaleSet := runnerScaleSet(t)
+	set := runnerSet(t)
+	scaleSet := testutil.Named(t, testutil.Documents(t, testutil.Manifest(t, "mitstack-runner-scale-set", set.Inline).Bytes), "AutoscalingRunnerSet", "mitstack-ci")
 
 	listener := testutil.Field(t, scaleSet, "spec", "listenerTemplate")
 

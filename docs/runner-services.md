@@ -150,9 +150,9 @@ The table shows when each kind of node comes to run the static policy.
 
 | Node | When it runs the static CPU manager policy |
 |---|---|
-| A worker of a cluster installed with runner services, running before the release that adds the policy | From that release's node rollout, with no reboot and no rebuild |
-| A Cloud worker created after the install, such as a burst member | It boots from the worker image on the install's settings, and runs the policy from the node rollout a later subscribe runs again for it |
-| Any node of a cluster installed without runner services | None runs it, since a rerender finds no disk eviction settings to read, and an upgrade that adds the services leaves the kubelet settings as the install rendered them |
+| A running worker that carries the disk eviction settings | From the next node rollout, with no reboot and no rebuild |
+| A Cloud worker created after the install, such as a burst member | It boots from the worker image on the install's settings, and runs the policy from the node rollout a later subscribe runs again for it, when the image carries the disk eviction settings |
+| A node without the disk eviction settings, such as any node of a cluster installed without runner services | None runs it, since a rerender finds no disk eviction settings to read, and an upgrade that adds the services leaves the kubelet settings as the install rendered them |
 
 At a node rollout, Talos applies the new configuration without a reboot. It
 stops the kubelet, deletes the CPU manager's state file `cpu_manager_state`

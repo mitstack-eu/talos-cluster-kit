@@ -48,7 +48,8 @@ var databaseOperators = []databaseOperator{
 // of one, so losing a zone leaves one to promote a standby, and leaves the set as it is for fewer than two zones,
 // since a second replica could never schedule.
 func (s Set) DatabaseOperatorsAcrossZones(zones []string) (Set, error) {
-	if len(distinctZones(zones)) < databaseOperatorReplicas {
+	distinct := distinctZones(zones)
+	if len(distinct) < databaseOperatorReplicas {
 		return s, nil
 	}
 	served := slices.Clone(s.Served)
@@ -58,11 +59,11 @@ func (s Set) DatabaseOperatorsAcrossZones(zones []string) (Set, error) {
 		}
 		i := slices.IndexFunc(served, func(m Manifest) bool { return m.Name == op.name })
 		if i < 0 {
-			return Set{}, fmt.Errorf("the set serves no %s manifest to spread over the zones %v", op.name, distinctZones(zones))
+			return Set{}, fmt.Errorf("the set serves no %s manifest to spread over the zones %v", op.name, distinct)
 		}
 		spread, err := op.spread(served[i].Bytes)
 		if err != nil {
-			return Set{}, fmt.Errorf("spreading %s over the zones %v: %w", op.name, distinctZones(zones), err)
+			return Set{}, fmt.Errorf("spreading %s over the zones %v: %w", op.name, distinct, err)
 		}
 		served[i].Bytes = spread
 	}

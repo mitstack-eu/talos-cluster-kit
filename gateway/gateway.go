@@ -26,7 +26,10 @@ import (
 // UserDataLimit is the most user data Hetzner Cloud accepts for a server, in bytes.
 const UserDataLimit = 32 * 1024
 
-const httpsPort = 443
+const (
+	httpsPort   = 443
+	highestPort = 1<<16 - 1
+)
 
 const (
 	registryImage = "docker.io/library/registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373"
@@ -84,6 +87,8 @@ type Inputs struct {
 	Tools components.Image
 	// Logs is the receiver the node-local Collectors export to, whose port the gateway forwards when there is one.
 	Logs components.LogExport
+	// EgressPorts are the TCP ports the gateway forwards to every outside address beside 443, which it always forwards.
+	EgressPorts []int
 	// Gzipped says the caller sends the cloud-config gzipped and judges that against Hetzner's limit itself.
 	Gzipped bool
 }
@@ -123,6 +128,11 @@ func (in Inputs) validate() error {
 	}
 	if !slices.Contains(in.List.images, in.Tools) {
 		errs = append(errs, fmt.Errorf("the list does not mirror the tools image %q, which the gateway copies its tools and manifests out of", in.Tools.Ref()))
+	}
+	for _, port := range in.EgressPorts {
+		if port < 1 || port > highestPort {
+			errs = append(errs, fmt.Errorf("egress port %d is outside 1 to %d", port, highestPort))
+		}
 	}
 	if errs != nil {
 		return fmt.Errorf("gateway %s: %w", in.Address, errors.Join(errs...))
@@ -170,23 +180,47 @@ func boundsEnv() string {
 
 func seconds(d time.Duration) string { return strconv.Itoa(int(d / time.Second)) }
 
+// egressPorts is the ports the gateway forwards to every outside address: 443, each egress port beyond it, and the log
+// receiver's.
 func (in Inputs) egressPorts() (string, error) {
+	ports := append([]int{httpsPort}, beyondHTTPS(in.EgressPorts)...)
 	if in.Logs.IsZero() {
-		return strconv.Itoa(httpsPort), nil
+		return joinPorts(ports), nil
 	}
+	logPort, err := in.logPort()
+	if err != nil {
+		return "", err
+	}
+	if !slices.Contains(ports, logPort) {
+		ports = append(ports, logPort)
+	}
+	return joinPorts(ports), nil
+}
+
+func (in Inputs) logPort() (int, error) {
 	_, port, err := net.SplitHostPort(in.Logs.Endpoint)
 	if err != nil {
-		return "", fmt.Errorf("log export endpoint %q: %w", in.Logs.Endpoint, err)
+		return 0, fmt.Errorf("log export endpoint %q: %w", in.Logs.Endpoint, err)
 	}
 	logPort, err := strconv.ParseUint(port, 10, 16)
 	if err != nil {
-		return "", fmt.Errorf("log export endpoint %q has no port number: %w", in.Logs.Endpoint, err)
+		return 0, fmt.Errorf("log export endpoint %q has no port number: %w", in.Logs.Endpoint, err)
 	}
-	ports := []string{strconv.Itoa(httpsPort)}
-	if logPort != httpsPort {
-		ports = append(ports, strconv.FormatUint(logPort, 10))
+	return int(logPort), nil
+}
+
+// beyondHTTPS is each of ports but 443 once, in ascending order, so the same ports render and mark alike in any order.
+func beyondHTTPS(ports []int) []int {
+	extra := slices.Compact(slices.Sorted(slices.Values(ports)))
+	return slices.DeleteFunc(extra, func(port int) bool { return port == httpsPort })
+}
+
+func joinPorts(ports []int) string {
+	s := make([]string, 0, len(ports))
+	for _, port := range ports {
+		s = append(s, strconv.Itoa(port))
 	}
-	return strings.Join(ports, ", "), nil
+	return strings.Join(s, ", ")
 }
 
 // List is the images a gateway mirrors and the manifests it serves, read out of a component set once, and the images it
@@ -233,13 +267,27 @@ func NewList(set components.Set, extra ...components.Image) (List, error) {
 	for _, m := range set.Served {
 		fmt.Fprintf(sum, "%s %s\n", m.TalosName(), m.SHA256())
 	}
-	digest := strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum.Sum(nil)))
-	return List{images: images, served: slices.Clone(set.Served), digest: digest}, nil
+	return List{images: images, served: slices.Clone(set.Served), digest: encodeDigest(sum.Sum(nil))}, nil
 }
 
-// Digest names the list's images and manifests by their digests, so a gateway built from it is replaced only when the
-// pinned list changes.
+func encodeDigest(sum []byte) string {
+	return strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum))
+}
+
+// Digest names the list's images and manifests by their digests.
 func (l List) Digest() string { return l.digest }
+
+// Mark labels a gateway built from the list that forwards egressPorts, so the gateway is replaced only when the pinned
+// list or its ports beyond 443 change. With no port beyond 443 it is the list's digest, the label such a gateway
+// already carries.
+func (l List) Mark(egressPorts []int) string {
+	extra := beyondHTTPS(egressPorts)
+	if len(extra) == 0 {
+		return l.digest
+	}
+	sum := sha256.Sum256([]byte(l.digest + " " + joinPorts(extra)))
+	return encodeDigest(sum[:])
+}
 
 // ListDigest is the digest of the list NewList makes from set and extra.
 func ListDigest(set components.Set, extra ...components.Image) (string, error) {

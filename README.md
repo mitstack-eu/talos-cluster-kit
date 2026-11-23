@@ -42,7 +42,8 @@ describes.
 A node boots from a disk image that embeds its whole machine configuration, so
 the server needs no user data. The nodes have no public address. A gateway in
 each location is the cluster's only server with one: it forwards the nodes'
-DNS, NTP and HTTPS, and HTTP to the cluster's ingress load balancer alone. It
+DNS, NTP and HTTPS, each further port its block opens, and HTTP to the
+cluster's ingress load balancer. It
 records that traffic, and serves the image mirror and the
 larger manifests over TLS on the private network. The table names the parts in
 the order a block uses them.
@@ -90,6 +91,20 @@ Log export is optional. A builder whose cluster has no log receiver leaves
 Collector and no log destination, and the gateway's `Inputs.Logs` left at zero
 forwards HTTPS alone. `nodeconfig.Render` refuses a `LogExport` with only one
 of its two fields set.
+
+A block opens further outbound ports with `controlplane.Plane.GatewayEgressPorts`,
+which the plane passes to each gateway as `gateway.Inputs.EgressPorts`. Every
+gateway then forwards those TCP ports to any outside address, beside 443, which
+it always forwards. A runner cluster sets `[]int{80, 443}`, so a CI job fetches
+Debian packages over plain HTTP. `gateway.Render` refuses a port outside 1 to
+65535.
+
+The ports also decide when a gateway is replaced. `gateway.List.Mark` gives the
+`mitstack.dev/gateway-list` label of a gateway built from a list and its ports.
+With no port beyond 443 the label is the list's digest, so a block that leaves
+the field unset keeps its gateways. A change of the ports beyond 443 changes the
+label, and the block's next upgrade replaces each gateway with one that forwards
+them.
 
 A Cloud cluster renders once with an empty `Node`, because every node boots
 from one snapshot and takes its name from Hetzner's metadata service. A
@@ -3521,8 +3536,8 @@ then names an image the cluster cannot pull. The block commits after that.
 
 `Plane.GatewaysAwaitRelease` tells the block whether the cluster has yet to
 take the release. It reads true while some location's gateway was built from
-an earlier list, whose digest its `mitstack.dev/gateway-list` label holds in
-place of this release's. It also reads true for a cluster with no network and
+an earlier list or other egress ports, so its `mitstack.dev/gateway-list` label
+differs from the one `gateway.List.Mark` gives this release. It also reads true for a cluster with no network and
 for one built with a single gateway, since neither has taken the release. A
 location that lost its gateway awaits nothing, since the plane builds its next
 gateway from this release's list. Once it reads false, the carriage waits only

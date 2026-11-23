@@ -589,8 +589,14 @@ machine rented from Hetzner, which the cluster adopts as its worker. Robot
 holds no labels, so the cluster marks a server as a subscription's by naming
 it `mitstack-` and the subscription id.
 
+The robot cluster module's `go.mod` replaces the kit with the repository root
+and the operator module with `operator`, both directories of the same checkout.
+These tests therefore build against the kit and operator code of their own
+commit, and the first test in the table proves it.
+
 | Test | What it proves | Against what |
 |---|---|---|
+| `TestModule_BuildsAgainstTheKitAndTheOperatorModuleInTheDirectoriesBesideIt` | The test build compiles the kit's `controlplane` package and the operator module from the checkout's `controlplane` and `operator` directories. That is the code a block builds when it requires the kit, the operator module and the robot cluster module at one release | The source paths the test build records for `controlplane.NewRequestReads` and `operator.AppName`. They must be the checkout's `controlplane` and `operator` directories, and they name the module cache when the `replace` lines are missing |
 | `TestAdmits_RefusesAServerAnotherSubscriptionNamedAndOneMissingCancelledOrOutsideTheClusterLocations` | A server is admitted when it carries this subscription's name, no name, or a name that does not start with `mitstack-`. One carrying another subscription's name refuses with class `server-taken`, a cancelled one with `server-cancelled`, one outside `fsn1`, `nbg1` and `hel1` with `location-unsupported`, and a missing one with `server-not-found`. Nothing is written to Robot | `robottest`, block-kit's fake of the Robot API, holding six servers |
 | `TestWaitOutRobotLimit_AnswersRobotsRequestLimitAsAWaitAndPassesAnyOtherErrorOn` | Robot's answer that its hourly request limit is reached, wrapped or not, becomes block-kit's `handler.Waiting`, so mitstack calls again later instead of failing the call. Any other error, and no error, come back as they went in | A wrapped limit error, a connection error and no error |
 | `TestHoldsWorkerRules_ReadsAFirewallAsHeldOnlyWhileActiveWithEveryRuleTheClusterGivesIt` | A server's firewall counts as holding the worker's rules only while Robot reads it `active` and it holds each rule the cluster gives the worker, with the same source address. A rule beside them is allowed | The firewall as written, one with an extra rule, one Robot is still applying, one missing a rule, and one admitting another address |

@@ -1338,8 +1338,10 @@ locations with those recordings byte for byte, and finds none for one.
 
 ## How the database operators keep a replica in a second zone
 
-This section is for an engineer who changes where a cluster's system pods run.
-The CloudNativePG operator runs every Postgres database on a cluster, and the
+This section is for an engineer who changes where the pods talos-cluster-kit
+installs on every cluster run. Two of those pods matter here, each run by one
+Deployment. The CloudNativePG operator is the Kubernetes controller that runs
+every Postgres database on a cluster, and the
 [Barman Cloud plugin](#how-a-postgres-cluster-backs-up) backs those databases
 up. When the nodes their pods may run on span two zones or more, each runs two
 replicas in two different zones, so losing one zone leaves the other replica
@@ -1352,52 +1354,87 @@ a Kubernetes Lease, the lock object each replica tries to hold, and only the
 holder reconciles. The other replica takes the Lease over within its
 15-second lease duration once the holder stops renewing it. CloudNativePG
 documents multiple replicas under its
-[installation guide](https://github.com/cloudnative-pg/cloudnative-pg/blob/v1.30.1/docs/src/installation_upgrade.md),
-and every replica serves its webhook from the one Secret `cnpg-webhook-cert`.
-The plugin serves the operator's calls from every replica, since its call
-server needs no leader, as the
+[installation guide](https://github.com/cloudnative-pg/cloudnative-pg/blob/v1.30.1/docs/src/installation_upgrade.md).
+Every replica serves the operator's admission webhook, the check the
+Kubernetes API runs before it stores a Postgres resource, with the certificate
+in the one Secret `cnpg-webhook-cert`. The plugin answers the operator's
+backup calls from every replica, since the part that serves them needs no
+leader, as the
 [plugin's guide](https://github.com/cloudnative-pg/plugin-barman-cloud/blob/v0.16.0/web/docs/installation.mdx)
-describes under "Running Multiple Replicas". Both replicas read the same two
-cert-manager Secrets and answer behind the one Service `barman-cloud`.
+describes under "Running Multiple Replicas". Both of its replicas read their
+certificates from the cert-manager Secrets `barman-cloud-server` and
+`barman-cloud-client`, and answer behind the one Service `barman-cloud`.
 
-`Plane.Release` counts the zones from two kinds of node:
+`Plane.Release` in `controlplane/release.go` renders the
+[release](#how-a-running-cluster-takes-a-releases-components), the components
+a running cluster takes from its repository. It counts the zones from the
+nodes a pod of either Deployment may run on:
 
 | Node | Counts when | Why |
 |---|---|---|
 | A control-plane node | The plane keeps apps on its control-plane nodes | A plane that runs apps on workers taints these nodes, and neither Deployment tolerates the taint |
-| A Cloud pool worker | It is not a burst member | Every kit pod refuses a burst member, which idle removal may take away |
-| A Robot worker | Never | The plane holds no location for it, so a cluster counts one zone fewer than it may have |
+| A worker of a [Cloud pool](#how-a-block-takes-node-pools) | Its server is running, and it is not a [burst member](#steady-and-burst-members) | A server that is off holds no node a pod could use, and every kit pod refuses a burst member, which the pool removes once it is idle |
+| A [Robot worker](#the-robot-cluster-module-for-a-cluster-with-a-robot-worker), a dedicated server | Never | The plane's state lists Hetzner Cloud servers alone, so it holds no record of the worker |
+
+A Robot worker carries its zone label from its own configuration, so the
+scheduler may still place a replica on it and keeps the two apart by its zone.
+It only never turns the spread on. A Cloud worker counts once Hetzner reports
+its server running, which comes before its node joins the cluster, so the
+second replica can wait Pending until the node joins.
 
 For two zones or more, `Set.DatabaseOperatorsAcrossZones` in
-`components/zones.go` changes each Deployment as the chart renders it:
+`components/zones.go` changes each Deployment of the manifest the kit ships
+for it, which a Helm chart rendered:
 
-| Field | The chart | The kit | Why |
+| Field | As the chart renders it | As the release carries it | Why |
 |---|---|---|---|
 | `replicas` | 1 | 2 | One replica holds the Lease and the other waits in another zone |
 | `podAntiAffinity` | None | Required over `topology.kubernetes.io/zone`, counting the Deployment's own pods | The scheduler never places both replicas in one zone |
+| `nodeAffinity` | Refuses a burst member | Refuses a burst member, and requires the label `topology.kubernetes.io/zone` | The scheduler skips the zone rule on a node without the label, which the labeller adds to a new Cloud node only on its next run, up to five minutes after the node joins |
 | `strategy` of the operator | Unset, which Kubernetes reads as a rolling update of 25 percent | `RollingUpdate` with `maxSurge: 0` and `maxUnavailable: 1` | A rollout stops one replica before it starts the next, so the new one finds a zone free |
 | `strategy` of the plugin | `Recreate` | `Recreate` | The plugin's guide keeps it, so no two versions of the plugin serve the operator at once |
 
 Each Deployment also gets a PodDisruptionBudget of the same name with
-`maxUnavailable: 1`, so a node drain evicts one replica at a time. The node
-affinity that keeps both off a burst member stays as rendered. For one zone,
-the set stays as the chart renders it, with one replica and no budget, since
-the anti-affinity would leave a second replica Pending.
+`maxUnavailable: 1`. That budget limits how many of the Deployment's pods an
+eviction may take at once, so a node drain, which evicts every pod from a node
+before the node is replaced or upgraded, evicts one replica at a time. For one
+zone, the set stays as the chart renders it, with one replica and no budget,
+since the zone rule would leave a second replica Pending.
 
-The gateways serve the set as the chart renders it, and the release alone
-carries the change. A cluster's gateway list therefore does not change with
-its zones. A cluster whose Cloud pool gains a worker in a second zone takes
-the spread at its next release.
+The spread refuses a set that lacks the CloudNativePG operator, or that serves
+cert-manager without the plugin, so a renamed manifest fails the release
+rather than shipping one replica. A set without cert-manager carries no
+plugin, and the spread leaves the plugin out.
+
+While one of two zones is down, its replica cannot start again, since the zone
+rule keeps it out of the zone that is left. The budget then counts that
+replica as the one it allows, and refuses to evict the replica that is left.
+A drain of that replica's node waits, as
+[the drain's own section](#how-the-drain-waits-on-a-disruption-budget)
+describes, and a Cloud worker's replacement gives up after about an hour with
+`worker-drain-failed`. The operator that is left keeps running until the zone
+returns.
+
+The [gateways](#how-the-gateways-are-kept), one server in each location that
+serves the cluster's images and manifests to its nodes, serve the set as the
+chart renders it, and
+the release alone carries the change. What the gateways serve therefore does
+not change with a cluster's zones. A cluster whose Cloud pool gains a worker
+in a second zone takes the spread at its next release.
 
 When the plugin rolls, both of its replicas stop before the new ones start,
-so for the time a pod takes to start the operator finds no plugin. A Cluster
-that names it then fails its reconcile and is retried.
+so for the time a pod takes to start the operator finds no plugin. A
+CloudNativePG Cluster resource that names the plugin for its backups then
+fails its reconcile and is retried.
 
 `TestDatabaseOperatorsAcrossZones_RunTwoReplicasInDistinctZonesUnderADisruptionBudgetOfOneAndLeaveOneZoneAsBuilt`
 in `components/components_test.go` checks each field above for two and three
 zones, and the unchanged set for one.
+`TestDatabaseOperatorsAcrossZones_RefusesASetThatLacksAnOperatorItMustSpread`
+checks the refusals.
 `TestRelease_SpreadsTheDatabaseOperatorsOverTheZonesOfTheNodesAPodWithoutATolerationRunsOn`
-in `controlplane/release_test.go` checks which nodes count.
+and `TestRelease_CountsNoZoneForACloudWorkerThatIsOff` in
+`controlplane/release_test.go` check which nodes count.
 
 ## How AWS comes to trust a cluster's tokens
 

@@ -31,29 +31,38 @@ const (
 // databaseOperator is a Deployment the release runs twice once its pods may run in two zones, named as its manifest is.
 type databaseOperator struct {
 	name string
-	// rollsOneAtATime replaces the replicas one by one. The Barman Cloud plugin keeps its chart's Recreate, which its
-	// installation guide keeps so no two versions of the plugin serve the operator at once.
+	// The Barman Cloud plugin keeps its chart's Recreate, which its installation guide keeps so no two versions of the
+	// plugin serve the operator at once.
 	rollsOneAtATime bool
+	// servedWith is the manifest a set must serve for it to carry the operator, since the Barman Cloud plugin needs
+	// cert-manager; an empty one means every set carries it.
+	servedWith string
 }
 
-var databaseOperators = []databaseOperator{{name: "cloudnative-pg", rollsOneAtATime: true}, {name: "plugin-barman-cloud"}}
+var databaseOperators = []databaseOperator{
+	{name: "cloudnative-pg", rollsOneAtATime: true},
+	{name: "plugin-barman-cloud", servedWith: "cert-manager"},
+}
 
-// DatabaseOperatorsAcrossZones is the set whose CloudNativePG operator and Barman Cloud plugin, where it holds them, run
-// two replicas in two distinct zones of zones under a disruption budget of one, so losing a zone leaves one to promote
-// a standby. For zones that name fewer than two, it is the set as it is, since a second replica could never schedule.
+// DatabaseOperatorsAcrossZones runs the database operators as two replicas in distinct zones under a disruption budget
+// of one, so losing a zone leaves one to promote a standby, and leaves the set as it is for fewer than two zones,
+// since a second replica could never schedule.
 func (s Set) DatabaseOperatorsAcrossZones(zones []string) (Set, error) {
 	if len(distinctZones(zones)) < databaseOperatorReplicas {
 		return s, nil
 	}
 	served := slices.Clone(s.Served)
-	for i, m := range served {
-		j := slices.IndexFunc(databaseOperators, func(op databaseOperator) bool { return op.name == m.Name })
-		if j < 0 {
+	for _, op := range databaseOperators {
+		if op.servedWith != "" && !slices.ContainsFunc(served, func(m Manifest) bool { return m.Name == op.servedWith }) {
 			continue
 		}
-		spread, err := databaseOperators[j].spread(m.Bytes)
+		i := slices.IndexFunc(served, func(m Manifest) bool { return m.Name == op.name })
+		if i < 0 {
+			return Set{}, fmt.Errorf("the set serves no %s manifest to spread over the zones %v", op.name, distinctZones(zones))
+		}
+		spread, err := op.spread(served[i].Bytes)
 		if err != nil {
-			return Set{}, fmt.Errorf("spreading %s over the zones %v: %w", m.Name, distinctZones(zones), err)
+			return Set{}, fmt.Errorf("spreading %s over the zones %v: %w", op.name, distinctZones(zones), err)
 		}
 		served[i].Bytes = spread
 	}
@@ -90,10 +99,15 @@ func (op databaseOperator) spread(manifest []byte) ([]byte, error) {
 	}
 	affinity := "      affinity:\n        podAntiAffinity:\n          requiredDuringSchedulingIgnoredDuringExecution:\n" +
 		tmpl.Indent(zoneTermIndent, string(zoneTerm)) + "\n"
+	// The scheduler skips a required zone term on a node without the zone label, which the topology labeller gives a
+	// Cloud node only on its next run, so a node rule requires the label beside the chart's rule against burst members.
+	burstRule := "\n                  - key: " + BurstLabel + "\n                    operator: DoesNotExist\n"
+	zoneLabelRule := "                  - key: " + zoneTopologyKey + "\n                    operator: Exists\n"
 	out := manifest
 	for _, edit := range []struct{ field, anchor, replacement string }{
 		{"replicas", "\n  replicas: 1\n", "\n" + replicas},
 		{"affinity", "\n      affinity:\n", "\n" + affinity},
+		{"node rule against burst members", burstRule, burstRule + zoneLabelRule},
 	} {
 		if n := bytes.Count(out, []byte(edit.anchor)); n != 1 {
 			return nil, fmt.Errorf("the manifest holds a Deployment's %s %d times, want once", edit.field, n)
@@ -110,7 +124,6 @@ func (op databaseOperator) spread(manifest []byte) ([]byte, error) {
 	return append(append(out, "---\n"...), budget...), nil
 }
 
-// deployment finds the operator's Deployment among the manifest's documents.
 func (op databaseOperator) deployment(manifest []byte) (deployment, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(manifest))
 	for {

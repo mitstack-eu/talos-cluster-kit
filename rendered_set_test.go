@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/stretchr/testify/assert"
@@ -390,6 +391,50 @@ func TestManifests_NoRoleBindingLetsARunnerJobsServiceAccountReadTheRunnerToken(
 	for _, group := range []string{"group:system:serviceaccounts", "group:system:serviceaccounts:" + components.RunnersNamespace, "group:system:authenticated"} {
 		assert.NotContains(t, readers, group, "a group that holds the account %s each job runs as", account)
 	}
+}
+
+// mountsSecret is whether spec mounts the Secret named secret, as a volume of its own or as a projected source.
+func mountsSecret(spec map[string]any, secret string) bool {
+	for _, raw := range listOf(spec["volumes"]) {
+		volume, _ := raw.(map[string]any)
+		if source, _ := volume["secret"].(map[string]any); source["secretName"] == secret {
+			return true
+		}
+		projected, _ := volume["projected"].(map[string]any)
+		for _, rawSource := range listOf(projected["sources"]) {
+			source, _ := rawSource.(map[string]any)
+			if projectedSecret, _ := source["secret"].(map[string]any); projectedSecret["name"] == secret {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func TestManifests_EveryPodThatMountsTheRunnerSweepsCopyOfTheRunnerTokenRunsOnTheControlPlane(t *testing.T) {
+	plane := tokenAndLeasePlane(t, time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC))
+	in := runnerInputs()
+	plane.Runners = &in
+	release, err := plane.Release(controlplane.State{})
+	require.NoError(t, err)
+
+	var mounts []string
+	for _, m := range release.Components {
+		for _, doc := range testutil.Documents(t, m.Bytes) {
+			found := map[string]map[string]any{}
+			podSpecs(doc, "", found)
+			for path, spec := range found {
+				if !mountsSecret(spec, components.RunnerSweepTokenSecret) {
+					continue
+				}
+				where := fmt.Sprintf("%s: %v %v%s", m.Name, doc["kind"], testutil.Field(t, doc, "metadata", "name"), path)
+				mounts = append(mounts, where)
+				assert.True(t, runsOnTheControlPlane(spec), "%s mounts the lease job's copy of the runner token, so it selects %s and tolerates its NoSchedule taint, where no job runs",
+					where, controlPlaneRole)
+			}
+		}
+	}
+	assert.Len(t, mounts, 1, "the node report's pod alone mounts the copy, which shows the search finds a mount: %v", mounts)
 }
 
 // podRequest is the CPU in millicores and the memory in bytes a pod or a container asks the scheduler for.

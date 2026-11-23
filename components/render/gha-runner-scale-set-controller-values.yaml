@@ -4,6 +4,13 @@ image:
   tag: 0.15.1@sha256:4b51a20db717b194e2f3fa96cfe2ddcb21602811f79053c75fd1a383517b9f90
 podLabels:
   mitstack.dev/app: mitstack-runners
+# The controller reads the runner token, so it runs on the control plane, where no job's pod runs.
+nodeSelector:
+  node-role.kubernetes.io/control-plane: ""
+tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 65532

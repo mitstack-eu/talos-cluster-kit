@@ -44170,3 +44170,9 @@ spec:
       volumes:
       - name: tmp
         emptyDir: {}
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/control-plane
+          operator: Exists

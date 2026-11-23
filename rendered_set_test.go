@@ -183,6 +183,11 @@ func boundToItsVolumesNode(pod renderedPod) bool {
 
 // refusesBurstNodes is whether each required node selector term of spec holds a pod off a node with the burst label.
 func refusesBurstNodes(spec map[string]any) bool {
+	return refusesNodesLabelled(spec, components.BurstLabel)
+}
+
+// refusesNodesLabelled is whether each required node selector term of spec holds a pod off a node with label.
+func refusesNodesLabelled(spec map[string]any, label string) bool {
 	affinity, _ := spec["affinity"].(map[string]any)
 	node, _ := affinity["nodeAffinity"].(map[string]any)
 	required, _ := node["requiredDuringSchedulingIgnoredDuringExecution"].(map[string]any)
@@ -192,7 +197,7 @@ func refusesBurstNodes(spec map[string]any) bool {
 		expressions, _ := term["matchExpressions"].([]any)
 		if !slices.ContainsFunc(expressions, func(e any) bool {
 			m, _ := e.(map[string]any)
-			return m["key"] == components.BurstLabel && m["operator"] == "DoesNotExist"
+			return m["key"] == label && m["operator"] == "DoesNotExist"
 		}) {
 			return false
 		}
@@ -271,6 +276,119 @@ func TestManifests_TheRunnerServicesKeepARCsControllerAndTheListenerOffBurstMemb
 	require.Len(t, runners, 1, "the runner's pod template")
 	for _, pod := range append(controller, listeners...) {
 		assert.True(t, refusesBurstNodes(pod.spec), "%s has no required node affinity %s DoesNotExist, and a burst member goes with the idle window", pod.where, components.BurstLabel)
+	}
+}
+
+// runsOnTheControlPlane is whether spec selects the control-plane nodes and tolerates the NoSchedule taint they keep
+// when apps run on workers alone.
+func runsOnTheControlPlane(spec map[string]any) bool {
+	selector, _ := spec["nodeSelector"].(map[string]any)
+	_, selects := selector[controlPlaneRole]
+	return selects && toleratesControlPlane(spec)
+}
+
+func TestManifests_TheRunnerServicesRunEveryPodThatHoldsTheRunnerTokenOnTheControlPlaneAndEachJobOffIt(t *testing.T) {
+	var holders, jobs []renderedPod
+	for _, pod := range renderedPods(t) {
+		switch {
+		case pod.source == "runners/gha-runner-scale-set-controller" && pod.kind == "Deployment",
+			pod.source == "runners/mitstack-runner-scale-set" && strings.HasSuffix(pod.where, ".spec.listenerTemplate.spec"),
+			pod.source == runnerCredentials && pod.workload == "mitstack-runner-lease":
+			holders = append(holders, pod)
+		case runsAJob(pod):
+			jobs = append(jobs, pod)
+		}
+	}
+
+	require.Len(t, holders, 3, "the pods of ARC's controller, the listener and the lease job")
+	require.Len(t, jobs, 1, "the runner's pod template")
+	for _, pod := range holders {
+		assert.True(t, runsOnTheControlPlane(pod.spec), "%s holds the runner token, so it selects %s and tolerates its NoSchedule taint, where no job runs",
+			pod.where, controlPlaneRole)
+	}
+	assert.True(t, refusesNodesLabelled(jobs[0].spec, controlPlaneRole), "%s has no required node affinity %s DoesNotExist, so a job may run beside the runner token",
+		jobs[0].where, controlPlaneRole)
+}
+
+// secretReaders are the subjects, as namespace/name for a service account, group:name for a group and user:name for a
+// user, that a rendered binding lets get, list or watch the Secret named secret in namespace.
+func secretReaders(t *testing.T, namespace, secret string) []string {
+	t.Helper()
+	docs := renderedDocs(t)
+	rules := map[string][]any{}
+	for _, d := range docs {
+		if d.doc["kind"] == "Role" || d.doc["kind"] == "ClusterRole" {
+			ns, _ := testutil.Field(t, d.doc, "metadata", "namespace").(string)
+			key := fmt.Sprintf("%v/%s/%v", d.doc["kind"], ns, testutil.Field(t, d.doc, "metadata", "name"))
+			rules[key] = slices.Concat(rules[key], listOf(d.doc["rules"]))
+		}
+	}
+	readers := map[string]bool{}
+	for _, d := range docs {
+		ns, _ := testutil.Field(t, d.doc, "metadata", "namespace").(string)
+		bindingNamespace := ""
+		switch {
+		// Argo CD applies a Role or RoleBinding rendered without a namespace to its Application's, which may be namespace.
+		case d.doc["kind"] == "RoleBinding" && (ns == namespace || ns == ""):
+			bindingNamespace = namespace
+		case d.doc["kind"] != "ClusterRoleBinding":
+			continue
+		}
+		ref, _ := d.doc["roleRef"].(map[string]any)
+		// A ClusterRole's key has no namespace, and a Role rendered without one counts as one in the binding's.
+		granted := rules[fmt.Sprintf("%v//%v", ref["kind"], ref["name"])]
+		if ref["kind"] == "Role" {
+			granted = slices.Concat(rules[fmt.Sprintf("Role/%s/%v", bindingNamespace, ref["name"])], granted)
+		}
+		if !grantsSecretRead(granted, secret) {
+			continue
+		}
+		for _, raw := range listOf(d.doc["subjects"]) {
+			subject, _ := raw.(map[string]any)
+			switch subject["kind"] {
+			case "Group":
+				readers[fmt.Sprintf("group:%v", subject["name"])] = true
+			case "User":
+				readers[fmt.Sprintf("user:%v", subject["name"])] = true
+			default:
+				// The API server reads a service account subject with no namespace as one in its binding's namespace.
+				subjectNamespace, _ := subject["namespace"].(string)
+				if subjectNamespace == "" {
+					subjectNamespace = bindingNamespace
+				}
+				readers[fmt.Sprintf("%s/%v", subjectNamespace, subject["name"])] = true
+			}
+		}
+	}
+	return slices.Sorted(maps.Keys(readers))
+}
+
+// grantsSecretRead is whether a rule of rules lets its holder get, list or watch the Secret named secret.
+func grantsSecretRead(rules []any, secret string) bool {
+	for _, raw := range rules {
+		rule, _ := raw.(map[string]any)
+		groups, resources, verbs, names := listOf(rule["apiGroups"]), listOf(rule["resources"]), listOf(rule["verbs"]), listOf(rule["resourceNames"])
+		core := slices.Contains(groups, any("")) || slices.Contains(groups, any("*"))
+		onSecrets := slices.Contains(resources, any("secrets")) || slices.Contains(resources, any("*"))
+		reads := slices.ContainsFunc(verbs, func(v any) bool { return v == "get" || v == "list" || v == "watch" || v == "*" })
+		named := len(names) == 0 || slices.Contains(names, any(secret))
+		if core && onSecrets && reads && named {
+			return true
+		}
+	}
+	return false
+}
+
+func TestManifests_NoRoleBindingLetsARunnerJobsServiceAccountReadTheRunnerToken(t *testing.T) {
+	job := runnerPod(t)
+	account := components.RunnersNamespace + "/" + testutil.Field(t, job.spec, "serviceAccountName").(string)
+
+	readers := secretReaders(t, components.RunnersNamespace, components.RunnerTokenSecret)
+
+	assert.Contains(t, readers, components.RunnersNamespace+"/arc-gha-rs-controller", "ARC's controller reads the token to register the scale set, which shows the search finds a reader")
+	assert.NotContains(t, readers, account, "the account %s each job runs as", account)
+	for _, group := range []string{"group:system:serviceaccounts", "group:system:serviceaccounts:" + components.RunnersNamespace, "group:system:authenticated"} {
+		assert.NotContains(t, readers, group, "a group that holds the account %s each job runs as", account)
 	}
 }
 

@@ -58,7 +58,14 @@ spec:
     spec:
       backoffLimit: 0
       template:
+        # The lease job writes the runner token, so it runs on the control plane, where no CI job's pod runs.
         spec:
+          nodeSelector:
+            {{ .ControlPlaneLabel }}: ""
+          tolerations:
+            - key: {{ .ControlPlaneLabel }}
+              operator: Exists
+              effect: NoSchedule
           affinity:
             nodeAffinity:
               requiredDuringSchedulingIgnoredDuringExecution:

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -182,17 +183,27 @@ func TestManifests_RunsKubeBenchAsRootOnTheHostsConfigWithNoTokenAndKubescapeAsN
 	assert.Equal(t, locked(0, false), testutil.Field(t, bench, "securityContext"), "kube-bench reads root-owned files on the host")
 	assert.Equal(t, locked(65532, true), testutil.Field(t, scan, "securityContext"),
 		"kubescape, which reads no host file, cannot reach a root process through the host's process table")
-	assert.Equal(t, map[string]any{"/tmp": nil, "/results": nil, "/etc/kubernetes": true, "/var/lib/kubelet": true, "/var/lib/etcd": true},
+	scheduler, controllerManager := constants.KubernetesSchedulerSecretsDir, constants.KubernetesControllerManagerSecretsDir
+	assert.Equal(t, map[string]any{"/tmp": nil, "/results": nil, "/etc/kubernetes": true, "/var/lib/kubelet": true, "/var/lib/etcd": true,
+		scheduler: true, controllerManager: true},
 		mounts(t, bench), "kube-bench alone mounts the host, read-only, and holds no token")
 	assert.Equal(t, map[string]any{"/tmp": nil, "/results": nil, "/var/run/secrets/kubernetes.io/serviceaccount": true}, mounts(t, scan))
 	typeChecks := map[any]any{}
+	hostPaths := map[string]string{}
 	for _, v := range testutil.Field(t, pod, "volumes").([]any) {
 		if hostPath, ok := v.(map[string]any)["hostPath"].(map[string]any); ok {
 			typeChecks[hostPath["path"]] = hostPath["type"]
+			hostPaths[testutil.Field(t, v, "name").(string)] = hostPath["path"].(string)
 		}
 	}
-	assert.Equal(t, map[any]any{"/etc/kubernetes": "Directory", "/var/lib/kubelet": "Directory", "/var/lib/etcd": nil}, typeChecks,
-		"nothing else of the host, and no type check on etcd's directory, since Talos's kubelet checks inside its own container, which holds none")
+	assert.Equal(t, map[any]any{"/etc/kubernetes": "Directory", "/var/lib/kubelet": "Directory", "/var/lib/etcd": nil,
+		scheduler: nil, controllerManager: nil}, typeChecks,
+		"nothing else of the host, and no type check on etcd's or the kubeconfigs' directories, since Talos's kubelet checks inside its own container, which holds none of them")
+	for _, v := range testutil.Field(t, bench, "volumeMounts").([]any) {
+		if path, ok := hostPaths[testutil.Field(t, v, "name").(string)]; ok {
+			assert.Equal(t, path, testutil.Field(t, v, "mountPath"), "kube-bench reads each host directory where Talos keeps it, among the paths it looks in")
+		}
+	}
 	for _, c := range []any{bench, scan} {
 		assert.Equal(t, testutil.ToolsImage, testutil.Field(t, c, "image"))
 		assert.NotNil(t, testutil.Field(t, c, "resources", "limits", "memory"), "each step sets its memory limit")

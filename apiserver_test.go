@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v4"
@@ -70,10 +71,15 @@ func TestAPIServer_TheOutsideProbeAndTheSecurityScanWriteTheirOwnConfigMapAndNoO
 		assert.Regexp(t, `^kube-bench: failed; kubescape: (ran|failed)$`, summary(t, data, "last-run")["output"])
 	})
 
-	t.Run("the security scan writes what kube-bench read of each control-plane process and of etcd's directory as Talos owns it", func(t *testing.T) {
+	t.Run("the security scan writes what kube-bench read of each control-plane process, of etcd's directory and of each kubeconfig as Talos keeps them", func(t *testing.T) {
 		results := sharedDir(t)
 		require.NoError(t, os.Chmod(results, 0o777))
 		standIns := map[string][]string{"/results": {"-v", results + ":/results"}, "/var/lib/etcd": {"--tmpfs", "/var/lib/etcd:ro," + talosEtcdDirectory}}
+		for _, path := range []string{constants.KubernetesSchedulerSecretsDir, constants.KubernetesControllerManagerSecretsDir} {
+			secrets := sharedDir(t)
+			require.NoError(t, os.WriteFile(filepath.Join(secrets, "kubeconfig"), []byte("apiVersion: v1\nkind: Config\n"), talosKubeconfigMode))
+			standIns[path] = []string{"-v", secrets + ":" + path + ":ro"}
+		}
 		job, pod := cronJobPod(t, rendered, "mitstack-security-scan")
 		bench := testutil.Field(t, pod, "initContainers", "0")
 		benchArgs := append([]string{"run", "--rm", "--pid", "container:" + controlPlaneStandIns(t, server.toolsImage)},
@@ -92,7 +98,9 @@ func TestAPIServer_TheOutsideProbeAndTheSecurityScanWriteTheirOwnConfigMapAndNoO
 			failed = append(failed, testutil.Field(t, check, "id"))
 		}
 		for id, read := range map[string]string{"1.2.15": "the API server's --profiling=false", "1.3.2": "the controller manager's --profiling=false",
-			"1.4.1": "the scheduler's --profiling=false", "1.1.11": "mode 700 on etcd's directory, which another user owns"} {
+			"1.4.1": "the scheduler's --profiling=false", "1.1.11": "mode 700 on etcd's directory, which another user owns",
+			"1.1.12": "etcd:etcd as the owner of etcd's directory, which Talos gives etcd's user and group", "1.1.15": "mode 400 on the scheduler's kubeconfig",
+			"1.1.17": "mode 400 on the controller manager's kubeconfig"} {
 			assert.NotContains(t, failed, id, "kube-bench read %s", read)
 		}
 		assert.Regexp(t, `^kube-bench: ran; kubescape: (ran|failed)$`, summary(t, server.configMapData(t, "mitstack-security-scans"), "last-run")["output"])
@@ -288,6 +296,9 @@ func (s *apiServer) serviceAccount(t *testing.T, namespace, account string) stri
 
 // talosEtcdDirectory is the mode and owner Talos gives /var/lib/etcd, as tmpfs options.
 const talosEtcdDirectory = "mode=0700,uid=60,gid=60"
+
+// talosKubeconfigMode is the mode Talos writes the scheduler's and the controller manager's kubeconfigs with.
+const talosKubeconfigMode = 0o400
 
 // controlPlaneStandIns starts a container that holds one process named as each component kube-bench looks for, with the
 // flag the scan test reads back, and returns the container's name once every process runs.

@@ -511,13 +511,15 @@ func TestManifests_OneRunnerJobFitsOnTheSmallestPoolServerBesideEveryDaemonSetTh
 	require.Positive(t, job.milliCPU, "the runner pod requests %s, and a pod that reserves nothing fits anywhere", job)
 	require.Positive(t, job.memory, "the runner pod requests %s, and a pod that reserves nothing fits anywhere", job)
 
-	need := job
+	var sum podRequest
 	var each []string
 	for _, key := range slices.Sorted(maps.Keys(daemons)) {
-		need = need.plus(daemons[key])
+		sum = sum.plus(daemons[key])
 		each = append(each, fmt.Sprintf("%s %s", key, daemons[key]))
 	}
+	need := job.plus(sum)
 	room := workerAllocatable(smallestPoolServer(t))
+	t.Logf("the runner pod asks %s, the DaemonSets %v ask %s, together %s, and the smallest pool server offers %s", job, each, sum, need, room)
 
 	assert.LessOrEqual(t, need.milliCPU, room.milliCPU, "the runner pod's %s with the DaemonSets' %v needs %s, and the smallest pool server offers %s", job, each, need, room)
 	assert.LessOrEqual(t, need.memory, room.memory, "the runner pod's %s with the DaemonSets' %v needs %s, and the smallest pool server offers %s", job, each, need, room)

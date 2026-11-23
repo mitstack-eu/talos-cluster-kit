@@ -54,9 +54,9 @@ type Cluster struct {
 	// AppsOnWorkers keeps Talos's NoSchedule taint on the control-plane nodes, so only a pod that tolerates it, such as
 	// Cilium's, ztunnel's, the CNI agent's and the log collector's, runs there.
 	AppsOnWorkers bool
-	// DiskEviction puts the kubelet on image collection and soft eviction, which a node running CI jobs' images and
-	// caches needs before its disk fills.
-	DiskEviction bool
+	// RunsCIJobs puts the kubelet on image collection and soft eviction, which a node running CI jobs' images and
+	// caches needs before its disk fills, and a worker's on the static CPU manager policy, so a job's cores are its alone.
+	RunsCIJobs bool
 	// Release names the kit release the configuration is rendered from, which Talos sets as the node's
 	// MachineConfigAnnotation; with none the node carries no such annotation.
 	Release string
@@ -134,7 +134,7 @@ func (c Cluster) render(role machine.Type, n Node) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	cfg, err := container.New(append(c.adapt(base.Documents(), n), extra...)...)
+	cfg, err := container.New(append(c.adapt(base.Documents(), role, n), extra...)...)
 	if err != nil {
 		return nil, fmt.Errorf("assemble the configuration of cluster %s: %w", c.Name, err)
 	}

@@ -24,12 +24,22 @@ Back to [the README](../README.md).
 | Gateway | The kit's server in each location, which mirrors every image the cluster's nodes pull |
 | Node report | The kit's job that posts each node's state to the platform |
 | Report token | The token the node report and the lease job present to the platform |
+| Talos | The operating system every node runs, set up by one machine configuration per node |
+| Kubelet | The Kubernetes agent on each node, which starts the node's pods and gives them their CPU and memory |
+| Cloud pool | The cluster's workers on Hetzner Cloud servers, which grows and shrinks with the load |
 | Burst member | A Cloud worker added for a burst of load, labelled `mitstack.dev/burst` |
 | Worker | A node outside the control plane, either a Cloud pool server or a dedicated server |
+| Worker image | The disk snapshot an install builds, which every Cloud worker boots from |
 | Taint | A mark on a node that keeps off every pod without a matching toleration |
 | Toleration | A pod's declaration that it accepts a taint, so it may run on the tainted node |
 | Argo CD | The kit's deploy tool, which applies every component's manifests to the cluster |
-| Rerender | The kit's render of a running node's configuration for a new release, which keeps the settings that node already has |
+| Rerender | The kit's render of a running node's configuration for a new release, from the cluster and node settings it reads back from that node |
+| Node rollout | The kit's Job that gives each running node a release's configuration, one node at a time and without a reboot |
+| Subscribe | The call mitstack sends the operator to build or change the cluster, which the operator answers one step at a time |
+| Install | The subscribes that first build a cluster, and render every node's first configuration |
+| Update | A later subscribe that moves a running cluster onto a newer release of its block, and so onto the kit release that block release carries. The platform's API and console call it an upgrade |
+| Upgrade | A request that changes a running cluster's parameters, such as one that names runner inputs |
+| Observe | The operator's read of the cluster's state, whose status names what the next subscribe would do |
 
 A block and the other workspace terms are defined in
 [the workspace glossary](https://github.com/mitstack-eu/mitstack-workspace/blob/main/docs/glossary.md).
@@ -55,16 +65,20 @@ holds the following parts, beside every component a cluster runs anyway:
   daemon as a sidecar, so a job can build and run containers. Every volume it
   mounts is an emptyDir, it mounts no service account token, and it may run on
   a burst member. It never runs on a control-plane node.
-- A fixed CPU and memory request on the runner pod's runner and Docker daemon
-  containers, the same for every block. The figures live only in
-  `components/runners/scale-set.yaml`, so read them there. One job then fits on
-  a cx23, Hetzner's 2 vCPU and 4 GB server and the smallest a Cloud pool may
-  list. It fits beside every DaemonSet, the pods the kit runs once on each
-  node, such as the mesh and network agents. A job that finds no room on any
-  node waits, so a Cloud pool that scales adds a burst member for it, as
+- A fixed CPU and memory request on each container of the runner pod, the
+  same for every block, with a limit equal to each request. Kubernetes then
+  gives the pod its `Guaranteed` class, the class whose containers keep what
+  they asked for. The runner container asks for whole cores, so a job's steps
+  get cores of their own, as the next section explains. The figures live only
+  in `components/runners.go`, so read them there. By the sizes Hetzner
+  publishes, one job then fits on a cx23, Hetzner's 2 vCPU and 4 GB server and
+  the smallest a Cloud pool may list. It fits beside every DaemonSet, the pods
+  the kit runs once on each node, such as the mesh and network agents. A job
+  that finds no room on any node waits, so a Cloud pool that scales adds a
+  burst member for it, as
   [the README](../README.md#how-a-cloud-pool-scales-with-the-load) explains. A
   test in `rendered_set_test.go` at the kit's root sums those DaemonSets'
-  requests and fails once the job no longer fits.
+  requests against the published sizes and fails once the job no longer fits.
 - The CronJob `mitstack-runner-lease` in `mitstack-node`, which runs on the
   control plane and keeps the GitHub token ARC reads from the Secret
   `mitstack-runner-token` fresh.
@@ -83,12 +97,163 @@ which ARC's controller and listener need. Only a job's pod, which ARC labels
 `app.kubernetes.io/component: runner`, reaches the rest of the internet, since
 a job reaches whatever its workflow pulls or calls.
 
-Every node's kubelet starts collecting unused images once 80% of a disk is in
-use, and evicts pods once less than 15% of a disk is free for a minute. A
+On a cluster installed with runner services, every node's kubelet starts
+collecting unused images once 80% of a disk is in use, and evicts pods once
+less than 15% of a disk is free for a minute. A
 job's images and build caches fill a disk quickly, and an eviction stops a pod
 gracefully where a full disk would stop the node. A node the kubelet marks with the
 `node.kubernetes.io/disk-pressure` taint reads as not serving in the node
 report, so the redundancy guard counts it as down.
+
+## How a job gets cores of its own
+
+A job's steps run in the runner container. When that container shares every
+core of its node with the node's other pods, a step's timings vary with
+whatever else runs there. The Linux command `nproc`, which prints how many
+cores a process may use, then prints the node's cores rather than the job's.
+
+Kubernetes counts CPU in thousandths of a core, so `1000m` is one whole core
+and `250m` is a quarter of one. A container asks for whole cores when its CPU
+request is a whole number of them, such as `1000m` or `2000m`.
+
+Each worker of a cluster that runs CI jobs therefore runs the static CPU
+manager policy once it has taken that setting, as
+[How each node comes to run the kubelet settings](#how-each-node-comes-to-run-the-kubelet-settings)
+explains. The policy is a kubelet setting that splits the node's cores in two:
+
+1. A container of a `Guaranteed` pod that asks for whole cores gets those
+   cores alone, and no other container runs on them.
+2. Every other container shares the cores left over, which the kubelet calls
+   the shared pool.
+
+`nproc` in a step then prints the number of whole cores the runner container
+asks for, which is 1 at the request `components/runners.go` sets. The Docker daemon asks
+for a fraction of a core, and so does the init container, which copies files
+from the runner image into a shared volume before the other containers start.
+Both therefore run in the shared pool, beside the node's other pods.
+
+The kubelet refuses the static policy unless some CPU is kept for the system,
+so the shared pool never empties. Talos keeps 50m of CPU for the system on
+every node, and the kubelet rounds that up to one whole core it keeps in the
+shared pool. On a node of N cores, N minus one cores can therefore go to jobs.
+
+A cx23 shows the arithmetic. It has 2 cores, so the kubelet keeps one in the
+shared pool and one can go to a job's runner. The scheduler, which places
+pods on nodes, offers pods the node's 2000m less Talos's 50m, so 1950m. Whole
+cores it places there therefore never pass one either.
+
+The control-plane nodes keep the kubelet's default policy, `none`, under which
+every container shares every core. No job runs there.
+
+## How each node comes to run the kubelet settings
+
+The install alone decides whether a cluster's nodes run CI jobs. Every node
+boots on a configuration the install renders: the control-plane nodes, the
+dedicated worker, and the worker image every Cloud worker boots from, burst
+members included. When the plane names runner inputs at the install, the
+install renders the kubelet's CI settings into each of them.
+
+The kit keeps no record of the install's choice outside the nodes, so a
+rerender reads it back from the running node. A node that carries the disk
+eviction settings takes the CI settings of the kit release an Update carries,
+and a node without them takes none. An upgrade that names runner inputs on a
+cluster installed without them therefore leaves every kubelet as the install
+rendered it.
+
+The table below is the one place this page names kit releases. It maps the
+kit release the install ran to the settings it renders and to when a worker
+comes to run the static policy.
+
+| Kit release at the install | The kubelet's CI settings it renders | When a worker runs the static CPU manager policy |
+|---|---|---|
+| v0.117.0 or earlier, or any release on a plane without runner inputs | None | Never, since a rerender finds no disk eviction settings to read |
+| v0.118.0 to v0.128.x | The disk eviction settings, on every node | A running worker, from the node rollout of the first Update onto a kit release of the next row, with no reboot and no rebuild. A Cloud worker the cluster creates later, such as a burst member, boots from the install's worker image without the policy, and runs it from the first node rollout that reaches it |
+| v0.129.0 or later | The disk eviction settings on every node, and the static CPU manager policy on each worker | From its first boot, since its configuration or the worker image it boots from carries the policy |
+
+The platform sends an Update once the block release a subscription uses moves
+to a newer one. The kit release that block release carries decides the row an
+Update moves a running worker into.
+
+A cluster in the first row takes the policy only from a new install. For a
+running cluster, that means you delete it and create it again: an unsubscribe
+removes the cluster, and a later subscribe builds it with runner inputs on a
+block release whose kit release sits in the last row.
+
+A removal deletes every Cloud resource that carries the subscription's labels,
+as
+[How a block drives the Cloud control plane](../README.md#how-a-block-drives-the-cloud-control-plane)
+explains. Those include the worker image and the snapshot that holds the
+cluster's keys. A block built on the robot cluster module also deletes the
+cluster repository and releases the dedicated server, as
+[A cluster with no dedicated server](../README.md#a-cluster-with-no-dedicated-server)
+describes. `Cluster.Delete` in `operator/robotcluster/teardown.go` holds that
+removal.
+
+At a node rollout, Talos applies the new configuration without a reboot.
+Talos stops the kubelet, deletes the CPU manager's state file
+`cpu_manager_state` when the kubelet would refuse it under the new policy,
+and starts the kubelet again. The kubelet refuses a state file written under
+another policy, so without that step it would not start.
+
+Kubernetes applies a CPU manager policy only to the pods the kubelet starts
+after the change. Neither Talos nor the rollout drains the node first, which
+would move its pods to other nodes before the change. A job pod already
+running therefore keeps sharing its node's cores until it ends, and each later
+job gets cores of its own.
+
+### How you read which row a worker is in
+
+The kubelet's running settings tell you the row. You read them through the
+Kubernetes API's path to a node's kubelet, so you need a kubeconfig for the
+cluster, for an account that may `get` the resource `nodes/proxy`. Run this
+for a worker, with its node name in place of `<worker>`:
+
+```bash
+kubectl get --raw "/api/v1/nodes/<worker>/proxy/configz" | jq '.kubeletconfig | {evictionSoft, cpuManagerPolicy}'
+```
+
+| What it prints | What it means for the worker |
+|---|---|
+| `evictionSoft` null, `cpuManagerPolicy` `none` | The install rendered no CI settings, so the worker is in the first row and runs the policy only once the cluster is built again |
+| `evictionSoft` set, `cpuManagerPolicy` `none` | The install rendered the disk eviction settings alone, so the worker is in the middle row and runs the policy once a node rollout of a kit release from the last row reaches it |
+| `evictionSoft` set, `cpuManagerPolicy` `static` | The worker runs the policy |
+
+The node report answers a narrower question, and needs no kubeconfig. The
+kit posts it to the platform, which serves it at
+`GET /v1/subscriptions/<id>/node-reports`. Each node's `machineConfig` in it
+names the release the node's machine configuration was rendered from, by the
+digest of that release's tools image. It therefore shows whether a release's
+node rollout has reached a worker. It cannot tell the row, since a node
+without the disk eviction settings takes each later release's configuration
+without them too.
+
+### When the rollout reaches a worker created later
+
+A burst member of a cluster whose install rendered the disk eviction settings
+alone boots on the install's kit release. The node report names that release
+as the source of its machine configuration, so the kit reads the member as
+behind. The
+member's jobs share its cores until a node rollout reaches it, which takes
+these steps:
+
+1. The kit waits for a node report it trusts: one made after the cluster's
+   newest server was created, which names every node and reads each one
+   Ready. Until then the cluster reads Unknown, and its status names the
+   report it waits on.
+2. The next subscribe commits the release's rollout file again, and its Job
+   gives the member the release's configuration.
+3. When the release's earlier Job already completed, that subscribe takes the
+   rollout file out instead. Once a later node report no longer reads the
+   earlier Job, the subscribe after it commits the file again, so the rollout
+   reaches the member on the second subscribe.
+
+The kit's observe names that step in the cluster's status, such as "the next
+subscribe commits the release's machine configuration rollout", and the
+platform sends a subscribe while the observe names a step. The kit does not
+say when the platform observes the cluster after a node report arrives, so
+this page cannot say how long a member runs without the policy.
+[How an Update reaches each node's configuration](../README.md#how-an-update-reaches-each-nodes-configuration)
+gives the rollout's full rules.
 
 ## Why the runner token stays on the control plane
 
@@ -202,11 +367,9 @@ rendered from the inputs, which the build and every release carry.
 A build of a plane with runner inputs carries the runner services from its
 first boot. A plane that gains them on an upgrade replaces each gateway first,
 as the last section of this page shows, and its next release carries the rest.
-
-The kit renders the disk eviction settings into a node's configuration when it
-builds the node. A rerender keeps a running node's kubelet settings, so a
-cluster that gains the runner services by an upgrade keeps its nodes' kubelet
-settings. Each node takes the disk eviction settings only once it is rebuilt.
+Its nodes keep the kubelet settings the install rendered, as
+[How each node comes to run the kubelet settings](#how-each-node-comes-to-run-the-kubelet-settings)
+explains.
 
 ## How the GitHub token stays fresh
 
@@ -292,14 +455,15 @@ controller starts each later job on the new image.
 
 | File | What it holds |
 |---|---|
-| `components/runners.go` | `RunnerInputs`, its checks, and `Set.WithRunnerServices` and `Set.WithRunners` |
+| `components/runners.go` | `RunnerInputs`, its checks, `Set.WithRunnerServices` and `Set.WithRunners`, and the CPU and memory each container of a job's pod asks for and is limited to |
 | `components/runners/runners.yaml` | The namespace and its Cilium policy |
 | `components/runners/scale-set.yaml` | The template of the scale set, its runner pod, and the Role and RoleBinding that let ARC's controller create each listener's Role |
 | `components/runners/policies/` | The three pod policies that skip `mitstack-runners`, which `scripts/render-components.sh` writes |
 | `components/gha-runner-scale-set-controller/gha-runner-scale-set-controller.yaml` | ARC's controller and its CRDs, which `scripts/render-components.sh` renders |
 | `controlplane/runners.go` and `controlplane/manifests/runner-token.yaml` | The runner token's Secret and the lease CronJob |
 | `controlplane/scripts/cluster-tokens.sh` | The `runner-lease` verb the CronJob runs |
-| `nodeconfig/documents.go` | The kubelet's disk eviction settings |
+| `nodeconfig/documents.go` | The kubelet's disk eviction settings and a worker's static CPU manager policy |
+| `nodeconfig/rerender.go` | `Rerender`, which reads whether a running node carries the disk eviction settings |
 | `report/members.go` | The reading of a node under disk pressure |
 
 [The development page](development.md) explains how to render the

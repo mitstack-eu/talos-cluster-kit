@@ -673,14 +673,14 @@ func TestPlane_AnUpgradeThatAddsRunnerServicesReplacesEachGatewayAndTheReplaceme
 	}
 }
 
-func TestPlane_AnInstallRendersTheNodesWithDiskEvictionOnlyForAPlaneWithRunners(t *testing.T) {
+func TestPlane_AnInstallRendersTheNodesForCIJobsOnlyForAPlaneWithRunners(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		opts []func(*harness)
 		want bool
 	}{
-		{"a plane with runners puts the kubelet on eviction at 85% disk", []func(*harness){runners}, true},
-		{"a plane without runners leaves the kubelet's disk settings alone", nil, false},
+		{"a plane with runners renders its nodes' kubelet for CI jobs", []func(*harness){runners}, true},
+		{"a plane without runners leaves the kubelet's settings alone", nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t, tc.opts...)
@@ -688,7 +688,7 @@ func TestPlane_AnInstallRendersTheNodesWithDiskEvictionOnlyForAPlaneWithRunners(
 			require.NoError(t, h.converge())
 
 			require.NotEmpty(t, h.installed, "the clusters the plane installed")
-			assert.Equal(t, tc.want, h.installed[0].DiskEviction, "the cluster the install rendered")
+			assert.Equal(t, tc.want, h.installed[0].RunsCIJobs, "the cluster the install rendered")
 		})
 	}
 }

@@ -1040,8 +1040,10 @@ func kubeletSettings(t *testing.T, config []byte) map[string]any {
 	t.Helper()
 	docs := testutil.Kind(testutil.Documents(t, config), "KubeletConfig")
 	require.Len(t, docs, 1, "the KubeletConfig documents of the node's configuration")
-	settings, _ := docs[0]["config"].(map[string]any)
-	return settings
+	if settings, _ := docs[0]["config"].(map[string]any); len(settings) > 0 {
+		return settings
+	}
+	return nil
 }
 
 var diskEvictionSettings = map[string]any{
@@ -1066,18 +1068,24 @@ func withoutCPUManagerPolicy(doc map[string]any) {
 	}
 }
 
-func TestRender_RunsCIJobsCollectsImagesAndEvictsOnEveryNodeAndPutsAWorkerOnTheStaticCPUManagerPolicy(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		render func(nodeconfig.Cluster) ([]byte, error)
-		want   map[string]any
-	}{
-		{"a control-plane node, where no job runs, collects images and evicts", controlPlane(nodeconfig.Node{}), diskEvictionSettings},
-		{"a worker also gives each job's whole cores to it alone", worker(nodeconfig.Node{}), ciWorkerSettings()},
-	} {
+// kubeletNodes are each role of a cluster that does and does not run CI jobs, and the kubelet settings this release renders for it.
+var kubeletNodes = []struct {
+	name   string
+	ciJobs bool
+	render func(nodeconfig.Cluster) ([]byte, error)
+	want   map[string]any
+}{
+	{"a control-plane node of a cluster that runs CI jobs, where no job runs, collects images and evicts", true, controlPlane(nodeconfig.Node{}), diskEvictionSettings},
+	{"a worker of a cluster that runs CI jobs also gives each job's whole cores to it alone", true, worker(nodeconfig.Node{}), ciWorkerSettings()},
+	{"a control-plane node of a cluster that runs no CI job keeps the kubelet's defaults", false, controlPlane(nodeconfig.Node{}), nil},
+	{"a worker of a cluster that runs no CI job keeps the kubelet's defaults", false, worker(nodeconfig.Node{}), nil},
+}
+
+func TestRender_GivesEachNodeTheKubeletSettingsForWhetherItsClusterRunsCIJobsAndItsRole(t *testing.T) {
+	for _, tc := range kubeletNodes {
 		t.Run(tc.name, func(t *testing.T) {
 			cluster := testutil.NewCluster(t)
-			cluster.RunsCIJobs = true
+			cluster.RunsCIJobs = tc.ciJobs
 
 			got, err := tc.render(cluster)
 
@@ -1087,26 +1095,8 @@ func TestRender_RunsCIJobsCollectsImagesAndEvictsOnEveryNodeAndPutsAWorkerOnTheS
 	}
 }
 
-func TestRender_AClusterThatRunsNoCIJobKeepsTheKubeletsDefaultSettingsOnEveryNode(t *testing.T) {
-	for _, render := range []func(nodeconfig.Cluster) ([]byte, error){controlPlane(nodeconfig.Node{}), worker(nodeconfig.Node{})} {
-		got, err := render(testutil.NewCluster(t))
-
-		require.NoError(t, err)
-		assert.Empty(t, kubeletSettings(t, got), "the kubelet's settings")
-	}
-}
-
-func TestRerender_GivesARunningNodeOfACIClusterThisReleasesKubeletSettingsAndAddsNoneToANodeRenderedWithout(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		ciJobs bool
-		render func(nodeconfig.Cluster) ([]byte, error)
-		want   map[string]any
-	}{
-		{"a control-plane node rendered with disk eviction keeps it", true, controlPlane(nodeconfig.Node{}), diskEvictionSettings},
-		{"a worker rendered with disk eviction before the static CPU manager policy takes the policy", true, worker(nodeconfig.Node{}), ciWorkerSettings()},
-		{"a node rendered without disk eviction", false, controlPlane(nodeconfig.Node{}), nil},
-	} {
+func TestRerender_GivesARunningNodeRenderedBeforeTheStaticCPUManagerPolicyThisReleasesKubeletSettings(t *testing.T) {
+	for _, tc := range kubeletNodes {
 		t.Run(tc.name, func(t *testing.T) {
 			cluster := testutil.NewCluster(t)
 			cluster.RunsCIJobs = tc.ciJobs
@@ -1117,10 +1107,6 @@ func TestRerender_GivesARunningNodeOfACIClusterThisReleasesKubeletSettingsAndAdd
 			got, err := nodeconfig.Rerender(running, release)
 
 			require.NoError(t, err)
-			if tc.want == nil {
-				assert.Empty(t, kubeletSettings(t, got), "the kubelet's settings after the rerender")
-				return
-			}
 			assert.Equal(t, tc.want, kubeletSettings(t, got), "the kubelet's settings after the rerender")
 		})
 	}

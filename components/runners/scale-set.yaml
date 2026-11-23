@@ -157,6 +157,7 @@ spec:
       restartPolicy: Never
       serviceAccountName: {{ .Name }}-runner
       automountServiceAccountToken: false
+      # Each container's requests make a job that finds no room wait, so a Cloud pool that scales grows for it.
       initContainers:
         - name: init-dind-externals
           image: {{ .RunnerImage }}

@@ -967,19 +967,23 @@ server's user data when it creates the server, so only a cluster built on
 v0.27.0 or later carries that rule.
 
 A slice may also serve a hostname of its own from a namespaced Issuer that
-answers the DNS-01 challenge, a TXT record written into the zone that serves
-the name. For a Route 53 zone, cert-manager trades a token of the slice's
-service account for an AWS role, so the flows let it reach AWS STS and
+answers the DNS-01 challenge. That challenge is a TXT record that
+cert-manager writes into the zone that serves the name. For a Route 53 zone,
+cert-manager trades a token of the slice's service account for an AWS role.
+The flows therefore let cert-manager's controller reach AWS STS and
 `route53.amazonaws.com` on 443. They also let it reach
 `acme-staging-v02.api.letsencrypt.org`, Let's Encrypt's staging directory, for
-a rehearsal. cert-manager's controller runs as the service account that
-`components.CertManagerAccount` names, in the namespace
-`components.CertManagerNamespace` names, so the slice grants that account the
-right to mint a token of the slice's own service account. Before it asks
-Let's Encrypt to validate, cert-manager looks the TXT record up itself. It
-runs with
-`--dns01-recursive-nameservers-only`, so it asks cluster DNS, since the flows
-let it reach no zone's own name servers.
+a rehearsal. A separate spec in the flows selects the controller alone by its
+name and component labels, so the CA injector, the webhook and trust-manager
+in the same namespace get none of this reach.
+
+cert-manager's controller runs as the service account that
+`components.CertManagerAccount` names, in the namespace that
+`components.CertManagerNamespace` names. The slice grants that account the
+right to mint a token of the slice's own service account. Before cert-manager
+asks Let's Encrypt to validate, it looks the TXT record up itself. The
+controller runs with `--dns01-recursive-nameservers-only`, so it asks cluster
+DNS, because the flows let it reach no zone's own name servers.
 
 `plane.go`, `converge.go`, `install.go` and `observe.go` hold the plane, and
 `api.go` holds the Hetzner Cloud client behind the `API` interface. The

@@ -977,13 +977,14 @@ a rehearsal. A separate spec in the flows selects the controller alone by its
 name and component labels, so the CA injector, the webhook and trust-manager
 in the same namespace get none of this reach.
 
-cert-manager's controller runs as the service account that
-`components.CertManagerAccount` names, in the namespace that
-`components.CertManagerNamespace` names. The slice grants that account the
-right to mint a token of the slice's own service account. Before cert-manager
-asks Let's Encrypt to validate, it looks the TXT record up itself. The
-controller runs with `--dns01-recursive-nameservers-only`, so it asks cluster
-DNS, because the flows let it reach no zone's own name servers.
+cert-manager's controller runs as the service account `cert-manager`, which
+`components.CertManagerAccount` names, in the namespace `cert-manager`, which
+`components.CertManagerNamespace` names. The slice's Role and RoleBinding
+grant that account the right to mint a token of the slice's own service
+account. Before cert-manager asks Let's Encrypt to validate, it looks the TXT
+record up itself. The controller's flag `--dns01-recursive-nameservers-only`
+makes it ask cluster DNS, because the flows let it reach no zone's own name
+servers.
 
 `plane.go`, `converge.go`, `install.go` and `observe.go` hold the plane, and
 `api.go` holds the Hetzner Cloud client behind the `API` interface. The

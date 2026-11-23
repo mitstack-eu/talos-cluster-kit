@@ -25,6 +25,10 @@ Back to [the README](../README.md).
 | Node report | The kit's job that posts each node's state to the platform |
 | Report token | The token the node report and the lease job present to the platform |
 | Burst member | A Cloud worker added for a burst of load, labelled `mitstack.dev/burst` |
+| Worker | A node outside the control plane, either a Cloud pool server or a dedicated server |
+| Taint | A mark on a node that keeps off every pod without a matching toleration |
+| Toleration | A pod's declaration that it accepts a taint, so it may run on the tainted node |
+| Argo CD | The kit's deploy tool, which applies every component's manifests to the cluster |
 | Rerender | The kit's render of a running node's configuration for a new release, which keeps the settings that node already has |
 
 A block and the other workspace terms are defined in
@@ -102,25 +106,26 @@ control-plane nodes, where no job's pod runs:
 3. The lease job writes a new token into the Secret every 30 minutes.
 
 Each of those pods selects the label Talos gives a control-plane node,
-`node-role.kubernetes.io/control-plane`. When a cluster runs its apps on
-workers alone, Talos also gives each control-plane node a NoSchedule taint
-under the same key, which keeps off every pod that does not declare it
-accepts the taint. These three pods declare it with a toleration. The runner
+`node-role.kubernetes.io/control-plane`. When a plane sets `AppsOnWorkers`,
+so its apps run on workers alone, Talos also gives each control-plane node a
+NoSchedule taint under the same key, which keeps off every pod that has no
+toleration for it. These three pods carry that toleration. The runner
 pod's node affinity refuses the label. The account a job runs as mounts no
 service account token, and no role bound to it reads the Secret, so it cannot
 read the token through the Kubernetes API either.
 
 Since a job never runs on a control-plane node, a cluster with runner services
-needs at least one worker, or every job waits unscheduled.
+needs at least one worker, or a Cloud pool that can add one, or every job
+waits unscheduled. The plane does not refuse a cluster without either, since
+it sees only the workers that exist and not how far the block's pool may grow.
 
 This placement leaves two paths open. Several components on every cluster,
 Argo CD's application controller among them, hold cluster-wide roles that may
 read every Secret, the runner token included. Argo CD's application controller
 selects only Linux nodes, so it may run on a worker beside a job, and a job
 that escapes onto that worker could use its account. Jobs from different
-repositories can also share a
-worker, and a job that escapes may reach what that node holds for the other
-jobs on it. Closing the first path would take workers that run CI jobs and
+repositories can also share a worker, and a job that escapes may reach what
+that node holds for the other jobs on it. Closing the first path would take workers that run CI jobs and
 nothing else, and closing the second would take one job per worker.
 
 ## How the parts fit together

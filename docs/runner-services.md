@@ -147,9 +147,10 @@ explains. The policy is a kubelet setting that splits the node's cores in two:
 
 `nproc` in a step then prints the number of whole cores the runner container
 asks for, which is 1 at the request `components/runners.go` sets. The Docker daemon asks
-for a fraction of a core, and so does the init container, which copies files
-from the runner image into a shared volume before the other containers start.
-Both therefore run in the shared pool, beside the node's other pods.
+for a fraction of a core, and so do the two init containers that run before
+the others start. One copies files from the runner image into a shared volume,
+and `npmrc` writes the npm configuration that names the npm cache. All three
+therefore run in the shared pool, beside the node's other pods.
 
 Everything a job asks the Docker daemon to run, such as the instructions of a
 `docker build`, a `docker run` container or a service container, runs inside
@@ -646,10 +647,10 @@ Every cache sweeps its disk every five minutes. The sweep first removes each
 entry unused for 14 days. It then keeps the most recently used entries that fit
 the sweep limit and removes the rest. An entry larger than the whole sweep
 limit goes alone, and the older entries that fit stay. An entry's last use is
-the later of the times it was last read and last written. The Go and npm caches mark an entry
-each time they serve it. The registry's reads move only the read time, which
-the node's file system updates at most once a day, so a blob's last use is
-exact to the day.
+the later of the times it was last read and last written. The Go and npm
+caches mark an entry each time they serve it. The registry's reads move only
+the read time, which the node's file system updates at most once a day, so a
+blob's last use is exact to the day.
 
 The registry also drops each image it pulled 14 days after the pull, and pulls
 it again on the next ask. It keeps no cache of blob descriptors, since such a
@@ -670,14 +671,20 @@ such fallback, so each `npm install` fails until `npm-cache` serves again.
 
 Argo CD is the tool that applies the kit's manifests inside the cluster. It
 applies them as Applications, each a group of objects, and judges each object
-an Application holds as `Healthy`, `Progressing` or `Degraded`. The node report
-the cluster sends every five minutes carries those judgements.
+an Application holds, for example as `Healthy`, `Progressing`, `Degraded` or
+`Missing`. The node report the cluster sends every five minutes carries those
+judgements.
 
 Each time the cluster's operator observes the cluster, it calls the plane's
 `Unhealthy` and hands the platform the cause and detail it returns. Both are
 empty when the cluster is well. The cause for a cache is
 `CauseRunnerCacheDown`, which the platform's catalogue lists as a transient
-failure: one that clears on its own once the cache serves again.
+failure: one that clears on its own once the cache serves again. It reads the
+same whichever cache is down, and the detail names the cache:
+
+```text
+a runner package cache does not serve, so its jobs fetch past it from the internet, and each npm install fails while it is the npm cache; the detail names the cache, so read its pod's log
+```
 
 `Unhealthy` reads the newest node report for Argo CD's health of each cache's
 Deployment. When any reads other than `Healthy`, or the caches' Application

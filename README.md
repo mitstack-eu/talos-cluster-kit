@@ -1643,32 +1643,57 @@ list. An image outside the list passes on its digest alone, and so does every
 image once a repository leaves the list. An empty list renders no manifest, so
 such a cluster checks no signature and its Kyverno keeps the reach it had.
 
-The robot cluster module fills `Plane.Signers` from the request mitstack
-sends it. That module, in `operator/robotcluster/`, is the Go code the block
-hcloud-hrobot-talos-cluster runs. The request carries the list in its
-`signers` param, one string in which a comma separates one entry from the
-next. Within an entry, `|` separates the fields in this order.
+The robot cluster module sets `Plane.Signers`, the signer list this section
+describes, from the request mitstack sends it. That module, in
+`operator/robotcluster/`, is the Go code that the block
+`hcloud-hrobot-talos-cluster` runs. A request names the cluster mitstack wants
+and carries its settings as params, which are string values by name. The list
+arrives in the `signers` param, one string in which a comma separates one
+entry from the next. Within an entry, `|` separates the fields, in the order
+of this table.
 
-| Field | What it holds | Example |
-|---|---|---|
-| Repository | The image repository, with no tag | `123456789012.dkr.ecr.eu-central-1.amazonaws.com/shop-api` |
-| Issuer | The CI provider that issued the build's token | `https://token.actions.githubusercontent.com` |
-| Subject | The build pipeline the token names | `https://github.com/acme/shop/.github/workflows/build.yml@refs/heads/main` |
-| Pull Secret | For a private registry only, the Secret holding its login, as `namespace/name` | `app-shop/ecr-pull` |
+| Field | Required | What it holds | Example |
+|---|---|---|---|
+| Repository | Yes | The image repository, written without a tag | `123456789012.dkr.ecr.eu-central-1.amazonaws.com/shop-api` |
+| Issuer | Yes | The address of the CI provider that issued the build's short-lived identity token, which the keyless signature's certificate names | `https://token.actions.githubusercontent.com` |
+| Subject | Yes | The build pipeline that token names | `https://github.com/acme/shop/.github/workflows/build.yml@refs/heads/main` |
+| Pull Secret | Only for a private registry | The Secret holding the registry's login, as `namespace/name` | `app-shop/ecr-pull` |
 
-The module refuses a list it cannot render before it changes anything. That
-covers a list `SignaturePolicy` refuses, and a pull Secret on a cluster that
-does not host the mitstack platform, since only a hosting cluster copies the
-Secret for Kyverno. The refusal reaches mitstack with the class
-`invalid-param`, which marks a param the block cannot act on, and its reason
-says which entry fails and why. While the list stays refused, the module's
-observe, its reading of the cluster, reports the cluster unknown with the
-same reason. The dry run of an upgrade, `PlanReplacements`, refuses the same
-list, so mitstack shows the refusal before it sends the upgrade.
+A list of two entries, the first for a public repository on GitHub's registry
+and the second for a private one in Amazon Elastic Container Registry (ECR),
+is this one line.
 
-An upgrade that changes the list carries the new policy in the release it
-commits to the cluster repository. An upgrade that empties the list takes the
-policy out of that release.
+```text
+ghcr.io/acme/shop-web|https://token.actions.githubusercontent.com|https://github.com/acme/shop/.github/workflows/build.yml@refs/heads/main,123456789012.dkr.ecr.eu-central-1.amazonaws.com/shop-api|https://token.actions.githubusercontent.com|https://github.com/acme/shop/.github/workflows/build.yml@refs/heads/main|app-shop/ecr-pull
+```
+
+An empty `signers` param, or a request with none, is an empty list.
+
+The module refuses a list the signature policy cannot hold before it changes
+anything. It refuses each list `components.SignaturePolicy` refuses, such as
+an entry missing a field, a repository named twice, or a private registry's
+entry with no pull Secret. It also refuses a pull Secret on a cluster that
+does not host the platform, which is a cluster whose request does not set the
+`hostsPlatform` param to `true`. Only a cluster that hosts the platform runs
+External Secrets, which copies each pull Secret into Kyverno's namespace, as
+[the section on private registries](#how-kyverno-reads-a-private-registry)
+explains. The refusal reaches mitstack with the class `invalid-param`, which
+marks a param the block cannot act on, and its reason says which entry fails
+and why.
+
+mitstack also asks the module to read the cluster's state, a call the module
+names its observe. While the list stays refused, the observe reports the
+cluster's state to mitstack as unknown, with the same reason. Before mitstack sends an upgrade, it runs the upgrade's dry run,
+the module's `PlanReplacements`, which says what the upgrade would replace.
+The dry run refuses each list the module refuses, so mitstack shows the
+refusal before it sends the upgrade.
+
+An upgrade that changes the list puts the new signature policy in the
+cluster's next release, the set of files the module commits to the cluster
+repository for Argo CD to apply, as
+[How a running cluster takes a release's components](#how-a-running-cluster-takes-a-releases-components)
+explains. An upgrade whose `signers` param is empty takes the policy out of
+that release.
 
 Kyverno reads each signature from the registry that holds the image. It
 checks the signature's certificate against Sigstore's trust root, the keys

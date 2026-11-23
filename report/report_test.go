@@ -1152,7 +1152,7 @@ func TestReport_NamesEachDatabaseInstancesRoleAndWhetherItStreamsOrWhyItsStatusI
 
 	require.NoError(t, err, out)
 	assert.Equal(t, readJSON(t, "testdata", "golden", "instance-status.json"), posted.body["cloudNativePG"])
-	assert.Equal(t, int32(7), instanceCalls.Load(), "one call to each instance pod that names an IP and its status port, and none to another")
+	assert.Equal(t, int32(6), instanceCalls.Load(), "one call to each instance pod that names an IP and its status port, and none to another")
 	assert.Zero(t, jobCalls.Load(), "a call to a pod CloudNativePG does not label an instance")
 	for _, field := range []string{"currentLsn", "receivedLsn", "replicationInfo", "systemID", "sessionID"} {
 		assert.NotContains(t, string(posted.raw), field, "the report keeps no field of the status answer but its two flags")

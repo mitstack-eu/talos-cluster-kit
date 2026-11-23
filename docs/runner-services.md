@@ -19,6 +19,7 @@ Back to [the README](../README.md).
 | Lease | A short-lived credential the platform grants a cluster, here a GitHub token |
 | ARC | actions-runner-controller, GitHub's operator for self-hosted runners |
 | Runner group | A group of an organisation's self-hosted runners, which decides the repositories they serve |
+| Scale set | ARC's `AutoscalingRunnerSet`: the runners a workflow reaches by naming the scale set in `runs-on`, which ARC starts as jobs wait |
 | dind | Docker in Docker: a Docker daemon in a sidecar container of the job's pod |
 | emptyDir | A Kubernetes volume that starts empty with its pod and is deleted with it |
 | Gateway | The kit's server in each location, which mirrors every image the cluster's nodes pull |
@@ -57,9 +58,9 @@ A cluster runs runner services when its plane names runner inputs. It then
 holds the following parts, beside every component a cluster runs anyway:
 
 - The namespace `mitstack-runners`, at the privileged Pod Security level.
-  Each job's Docker daemon runs privileged, or holds added capabilities and
-  unconfined profiles on a runner group that isolates its jobs, and the
-  baseline level refuses both.
+  Each job's Docker daemon runs privileged or, on a runner group that isolates
+  its jobs, holds added capabilities and unconfined profiles. The baseline
+  level refuses both.
 - ARC's controller, which watches that namespace alone and runs on the
   control plane. The kit renders it from the gha-runner-scale-set-controller
   0.15.1 chart.
@@ -330,10 +331,11 @@ below. A local test ran the daemon with all of them on kind, a Kubernetes
 cluster whose nodes are Docker containers on one workstation, and then took
 each setting away alone. Each row gives what failed without it.
 
-A capability is one of the powers Linux splits root's into, such as mounting
-a filesystem. Seccomp is the kernel's filter of the system calls a process may
-make, and AppArmor is a kernel profile of the files and actions a process may
-use.
+Linux splits root's power into parts it calls capabilities, such as the power
+to mount a filesystem, so a process can hold some of them alone. A Linux
+capability has nothing to do with a block's capability in the terms above.
+Seccomp is the kernel's filter of the system calls a process may make, and
+AppArmor is a kernel profile of the files and actions a process may use.
 
 | Setting on the `dind` container | What failed without it in the local test |
 |---|---|
@@ -632,7 +634,7 @@ GitHub answers 404 for a runner it no longer lists, as when ARC removed it
 after the list, so the sweep counts that runner removed. Whether GitHub also
 answers 404 to a token that lacks the right to remove a runner is not yet
 proven. A later sweep that removes the same runner again shows that GitHub
-still lists it, so the block's check names that runner.
+still lists it, so the block's check, described below, names that runner.
 
 The report's `runners` member says what the sweep did. This run listed three
 runners, removed one and left one busy runner for later. GitHub refused the
@@ -658,12 +660,13 @@ The fields mean this:
 - `removed` names each runner GitHub removed, or answered 404 for.
 - `unremoved` holds each refusal, with GitHub's status and its message cut to
   256 characters.
-- `busy` names each picked runner GitHub still reads busy, which waits for
-  GitHub to fail its job.
+- `busy` names each picked runner GitHub still reads busy, which the sweep
+  leaves for a later run.
 - `deferred` counts the busy runners and the picked runners the run did not
   ask about, past the 10 a run or after a rate limit, which wait for the next
-  run. The block's check reads no `deferred` count, so a backlog reads no
-  problem however many runs it takes to drain.
+  run. `Cluster.RunnersProblem`, the block's check described below, reads no
+  `deferred` count, so a backlog reads no problem however many runs it takes
+  to drain.
 - `unlisted` counts the runners GitHub lists in the group past the third page,
   which the sweep did not read.
 
@@ -683,8 +686,10 @@ own is a list of EphemeralRunners, which hold no Secret data. The Role
 `mitstack-node-report-runners` grants it in `mitstack-runners` alone, and only
 a report with runner inputs holds it. Kubernetes creates a Role only in a
 namespace that exists. The lease job's Role already lives in
-`mitstack-runners` and reaches the cluster in the same set of the kit's own
-components, so this Role needs no new step to create the namespace first.
+`mitstack-runners`. `Plane.ownComponents` in `controlplane/manifests.go`
+returns the node report's manifests and the lease job's in one list, so this
+Role reaches the cluster with the lease job's and needs no new step to create
+the namespace first.
 
 A block built on the robot cluster module reads the member through
 `Cluster.RunnersProblem`. It reads the newest report that names no failed

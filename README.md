@@ -1651,7 +1651,9 @@ subject. An entry for a private registry adds its pull Secret as
 `123456789012.dkr.ecr.eu-central-1.amazonaws.com/shop-api|https://token.actions.githubusercontent.com|https://github.com/acme/shop/.github/workflows/build.yml@refs/heads/main|app-shop/ecr-pull`.
 The module refuses with `invalid-param`, before any change, a list that
 `SignaturePolicy` refuses and a pull Secret on a cluster that hosts no
-platform, and its observe then reads unknown and names the entry. An Update
+platform, and its observe then reads unknown and names the entry. The dry
+run of an upgrade, `PlanReplacements`, refuses the same list, so mitstack
+shows the refusal before it sends anything. An Update
 that changes the list carries the new policy in the cluster's next release,
 and one that empties it takes the policy out.
 

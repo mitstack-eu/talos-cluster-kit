@@ -15,8 +15,8 @@ const (
 	signerFieldsSecret = 4
 )
 
-// readSigners reads the comma-separated signer list, each entry a repository, an issuer and a subject separated by "|",
-// with a private registry's pull Secret as namespace/name in a fourth field, refusing a list the policy cannot hold.
+// readSigners reads the signers param, comma-separated repository|issuer|subject entries, with a private registry's
+// pull Secret as namespace/name in a fourth field.
 func readSigners(d contract.Desired) ([]components.Signer, error) {
 	raw := d.Params[ParamSigners]
 	if raw == "" {

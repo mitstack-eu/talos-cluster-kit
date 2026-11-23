@@ -20,7 +20,7 @@ var runnerToken = template.Must(template.New("runner-token").Parse(runnerTokenTe
 
 // CauseRunnerCacheDown is the cause a plane with runners reads unhealthy with while Argo CD reads a package cache as
 // other than healthy, word for word as the catalogue type lists it under failures.
-const CauseRunnerCacheDown = "a runner package cache does not serve, so each job's npm install fails while its Go modules and Docker Hub images come from the internet; read the cache pod's log"
+const CauseRunnerCacheDown = "a runner package cache does not serve, so its jobs fetch past it from the internet, and each npm install fails while it is the npm cache; the detail names the cache, so read its pod's log"
 
 // withRunners adds the runner services, the scale set and its package caches to the set of a plane that asks for
 // runners, so the build and every release render the same runner manifests.

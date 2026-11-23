@@ -87,7 +87,10 @@ type Env struct {
 	EtcdDown string
 	// NoJobHealth leaves out of each report the health Argo CD keeps of what an Application applied.
 	NoJobHealth bool
-	Created     []contract.CreatedResource
+	// RolloutRefuses is the message the rollout Job's failed pod leaves as the Job refuses the release and changes no
+	// node, as it does for a setting a node takes only at reboot.
+	RolloutRefuses string
+	Created        []contract.CreatedResource
 
 	mu       sync.Mutex
 	queued   []func()
@@ -298,7 +301,7 @@ func (e *Env) syncArgo() {
 	e.Argo.Sync()
 	e.boot()
 	held := e.Argo.Object(testutil.ObjectRef{Group: "batch", Kind: "Job", Namespace: nodeconfig.TalosAPINamespace, Name: noderollout.JobName(e.Release())}) != nil
-	if held && !e.jobHeld {
+	if held && !e.jobHeld && e.RolloutRefuses == "" {
 		for _, s := range append(e.ByRole(controlplane.RoleNode), e.ByRole(controlplane.RoleCloudWorker)...) {
 			if s.Status == controlplane.ServerRunning {
 				delete(e.Earlier, s.Name)
@@ -436,8 +439,16 @@ func (e *Env) Report() map[string]any {
 		gateways = append(gateways, map[string]any{"address": addr, "passed": up, "reason": "no answer within 5s"})
 	}
 	report := map[string]any{"subscriptionId": e.Sub, "nodes": nodes, "etcd": map[string]any{"members": members}, "gateways": gateways, "images": []any{}}
-	if e.WaitingPods != nil {
-		report["pods"] = e.WaitingPods
+	pods := e.WaitingPods
+	if e.RolloutRefuses != "" && e.jobHeld {
+		node := e.ByRole(controlplane.RoleNode)[0].Name
+		pods = append(slices.Clone(pods), map[string]any{
+			"namespace": nodeconfig.TalosAPINamespace, "name": noderollout.JobName(e.Release()) + "-r7k2q", "node": node,
+			"phase": "Failed", "containers": []map[string]any{{"message": e.RolloutRefuses}},
+		})
+	}
+	if pods != nil {
+		report["pods"] = pods
 	}
 	return report
 }
@@ -502,6 +513,10 @@ func (e *Env) argoCD() (json.RawMessage, error) {
 			object["health"] = nil
 			if object["kind"] == "Job" {
 				object["health"] = report.JobCompleted
+			}
+			if object["kind"] == "Job" && e.RolloutRefuses != "" && object["name"] == noderollout.JobName(e.Release()) {
+				object["health"] = report.JobFailed
+				object["message"] = "Job has reached the specified backoff limit"
 			}
 			if e.NoJobHealth {
 				delete(object, "health")

@@ -21,7 +21,8 @@
       {"name": "lost-5", "unreadable": "the answer names no isPrimary or isWalReceiverActive"},
       {"name": "lost-6", "unreadable": "the certificate is not one the database CA signed for lost-rw.app-pg.svc"},
       {"name": "lost-7", "unreadable": "the certificate is not one the database CA signed for lost-rw.app-pg.svc"},
-      {"name": "lost-8", "unreadable": "the instance manager serves its status without TLS"}
+      {"name": "lost-8", "unreadable": "the instance manager serves its status without TLS"},
+      {"name": "lost-9", "unreadable": "the answer names no isPrimary or isWalReceiverActive"}
     ]},
   {"namespace": "app-pg", "kind": "Database", "name": "shop", "subscription": null, "applied": true, "message": null}
 ]

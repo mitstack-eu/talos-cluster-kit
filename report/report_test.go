@@ -230,7 +230,9 @@ func runReport(t *testing.T, fakes map[string]string, env ...string) (*testutil.
 	all := map[string]string{"talosctl": fakeTalosctl, "kubectl": fakeKubectl}
 	maps.Copy(all, fakes)
 	tools := testutil.NewTools(t, all)
-	tools.AddImageJq(t)
+	if _, ok := all["jq"]; !ok {
+		tools.AddImageJq(t)
+	}
 	token := filepath.Join(t.TempDir(), "token")
 	require.NoError(t, os.WriteFile(token, []byte(reportToken), 0o600))
 
@@ -1082,6 +1084,10 @@ func instanceManagerAnswering(t *testing.T, newServer func(http.Handler) *httpte
 	t.Helper()
 	server := newServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
+		assert.Empty(t, r.Header.Values("Authorization"), "a status call that sends a credential")
+		if r.TLS != nil {
+			assert.Empty(t, r.TLS.PeerCertificates, "a status call that presents a client certificate")
+		}
 		if r.URL.Path != "/pg/status" || r.Method != http.MethodGet {
 			http.NotFound(w, r)
 			return
@@ -1139,7 +1145,6 @@ func newAuthority(t *testing.T) authority {
 	return authority{cert: cert, key: key}
 }
 
-// file writes the authority's certificate where the report reads the database CA.
 func (a authority) file(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "ca.crt")
@@ -1164,7 +1169,8 @@ func (a authority) serving(t *testing.T, cluster, namespace string) func(http.Ha
 	require.NoError(t, err)
 	return func(handler http.Handler) *httptest.Server {
 		server := httptest.NewUnstartedServer(handler)
-		server.TLS = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}, MinVersion: tls.VersionTLS13}
+		server.TLS = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}, MinVersion: tls.VersionTLS13,
+			ClientAuth: tls.RequestClientCert}
 		server.StartTLS()
 		return server
 	}
@@ -1197,7 +1203,6 @@ func instancePod(t *testing.T, namespace, cluster, name, ip string, manager inst
 	return databasePod(t, namespace, name, map[string]any{"cnpg.io/cluster": cluster, "cnpg.io/podRole": "instance"}, ip, manager)
 }
 
-// readingInstances answers the pod read with podsFile and CloudNativePG's read with the instance status test's Clusters.
 func readingInstances(podsFile string, fakes map[string]string) map[string]string {
 	all := map[string]string{"kubectl": kubectlAnswering(map[string]string{podsRead: "cat " + podsFile,
 		cloudNativePGRead: "cat testdata/instance-status-clusters.json"})}
@@ -1214,7 +1219,6 @@ func podsFile(t *testing.T, pods ...any) string {
 	return path
 }
 
-// statusCalls returns the arguments of each curl the report ran on an instance manager's status route.
 func statusCalls(t *testing.T, tools *testutil.Tools) [][]string {
 	t.Helper()
 	var calls [][]string
@@ -1258,6 +1262,7 @@ func TestReport_NamesEachDatabaseInstancesRoleAndWhetherItStreamsOrWhyItsStatusI
 		instancePod(t, "app-pg", "lost", "lost-6", "127.0.0.1", unchecked(other.serving(t, "lost", "app-pg"))),
 		instancePod(t, "app-pg", "lost", "lost-7", "127.0.0.1", unchecked(database.serving(t, "lost", "app-other"))),
 		instancePod(t, "app-pg", "lost", "lost-8", "127.0.0.1", unchecked(httptest.NewServer)),
+		instancePod(t, "app-pg", "lost", "lost-9", "127.0.0.1", answering(lost, http.StatusOK, "<html>the instance manager is starting</html>")),
 		databasePod(t, "app-pg", "shared-1-initdb-x7k2p", map[string]any{"cnpg.io/cluster": "shared", "cnpg.io/jobRole": "initdb"}, "127.0.0.1",
 			instanceManagerAnswering(t, shared, http.StatusOK, primaryStatusAnswer, &jobCalls)),
 	)
@@ -1270,21 +1275,20 @@ func TestReport_NamesEachDatabaseInstancesRoleAndWhetherItStreamsOrWhyItsStatusI
 
 	require.NoError(t, err, out)
 	assert.Equal(t, readJSON(t, "testdata", "golden", "instance-status.json"), posted.body["cloudNativePG"])
-	assert.Equal(t, int32(6), instanceCalls.Load(), "one call to each instance whose certificate the database CA signed for its Cluster, and none to another")
+	assert.Equal(t, int32(7), instanceCalls.Load(), "one call to each instance whose certificate the database CA signed for its Cluster, and none to another")
 	assert.Zero(t, uncheckedCalls.Load(), "a request to an instance whose certificate fails the check, or that serves its status without TLS")
 	assert.Zero(t, jobCalls.Load(), "a call to a pod CloudNativePG does not label an instance")
 	for _, field := range []string{"currentLsn", "receivedLsn", "replicationInfo", "systemID", "sessionID"} {
 		assert.NotContains(t, string(posted.raw), field, "the report keeps no field of the status answer but its two flags")
 	}
 	calls := statusCalls(t, tools)
-	assert.Len(t, calls, 10, "one curl to each instance with an IP, a status port and TLS: %q", calls)
+	assert.Len(t, calls, 11, "one curl to each instance with an IP, a status port and TLS: %q", calls)
 	for _, args := range calls {
 		assert.False(t, slices.ContainsFunc(args, skipsVerification), "a status call that accepts any certificate: %q", args)
 		assert.Equal(t, caFile, flagValue(args, "--cacert"), "the CA a status call checks the certificate against: %q", args)
 	}
 }
 
-// flagValue returns the argument after flag, or "" when args do not name it.
 func flagValue(args []string, flag string) string {
 	at := slices.Index(args, flag)
 	if at < 0 || at+1 == len(args) {
@@ -1321,4 +1325,39 @@ func TestReport_ReadsEachDatabaseInstanceUnreadableAndCallsNoneWhenItHoldsNoData
 			assert.Zero(t, calls.Load(), "a call to an instance manager whose certificate the report cannot check")
 		})
 	}
+}
+
+func TestReport_NamesNoInstanceStatusWhenItCannotKeepOneInstancesAnswer(t *testing.T) {
+	var calls atomic.Int32
+	database := newAuthority(t)
+	shared := database.serving(t, "shared", "app-pg")
+	pods := podsFile(t,
+		instancePod(t, "app-pg", "shared", "shared-1", "127.0.0.1", instanceManagerAnswering(t, shared, http.StatusOK, primaryStatusAnswer, &calls)),
+		instancePod(t, "app-pg", "shared", "shared-2", "127.0.0.1", instanceManagerAnswering(t, shared, http.StatusOK,
+			`{"isPrimary": false, "isWalReceiverActive": true}`, &calls)))
+	curl, err := exec.LookPath("curl")
+	require.NoError(t, err)
+	failsOnSharedTwosAnswer := `case "$*" in *'"name":"shared-2"'*'--rawfile answer'*) exit 5 ;; esac` + "\nexec '" + imageJq(t) + `' "$@"`
+
+	_, posted, out, err := runReport(t, readingInstances(pods, map[string]string{"curl": "exec '" + curl + `' "$@"`, "jq": failsOnSharedTwosAnswer}),
+		"REPORT_READ_SECONDS=1", "DATABASE_CA_FILE="+database.file(t))
+
+	require.NoError(t, err, out)
+	require.Equal(t, int32(2), calls.Load(), "one call to each instance")
+	objects, ok := posted.body["cloudNativePG"].([]any)
+	require.True(t, ok && len(objects) > 0, "the report names no CloudNativePG object: %v", posted.body["cloudNativePG"])
+	for _, object := range objects {
+		if cluster := object.(map[string]any); cluster["kind"] == "Cluster" {
+			assert.Nil(t, cluster["instanceStatus"], "an instance status list that leaves out shared-2, whose answer was never kept: %v", cluster)
+		}
+	}
+}
+
+func imageJq(t *testing.T) string {
+	t.Helper()
+	tools := testutil.NewTools(t, nil)
+	tools.AddImageJq(t)
+	path, err := os.Readlink(filepath.Join(tools.Dir, "jq"))
+	require.NoError(t, err)
+	return path
 }

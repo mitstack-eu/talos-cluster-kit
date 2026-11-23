@@ -2,6 +2,7 @@
 package components_test
 
 import (
+	"fmt"
 	"maps"
 	"reflect"
 	"slices"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/mirror"
@@ -132,7 +134,9 @@ func TestWithRunners_ReservesEachJobContainersCPUAndMemoryAsItsLimitAndWholeCore
 		assert.Subset(t, slices.Collect(maps.Keys(requests)), []string{"cpu", "memory"}, "%s requests %v; a pod is Guaranteed only when each container requests both", name, requests)
 		assert.Equal(t, requests, resources["limits"], "%s's limits; a pod is Guaranteed only when each limit equals its request", name)
 	}
-	assert.Regexp(t, `^[1-9][0-9]*(000m)?$`, testutil.Field(t, containers["runner"], "resources", "requests", "cpu"), "the runner's CPU; the static CPU manager gives a container cores of its own only for a whole number")
+	cpu, err := resource.ParseQuantity(fmt.Sprint(testutil.Field(t, containers["runner"], "resources", "requests", "cpu")))
+	require.NoError(t, err, "the runner's CPU")
+	assert.True(t, cpu.MilliValue() > 0 && cpu.MilliValue()%1000 == 0, "the runner's CPU %s; the static CPU manager gives a container cores of its own only for whole cores", &cpu)
 }
 
 func TestWithRunners_KeepsTheListenerOffBurstMembersAndLabelsIt(t *testing.T) {

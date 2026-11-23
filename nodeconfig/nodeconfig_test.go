@@ -1059,7 +1059,7 @@ func ciWorkerSettings() map[string]any {
 	return settings
 }
 
-// withoutCPUManagerPolicy drops the CPU manager policy from a node's kubelet settings, as a release before it rendered them.
+// withoutCPUManagerPolicy makes a node's kubelet settings those of a node with disk eviction and no CPU manager policy.
 func withoutCPUManagerPolicy(doc map[string]any) {
 	if settings, ok := doc["config"].(map[string]any); ok && doc["kind"] == "KubeletConfig" {
 		delete(settings, "cpuManagerPolicy")

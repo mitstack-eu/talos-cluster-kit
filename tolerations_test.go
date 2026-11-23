@@ -41,7 +41,7 @@ func renderedManifests(t *testing.T) map[string][]byte {
 		}
 	}
 	addSet("default", components.Default())
-	runnerSet, err := components.Default().WithRunners(runnerInputs())
+	runnerSet, err := components.Default().WithRunners(runnerInputs(), testutil.ToolsImage)
 	require.NoError(t, err)
 	addChanged("runners", components.Default(), runnerSet, out)
 	hosting, err := components.Hosting(testutil.HostingInputs(t))

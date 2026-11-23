@@ -667,7 +667,7 @@ func TestRelease_APlaneWithoutRunnersCarriesNoRunnerManifestAndTheSameClusterTok
 	equipped, err := with.Release(h.read())
 	require.NoError(t, err)
 
-	for _, name := range []string{"mitstack-runner-token", "mitstack-runner-scale-set", "gha-runner-scale-set-controller", "mitstack-runners"} {
+	for _, name := range []string{"mitstack-runner-token", "mitstack-runner-scale-set", "gha-runner-scale-set-controller", "mitstack-runners", components.RunnerCachesName} {
 		assert.NotContains(t, manifestNames(bare.Components), name, "a plane that asks for no runners")
 	}
 	assert.Equal(t, string(testutil.Manifest(t, "mitstack-cluster-tokens", bare.Components).Bytes),

@@ -177,12 +177,33 @@ spec:
           volumeMounts:
             - name: dind-externals
               mountPath: /home/runner/tmpDir
+        # npm reads a project's .npmrc and the user npmrc setup-node writes before this global one, so a job that names
+        # its own registry keeps it.
+        - name: npmrc
+          image: ghcr.io/actions/actions-runner:2.338.2@sha256:6d0b2d80d80f143f77dcb676e50920100bbb547e39e883454d57f45ab8c31300
+          command: ["sh", "-c", "printf 'registry=%s\\n' \"$NPM_REGISTRY\" > \"$npm_config_globalconfig\""]
+          env:
+            - name: NPM_REGISTRY
+              value: "http://npm-cache.mitstack-runners.svc:8080/"
+            - name: npm_config_globalconfig
+              value: /home/runner/npmrc/npmrc
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+          volumeMounts:
+            - name: npmrc
+              mountPath: /home/runner/npmrc
         - name: dind
           image: docker.io/library/docker:29.10.0-dind@sha256:4bbc7223f81db790097c6dea42fb93e05b8fead4f0431fbe6ccaba6e8473201c
           args:
             - dockerd
             - --host=unix:///var/run/docker.sock
             - --group=$(DOCKER_GROUP_GID)
+            - "--registry-mirror=http://image-cache.mitstack-runners.svc:5000"
           env:
             - name: DOCKER_GROUP_GID
               value: "123"
@@ -229,6 +250,11 @@ spec:
               value: unix:///var/run/docker.sock
             - name: RUNNER_WAIT_FOR_DOCKER_IN_SECONDS
               value: "120"
+            # The go command turns to the internet on any error of the Go cache, and npm has no such fallback.
+            - name: GOPROXY
+              value: "http://go-cache.mitstack-runners.svc:8080|https://proxy.golang.org,direct"
+            - name: npm_config_globalconfig
+              value: /home/runner/npmrc/npmrc
           resources:
             requests:
               cpu: 1000m
@@ -241,7 +267,12 @@ spec:
               mountPath: /home/runner/_work
             - name: dind-sock
               mountPath: /var/run
+            - name: npmrc
+              mountPath: /home/runner/npmrc
+              readOnly: true
       volumes:
+        - name: npmrc
+          emptyDir: {}
         - name: dind-sock
           emptyDir: {}
         - name: dind-externals

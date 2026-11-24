@@ -2,13 +2,14 @@ package robotcluster_test
 
 // A cluster needs its operator's id, boundary and worker install, names to replace only the nodes and Cloud workers a
 // request names that the cluster runs, refuses a control-plane size its block declares no servers for or the running
-// cluster was not subscribed with, and rolls out the runner services its operator's Config asks for and the signature
-// policy of the signer list a request names.
+// cluster was not subscribed with, rolls out the runner services its operator's Config asks for and the signature
+// policy of the signer list a request names, and builds its gateway forwarding the ports its operator's Config names.
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -274,6 +275,63 @@ func TestConfig_RunnersPutsTheRunnerServicesInTheReleaseTheClusterRollsOutAndACo
 			}
 		})
 	}
+}
+
+func withGatewayEgressPorts(ports []int) robotclustertest.Option {
+	return func(e *robotclustertest.Env) { e.Config.GatewayEgressPorts = ports }
+}
+
+// forwardedToEveryAddress matches the gateway's forward rule that names no destination address, capturing its ports.
+var forwardedToEveryAddress = regexp.MustCompile(`(?m)^ +ip saddr 10\.0\.0\.0/16 tcp dport \{ ([^}]*) \} accept$`)
+
+func TestConfig_GatewayEgressPortsForwardsPort80ToEveryOutsideAddressBesideHTTPSAndAConfigWithoutThemForwardsHTTPSAlone(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		ports []int
+		want  []string
+	}{
+		{"a Config naming 80 and 443 forwards 443 and 80", []int{80, 443}, []string{"443", "80"}},
+		{"a Config naming no ports forwards 443 alone", nil, []string{"443"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, gw := settledGateway(t, withGatewayEgressPorts(tc.ports))
+
+			rules := forwardedToEveryAddress.FindAllStringSubmatch(gatewayCloudConfig(t, e.Cloud.UserData[gw.ID]), -1)
+
+			require.Len(t, rules, 1, "the forward rules naming no destination address")
+			assert.Equal(t, tc.want, strings.Split(rules[0][1], ", "), "the ports forwarded to every outside address for a Config naming %v", tc.ports)
+		})
+	}
+}
+
+// awaitsRelease is whether the plane the observe reads e's cluster with finds a gateway built from an earlier list.
+func awaitsRelease(t *testing.T, e *robotclustertest.Env) bool {
+	t.Helper()
+	p, err := e.Cluster.PlaneFor(e.Cloud, e.Desired())
+	require.NoError(t, err, "the observe's plane")
+	st, err := p.Read(context.Background())
+	require.NoError(t, err, "the cluster's state")
+	awaits, err := p.GatewaysAwaitRelease(st)
+	require.NoError(t, err, "whether a gateway awaits the release")
+	return awaits
+}
+
+func TestConfig_GatewayEgressPortsBeyondHTTPSChangeTheGatewayListLabelTheSubscribeWritesAndTheObserveReads(t *testing.T) {
+	unset, unsetGateway := settledGateway(t)
+	opened, openedGateway := settledGateway(t, withGatewayEgressPorts([]int{80, 443}))
+
+	opened.EnsureOrWait("a further subscribe with the same ports")
+	unset.Config.GatewayEgressPorts = []int{80, 443}
+	unset.Cluster = robotcluster.New(unset.Config)
+
+	mark := openedGateway.Labels[controlplane.KeyGatewayList]
+	assert.NotEqual(t, unsetGateway.Labels[controlplane.KeyGatewayList], mark, "the gateway-list label of a gateway forwarding 80 beside 443")
+	assert.False(t, awaitsRelease(t, opened), "the observe reads the gateway the subscribe built with 80 and 443 as current")
+	after := opened.ByRole(controlplane.RoleGateway)
+	require.Len(t, after, 1, "the gateways after a further subscribe with the same ports")
+	assert.Equal(t, openedGateway.ID, after[0].ID, "the gateway after a further subscribe with the same ports")
+	assert.Equal(t, mark, after[0].Labels[controlplane.KeyGatewayList], "the gateway-list label after a further subscribe with the same ports")
+	assert.True(t, awaitsRelease(t, unset), "the observe reads a gateway built with no ports as stale once its operator names 80 and 443")
 }
 
 var errRunnersUnnamed = handler.Refuse("runner-organization-unset", "the request names no GitHub organisation for the runners to register in")

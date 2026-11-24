@@ -429,6 +429,44 @@ open:
    sets `kernel.yama.ptrace_scope` to 2, which lets only a process holding
    that capability trace another, and the workstation the test ran on reads 1.
 
+## How a job's containers reach the network
+
+A container that Docker starts inside a job, such as a step of an image build
+or a service container, sends its traffic through one of Docker's bridges in
+the job's pod. A bridge is a network device the Docker daemon creates:
+`docker0` for its default network, and one whose name starts with `br-` for
+each custom network, such as the one a job with `services:` gets.
+
+The kit runs Istio in ambient mode, which writes redirect rules inside every
+pod. Those rules treat traffic that arrives from a bridge as a call into the
+pod. Without more, a container's fetch never leaves the pod, and a call from
+one container to another by name is reset.
+
+The runner pod's template therefore carries the annotation Istio documents for
+Docker in Docker, `istio.io/reroute-virtual-interfaces`, with the value
+`"docker0,br-+"`. For each entry, Istio's CNI agent, the pod on each node that
+sets up a new pod's network for the mesh, writes two rules at the head of the
+pod's `ISTIO_PRERT` chain, a list of rules in the kernel's packet filter. The
+first sends the entry's TCP traffic to port 15001, where the mesh takes a
+pod's outgoing calls, and the second stops the chain there. The `+` in `br-+`
+is the packet filter's wildcard, so the entry matches the bridge of every
+custom network. A container's traffic then leaves the pod the way a job's own
+steps' traffic does.
+
+ARC copies the template's annotations onto each runner pod. The listener
+starts no Docker, so its template carries no annotation. The two entries live
+in `dockerBridges` in `components/runners.go`.
+
+Istio marks the annotation Alpha, so a later Istio release may change it. A
+copy of both rules written by hand on a runner pod made a container on either
+network reach the internet, one container reach another by name, and a
+`docker build` fetch its package updates. No job has run on a pod that carries
+the annotation itself yet, so whether the CNI agent takes `br-+` from it and
+writes the rules is unproven. If it does not, the alternative is Istio's
+annotation `ambient.istio.io/bypass-inbound-capture`, which drops the mesh's
+inbound redirect for the whole pod, so calls into the pod no longer pass
+through the mesh. The kit does not use it.
+
 ## How the parts fit together
 
 ```mermaid
@@ -767,7 +805,7 @@ controller starts each later job on the new image.
 
 | File | What it holds |
 |---|---|
-| `components/runners.go` | `RunnerInputs`, its checks, `Set.WithRunnerServices` and `Set.WithRunners`, and the CPU and memory each container of a job's pod asks for and is limited to |
+| `components/runners.go` | `RunnerInputs`, its checks, `Set.WithRunnerServices` and `Set.WithRunners`, the CPU and memory each container of a job's pod asks for and is limited to, and `dockerBridges`, the interfaces Istio reroutes out of a job's pod |
 | `components/runners/runners.yaml` | The namespace and its Cilium policy |
 | `components/runners/scale-set.yaml` | The template of the scale set, its runner pod, and the Role and RoleBinding that let ARC's controller create each listener's Role |
 | `components/runners/policies/` | The three pod policies that skip `mitstack-runners`, which `scripts/render-components.sh` writes |

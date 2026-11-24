@@ -2084,6 +2084,12 @@ istiod injects no sidecar, because `components/render/istiod-values.yaml`
 leaves out the injector's templates. A pod with a sidecar would sit outside
 ambient mode, and `mitstack-require-mesh` refuses a pod that claims one.
 
+A CI job's pod, on a cluster with runner services, carries one Istio
+annotation, `istio.io/reroute-virtual-interfaces`. It lets the containers
+Docker starts inside the job reach the network through the mesh, as
+[the runner services page](docs/runner-services.md#how-a-jobs-containers-reach-the-network)
+explains.
+
 Cilium still decides which pods may talk, but Cilium sees a call inside the
 mesh only as port 15008. Every Cilium policy that admits a call between two
 pods on a port it lists therefore admits 15008 from the same peers. Inside

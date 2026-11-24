@@ -145,6 +145,8 @@ spec:
     metadata:
       labels:
         mitstack.dev/app: {{ .Namespace }}
+      annotations:
+        istio.io/reroute-virtual-interfaces: {{ printf "%q" .DockerBridges }}
     # A job that escapes its pod reaches its node, so a job never runs on the control plane beside the runner token.
     spec:
       affinity:

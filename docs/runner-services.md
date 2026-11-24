@@ -147,6 +147,15 @@ for a fraction of a core, and so does the init container, which copies files
 from the runner image into a shared volume before the other containers start.
 Both therefore run in the shared pool, beside the node's other pods.
 
+Everything a job asks the Docker daemon to run, such as the instructions of a
+`docker build`, a `docker run` container or a service container, runs inside
+the daemon's own container. That work therefore never gets the runner
+container's whole core. It shares the daemon container's CPU and memory
+limits, which `jobDindSize` in `components/runners.go` sets with a request
+equal to its limit. Those limits are the most that all of it may use together.
+A workstation run under Docker showed a build counting against the daemon
+container's limits, and the same has not yet been read on a pool pod.
+
 The kubelet refuses the static policy unless some CPU is kept for the system,
 so the shared pool never empties. Talos keeps 50m of CPU for the system on
 every node, and the kubelet rounds that up to one whole core it keeps in the
@@ -833,6 +842,18 @@ namespace that exists. The lease job's Role already lives in
 returns the node report's manifests and the lease job's in one list, so this
 Role reaches the cluster with the lease job's and needs no new step to create
 the namespace first.
+
+The sweep is the part of the node report that removes offline runners. It
+sends the GitHub token the lease job writes to `https://api.github.com` and to
+no other host, because `Manifests` in `report/report.go` fixes that address in
+code and no field of `report.Inputs` can change it. `trustedGitHubBase` in
+`report/urlguard.go` also checks the address against the one host this package
+allows, `api.github.com`, and refuses any other host that a later change
+passes to it. block-kit's check of every block's pipeline asks each package a
+block uses that names GitHub's API for such a check. This kit,
+`talos-cluster-kit`, imports no part of block-kit, so `report/urlguard.go`
+carries its own check in place of block-kit's `ghapi.Base`, the helper that
+checks a GitHub address against a list of allowed hosts.
 
 A block built on the robot cluster module reads the member through
 `Cluster.RunnersProblem`. It reads the newest report that names no failed

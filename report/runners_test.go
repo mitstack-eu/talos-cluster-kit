@@ -493,6 +493,29 @@ func TestManifests_GrantsTheReportOnlyAListOfARCsEphemeralRunnersInTheRunnerName
 		testutil.Field(t, binding, "subjects"), "only the report's own service account")
 }
 
+func TestTrustedGitHubBase_AnswersTheAllowlistsOwnEntryForGitHubsAPIAndRefusesEveryOtherHost(t *testing.T) {
+	cases := map[string]struct{ endpoint, base string }{
+		"GitHub's own API resolves to the allowlist's entry":        {"https://api.github.com", "https://api.github.com"},
+		"an uppercase host with a path resolves to the entry alone": {"https://API.GitHub.com/orgs/acme", "https://api.github.com"},
+		"a host outside the allowlist is refused":                   {endpoint: "https://api.github.com.attacker.example"},
+		"the allowlisted host on another port is refused":           {endpoint: "https://api.github.com:8443"},
+		"the allowlisted host over http is refused":                 {endpoint: "http://api.github.com"},
+		"a loopback address is refused":                             {endpoint: "https://127.0.0.1"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			base, err := report.TrustedGitHubBase(tc.endpoint)
+
+			if tc.base == "" {
+				require.Error(t, err, "trustedGitHubBase(%q) = %q; want a refusal", tc.endpoint, base)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.base, base, "trustedGitHubBase(%q)", tc.endpoint)
+		})
+	}
+}
+
 func TestManifests_RefusesRunnerInputsNamingNoGitHubOrganisation(t *testing.T) {
 	in := runnerReportInputs()
 	in.Runners.Organization = "not an org"

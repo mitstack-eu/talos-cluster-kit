@@ -119,7 +119,7 @@ type Inputs struct {
 }
 
 // githubAPI is where the runner sweep lists and removes the org's runners.
-const githubAPI = "https://api.github.com"
+const githubAPI = "https://" + githubAPIHost
 
 // egressURL is Let's Encrypt's ACME directory, which cert-manager reaches for every app's certificate, so a TLS
 // connection to it reads the egress the network's default route gives the nodes.
@@ -152,6 +152,10 @@ func Manifests(in Inputs) ([]byte, error) {
 	if err := in.validate(); err != nil {
 		return nil, err
 	}
+	sweepAPI, err := trustedGitHubBase(githubAPI)
+	if err != nil {
+		return nil, fmt.Errorf("the report's runner sweep: %w", err)
+	}
 	report, err := tmpl.Execute(manifests, map[string]any{
 		"Namespace":          nodeconfig.TalosAPINamespace,
 		"Image":              in.ToolsImage,
@@ -170,7 +174,7 @@ func Manifests(in Inputs) ([]byte, error) {
 		"Runners":            in.Runners,
 		"RunnersNamespace":   components.RunnersNamespace,
 		"SweepTokenSecret":   components.RunnerSweepTokenSecret,
-		"GitHubAPI":          githubAPI,
+		"GitHubAPI":          sweepAPI,
 	})
 	if err != nil {
 		return nil, err

@@ -147,11 +147,14 @@ for a fraction of a core, and so does the init container, which copies files
 from the runner image into a shared volume before the other containers start.
 Both therefore run in the shared pool, beside the node's other pods.
 
-The containers the Docker daemon starts, such as each step of a `docker build`,
-run inside the daemon's own container. Their CPU and memory therefore count
-against the daemon's limits, which `jobDindSize` in `components/runners.go`
-sets. That size is the most CPU and memory a job's image builds may use
-together.
+Everything a job asks the Docker daemon to run, such as the instructions of a
+`docker build`, a `docker run` container or a service container, runs inside
+the daemon's own container. That work therefore never gets the runner
+container's whole core. It shares the daemon container's CPU and memory
+limits, which `jobDindSize` in `components/runners.go` sets with a request
+equal to its limit. Those limits are the most that all of it may use together.
+A workstation run under Docker showed a build counting against the daemon
+container's limits, and the same has not yet been read on a pool pod.
 
 The kubelet refuses the static policy unless some CPU is kept for the system,
 so the shared pool never empties. Talos keeps 50m of CPU for the system on

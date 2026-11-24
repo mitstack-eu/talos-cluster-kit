@@ -4,15 +4,8 @@ package robotcluster_test
 // from subscribe to unsubscribe, and a Cloud-only cluster whose operator names no gateway ports builds the same gateway.
 
 import (
-	"bytes"
-	"compress/gzip"
-	"encoding/base64"
 	"fmt"
-	"io"
 	"maps"
-	"mime"
-	"mime/multipart"
-	"net/mail"
 	"regexp"
 	"slices"
 	"strings"
@@ -106,12 +99,11 @@ func TestCloudOnlyCluster_WithNoGatewayEgressPortsBuildsTheGatewayAndListLabelIt
 
 	var golden strings.Builder
 	section(&golden, "gateway list label", []string{gw.Labels[controlplane.KeyGatewayList]})
-	section(&golden, "gateway cloud-config", []string{withoutPEMBodies(gatewayCloudConfig(t, e.Cloud.UserData[gw.ID]))})
+	section(&golden, "gateway cloud-config", []string{withoutPEMBodies(robotclustertest.GatewayCloudConfig(t, e.Cloud.UserData[gw.ID]))})
 
 	testutil.Golden(t, "testdata/cloud-only-gateway.golden", []byte(golden.String()))
 }
 
-// settledGateway is a Cloud-only cluster settled present with opts, and the one gateway its single location runs.
 func settledGateway(t *testing.T, opts ...robotclustertest.Option) (*robotclustertest.Env, controlplane.Server) {
 	t.Helper()
 	e := robotclustertest.New(t, cloudOnlySub, append([]robotclustertest.Option{cloudOnly}, opts...)...)
@@ -120,27 +112,6 @@ func settledGateway(t *testing.T, opts ...robotclustertest.Option) (*robotcluste
 	gateways := e.ByRole(controlplane.RoleGateway)
 	require.Len(t, gateways, 1, "the gateways of a cluster in one location")
 	return e, gateways[0]
-}
-
-// gatewayCloudConfig is the kit's cloud-config in a gateway's user data, its first MIME part, decompressed as cloud-init does.
-func gatewayCloudConfig(t *testing.T, userData string) string {
-	t.Helper()
-	msg, err := mail.ReadMessage(strings.NewReader(userData))
-	require.NoError(t, err, "the gateway's user data as a MIME message")
-	_, params, err := mime.ParseMediaType(msg.Header.Get("Content-Type"))
-	require.NoError(t, err, "the user data's content type")
-	part, err := multipart.NewReader(msg.Body, params["boundary"]).NextPart()
-	require.NoError(t, err, "the user data's first part")
-	require.Equal(t, "application/gzip", part.Header.Get("Content-Type"), "the kit part's content type")
-	encoded, err := io.ReadAll(part)
-	require.NoError(t, err, "the kit part")
-	zipped, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(string(encoded), "\n", ""))
-	require.NoError(t, err, "the base64 of the kit part")
-	r, err := gzip.NewReader(bytes.NewReader(zipped))
-	require.NoError(t, err, "the gzip of the kit part")
-	plain, err := io.ReadAll(r)
-	require.NoError(t, err, "the gzip of the kit part")
-	return string(plain)
 }
 
 var pemBody = regexp.MustCompile(`(?s)(-----BEGIN [A-Z ]+-----\n).*?(\n *-----END [A-Z ]+-----)`)

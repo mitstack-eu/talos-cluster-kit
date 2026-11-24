@@ -36,7 +36,8 @@ type Decision struct {
 	Waiting []report.WaitingPod
 	// Measured is the room each type's running nodes offer, which judged the pods in Waiting.
 	Measured pools.Measured
-	// Unheld names the waiting pods no burst member of a listed type would hold, empty when there are none.
+	// Unheld names each waiting pod whose placement a burst member admits but that no listed type holds, empty when
+	// there are none or the pool holds its maximum.
 	Unheld string
 }
 

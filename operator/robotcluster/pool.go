@@ -202,8 +202,8 @@ func (c convergence) scaling(ctx context.Context) (scaling.Decision, error) {
 	return scaling.Decide(pool, c.state.Servers[pools.RoleCloudWorker], reads, pools.Holds(ctx, c.plane, pool))
 }
 
-// poolHold names a pool that holds while pods wait for a node, at its maximum, for want of a listed type that holds
-// them or for want of a steady member, or whose node labeller's newest run failed, the cluster resource's health cause.
+// poolHold names the cluster resource's health cause for a pool at its maximum while pods wait, for pods no listed type
+// holds, for a pool held for want of a steady member, or for a pool whose node labeller's newest run failed.
 func poolHold(ctx context.Context, d contract.Desired, p controlplane.Plane, st controlplane.State, reports *GatewayReports) (cause, detail string, err error) {
 	pool, err := readCloudPool(d)
 	if err != nil || !pool.Scales() {

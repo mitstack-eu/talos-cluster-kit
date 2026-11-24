@@ -4907,7 +4907,9 @@ decision answers a `Decision`:
 5. A pool that holds its maximum while pods wait answers `AtMaximum`, with a
    `Detail` such as "2 pods wait for a node, and the Cloud pool holds its
    maximum of 3: ci/d, ci/e", which names the first three pods. The block shows `CauseAtMaximum` in the cluster resource's
-   health, and that cause starts no change.
+   health, and that cause starts no change. At its maximum the pool does not
+   judge which of its types holds a pod, so a pod no listed type holds also
+   reads `CauseAtMaximum` there.
 6. With no pod waiting, a burst member goes when every report from the
    newest back over the idle window reads it running none but the cluster's
    own pods. One member goes at a time, and a steady member never goes this

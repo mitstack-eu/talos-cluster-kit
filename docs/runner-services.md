@@ -832,11 +832,7 @@ The node report holds no right on any Secret. The lease job therefore writes
 the token into `mitstack-runner-sweep-token` in `mitstack-node`, which the
 report mounts as an optional volume, so a report runs before the first lease.
 Each GitHub call reads the token from a header file and never from the
-command line. The sweep sends that token to `https://api.github.com` alone.
-`trustedGitHubBase` in `report/urlguard.go` builds that address from the
-package's one allowed host and refuses any other, so no input chooses where
-the token goes. The kit's root module imports no block framework, so this
-guard stands in for block-kit's `ghapi.Base`. Once the sweep has read the token, it drops every line holding
+command line. Once the sweep has read the token, it drops every line holding
 it from the read errors it posts. The sweep's one right beyond the report's
 own is a list of EphemeralRunners, which hold no Secret data. The Role
 `mitstack-node-report-runners` grants it in `mitstack-runners` alone, and only
@@ -846,6 +842,12 @@ namespace that exists. The lease job's Role already lives in
 returns the node report's manifests and the lease job's in one list, so this
 Role reaches the cluster with the lease job's and needs no new step to create
 the namespace first.
+
+The sweep sends its token to `https://api.github.com` and nowhere else.
+`trustedGitHubBase` in `report/urlguard.go` builds that address from the one
+host the package allows, and refuses any other, so no input chooses where the
+token goes. The kit's root module imports no block framework, so this guard
+stands in for block-kit's `ghapi.Base`.
 
 A block built on the robot cluster module reads the member through
 `Cluster.RunnersProblem`. It reads the newest report that names no failed

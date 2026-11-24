@@ -439,15 +439,16 @@ each custom network, such as the one a job with `services:` gets.
 
 The kit runs Istio in ambient mode, which writes redirect rules inside every
 pod. Those rules treat traffic that arrives from a bridge as a call into the
-pod. Without more, a container's fetch never leaves the pod, and a call from
-one container to another by name is reset.
+pod. Left alone, they keep a container's fetch from leaving the pod and reset
+a call from one container to another by name.
 
-The runner pod's template therefore carries the annotation Istio documents for
-Docker in Docker, `istio.io/reroute-virtual-interfaces`, with the value
-`"docker0,br-+"`. For each entry, Istio's CNI agent, the pod on each node that
-sets up a new pod's network for the mesh, writes two rules at the head of the
-pod's `ISTIO_PRERT` chain, a list of rules in the kernel's packet filter. The
-first sends the entry's TCP traffic to port 15001, where the mesh takes a
+The runner pod's template in `components/runners/scale-set.yaml` therefore
+carries the annotation Istio documents for Docker in Docker,
+`istio.io/reroute-virtual-interfaces`, with the value `"docker0,br-+"`.
+Istio's CNI agent is the pod on each node that sets up a new pod's network for
+the mesh. For each entry, it writes two rules at the head of the pod's
+`ISTIO_PRERT` chain, which is a list of rules in the kernel's packet filter.
+The first sends the entry's TCP traffic to port 15001, where the mesh takes a
 pod's outgoing calls, and the second stops the chain there. The `+` in `br-+`
 is the packet filter's wildcard, so the entry matches the bridge of every
 custom network. A container's traffic then leaves the pod the way a job's own

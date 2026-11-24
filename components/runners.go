@@ -52,8 +52,8 @@ var (
 	jobInitSize   = containerSize{CPU: "100m", Memory: "128Mi"}
 )
 
-// dockerBridges are Docker's default bridge and the pattern of the bridges it makes for custom networks, whose traffic
-// Istio's ambient redirect would otherwise catch as inbound to the job pod.
+// dockerBridges are the interfaces Istio reroutes out of a job's pod, since its ambient redirect would otherwise catch
+// their traffic as inbound: Docker's default bridge, and the pattern matching each custom network's bridge.
 var dockerBridges = []string{"docker0", "br-+"}
 
 // controllerAccountRe matches a pod's serviceAccountName with its value, which a CRD schema's bare key never has.

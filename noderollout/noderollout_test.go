@@ -17,6 +17,7 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/etcd"
 	"github.com/mitstack-eu/talos-cluster-kit/internal/redundanttest"
 	"github.com/mitstack-eu/talos-cluster-kit/noderollout"
+	"github.com/mitstack-eu/talos-cluster-kit/redundant"
 	"github.com/mitstack-eu/talos-cluster-kit/report"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 )
@@ -92,6 +93,11 @@ func etcdReport(unhealthy ...string) report.Read {
 		members = append(members, fmt.Sprintf(`{"hostname":%q,"healthy":%t}`, hostname, !slices.Contains(unhealthy, hostname)))
 	}
 	return report.Read{Body: []byte(`{"etcd":{"members":[` + strings.Join(members, ",") + `]}}`), At: rolloutBegan.Add(time.Minute)}
+}
+
+// oneMemberReport is a node report read at at, listing poc-cp1 as the only etcd member, healthy as given.
+func oneMemberReport(healthy bool, at time.Time) report.Read {
+	return report.Read{Body: fmt.Appendf(nil, `{"etcd":{"members":[{"hostname":"poc-cp1","healthy":%t}]}}`, healthy), At: at}
 }
 
 func rollout(read report.Read) noderollout.Rollout {
@@ -238,6 +244,39 @@ func TestJob_RendersNoRolloutUnlessTheReportReadsEveryEtcdMemberServingSinceTheU
 			for _, want := range tc.want {
 				assert.Contains(t, err.Error(), want)
 			}
+		})
+	}
+}
+
+func TestJob_RendersTheRolloutOnAOneNodePlaneWhoseOnlyEtcdMemberReadsServingSinceTheUpdateBegan(t *testing.T) {
+	read := oneMemberReport(true, rolloutBegan.Add(time.Minute))
+
+	rendered, err := noderollout.Job(rollout(read))
+
+	require.NoError(t, err, "Job(a one-member report read serving since the Update began)")
+	jobs := testutil.Kind(testutil.Documents(t, rendered), "Job")
+	require.Len(t, jobs, 1)
+	assert.Equal(t, noderollout.JobName(release), testutil.Field(t, jobs[0], "metadata", "name"))
+}
+
+func TestJob_RendersNoRolloutOnAOneNodePlaneUnlessItsOnlyEtcdMemberReadsServingSinceTheUpdateBegan(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		r    noderollout.Rollout
+		held bool
+		want string
+	}{
+		{"a member read not serving", rollout(oneMemberReport(false, rolloutBegan.Add(time.Minute))), true, `"poc-cp1" read not serving at 2026-11-19T09:01:00Z`},
+		{"a report read before the Update began", rollout(oneMemberReport(true, rolloutBegan.Add(-time.Minute))), true, `"poc-cp1" read at 2026-11-19T08:59:00Z, before the step began`},
+		{"a block that passes no guard", noderollout.Rollout{ToolsImage: testutil.ToolsImage, Report: oneMemberReport(true, rolloutBegan.Add(time.Minute)), StepStart: rolloutBegan}, false, "passes no redundancy guard"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rendered, err := noderollout.Job(tc.r)
+
+			require.Error(t, err)
+			assert.Empty(t, rendered, "the rollout Job rendered")
+			assert.Contains(t, err.Error(), tc.want)
+			assert.Equal(t, tc.held, redundant.Held(err), "Held(%v)", err)
 		})
 	}
 }

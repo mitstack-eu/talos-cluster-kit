@@ -77,7 +77,8 @@ type Rollout struct {
 }
 
 // Job renders the objects that give each node r's release, in the namespace the node report creates, once r.Guard finds
-// that etcd keeps every member but any one serving, since the Job changes a control-plane node at a time.
+// that etcd keeps every member but any one serving, since the Job changes a control-plane node at a time, and on a
+// plane of one member once that member reads serving since r.StepStart.
 func Job(r Rollout) ([]byte, error) {
 	release, err := Release(r.ToolsImage)
 	if err != nil {
@@ -90,11 +91,8 @@ func Job(r Rollout) ([]byte, error) {
 	if len(members) == 0 {
 		return nil, errors.New("the node report lists no etcd member, so no node's configuration changes")
 	}
-	set := redundant.Set{Name: "etcd members", Members: members, Minimum: redundant.AllButOne}
-	for _, m := range members {
-		if err := r.Guard.Allow(set, m.Name, r.StepStart); err != nil {
-			return nil, err
-		}
+	if err := allowChanges(r, members); err != nil {
+		return nil, err
 	}
 	return tmpl.Execute(job, map[string]string{
 		"Name":      JobName(release),
@@ -103,4 +101,43 @@ func Job(r Rollout) ([]byte, error) {
 		"Image":     r.ToolsImage,
 		"Script":    script,
 	})
+}
+
+const etcdMembers = "etcd members"
+
+// allowChanges asks r.Guard to allow changing each etcd member in turn, and judges the only member of a plane of one by
+// its own reading, since the guard counts only the members a change leaves and a set of one leaves none.
+func allowChanges(r Rollout, members []report.Member) error {
+	if len(members) == 1 {
+		only := redundant.Set{Name: etcdMembers, Members: members, Minimum: redundant.NoRedundancy}
+		if err := r.Guard.Allow(only, members[0].Name, r.StepStart); err != nil {
+			return err
+		}
+		return onlyMemberServing(members[0], r.StepStart)
+	}
+	set := redundant.Set{Name: etcdMembers, Members: members, Minimum: redundant.AllButOne}
+	for _, m := range members {
+		if err := r.Guard.Allow(set, m.Name, r.StepStart); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// onlyMemberServing refuses, in the guard's held form, a change to m unless m reads serving since stepStart.
+func onlyMemberServing(m report.Member, stepStart time.Time) error {
+	at := func(t time.Time) string { return t.UTC().Format(time.RFC3339) }
+	var reading string
+	switch {
+	case m.Reading == nil:
+		reading = fmt.Sprintf("%q has no reading", m.Name)
+	case m.Reading.At.Before(stepStart):
+		reading = fmt.Sprintf("%q read at %s, before the step began", m.Name, at(m.Reading.At))
+	case !m.Reading.Serving:
+		reading = fmt.Sprintf("%q read not serving at %s", m.Name, at(m.Reading.At))
+	default:
+		return nil
+	}
+	return fmt.Errorf("refused:%s: changing %q, the only one of the %s, needs it serving, judged by readings since %s: %s",
+		redundant.ClassBelowMinimum, m.Name, etcdMembers, at(stepStart), reading)
 }

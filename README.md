@@ -281,8 +281,17 @@ reads Ready, so neither waits on the other.
 `Job` renders nothing unless the newest node report shows every etcd member
 serving since the block's Update began, the step that changes a running
 cluster. The block passes the guard that judges it, the same one the member
-removals take, so the refusal names the member that is not serving. The Job's script,
-`noderollout/scripts/apply-machine-config.sh`, then works in this order:
+removals take, so the refusal names the member that is not serving.
+
+A control plane of one node has one etcd member, and changing it leaves no
+other member serving. The guard counts only the members a change leaves, so
+`Job` asks it to judge that set as one with no redundancy. `Job` then checks
+the member's own reading, and renders the Job only when a report made since
+the Update began reads that member serving. Otherwise it refuses with the
+guard's class `redundancy-below-minimum`, naming that reading.
+
+The Job's script, `noderollout/scripts/apply-machine-config.sh`, then works in
+this order:
 
 1. It lists the nodes and leaves out each one whose `mitstack.dev/machine-config`
    annotation names the release already, so an Update sent again after a
@@ -5407,6 +5416,11 @@ unhealthy. The subscribe then refuses with the guard's class
 [How a control-plane node is replaced](#how-a-control-plane-node-is-replaced)
 describes for the same guard. The cluster reads Unknown with the same refusal
 in its status.
+
+A control plane of one node takes the release through the same Job. Its one
+etcd member must read healthy in a report made since the Update began, and
+the subscribe refuses with the same class while it does not. The plane has no
+other etcd member to serve while the Job changes that node.
 
 ### A cluster with no dedicated server
 

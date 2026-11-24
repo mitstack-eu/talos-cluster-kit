@@ -188,11 +188,11 @@ spec:
               value: "123"
           resources:
             requests:
-              cpu: 250m
-              memory: 512Mi
+              cpu: 450m
+              memory: 1024Mi
             limits:
-              cpu: 250m
-              memory: 512Mi
+              cpu: 450m
+              memory: 1024Mi
           securityContext:
             # The unprivileged daemon's settings in a user namespace; docs/runner-services.md gives each one's reason and which are unproven on Talos.
             privileged: false

@@ -437,36 +437,82 @@ the job's pod. A bridge is a network device the Docker daemon creates:
 `docker0` for its default network, and one whose name starts with `br-` for
 each custom network, such as the one a job with `services:` gets.
 
-The kit runs Istio in ambient mode, which writes redirect rules inside every
-pod. Those rules treat traffic that arrives from a bridge as a call into the
-pod. Left alone, they keep a container's fetch from leaving the pod and reset
-a call from one container to another by name.
+A job's pod sits in the cluster's service mesh, a layer that wraps each TCP
+call between pods in mutual TLS. The mesh is Istio, run in its ambient mode,
+which adds no container to a pod, as
+[the README's mesh section](../README.md#how-every-call-between-pods-proves-who-makes-it)
+explains. Istio's CNI agent, the pod on each node that sets up a new pod's
+network for the mesh, writes rules into each pod's packet filter. The packet
+filter is the kernel's list of rules for the packets a pod sends and receives.
+
+The iptables manual describes a pod's `PREROUTING` rules as the ones for
+packets arriving on any of its network interfaces, and its `OUTPUT` rules as
+the ones for packets its own processes send. Istio hooks its chain
+`ISTIO_PRERT` into `PREROUTING`. At Istio 1.30.7, the release the kit
+installs, `cni/pkg/iptables/iptables.go` makes that chain send each arriving
+TCP packet to the port where Istio takes calls into the pod. Only a packet for
+the pod's loopback address, or one Istio has already marked, escapes it. A
+container's packets reach the pod's network stack through a bridge, so they
+meet `PREROUTING` and Istio handles them as calls into the pod.
+
+A hand run on a runner pod,
+[run 45271994946 of mit6635-scratch](https://github.com/mitstack-eu/mit6635-scratch/actions/runs/45271994946),
+tried each case with Istio's usual rules alone. A container on Docker's
+default network and one on a custom network each failed to reach the internet
+over HTTPS, with `Send failure: Broken pipe`. A container that called another
+by name on a custom network got `Connection reset by peer`. The job's own
+step, whose packets go through `OUTPUT`, reached the internet and a
+container's published port.
 
 The runner pod's template in `components/runners/scale-set.yaml` therefore
-carries the annotation Istio documents for Docker in Docker,
-`istio.io/reroute-virtual-interfaces`, with the value `"docker0,br-+"`.
-Istio's CNI agent is the pod on each node that sets up a new pod's network for
-the mesh. For each entry, it writes two rules at the head of the pod's
-`ISTIO_PRERT` chain, which is a list of rules in the kernel's packet filter.
-The first sends the entry's TCP traffic to port 15001, where the mesh takes a
-pod's outgoing calls, and the second stops the chain there. The `+` in `br-+`
-is the packet filter's wildcard, so the entry matches the bridge of every
-custom network. A container's traffic then leaves the pod the way a job's own
-steps' traffic does.
+carries the annotation `istio.io/reroute-virtual-interfaces`, with the value
+`"docker0,br-+"`. Istio's code comment on the rules it writes says they
+"treat inbound as outbound traffic", and names Docker in Docker as a use. At
+Istio 1.30.7, this is what the CNI agent's code does:
 
-ARC copies the template's annotations onto each runner pod. The listener
-starts no Docker, so its template carries no annotation. The two entries live
-in `dockerBridges` in `components/runners.go`.
+1. `cni/pkg/nodeagent/net.go` splits the annotation's value on commas and
+   trims each entry.
+2. `cni/pkg/iptables/iptables.go` writes two rules for each entry, as the
+   first rules of `ISTIO_PRERT`, and passes the entry unchanged as the
+   interface they match.
+3. The first rule sends TCP packets arriving on that interface to port 15001,
+   the port where Istio takes a pod's outgoing calls.
+4. The second rule makes those packets skip the rest of `ISTIO_PRERT`, so its
+   inbound redirect never sees them.
 
-Istio marks the annotation Alpha, so a later Istio release may change it. A
-copy of both rules written by hand on a runner pod made a container on either
-network reach the internet, one container reach another by name, and a
-`docker build` fetch its package updates. No job has run on a pod that carries
-the annotation itself yet, so whether the CNI agent takes `br-+` from it and
-writes the rules is unproven. If it does not, the alternative is Istio's
-annotation `ambient.istio.io/bypass-inbound-capture`, which drops the mesh's
-inbound redirect for the whole pod, so calls into the pod no longer pass
-through the mesh. The kit does not use it.
+Both rules match TCP alone. The `+` that ends `br-+` is the iptables wildcard
+for any interface whose name starts with `br-`, so the entry matches the
+bridge of every custom network.
+
+The same hand run then wrote the two rules for each of the two entries on the
+runner pod. Each HTTPS case returned 200: a container on Docker's default
+network and one on a custom network reached the internet, and one container
+reached another by name. A `docker build` on the default network fetched its
+package updates over HTTPS. The packet counter of the `br-+` rule showed it
+matched the custom network's bridge. One case still failed. A container on the
+default network fetching over plain HTTP, port 80, got
+`Connection reset by peer` after ten seconds, and why is not established.
+
+ARC's controller, at the release 0.15.1 the kit pins, carries the template's
+annotations onto each runner pod. Its `controllers/actions.github.com/resourcebuilder.go`
+copies the scale set's `spec.template` into its EphemeralRunnerSet, and from
+there into each EphemeralRunner. It then copies that template's annotations
+onto the runner pod it creates. The three CRDs in
+`components/gha-runner-scale-set-controller/gha-runner-scale-set-controller.yaml`
+each declare `annotations` under the template's `metadata`, so the API server
+keeps the field. The listener starts no Docker, so its template carries no
+annotation. The two entries live in `dockerBridges` in `components/runners.go`.
+
+One thing is unproven: no job has yet run on a pod that carries the
+annotation. What ARC and Istio do with it rests on their code and the hand
+run until a live pod shows the two rules for each entry.
+
+Istio marks the annotation Alpha, its label for a feature that may change or
+go without notice in a later release. If a live pod does not take `br-+`, the
+alternative is Istio's annotation `ambient.istio.io/bypass-inbound-capture`.
+Istio 1.30.7's comment on it in `cni/pkg/nodeagent/net.go` says it runs the
+pod in "ingress mode" and "just disables inbound redirection". Calls into the
+pod would then skip the mesh's inbound redirect. The kit does not use it.
 
 ## How the parts fit together
 

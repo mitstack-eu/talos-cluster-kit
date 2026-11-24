@@ -48,7 +48,7 @@ type containerSize struct{ CPU, Memory string }
 // keeps for it alone and fit one job on a cx23, the smallest server a Cloud pool may list.
 var (
 	jobRunnerSize = containerSize{CPU: "1000m", Memory: "1536Mi"}
-	jobDindSize   = containerSize{CPU: "250m", Memory: "512Mi"}
+	jobDindSize   = containerSize{CPU: "450m", Memory: "1024Mi"}
 	jobInitSize   = containerSize{CPU: "100m", Memory: "128Mi"}
 )
 

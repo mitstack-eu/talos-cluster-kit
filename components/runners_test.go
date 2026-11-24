@@ -130,6 +130,15 @@ func TestWithRunners_RunsEachJobInItsOwnUserNamespaceWithAnUnprivilegedDaemonWhi
 	testutil.Golden(t, "testdata/golden/runner-manifests.txt", manifestSums(runnerSet(t)))
 }
 
+func TestWithRunners_HasIstioRerouteDockersDefaultAndCustomBridgesOutOfEachJobPodWithTheSwitchOffOrOnAndNoListenerInterface(t *testing.T) {
+	for _, isolate := range []bool{false, true} {
+		scaleSet := scaleSetIn(t, runnerSet(t, func(in *components.RunnerInputs) { in.IsolateJobs = isolate }))
+
+		assert.Equal(t, "docker0,br-+", testutil.Field(t, scaleSet, "spec", "template", "metadata", "annotations", "istio.io/reroute-virtual-interfaces"), "the interfaces Istio sends out of a job pod with IsolateJobs %t", isolate)
+		assert.Nil(t, testutil.Field(t, scaleSet, "spec", "listenerTemplate", "metadata", "annotations"), "the listener starts no Docker, so it needs no rerouted interface")
+	}
+}
+
 func TestWithRunners_ReservesEachJobContainersCPUAndMemoryAsItsLimitAndWholeCoresForTheRunnerSoTheJobPodIsGuaranteed(t *testing.T) {
 	containers := jobContainers(t, testutil.Field(t, scaleSetIn(t, runnerSet(t)), "spec", "template", "spec"))
 

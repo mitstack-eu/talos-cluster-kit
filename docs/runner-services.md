@@ -429,6 +429,142 @@ open:
    sets `kernel.yama.ptrace_scope` to 2, which lets only a process holding
    that capability trace another, and the workstation the test ran on reads 1.
 
+## How a job's containers reach the network
+
+A container that Docker starts inside a job, such as a step of an image build
+or a service container, sends its traffic through one of Docker's bridges in
+the job's pod. A bridge is a network device the Docker daemon creates:
+`docker0` for its default network, and one whose name starts with `br-` for
+each custom network, such as the one a job with `services:` gets.
+
+A job's pod sits in the cluster's service mesh, a layer that wraps each TCP
+call between pods in mutual TLS, an encrypted connection in which both ends
+present a certificate. The mesh is Istio, run in its ambient mode, which adds
+no container to a pod, as
+[the README's mesh section](../README.md#how-every-call-between-pods-proves-who-makes-it)
+explains. Istio's CNI agent, its Container Network Interface plugin, runs as a
+pod on each node and sets up each new pod's network for the mesh. It does so
+by writing rules into the pod's packet filter.
+
+The packet filter is the kernel's set of rules for the packets a pod sends and
+receives, and iptables is the tool that writes them. The iptables manual
+groups those rules into tables, and each table into chains. A chain is a list
+of rules that a packet is checked against in order. Istio's redirect sits in
+the nat table, which the manual says "is consulted when a packet that creates
+a new connection is encountered". For that table, the manual describes the
+built-in chain `PREROUTING` as "for altering packets as soon as they come in",
+and `OUTPUT` as "for altering locally-generated packets before routing". A
+packet that a container sends comes into the pod's network through a bridge,
+so it meets `PREROUTING`. A packet that the job's own step sends is generated
+in the pod, so it meets `OUTPUT`.
+
+At Istio 1.30.7, the release the kit installs, `cni/pkg/iptables/iptables.go`
+hooks Istio's own chain `ISTIO_PRERT` into `PREROUTING`. That chain sends each
+arriving TCP packet to what the code calls ztunnel's inbound plaintext port,
+the port where Istio takes calls into the pod. The run described below listed
+that port as 15006. A mark is a number the kernel can attach to a packet, and
+Istio's is `0x539`. That redirect leaves four kinds of TCP packet alone:
+
+1. a packet from the address Istio gives the node's health probes,
+   169.254.7.127
+2. a packet for port 15008, where ztunnel delivers a call already wrapped in
+   mutual TLS, as the README's mesh section says
+3. a packet for the pod's loopback address
+4. a packet that carries Istio's mark
+
+A container's packet arrives through a bridge, so that redirect treats it as a
+call into the pod, although the container is sending it out. The hand run
+below tests whether letting that traffic out instead fixes the failures.
+
+A workflow run tried this by hand,
+[run 45271994946](https://github.com/mitstack-eu/mit6635-scratch/actions/runs/45271994946)
+in the repository `mitstack-eu/mit6635-scratch`. Its job ran on a pod of the
+runner group `mitstack-runners`. Its steps ran
+`iptables -t nat -I ISTIO_PRERT ...` inside the runner pod. For each of two
+interface names, `docker0` and `br-+`, they inserted a pair of rules at the
+head of the chain: one sends TCP packets arriving on that interface to port
+15001, Istio's port for a pod's outgoing calls, and one is a `RETURN` after
+it. The chain as found held no rule for a virtual interface, so the annotation
+played no part in the run, and the run shows what the rules do and nothing
+about the annotation. The run tried cases a to e first with the pod's rules as
+Istio wrote them, then with both pairs inserted, the one for `docker0` and the
+one for `br-+`. It tried case f only with both pairs inserted:
+
+| Case | What it fetched | Istio's rules alone | With both pairs inserted |
+|---|---|---|---|
+| a | A container on Docker's default network fetches `https://deb.debian.org/debian/dists/trixie/InRelease` over HTTPS | `Send failure: Broken pipe` | 200 |
+| b | A container on a custom network fetches the same address over HTTPS | `Send failure: Broken pipe` | 200 |
+| c | A container on the custom network calls another container by name, `http://srv:8080/index.html`, over plain HTTP | `Connection reset by peer` | 200 |
+| d | The job's own step calls a container's published port, `http://127.0.0.1:18080/index.html` | 200 | 200 |
+| e | The job's own step fetches the address of case a over HTTPS | 200 | 200 |
+| f | A container on the default network fetches the same address over plain HTTP, port 80 | Not tried | `Connection reset by peer` after ten seconds |
+
+With the pair for `docker0` alone, case a returned 200 while cases b and c
+still failed.
+
+The runner pod's template in `components/runners/scale-set.yaml` therefore
+carries the annotation `istio.io/reroute-virtual-interfaces`, with the value
+`"docker0,br-+"`. Istio's code comment on the rules it writes says they
+"treat inbound as outbound traffic", and names Docker in Docker as a use.
+Istio's API repository, in `annotation/annotations.gen.go` at tag 1.30.7,
+gives the annotation the status Alpha, the first of the three statuses it
+lists: Alpha, Beta and Stable. At that release, this is what the CNI agent's
+code does:
+
+1. `cni/pkg/nodeagent/net.go` splits the annotation's value on commas and
+   trims each entry.
+2. `cni/pkg/iptables/iptables.go` writes two rules for each entry, as the
+   first rules of `ISTIO_PRERT`, and passes the entry unchanged as the
+   interface they match.
+3. The first rule sends TCP packets arriving on that interface to port 15001,
+   the port where Istio takes a pod's outgoing calls.
+4. The second rule is a `RETURN`, which the iptables manual says means "stop
+   traversing this chain", so the chain's later redirect to port 15006 does
+   not apply to those packets.
+
+Both rules match TCP alone. The annotation's own description in that
+`annotations.gen.go` says that custom networks "are assigned a randomized
+interface name". The kit therefore names a pattern. The iptables manual says
+that if an interface name "ends in a "+", then any interface which begins with
+this name will match". So `br-+` matches the bridge of every custom network.
+
+In the run, cases a to e each returned 200 with both pairs inserted, as the
+table shows. A `docker build` on the default network also fetched its package
+updates and upgraded 23 packages. Its Dockerfile first rewrote apt's sources
+from HTTP to HTTPS. The packet counters showed the redirect for `docker0`
+matching 5 packets and the one for `br-+` matching 2, so `br-+` matched the
+custom network's bridge. Both `RETURN` rules counted 0 packets, so the second
+rule's effect is read from Istio's code, and the run did not exercise it.
+
+One further case failed. A container on the default network fetching over
+plain HTTP, port 80, got `Connection reset by peer` after ten seconds with
+both pairs in place. The run did not try that case without the rules, so
+whether the rules cause it is not established. A plain-HTTP fetch from a
+container may still fail until that case is explained.
+
+ARC's controller, at release 0.15.1, which the kit pins, carries the
+template's annotations onto each runner pod. ARC defines three CRDs for it,
+AutoscalingRunnerSet, EphemeralRunnerSet and EphemeralRunner. Its
+`controllers/actions.github.com/resourcebuilder.go` copies the
+AutoscalingRunnerSet's `spec.template` into its EphemeralRunnerSet, and from
+there into each EphemeralRunner. In the EphemeralRunner, the pod template's
+fields sit directly in `spec`. The controller copies the annotations in that
+`spec` onto the runner pod it creates. Each of the three CRDs, in
+`components/gha-runner-scale-set-controller/gha-runner-scale-set-controller.yaml`,
+declares `annotations` in the template's metadata, so the API server keeps the
+field. The listener starts no Docker, so its template carries no annotation.
+The two entries live in `dockerBridges` in `components/runners.go`.
+
+Two points are open. No job has yet run on a pod that carries the annotation,
+so what ARC and Istio do with it rests on their code until a live pod shows
+the two rules for each entry. The other is case f's reset.
+
+If a live pod does not take `br-+`, the alternative is Istio's annotation
+`ambient.istio.io/bypass-inbound-capture`. Istio 1.30.7's comment on it in
+`cni/pkg/nodeagent/net.go` says it runs the pod in "ingress mode" and "just
+disables inbound redirection". Calls into the pod would then skip the mesh's
+inbound redirect. The kit does not use it.
+
 ## How the parts fit together
 
 ```mermaid
@@ -767,7 +903,7 @@ controller starts each later job on the new image.
 
 | File | What it holds |
 |---|---|
-| `components/runners.go` | `RunnerInputs`, its checks, `Set.WithRunnerServices` and `Set.WithRunners`, and the CPU and memory each container of a job's pod asks for and is limited to |
+| `components/runners.go` | `RunnerInputs`, its checks, `Set.WithRunnerServices` and `Set.WithRunners`, the CPU and memory each container of a job's pod asks for and is limited to, and `dockerBridges`, the interfaces Istio reroutes out of a job's pod |
 | `components/runners/runners.yaml` | The namespace and its Cilium policy |
 | `components/runners/scale-set.yaml` | The template of the scale set, its runner pod, and the Role and RoleBinding that let ARC's controller create each listener's Role |
 | `components/runners/policies/` | The three pod policies that skip `mitstack-runners`, which `scripts/render-components.sh` writes |

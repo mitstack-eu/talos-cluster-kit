@@ -52,6 +52,10 @@ var (
 	jobInitSize   = containerSize{CPU: "100m", Memory: "128Mi"}
 )
 
+// dockerBridges are the interfaces Istio reroutes out of a job's pod, since its ambient redirect would otherwise catch
+// their traffic as inbound: Docker's default bridge, and the pattern matching each custom network's bridge.
+var dockerBridges = []string{"docker0", "br-+"}
+
 // controllerAccountRe matches a pod's serviceAccountName with its value, which a CRD schema's bare key never has.
 var controllerAccountRe = regexp.MustCompile(`(?m)^[ \t]+serviceAccountName:[ \t]+(\S+)[ \t]*$`)
 
@@ -180,6 +184,7 @@ func (s Set) WithRunners(in RunnerInputs) (Set, error) {
 		"DindSize":          jobDindSize,
 		"InitSize":          jobInitSize,
 		"IsolateJobs":       in.IsolateJobs,
+		"DockerBridges":     strings.Join(dockerBridges, ","),
 	})
 	if err != nil {
 		return Set{}, err

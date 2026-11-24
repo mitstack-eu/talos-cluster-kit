@@ -2088,12 +2088,14 @@ Runner services run an organisation's GitHub Actions jobs on the cluster, one
 pod per job, with Docker inside it. Each job's pod carries one Istio
 annotation, `istio.io/reroute-virtual-interfaces`, with the value
 `"docker0,br-+"`. The annotation asks Istio's CNI agent to send TCP traffic
-from Docker's bridges to the mesh's outbound port. At Istio 1.30.7,
-`cni/pkg/nodeagent/net.go` reads its entries and `cni/pkg/iptables/iptables.go`
-writes those rules. Without them, the agent's inbound redirect catches that
-traffic. What the annotation is for, what hand-written copies of its rules
-showed, and the one thing still unproven are on
-[the runner services page](docs/runner-services.md#how-a-jobs-containers-reach-the-network).
+arriving from Docker's bridges to port 15001, the mesh's outbound port. At
+Istio 1.30.7, `cni/pkg/nodeagent/net.go` reads its entries and
+`cni/pkg/iptables/iptables.go` writes those rules. Without them, the agent's
+inbound redirect catches that traffic.
+[The runner services page](docs/runner-services.md#how-a-jobs-containers-reach-the-network)
+says what the annotation is for and what is still unproven. It also says what
+a workflow run showed when it inserted the same rules by hand, on a pod
+without the annotation.
 
 Cilium still decides which pods may talk, but Cilium sees a call inside the
 mesh only as port 15008. Every Cilium policy that admits a call between two

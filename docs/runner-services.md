@@ -843,11 +843,17 @@ returns the node report's manifests and the lease job's in one list, so this
 Role reaches the cluster with the lease job's and needs no new step to create
 the namespace first.
 
-The sweep sends its token to `https://api.github.com` and nowhere else.
-`trustedGitHubBase` in `report/urlguard.go` builds that address from the one
-host the package allows, and refuses any other, so no input chooses where the
-token goes. The kit's root module imports no block framework, so this guard
-stands in for block-kit's `ghapi.Base`.
+The sweep is the part of the node report that removes offline runners. It
+sends the GitHub token the lease job writes to `https://api.github.com` and to
+no other host, because `Manifests` in `report/report.go` fixes that address in
+code and no field of `report.Inputs` can change it. `trustedGitHubBase` in
+`report/urlguard.go` also checks the address against the one host this package
+allows, `api.github.com`, and refuses any other host that a later change
+passes to it. block-kit's check of every block's pipeline asks each package a
+block uses that names GitHub's API for such a check. This kit,
+`talos-cluster-kit`, imports no part of block-kit, so `report/urlguard.go`
+carries its own check in place of block-kit's `ghapi.Base`, the helper that
+checks a GitHub address against a list of allowed hosts.
 
 A block built on the robot cluster module reads the member through
 `Cluster.RunnersProblem`. It reads the newest report that names no failed

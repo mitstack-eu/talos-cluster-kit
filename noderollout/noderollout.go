@@ -108,17 +108,18 @@ const etcdMembers = "etcd members"
 // allowChanges asks r.Guard to allow changing each etcd member in turn, and judges the only member of a plane of one by
 // its own reading, since the guard counts only the members a change leaves and a set of one leaves none.
 func allowChanges(r Rollout, members []report.Member) error {
-	set := redundant.Set{Name: etcdMembers, Members: members, Minimum: redundant.AllButOne}
 	if len(members) == 1 {
-		set.Minimum = redundant.NoRedundancy
+		only := redundant.Set{Name: etcdMembers, Members: members, Minimum: redundant.NoRedundancy}
+		if err := r.Guard.Allow(only, members[0].Name, r.StepStart); err != nil {
+			return err
+		}
+		return onlyMemberServing(members[0], r.StepStart)
 	}
+	set := redundant.Set{Name: etcdMembers, Members: members, Minimum: redundant.AllButOne}
 	for _, m := range members {
 		if err := r.Guard.Allow(set, m.Name, r.StepStart); err != nil {
 			return err
 		}
-	}
-	if len(members) == 1 {
-		return onlyMemberServing(members[0], r.StepStart)
 	}
 	return nil
 }

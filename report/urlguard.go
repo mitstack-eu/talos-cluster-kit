@@ -9,7 +9,7 @@ import (
 // githubAPIHost is GitHub's own API host, the one host the runner sweep sends the leased runner token to.
 const githubAPIHost = "api.github.com"
 
-// allowedGitHubHosts lists every host the runner sweep may dial, so no request or input chooses one.
+// allowedGitHubHosts lists every host the runner sweep may send its token to.
 func allowedGitHubHosts() []string { return []string{githubAPIHost} }
 
 // trustedGitHubBase answers the allowlist's own entry for endpoint's host, never a base built from endpoint.

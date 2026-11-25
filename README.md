@@ -2277,7 +2277,7 @@ change `report/scripts/report.sh`.
 
 | Member | What it holds | Where it comes from |
 |---|---|---|
-| `nodes` | Each node with its Talos version, allocatable resources, every address it holds with that address's type as `addresses`, `topology.kubernetes.io/zone` and `topology.kubernetes.io/region` labels, and, as `zoneLabelManagers`, each field manager that wrote its zone label. `taints` holds the node's `spec.taints`, each as `key`, `value` or `null`, and `effect`, and `unschedulable` holds its `spec.unschedulable`, `false` when the node sets none. They are the two facts Kubernetes reads to decide whether a pod may land on the node, and the report derives no role from them. `machineConfig` holds the release its `mitstack.dev/machine-config` annotation names, the digest of the tools image of the kit release its machine configuration was rendered from, or `null` on a node that names none | `kubectl get nodes --show-managed-fields` |
+| `nodes` | Each node with its Talos version, allocatable resources, every address it holds with that address's type as `addresses`, `topology.kubernetes.io/zone` and `topology.kubernetes.io/region` labels, and, as `zoneLabelManagers`, each field manager that wrote its zone label. `taints` holds the node's `spec.taints`, each as `key`, `value` or `null`, and `effect`, and `unschedulable` holds its `spec.unschedulable`, `false` when the node sets none. They are the two facts Kubernetes reads to decide whether a pod may land on the node, and the report derives no role from them. `bootID` holds the node's `status.nodeInfo.bootID`, the identifier its kernel makes afresh at every boot, or `null` on a node that lists none, as [the section on reboots](#how-two-reports-show-whether-a-node-rebooted) describes. `machineConfig` holds the release its `mitstack.dev/machine-config` annotation names, the digest of the tools image of the kit release its machine configuration was rendered from, or `null` on a node that names none | `kubectl get nodes --show-managed-fields` |
 | `etcd` | Each etcd member, `healthy` only when its node answered `talosctl etcd status` with an empty `ERRORS` cell, the `leader`, and a `statusError` naming a status read that failed | `talosctl etcd members` and `talosctl etcd status` |
 | `systemVolumes` | How each node's `STATE` and `EPHEMERAL` volumes are encrypted | `talosctl get volumestatus` |
 | `argocd` | Each Application's health, sync, `revision`, the `operation` of its last sync and its applied objects, each object with Argo CD's health of it, as [the section on the revision](#how-the-report-names-the-revision-each-application-was-compared-against) and [the section on object health](#how-the-report-shows-each-objects-health-and-each-containers-state) describe, under `routes` the answer each of 17 routes gives a caller with no session, and the `argocd` namespace's Services and Ingresses. The settings route's entry also says [whether any account can sign in with a password](#how-the-report-shows-whether-a-password-signs-in-to-argo-cd) | The Applications, `ARGOCD_URL` and the Ingress read |
@@ -2316,6 +2316,42 @@ in `bytes`. Argo CD answers two of the routes for such a caller, userinfo and
 settings, and the report keeps one boolean of each:
 [the section on the local login](#how-the-report-shows-whether-a-password-signs-in-to-argo-cd)
 describes both.
+
+### How two reports show whether a node rebooted
+
+A node's kernel makes a new boot ID each time the node boots, and the kubelet
+copies it into the Node object's `status.nodeInfo.bootID`. Each node row
+carries it as `bootID`, so the value stays the same from one report to the
+next until that node boots again. You can then tell from mitstack's stored
+reports alone whether an Update rebooted a node, with no access to the cluster
+and nothing read by hand beforehand.
+
+To judge one node, compare its `bootID` in a report made before the moment
+you care about with one made after it. A different value means the node
+booted in between, and the same value means it did not. A `null` on either
+side means the node listed no boot ID in that report, so the pair says nothing
+about that node.
+
+The platform keeps each report's body whole and serves a subscription's
+newest reports, newest first, on `GET /v1/subscriptions/{id}/node-reports`. It
+keeps as many as `ClusterNodeReportsKept` in the platform's
+`api/internal/repo/cluster_enrolments.go` names, and a cluster reports once
+every `Interval` in `report/report.go`. A report from before an Update
+therefore has to be read while the platform still keeps it. This command
+reads the newest and the oldest stored report of `sub_0123456789ab` and names
+each node with whether it booted between them:
+
+```bash
+curl -sf -H "Authorization: Bearer $MITSTACK_API_TOKEN" \
+  https://api.mitstack.dev/v1/subscriptions/sub_0123456789ab/node-reports |
+  jq '(.reports | last.body.nodes) as $before | .reports[0].body.nodes[]
+    | . as $after | ($before[] | select(.name == $after.name) | .bootID) as $was
+    | {name, rebooted: (if $was == null or .bootID == null then null else $was != .bootID end)}'
+```
+
+A node that answers `"rebooted": false` kept its boot ID across the reports,
+`true` booted between them, and `null` listed no boot ID in one of them. A
+node in only one of the two reports is left out.
 
 ### How the report names the revision each Application was compared against
 

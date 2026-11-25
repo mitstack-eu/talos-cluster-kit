@@ -2323,8 +2323,9 @@ A node's kernel makes a new boot ID each time the node boots, and the kubelet
 copies it into the Node object's `status.nodeInfo.bootID`. Each node row
 carries it as `bootID`, so the value stays the same from one report to the
 next until that node boots again. You can then tell from mitstack's stored
-reports alone whether an Update rebooted a node, with no access to the cluster
-and nothing read by hand beforehand.
+reports alone whether an Update rebooted a node. An Update is the step that
+moves a running cluster to a new release of its cluster block. The read needs
+no access to the cluster and nothing recorded by hand beforehand.
 
 To judge one node, compare its `bootID` in a report made before the moment
 you care about with one made after it. A different value means the node
@@ -2332,26 +2333,37 @@ booted in between, and the same value means it did not. A `null` on either
 side means the node listed no boot ID in that report, so the pair says nothing
 about that node.
 
-The platform keeps each report's body whole and serves a subscription's
-newest reports, newest first, on `GET /v1/subscriptions/{id}/node-reports`. It
-keeps as many as `ClusterNodeReportsKept` in the platform's
+The platform keeps each report's body whole and serves the newest reports of
+a cluster's subscription, newest first, on
+`GET /v1/subscriptions/{id}/node-reports`. The subscription is the cluster's
+record on mitstack, named by an id such as `sub_0123456789ab`. The platform
+keeps as many reports as `ClusterNodeReportsKept` in its
 `api/internal/repo/cluster_enrolments.go` names, and a cluster reports once
-every `Interval` in `report/report.go`. A report from before an Update
-therefore has to be read while the platform still keeps it. This command
-reads the newest and the oldest stored report of `sub_0123456789ab` and names
-each node with whether it booted between them:
+every `Interval` in `report/report.go`. Those two values multiplied say how
+far back the oldest kept report reaches, so read the report from before an
+Update while the platform still keeps it.
+
+The request needs the personal API token of a member of the organisation
+that owns the subscription, which that member creates on the console's
+Settings, API Tokens page. This command, with that token in
+`MITSTACK_API_TOKEN`, compares the
+newest and the oldest stored report of `sub_0123456789ab`:
 
 ```bash
 curl -sf -H "Authorization: Bearer $MITSTACK_API_TOKEN" \
   https://api.mitstack.dev/v1/subscriptions/sub_0123456789ab/node-reports |
-  jq '(.reports | last.body.nodes) as $before | .reports[0].body.nodes[]
-    | . as $after | ($before[] | select(.name == $after.name) | .bootID) as $was
-    | {name, rebooted: (if $was == null or .bootID == null then null else $was != .bootID end)}'
+  jq '(.reports | last) as $before | .reports[0] as $after
+    | {before: $before.receivedAt, after: $after.receivedAt, nodes: [$after.body.nodes[]
+      | . as $node | ($before.body.nodes[] | select(.name == $node.name) | .bootID) as $was
+      | {name, rebooted: (if $was == null or .bootID == null then null else $was != .bootID end)}]}'
 ```
 
-A node that answers `"rebooted": false` kept its boot ID across the reports,
-`true` booted between them, and `null` listed no boot ID in one of them. A
-node in only one of the two reports is left out.
+The answer names when the platform received each of the two reports as
+`before` and `after`. It says something about an Update only when `before` is
+earlier than the Update began and `after` is later than it ended. Under
+`nodes`, a node that answers `"rebooted": false` kept its boot ID across the
+two reports, `true` booted between them, and `null` listed no boot ID in one
+of them. A node in only one of the two reports is left out.
 
 ### How the report names the revision each Application was compared against
 

@@ -95,8 +95,12 @@ of its two fields set.
 A block opens further outbound ports with `controlplane.Plane.GatewayEgressPorts`,
 which the plane passes to each gateway as `gateway.Inputs.EgressPorts`. Every
 gateway then forwards those TCP ports to any outside address, beside 443, which
-it always forwards. A runner cluster, whose nodes run a repository's CI jobs,
-sets `[]int{80, 443}`. A CI job, one build or test run on those nodes, can then
+it forwards whether the list names it or not. The robot cluster module, the Go
+code in `operator/robotcluster/` that a block's operator builds its planes
+with, takes the ports as `robotcluster.Config.GatewayEgressPorts` and gives
+them to every plane it builds. A block whose nodes must reach outside hosts
+over plain HTTP, such as a runner cluster running a repository's CI jobs, sets
+`[]int{80, 443}`. A CI job, one build or test run on those nodes, can then
 reach an outside host over plain HTTP. `gateway.Render` refuses a port outside 1
 to 65535.
 

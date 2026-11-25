@@ -40,6 +40,8 @@ type Config struct {
 	ClusterType string
 	// Runners names the runner services a request's cluster runs, its error refusing the request; nil runs none.
 	Runners func(d contract.Desired) (*components.RunnerInputs, error)
+	// GatewayEgressPorts are the TCP ports the gateway forwards to any outside address beside 443; nil forwards 443 alone.
+	GatewayEgressPorts []int
 
 	Now             func() time.Time
 	CloudAPI        func(token string) controlplane.API
@@ -115,17 +117,18 @@ func (cfg Config) withDefaults() Config {
 
 func (k *Cluster) NewPlane(api controlplane.API, subID, appName string) controlplane.Plane {
 	return controlplane.Plane{
-		API:               controlplane.ReadOncePerRequest(api, requestReads),
-		Block:             k.cfg.Block,
-		Subscription:      subID,
-		AppName:           appName,
-		ServerTypes:       []string{controlplane.DefaultServerType},
-		Boundary:          k.cfg.Boundary,
-		PlatformURL:       PlatformURL,
-		ReportProofScript: reportproof.TokenRequestScript,
-		Now:               k.cfg.Now,
-		AppsOnWorkers:     true,
-		WorkerAddresses:   []string{workerAddress.Addr().String()},
+		API:                controlplane.ReadOncePerRequest(api, requestReads),
+		Block:              k.cfg.Block,
+		Subscription:       subID,
+		AppName:            appName,
+		ServerTypes:        []string{controlplane.DefaultServerType},
+		Boundary:           k.cfg.Boundary,
+		PlatformURL:        PlatformURL,
+		ReportProofScript:  reportproof.TokenRequestScript,
+		Now:                k.cfg.Now,
+		AppsOnWorkers:      true,
+		WorkerAddresses:    []string{workerAddress.Addr().String()},
+		GatewayEgressPorts: k.cfg.GatewayEgressPorts,
 		// A successor boots the configuration its image was built with, which the rollout replaces.
 		RollsOutMachineConfig: true,
 	}

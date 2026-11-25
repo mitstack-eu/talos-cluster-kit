@@ -1,7 +1,8 @@
 package robotcluster_test
 
 // A cluster on a dedicated server, shaped as production's, takes the same steps and Robot calls and reads the same
-// from subscribe to unsubscribe.
+// from subscribe to unsubscribe, and a Cloud-only cluster whose operator names no gateway ports builds a gateway with
+// the same firewall and list label.
 
 import (
 	"fmt"
@@ -92,6 +93,40 @@ func TestDedicatedServerCluster_WithProductionsSetSizeCloudPoolKeepsItsMemberSte
 	section(&golden, "observed", []string{string(e.Observe().State) + ": " + e.Observe().StatusDetail})
 
 	testutil.Golden(t, "testdata/production-cloud-pool.golden", []byte(golden.String()))
+}
+
+func TestCloudOnlyCluster_WithNoGatewayEgressPortsBuildsTheGatewayFirewallAndListLabelItsGoldenRecords(t *testing.T) {
+	e, gw := settledGateway(t)
+	cloudConfig := robotclustertest.GatewayCloudConfig(t, e.Cloud.UserData[gw.ID])
+
+	var golden strings.Builder
+	section(&golden, "gateway list label", []string{gw.Labels[controlplane.KeyGatewayList]})
+	section(&golden, "gateway /etc/nftables.conf", []string{writtenFile(t, cloudConfig, "/etc/nftables.conf")})
+
+	testutil.Golden(t, "testdata/cloud-only-gateway.golden", []byte(golden.String()))
+}
+
+func settledGateway(t *testing.T, opts ...robotclustertest.Option) (*robotclustertest.Env, controlplane.Server) {
+	t.Helper()
+	e := robotclustertest.New(t, cloudOnlySub, append([]robotclustertest.Option{cloudOnly}, opts...)...)
+	obs, err := e.Settle()
+	require.NoError(t, err, "the subscribe: %s", obs.StatusDetail)
+	gateways := e.ByRole(controlplane.RoleGateway)
+	require.Len(t, gateways, 1, "the gateways of a cluster in one location")
+	return e, gateways[0]
+}
+
+func writtenFile(t *testing.T, cloudConfig, path string) string {
+	t.Helper()
+	for _, written := range testutil.Field(t, testutil.Documents(t, []byte(cloudConfig))[0], "write_files").([]any) {
+		if file, _ := written.(map[string]any); file["path"] == path {
+			content, ok := file["content"].(string)
+			require.True(t, ok, "the cloud-config writes %s as text", path)
+			return strings.TrimRight(content, "\n")
+		}
+	}
+	require.FailNow(t, "the cloud-config writes no "+path)
+	return ""
 }
 
 func section(b *strings.Builder, title string, lines []string) {

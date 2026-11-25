@@ -12,8 +12,11 @@ import (
 	"io"
 	"log"
 	"maps"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/mail"
 	"regexp"
 	"slices"
 	"strings"
@@ -379,12 +382,27 @@ func builderConfiguration(t *testing.T, userData string) []map[string]any {
 func gunzipped(t *testing.T, encoded []byte) []byte {
 	t.Helper()
 	zipped, err := base64.StdEncoding.DecodeString(string(encoded))
-	require.NoError(t, err, "the base64 of a builder file")
+	require.NoError(t, err, "the base64 of a gzipped file")
 	r, err := gzip.NewReader(bytes.NewReader(zipped))
-	require.NoError(t, err, "the gzip of a builder file")
+	require.NoError(t, err, "the gzip of a gzipped file")
 	plain, err := io.ReadAll(r)
-	require.NoError(t, err, "the gzip of a builder file")
+	require.NoError(t, err, "the gzip of a gzipped file")
 	return plain
+}
+
+// GatewayCloudConfig is the kit's cloud-config in a gateway's user data, decompressed as cloud-init does.
+func GatewayCloudConfig(t *testing.T, userData string) string {
+	t.Helper()
+	msg, err := mail.ReadMessage(strings.NewReader(userData))
+	require.NoError(t, err, "the gateway's user data as a MIME message")
+	_, params, err := mime.ParseMediaType(msg.Header.Get("Content-Type"))
+	require.NoError(t, err, "the user data's content type")
+	part, err := multipart.NewReader(msg.Body, params["boundary"]).NextPart()
+	require.NoError(t, err, "the user data's first part")
+	require.Equal(t, "application/gzip", part.Header.Get("Content-Type"), "the kit part's content type")
+	encoded, err := io.ReadAll(part)
+	require.NoError(t, err, "the kit part")
+	return string(gunzipped(t, encoded))
 }
 
 // boot gives each Cloud server the harness has not seen yet the machine configuration Boots names.

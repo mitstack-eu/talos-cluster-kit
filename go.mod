@@ -11,6 +11,7 @@ require (
 	go.opentelemetry.io/proto/otlp v1.10.0
 	go.yaml.in/yaml/v4 v4.0.0-rc.6
 	golang.org/x/crypto v0.55.0
+	golang.org/x/mod v0.38.0
 	google.golang.org/protobuf v1.36.12
 	k8s.io/apimachinery v0.37.1
 )

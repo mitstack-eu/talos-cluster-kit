@@ -111,12 +111,9 @@ func TestHosting_ListensOnlyOnTLSKeepsRaftOnTheUserVolumeAndUnsealsWithAStaticKe
 
 	statefulSet := namedDocument(t, openbao, "StatefulSet", "openbao")
 	assert.EqualValues(t, components.OpenBaoMembers, testutil.Field(t, statefulSet, "spec", "replicas"))
-	mounts := map[string]string{}
-	for _, m := range testutil.Field(t, statefulSet, "spec", "template", "spec", "containers", "0", "volumeMounts").([]any) {
-		mounts[testutil.Field(t, m, "name").(string)] = testutil.Field(t, m, "mountPath").(string)
-	}
-	assert.Equal(t, raft, mounts["data"], "Raft keeps its data outside the claim's mount")
-	assert.Equal(t, "/openbao/seal", mounts["seal-key"])
+	container := testutil.Field(t, statefulSet, "spec", "template", "spec", "containers", "0")
+	assert.Equal(t, raft, testutil.Item(t, container, "data", "volumeMounts")["mountPath"], "Raft keeps its data outside the claim's mount")
+	assert.Equal(t, "/openbao/seal", testutil.Item(t, container, "seal-key", "volumeMounts")["mountPath"])
 	assert.Equal(t, "openbao-local", testutil.Field(t, statefulSet, "spec", "volumeClaimTemplates", "0", "spec", "storageClassName"))
 
 	volumes := testutil.Kind(testutil.Documents(t, testutil.Manifest(t, "mitstack-openbao-storage", set.Inline).Bytes), "PersistentVolume")
@@ -234,11 +231,7 @@ func TestHosting_LetsTheCollectorsClusterCopyAloneReachOpenBaosMetricsListenerAn
 	collector := collectorDocs(t, set, testutil.TelemetryExport())
 	pods := map[string]testutil.CiliumEndpoint{"OpenBao": testutil.Endpoint("openbao", nil, map[string]string{"app.kubernetes.io/name": "openbao"})}
 	for _, which := range collectorCopies {
-		labels := map[string]string{}
-		for k, v := range testutil.Field(t, podTemplate(t, collector, which), "metadata", "labels").(map[string]any) {
-			labels[k] = v.(string)
-		}
-		pods["the Collector's "+which+" copy"] = testutil.Endpoint("kube-system", nil, labels)
+		pods["the Collector's "+which+" copy"] = testutil.Endpoint("kube-system", nil, testutil.Labels(t, podTemplate(t, collector, which), "metadata", "labels"))
 	}
 	flows := namedDocument(t, testutil.Manifest(t, "mitstack-hosting-flows", set.Served), "CiliumClusterwideNetworkPolicy", "mitstack-hosting-flows")
 	ports := namedDocument(t, testutil.Manifest(t, "mitstack-hosting-mesh", set.Served), "AuthorizationPolicy", "mitstack-openbao-ports")
@@ -605,12 +598,8 @@ func TestHosting_KeepsEachAuthoritysKeyInTheTrustNamespacePublishesItsCertificat
 func initJob(t *testing.T, set components.Set) (testutil.CiliumEndpoint, map[string]string) {
 	t.Helper()
 	job := namedDocument(t, testutil.Manifest(t, "mitstack-openbao-init", set.Inline), "Job", "mitstack-openbao-init")
-	labels := map[string]string{}
-	for k, v := range testutil.Field(t, job, "spec", "template", "metadata", "labels").(map[string]any) {
-		labels[k] = v.(string)
-	}
 	env := testutil.ContainerEnv(t, testutil.Field(t, job, "spec", "template", "spec", "containers", "0"))
-	return testutil.Endpoint(testutil.Field(t, job, "metadata", "namespace").(string), nil, labels), env
+	return testutil.Endpoint(testutil.Field(t, job, "metadata", "namespace").(string), nil, testutil.Labels(t, job, "spec", "template", "metadata", "labels")), env
 }
 
 func TestHosting_TheInitJobTrustsTheSSHHostKeysArgoCDTrustsForGitHubOn443(t *testing.T) {

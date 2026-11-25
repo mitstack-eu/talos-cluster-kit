@@ -447,6 +447,20 @@ func TestManifests_EveryPodThatMountsTheRunnerSweepsCopyOfTheRunnerTokenRunsOnTh
 	assert.Len(t, mounts, 1, "the node report's pod alone mounts the copy, which shows the search finds a mount: %v", mounts)
 }
 
+func TestManifests_TheRunnerCachesRunAsDeploymentsKeptOffBurstMembersSoTheirEntriesOutliveTheBurstMembersThatCome(t *testing.T) {
+	var caches []string
+	for _, pod := range renderedPods(t) {
+		if pod.source != "runners/"+components.RunnerCachesName {
+			continue
+		}
+		caches = append(caches, pod.workload)
+		assert.Equal(t, "Deployment", pod.kind, "%s runs one pod that the scheduler places again when its node goes", pod.where)
+		assert.True(t, refusesBurstNodes(pod.spec), "%s has no required node affinity %s DoesNotExist, and a burst member takes the cache's disk when it goes", pod.where, components.BurstLabel)
+	}
+
+	assert.ElementsMatch(t, []string{"go-cache", "npm-cache", "image-cache"}, caches, "the caches the runner services render")
+}
+
 // podRequest is the CPU in millicores and the memory in bytes a pod or a container asks the scheduler for.
 type podRequest struct{ milliCPU, memory int64 }
 

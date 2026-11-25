@@ -153,10 +153,15 @@ func runnerPolicyVariants() []string {
 	return names
 }
 
-// WithRunners is the set with the runner services and the scale set rendered inline from the inputs.
-func (s Set) WithRunners(in RunnerInputs) (Set, error) {
+// WithRunners is the set with the runner services, and the scale set and its package caches rendered inline from the
+// inputs, the caches on cacheImage's package-cache.
+func (s Set) WithRunners(in RunnerInputs, cacheImage string) (Set, error) {
 	if err := in.Validate(); err != nil {
 		return Set{}, fmt.Errorf("the runner scale set: %w", err)
+	}
+	caches, err := runnerCaches(cacheImage)
+	if err != nil {
+		return Set{}, err
 	}
 	controller, err := runnerControllerImage()
 	if err != nil {
@@ -185,12 +190,13 @@ func (s Set) WithRunners(in RunnerInputs) (Set, error) {
 		"InitSize":          jobInitSize,
 		"IsolateJobs":       in.IsolateJobs,
 		"DockerBridges":     strings.Join(dockerBridges, ","),
+		"Caches":            runnerCacheEnv(),
 	})
 	if err != nil {
 		return Set{}, err
 	}
 	s = s.WithRunnerServices()
-	s.Inline = append(slices.Clone(s.Inline), Manifest{Name: runnerScaleSetName, Path: "components/runners/scale-set.yaml", Bytes: out})
+	s.Inline = append(slices.Clone(s.Inline), Manifest{Name: runnerScaleSetName, Path: "components/runners/scale-set.yaml", Bytes: out}, caches)
 	return s, nil
 }
 

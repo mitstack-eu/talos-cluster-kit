@@ -1959,7 +1959,8 @@ A cluster applies the manifest at its build. The builder's user data has no
 room for it, so the builder fetches it from the serving server, as
 [the section on the serving server](#how-the-hosting-set-reaches-the-builder)
 explains. A cluster that hosts no platform orders that short-lived server
-for the manifest alone, and orders none when its list is empty. Every release
+for the manifest alone, and orders none when its list is empty and it runs no
+runner services. Every release
 carries the manifest too, so a changed list reaches a running cluster at its
 next upgrade.
 
@@ -3255,6 +3256,11 @@ list, which
 explains. A cluster with a list that hosts no platform therefore orders a
 serving server too, whose file holds that policy alone.
 
+The file carries the runner services' package caches too, which
+[the runner services' page](docs/runner-services.md#how-the-jobs-share-package-caches)
+describes. Beside the runner scale set the caches leave the builder no room,
+so a cluster with runner services orders a serving server as well.
+
 The `serve` package holds the server's key, its files and its command, and a
 block reuses it to serve any one file to one client.
 
@@ -3275,7 +3281,7 @@ everything a control-plane node boots with.
 | `controlplane/scripts/build-image.sh` without its comment lines, and the gateway CA's certificate | In the builder's user data |
 | The node report's, its outside probe's, the security scan's, the labeller's and the cluster tokens' scripts | In the tools image at `tools.ScriptDir`, where each command names its script's path |
 | Each served manifest | From the gateway, which copies it out of the tools image |
-| The hosting set's inline manifests, and the signature policy of a cluster that has a signer list | From the serving server, where the builder fetches them |
+| The hosting set's inline manifests, the runner services' package caches, and the signature policy of a cluster that has a signer list | From the serving server, where the builder fetches them |
 | The telemetry Collector of a cluster that requires an OTLP backend | From the cluster repository, since only a release carries it |
 | The CoreDNS Deployment of a cluster in more than one location | From the cluster repository, since Talos creates its own CoreDNS first at the build |
 

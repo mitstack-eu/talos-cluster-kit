@@ -23,3 +23,11 @@ func TestToolsDockerfile_BuildsMachineConfigWithTheGoReleaseTheModuleNamesPinned
 	require.NotNil(t, builder, "tools/Dockerfile builds machine-config in a golang stage pinned by its digest")
 	assert.Equal(t, string(goDirective[1]), string(builder[1]), "the golang stage runs the Go release go.mod names")
 }
+
+func TestToolsDockerfile_BuildsPackageCacheInTheGoStageAndInstallsItOnThePath(t *testing.T) {
+	dockerfile, err := os.ReadFile("tools/Dockerfile")
+	require.NoError(t, err)
+
+	assert.Regexp(t, `(?m)^RUN .*go build .*-o /package-cache \./cmd/package-cache$`, string(dockerfile), "the golang stage builds package-cache from the kit's source")
+	assert.Regexp(t, `(?m)^COPY --from=machine-config /package-cache /usr/local/bin/package-cache$`, string(dockerfile), "the image runs package-cache by its name, as each cache's pod does")
+}

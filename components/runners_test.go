@@ -36,7 +36,7 @@ func runnerInputs(options ...func(*components.RunnerInputs)) components.RunnerIn
 
 func runnerSet(t *testing.T, options ...func(*components.RunnerInputs)) components.Set {
 	t.Helper()
-	set, err := components.Default().WithRunners(runnerInputs(options...))
+	set, err := components.Default().WithRunners(runnerInputs(options...), testutil.ToolsImage)
 	require.NoError(t, err)
 	return set
 }
@@ -142,7 +142,7 @@ func TestWithRunners_HasIstioRerouteDockersDefaultAndCustomBridgesOutOfEachJobPo
 func TestWithRunners_ReservesEachJobContainersCPUAndMemoryAsItsLimitAndWholeCoresForTheRunnerSoTheJobPodIsGuaranteed(t *testing.T) {
 	containers := jobContainers(t, testutil.Field(t, scaleSetIn(t, runnerSet(t)), "spec", "template", "spec"))
 
-	require.ElementsMatch(t, []string{"init-dind-externals", "dind", "runner"}, slices.Collect(maps.Keys(containers)), "the job pod's containers")
+	require.ElementsMatch(t, []string{"init-dind-externals", "npmrc", "dind", "runner"}, slices.Collect(maps.Keys(containers)), "the job pod's containers")
 	for _, name := range slices.Sorted(maps.Keys(containers)) {
 		resources, _ := containers[name]["resources"].(map[string]any)
 		requests, _ := resources["requests"].(map[string]any)
@@ -195,7 +195,7 @@ func TestWithRunners_GrantsTheControllerARoleToCreateTheListenersRoleAndBindingA
 func TestDefault_HoldsNoRunnerManifest(t *testing.T) {
 	names := manifestNames(components.Default())
 
-	for _, name := range []string{"mitstack-runners", "gha-runner-scale-set-controller", "mitstack-runner-scale-set"} {
+	for _, name := range []string{"mitstack-runners", "gha-runner-scale-set-controller", "mitstack-runner-scale-set", components.RunnerCachesName} {
 		assert.NotContains(t, names, name, "a cluster that asks for no runner services")
 	}
 }
@@ -210,6 +210,7 @@ func TestWithRunnerServices_HoldsTheControllerAndNamespaceButNoScaleSetAndLeaves
 	assert.Contains(t, names, "mitstack-runners", "the namespace and its policy")
 	assert.Contains(t, names, "gha-runner-scale-set-controller", "ARC's controller")
 	assert.NotContains(t, names, "mitstack-runner-scale-set", "the scale set is what WithRunners adds")
+	assert.NotContains(t, names, components.RunnerCachesName, "the caches are what WithRunners adds")
 	assert.Empty(t, slices.DeleteFunc(slices.Clone(set.Inline), func(m components.Manifest) bool {
 		return slices.ContainsFunc(base.Inline, func(b components.Manifest) bool { return b.Name == m.Name })
 	}),
@@ -369,7 +370,7 @@ func TestRunnerInputs_ValidateRefusesWhatTheScaleSetCannotRunWith(t *testing.T) 
 			in := runnerInputs(tc.change)
 
 			err := in.Validate()
-			_, setErr := components.Default().WithRunners(in)
+			_, setErr := components.Default().WithRunners(in, testutil.ToolsImage)
 
 			assert.ErrorContains(t, err, tc.field, "Validate(%+v)", in)
 			assert.Error(t, setErr, "WithRunners(%+v) builds a set from refused inputs", in)

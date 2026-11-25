@@ -13,6 +13,8 @@
 !go.mod
 !go.sum
 !cmd/machine-config/
+!cmd/package-cache/
+!packagecache/
 !components/
 !internal/check/
 !internal/tmpl/

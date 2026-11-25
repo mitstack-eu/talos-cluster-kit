@@ -1,0 +1,257 @@
+# A burst member goes with the idle window and takes its disks with it, so every cache refuses one.
+{{- define "pod" }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: {{ .BurstLabel }}
+                    operator: DoesNotExist
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+{{- end }}
+{{- define "container" }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+{{- end }}
+{{- define "labels" }}
+        app.kubernetes.io/name: {{ .Name }}
+        app.kubernetes.io/component: package-cache
+{{- end }}
+{{- range .Servers }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Name }}
+  namespace: {{ $.Namespace }}
+  labels:
+{{- template "labels" . }}
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Name }}
+  template:
+    metadata:
+      labels:
+{{- template "labels" . }}
+        mitstack.dev/app: {{ $.Namespace }}
+    spec:
+{{- template "pod" $ }}
+      containers:
+        - name: cache
+          image: {{ $.CacheImage }}
+          command: [package-cache, {{ .Kind }}]
+          args:
+            - {{ printf "--listen=:%d" .Port | printf "%q" }}
+            - "--root=/var/cache/package-cache"
+            - {{ printf "--upstream=%s" .Upstream | printf "%q" }}
+{{- range .Flags }}
+            - {{ printf "%q" . }}
+{{- end }}
+            - {{ printf "--max-size=%s" .EvictAt | printf "%q" }}
+            - {{ printf "--max-age=%s" $.MaxAge | printf "%q" }}
+          ports:
+            - name: cache
+              containerPort: {{ .Port }}
+          readinessProbe:
+            httpGet:
+              path: /-/healthz
+              port: cache
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+              ephemeral-storage: {{ .Disk }}
+            limits:
+              cpu: 500m
+              memory: 512Mi
+{{- template "container" }}
+          volumeMounts:
+            - name: cache
+              mountPath: /var/cache/package-cache
+      volumes:
+        - name: cache
+          emptyDir:
+            sizeLimit: {{ .Disk }}
+{{- end }}
+---
+# The registry keeps no blob descriptor cache, which would name a blob the sweep removed as present.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Image.Name }}
+  namespace: {{ .Namespace }}
+data:
+  config.yml: |
+    version: 0.1
+    log:
+      fields:
+        service: registry
+    storage:
+      filesystem:
+        rootdirectory: /var/lib/registry
+    http:
+      addr: ":{{ .Image.Port }}"
+      headers:
+        X-Content-Type-Options: [nosniff]
+    health:
+      storagedriver:
+        enabled: true
+        interval: 10s
+        threshold: 3
+    proxy:
+      remoteurl: {{ .Image.Upstream }}
+      ttl: {{ .MaxAge }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Image.Name }}
+  namespace: {{ .Namespace }}
+  labels:
+{{- template "labels" .Image }}
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Image.Name }}
+  template:
+    metadata:
+      labels:
+{{- template "labels" .Image }}
+        mitstack.dev/app: {{ .Namespace }}
+    spec:
+{{- template "pod" . }}
+      containers:
+        - name: registry
+          image: {{ .RegistryImage }}
+          ports:
+            - name: cache
+              containerPort: {{ .Image.Port }}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: cache
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+              ephemeral-storage: {{ .Image.Disk }}
+            limits:
+              cpu: 500m
+              memory: 512Mi
+{{- template "container" }}
+          volumeMounts:
+            - name: cache
+              mountPath: /var/lib/registry
+            - name: config
+              mountPath: /etc/distribution
+              readOnly: true
+        - name: sweep
+          image: {{ .CacheImage }}
+          command: [package-cache, sweep]
+          args:
+            - "--dir=/var/lib/registry/docker/registry/v2/blobs"
+            - {{ printf "--max-size=%s" .Image.EvictAt | printf "%q" }}
+            - {{ printf "--max-age=%s" .MaxAge | printf "%q" }}
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+{{- template "container" }}
+          volumeMounts:
+            - name: cache
+              mountPath: /var/lib/registry
+      volumes:
+        - name: cache
+          emptyDir:
+            sizeLimit: {{ .Image.Disk }}
+        - name: config
+          configMap:
+            name: {{ .Image.Name }}
+{{- range .Caches }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Name }}
+  namespace: {{ $.Namespace }}
+  labels:
+{{- template "labels" . }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ .Name }}
+  ports:
+    - name: cache
+      port: {{ .Port }}
+      targetPort: cache
+      protocol: TCP
+{{- end }}
+---
+# Each cache also keeps the API server, DNS and GitHub that mitstack-runners-flows gives every pod of the namespace.
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: {{ .PolicyName }}
+specs:
+- description: "A job's pod reaches each package cache."
+  endpointSelector:
+    matchLabels:
+      k8s:io.kubernetes.pod.namespace: {{ .Namespace }}
+      k8s:app.kubernetes.io/component: runner
+  egress:
+{{- range .Caches }}
+  - toEndpoints:
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: {{ $.Namespace }}
+        k8s:app.kubernetes.io/name: {{ .Name }}
+    toPorts:
+    - ports: [{port: "{{ .Port }}", protocol: TCP}, {port: "15008", protocol: TCP}]
+{{- end }}
+{{- range .Caches }}
+- description: "{{ .Name }} answers job pods and reaches its upstreams."
+  endpointSelector:
+    matchLabels:
+      k8s:io.kubernetes.pod.namespace: {{ $.Namespace }}
+      k8s:app.kubernetes.io/name: {{ .Name }}
+  ingress:
+  - fromEndpoints:
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: {{ $.Namespace }}
+        k8s:app.kubernetes.io/component: runner
+    toPorts:
+    - ports: [{port: "{{ .Port }}", protocol: TCP}, {port: "15008", protocol: TCP}]
+  egress:
+  - toFQDNs:
+{{- range .Hosts }}
+    - matchName: {{ . }}
+{{- end }}
+    toPorts:
+    - ports: [{port: "443", protocol: TCP}]
+{{- end }}

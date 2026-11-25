@@ -73,14 +73,15 @@ func (p Plane) hostingSet(ctx context.Context, now time.Time) (components.Set, e
 	})
 }
 
-// splitFetched takes out of set the signature policy and the inline manifests base adds to the default set, a hosting
-// set's keys, which the builder fetches rather than carries, since with them its user data is over Hetzner's limit.
+// splitFetched takes out of set the signature policy, the runner services' package caches and the inline manifests base
+// adds to the default set, a hosting set's keys, which the builder fetches rather than carries, since with them its user
+// data is over Hetzner's limit.
 func splitFetched(set, base components.Set) (carried, fetched []components.Manifest) {
 	var defaults []string
 	for _, m := range components.Default().Inline {
 		defaults = append(defaults, m.Name)
 	}
-	fetchedNames := []string{components.SignaturePolicyName}
+	fetchedNames := []string{components.SignaturePolicyName, components.RunnerCachesName}
 	for _, m := range base.Inline {
 		if !slices.Contains(defaults, m.Name) {
 			fetchedNames = append(fetchedNames, m.Name)

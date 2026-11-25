@@ -865,6 +865,7 @@ body() {
         ready: ready,
         talosVersion: talos_version,
         kubeletVersion: .status.nodeInfo.kubeletVersion,
+        bootID: (.status.nodeInfo.bootID | if . == "" then null else . end),
         internalIP: ([.status.addresses[]? | select(.type == "InternalIP") | .address] | first),
         addresses: [.status.addresses[]? | {type, address}],
         allocatable: .status.allocatable,

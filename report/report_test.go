@@ -315,14 +315,17 @@ func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipA
 	assert.Equal(t, "sub_0123456789ab", posted.body["subscriptionId"])
 	assert.Equal(t, []any{
 		map[string]any{"name": "poc-talos4-cp1", "ready": true, "talosVersion": "v1.14.4", "kubeletVersion": "v1.37.1", "internalIP": "10.0.0.5",
+			"bootID":    "6f1c2a4e-8b3d-4f5a-9c7e-0d2b4a6c8e1f",
 			"addresses": []any{map[string]any{"type": "InternalIP", "address": "10.0.0.5"}, map[string]any{"type": "Hostname", "address": "poc-talos4-cp1"}}, "allocatable": map[string]any{"cpu": "3950m", "memory": "7712Mi", "pods": "110"}, "zone": "fsn1", "region": "eu-central",
 			"zoneLabelManagers": []any{map[string]any{"manager": "mitstack-node-topology", "operation": "Update", "time": "2026-11-04T08:05:00Z"}},
 			"taints":            []any{map[string]any{"key": "node-role.kubernetes.io/control-plane", "value": nil, "effect": "NoSchedule"}}, "unschedulable": false, "machineConfig": "sha256:5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c5f0c"},
 		map[string]any{"name": "poc-talos4-cp2", "ready": true, "talosVersion": "v1.14.4", "kubeletVersion": "v1.37.1", "internalIP": "10.0.0.6",
+			"bootID":    "a3e5c7b9-1d2f-4a6b-8c0e-2f4a6b8c0d1e",
 			"addresses": []any{map[string]any{"type": "InternalIP", "address": "10.0.0.6"}}, "allocatable": map[string]any{"cpu": "4", "memory": "15622080Ki", "pods": "110"}, "zone": "nbg1", "region": nil,
 			"zoneLabelManagers": []any{map[string]any{"manager": "kubectl-label", "operation": "Update", "time": "2026-11-04T08:07:00Z"}},
 			"taints":            []any{}, "unschedulable": false, "machineConfig": "sha256:9a1e9a1e9a1e9a1e9a1e9a1e9a1e9a1e9a1e9a1e9a1e9a1e9a1e9a1e9a1e9a1e"},
 		map[string]any{"name": "poc-talos4-cp3", "ready": false, "talosVersion": "v1.14.3", "kubeletVersion": "v1.37.1", "internalIP": "10.0.0.7",
+			"bootID":    "d4b6f8a0-2c4e-4b6d-8f0a-3c5e7a9b1d2f",
 			"addresses": []any{map[string]any{"type": "InternalIP", "address": "10.0.0.7"}}, "allocatable": map[string]any{"cpu": "1950m", "memory": "3615Mi", "pods": "110"}, "zone": nil, "region": nil,
 			"zoneLabelManagers": []any{},
 			"taints": []any{map[string]any{"key": "node.kubernetes.io/unschedulable", "value": nil, "effect": "NoSchedule"},
@@ -356,6 +359,52 @@ func TestReport_PostsEachNodeWithItsTalosVersionAndAllocatableTheEtcdMembershipA
 	})
 	assert.Equal(t, append(wantCalls, "kubectl "+proofRequest(posted)), calls, "the proof is minted once the body is final")
 	assert.Equal(t, reportProof, posted.proof, "the post carries the proof the block's script printed for its exact body")
+}
+
+// bootIDs is each posted node's bootID by its name, failing on a row that carries no bootID member at all.
+func bootIDs(t *testing.T, posted *postedReport) map[string]any {
+	t.Helper()
+	out := map[string]any{}
+	for _, row := range posted.body["nodes"].([]any) {
+		n := row.(map[string]any)
+		require.Contains(t, n, "bootID", "node %v carries no bootID member", n["name"])
+		out[n["name"].(string)] = n["bootID"]
+	}
+	return out
+}
+
+func TestReport_PostsANodeWhoseNodeObjectListsNoBootIDWithANullBootIDBesideTheOthersBootIDs(t *testing.T) {
+	cases := map[string]string{
+		"the node's nodeInfo has no bootID":    `jq '.items[2].status.nodeInfo |= del(.bootID)' testdata/nodes.json`,
+		"the node's nodeInfo has an empty one": `jq '.items[2].status.nodeInfo.bootID = ""' testdata/nodes.json`,
+	}
+	for name, answer := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, posted, out, err := runReport(t, kubectlWith(nodesRead, answer))
+
+			require.NoError(t, err, out)
+			assert.Equal(t, 1, posted.posts, "the report posts once although a node lists no boot ID")
+			assert.Equal(t, map[string]any{"poc-talos4-cp1": "6f1c2a4e-8b3d-4f5a-9c7e-0d2b4a6c8e1f",
+				"poc-talos4-cp2": "a3e5c7b9-1d2f-4a6b-8c0e-2f4a6b8c0d1e", "poc-talos4-cp3": nil}, bootIDs(t, posted),
+				"the node that lists no boot ID reads null and the others keep theirs")
+		})
+	}
+}
+
+func TestReport_GivesEachNodeTheSameBootIDInTwoReportsWithNoBootBetweenAndANewOneToANodeThatRebooted(t *testing.T) {
+	rebooted := `jq '.items[1].status.nodeInfo.bootID = "0b7d9f1a-3e5c-4d7f-a1b3-5c7e9a1b3d5f"' testdata/nodes.json`
+
+	_, before, out, err := runReport(t, nil)
+	require.NoError(t, err, out)
+	_, quiet, out, err := runReport(t, nil)
+	require.NoError(t, err, out)
+	_, after, out, err := runReport(t, kubectlWith(nodesRead, rebooted))
+	require.NoError(t, err, out)
+
+	assert.Equal(t, bootIDs(t, before), bootIDs(t, quiet), "two reports with no boot between them carry each node's same boot ID")
+	want := bootIDs(t, before)
+	want["poc-talos4-cp2"] = "0b7d9f1a-3e5c-4d7f-a1b3-5c7e9a1b3d5f"
+	assert.Equal(t, want, bootIDs(t, after), "only the node that rebooted carries a boot ID that differs from the report before")
 }
 
 // etcdMember is the etcd member with each member's health in members.txt order, the leader cp1, and no failed read.

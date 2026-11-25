@@ -185,10 +185,12 @@ type LoadBalancerSpec struct {
 	TargetIPs            []string
 }
 
-// ServerType is a server type Hetzner can order in a location, with its disk in GB.
+// ServerType is a server type Hetzner can order in a location, with its disk and memory in GB and its vCPUs.
 type ServerType struct {
-	Name   string
-	DiskGB float64
+	Name     string
+	DiskGB   float64
+	Cores    int
+	MemoryGB float64
 }
 
 // Snapshot is an image of a server, whose DiskGB is the disk of the server it imaged; Hetzner creates a server from it
@@ -338,7 +340,7 @@ func (a *hcloudAPI) AvailableServerTypes(ctx context.Context, location string) (
 		if slices.ContainsFunc(t.Locations, func(l hcloud.ServerTypeLocation) bool {
 			return l.Available && l.Location != nil && l.Location.Name == location
 		}) {
-			orderable = append(orderable, ServerType{Name: t.Name, DiskGB: float64(t.Disk)})
+			orderable = append(orderable, ServerType{Name: t.Name, DiskGB: float64(t.Disk), Cores: t.Cores, MemoryGB: float64(t.Memory)})
 		}
 	}
 	return orderable, nil

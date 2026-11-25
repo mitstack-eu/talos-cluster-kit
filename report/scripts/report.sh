@@ -629,12 +629,15 @@ body() {
     # placement is what a pod asks of a node, so the operator can tell whether a member it would add could take the pod.
     def placement: {nodeSelector: (.spec.nodeSelector // null),
       nodeSelectorTerms: (.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms // null)};
-    def pod($carried): $carried[qualified_name] as $carries | placement as $placement | {
+    # requests is the CPU and memory each container asks, which the operator sums for a waiting pod as the scheduler does.
+    def requests: def asks: {resources: {requests: ((.resources.requests // {}) | with_entries(select(.key == "cpu" or .key == "memory")))}};
+      {initContainers: [.spec.initContainers[]? | {restartPolicy: (.restartPolicy // null)} + asks], containers: [.spec.containers[]? | asks]};
+    def pod($carried): $carried[qualified_name] as $carries | placement as $placement | requests as $requests | {
       namespace: .metadata.namespace, name: .metadata.name, node: (.spec.nodeName // null), phase: (.status.phase // null),
       ownerKind: ([.metadata.ownerReferences[]? | select(.controller == true) | .kind] | .[0]),
       unschedulable: any(.status.conditions[]?; .type == "PodScheduled" and .status == "False" and .reason == "Unschedulable"),
       containers: [(.status.initContainerStatuses // []) + (.status.containerStatuses // []) | .[] | container + if $carries then failed_message else {} end]
-    } | if .unschedulable then . + {placement: $placement} else . end;
+    } | if .unschedulable then . + {placement: $placement, requests: $requests} else . end;
     def etcd_status_rows: [$etcd_status | split("\n") | .[1:][] | sub("\\s+$"; "") | select(test("\\S"))
       | [splits("\\s{2,}")] | {member: .[1], leader: .[4], errors: (.[11] // "")}];
     # etcd is each member with whether its node answered with no error, the leader the answers name, and the status

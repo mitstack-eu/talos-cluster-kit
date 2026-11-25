@@ -10,8 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane"
 	"github.com/mitstack-eu/talos-cluster-kit/controlplane/cloudtest"
@@ -36,6 +38,10 @@ type site struct {
 	openBao  map[string]string
 	sealed   map[string]bool
 	noReport bool
+	// allocatable is what the node of each member named offers pods, and cordoned the members whose node is cordoned,
+	// as a node report that waits reads them.
+	allocatable map[string]map[string]string
+	cordoned    map[string]bool
 }
 
 func (s *site) tick() time.Time {
@@ -49,7 +55,8 @@ func newSite(t *testing.T, builder ...func(*controlplane.ServerSpec)) *site {
 	t.Helper()
 	ctx := context.Background()
 	s := &site{t: t, drained: map[int64]bool{}, clock: time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC),
-		notReady: map[string]bool{}, openBao: map[string]string{}, sealed: map[string]bool{}}
+		notReady: map[string]bool{}, openBao: map[string]string{}, sealed: map[string]bool{},
+		allocatable: map[string]map[string]string{}, cordoned: map[string]bool{}}
 	s.cloud = cloudtest.New(s.tick)
 	s.cloud.InstantBuild = true
 	s.plane = s.newPlane()
@@ -134,7 +141,7 @@ func cloudPool(size int, locations ...string) pools.CloudPool {
 
 func (s *site) plan(pool pools.CloudPool) (pools.CloudPlan, error) {
 	s.t.Helper()
-	return pools.PlanCloud(context.Background(), s.plane, pool, func(srv controlplane.Server) bool { return s.drained[srv.ID] })
+	return pools.PlanCloud(context.Background(), s.plane, pool, func(srv controlplane.Server) bool { return s.drained[srv.ID] }, nil)
 }
 
 // reach plans pool and applies the plan until it plans nothing, as a block's upgrade does.
@@ -680,33 +687,256 @@ func sizedPool() pools.CloudPool {
 	return pools.CloudPool{ServerTypes: []string{"cx23", "cx53"}, Locations: []string{"fsn1"}, Min: 0, Max: 3, IdleWindow: 15 * time.Minute}
 }
 
-// runnerWaits is a node report reading each member Ready while one runner pod waits for a node.
+// runnerWaits is a node report reading each member Ready while one runner pod that requests nothing waits for a node.
 func (s *site) runnerWaits() report.Read {
+	return s.waits(runner("runner-1", "", ""))
+}
+
+// runner is a runner pod no node can take, whose one container requests cpu and memory, or nothing when both are empty.
+func runner(name, cpu, memory string) map[string]any {
+	pod := map[string]any{"namespace": "mitstack-runners", "name": name, "phase": "Pending", "ownerKind": "EphemeralRunner", "unschedulable": true}
+	if cpu != "" {
+		requests := map[string]any{"requests": map[string]string{"cpu": cpu, "memory": memory}}
+		pod["requests"] = map[string]any{"initContainers": []any{}, "containers": []any{map[string]any{"resources": requests}}}
+	}
+	return pod
+}
+
+// waits is a node report reading each member Ready, with what its node offers pods when allocatable names it, while
+// pods wait for a node.
+func (s *site) waits(pods ...map[string]any) report.Read {
 	s.t.Helper()
 	nodes := []map[string]any{}
 	for _, srv := range s.members() {
-		nodes = append(nodes, map[string]any{"name": srv.Name, "ready": true})
+		node := map[string]any{"name": srv.Name, "ready": true, "unschedulable": s.cordoned[srv.Name]}
+		if offers, ok := s.allocatable[srv.Name]; ok {
+			node["allocatable"] = offers
+		}
+		nodes = append(nodes, node)
 	}
-	runner := map[string]any{"namespace": "mitstack-runners", "name": "runner-1", "phase": "Pending", "ownerKind": "EphemeralRunner", "unschedulable": true}
 	at := s.tick()
-	body, err := json.Marshal(map[string]any{"madeAt": at, "nodes": nodes, "pods": []any{runner}})
+	body, err := json.Marshal(map[string]any{"madeAt": at, "nodes": nodes, "pods": pods})
 	require.NoError(s.t, err)
 	return report.Read{Body: body, At: at}
 }
 
-// grow decides pool by one node report and plans its servers at the decided size, as the block's pool step does.
+// grow decides pool by one node report and plans its servers at the decided size for the pods it grows for, as the
+// block's pool step does.
 func (s *site) grow(pool pools.CloudPool, read report.Read) (scale.Decision, pools.CloudPlan) {
 	s.t.Helper()
-	decision, err := scale.Decide(pool, s.members(), []report.Read{read})
+	ctx := context.Background()
+	decision, err := scale.Decide(pool, s.members(), []report.Read{read}, pools.Holds(ctx, s.plane, pool))
 	require.NoError(s.t, err)
 	sized := pool
 	sized.Max = decision.Want
-	plan, err := s.plan(sized)
+	plan, err := pools.PlanCloud(ctx, s.plane, sized, func(srv controlplane.Server) bool { return s.drained[srv.ID] }, decision.Measured, decision.Waiting...)
 	require.NoError(s.t, err)
 	return decision, plan
 }
 
-// The node report carries no pod requests, so this one waiting pod stands for a pod of any size.
+func TestDecideAndPlanCloud_OrdersForEachWaitingPodTheSmallestListedTypeOnSaleThatHoldsItsRequests(t *testing.T) {
+	small, large := runner("small", "250m", "512Mi"), runner("large", "6", "12Gi")
+	listing := func(types ...string) pools.CloudPool {
+		pool := sizedPool()
+		pool.ServerTypes = types
+		return pool
+	}
+	cases := []struct {
+		name    string
+		pool    pools.CloudPool
+		soldOut []string
+		pods    []map[string]any
+		want    []string
+	}{
+		{"a pod cx23 holds", sizedPool(), nil, []map[string]any{small}, []string{"cx23"}},
+		{"a pod only cx53 holds", sizedPool(), nil, []map[string]any{large}, []string{"cx53"}},
+		{"a pod cx23 holds, from a pool listing cx53 first", listing("cx53", "cx23"), nil, []map[string]any{small}, []string{"cx23"}},
+		{"a pod that requests nothing, from a pool listing cx53 first", listing("cx53", "cx23"), nil, []map[string]any{runner("bare", "", "")}, []string{"cx23"}},
+		{"a pod the pool's one type holds", listing("cx53"), nil, []map[string]any{small}, []string{"cx53"}},
+		{"a pod cx33 holds while cx33 is sold out", listing("cx23", "cx33", "cx53"), []string{"cx33"},
+			[]map[string]any{runner("medium", "2500m", "5Gi")}, []string{"cx53"}},
+		{"a small pod and a large one", sizedPool(), nil, []map[string]any{small, large}, []string{"cx23", "cx53"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newSite(t, imagedOn("cx23"))
+			s.cloud.SoldOutIn = map[string][]string{"fsn1": tc.soldOut}
+
+			decision, plan := s.grow(tc.pool, s.waits(tc.pods...))
+
+			assert.Equal(t, len(tc.want), decision.Want, "the members the pool wants")
+			assert.Equal(t, tc.want, typesOfSpecs(plan.Create), "the types ordered by a pool listing %v", tc.pool.ServerTypes)
+		})
+	}
+}
+
+func TestDecideAndPlanCloud_OrdersNoServerForAPodNoListedTypeHoldsAndNamesIt(t *testing.T) {
+	huge := runner("huge", "32", "4Gi")
+	cases := []struct {
+		name string
+		pods []map[string]any
+		want []string
+	}{
+		{"the pod alone", []map[string]any{huge}, nil},
+		{"the pod beside one cx23 holds", []map[string]any{huge, runner("small", "250m", "512Mi")}, []string{"cx23"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newSite(t, imagedOn("cx23"))
+
+			decision, plan := s.grow(sizedPool(), s.waits(tc.pods...))
+
+			assert.Equal(t, len(tc.want), decision.Want, "the members the pool wants")
+			assert.Equal(t, tc.want, typesOfSpecs(plan.Create), "the types the pool orders")
+			assert.Contains(t, decision.Unheld, "mitstack-runners/huge", "the pod no listed type holds")
+		})
+	}
+}
+
+// burstDaemons is what the DaemonSets a burst member in fsn1 runs request of its node.
+func (s *site) burstDaemons() report.Request {
+	s.t.Helper()
+	daemons, err := s.plane.DaemonSetPods()
+	require.NoError(s.t, err)
+	var taken report.Request
+	for _, d := range daemons {
+		if d.Admits(pools.BurstNodeLabels("fsn1")) {
+			taken = taken.Plus(d.Request())
+		}
+	}
+	require.Positive(s.t, taken.MilliCPU, "the DaemonSets a burst member runs request CPU")
+	return taken
+}
+
+// cx23Allocatable is what a Talos worker on cx23 offers pods by cx23's published 2 vCPUs and 4 GB, as the test
+// stand-in lists them, after the system reservation and the hard eviction threshold.
+func cx23Allocatable() report.Request {
+	reservedCPU, reservedMemory := resource.MustParse(constants.KubeletSystemReservedCPU), resource.MustParse(constants.KubeletSystemReservedMemoryWorker)
+	return report.Request{MilliCPU: 2000 - reservedCPU.MilliValue(), Memory: 4<<30 - reservedMemory.Value() - controlplane.KubeletHardEvictionMemory}
+}
+
+func TestDecideAndPlanCloud_ATypeHoldsAPodWithinWhatTalosAndTheDaemonSetsOfABurstMemberLeaveOfIt(t *testing.T) {
+	s := newSite(t, imagedOn("cx23"))
+	taken := s.burstDaemons()
+	cpu, memory := cx23Allocatable().MilliCPU-taken.MilliCPU, cx23Allocatable().Memory-taken.Memory
+	cases := []struct {
+		name        string
+		cpu, memory int64
+		want        string
+	}{
+		{"a pod asking all cx23 leaves", cpu, memory, "cx23"},
+		{"a pod asking a millicore more", cpu + 1, memory, "cx53"},
+		{"a pod asking a byte more", cpu, memory + 1, "cx53"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, plan := s.grow(sizedPool(), s.waits(runner("edge", fmt.Sprintf("%dm", tc.cpu), fmt.Sprint(tc.memory))))
+
+			assert.Equal(t, []string{tc.want}, typesOfSpecs(plan.Create), "the type ordered for %dm CPU and %d bytes", tc.cpu, tc.memory)
+		})
+	}
+}
+
+// oneOf is a pool of one steady member of serverType in fsn1.
+func oneOf(serverType string) pools.CloudPool {
+	return pools.CloudPool{ServerTypes: []string{serverType}, Locations: []string{"fsn1"}, Min: 1, Max: 1}
+}
+
+// offers has the node of member report room as what it offers pods.
+func (s *site) offers(member string, room report.Request) {
+	s.allocatable[member] = map[string]string{"cpu": fmt.Sprintf("%dm", room.MilliCPU), "memory": fmt.Sprint(room.Memory)}
+}
+
+// gapPod waits for all the memory cx23's published size leaves a pod on a burst member, which a running cx23 that
+// offers less than that size does not hold.
+func (s *site) gapPod() map[string]any {
+	return runner("gap", "100m", fmt.Sprint(cx23Allocatable().Memory-s.burstDaemons().Memory))
+}
+
+func TestDecideAndPlanCloud_APodThatFitsATypesPublishedSizeButNotWhatARunningNodeOfThatTypeOffersGetsTheNextListedType(t *testing.T) {
+	cases := []struct {
+		name  string
+		types []string
+		want  []string
+	}{
+		{"a pool listing cx23 and cx53", []string{"cx23", "cx53"}, []string{"cx53"}},
+		{"a pool listing cx23 alone", []string{"cx23"}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newSite(t, imagedOn("cx23"))
+			s.reach(oneOf("cx23"))
+			running := s.members()[0]
+			measured := cx23Allocatable()
+			measured.Memory -= 300 << 20
+			s.offers(running.Name, measured)
+			pool := sizedPool()
+			pool.ServerTypes = tc.types
+
+			decision, plan := s.grow(pool, s.waits(s.gapPod()))
+
+			assert.Equal(t, 1+len(tc.want), decision.Want, "the members the pool wants beside the running cx23")
+			assert.Equal(t, tc.want, typesOfSpecs(plan.Create), "the types ordered by a pool listing %v", tc.types)
+			if tc.want == nil {
+				assert.Contains(t, decision.Unheld, "mitstack-runners/gap", "the pod no listed type holds by what the running cx23 offers")
+			}
+		})
+	}
+}
+
+func TestDecideAndPlanCloud_APodThatFitsATypesPublishedSizeGetsThatTypeWhenNoServingNodeOfItOffersLess(t *testing.T) {
+	cases := []struct {
+		name     string
+		running  string
+		cordoned bool
+	}{
+		{"no member runs", "", false},
+		{"only a cx53 member offers anything", "cx53", false},
+		{"the one cx23 member's node is cordoned", "cx23", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newSite(t, imagedOn("cx23"))
+			if tc.running != "" {
+				s.reach(oneOf(tc.running))
+				running := s.members()[0]
+				s.offers(running.Name, report.Request{MilliCPU: 100, Memory: 100 << 20})
+				s.cordoned[running.Name] = tc.cordoned
+			}
+
+			_, plan := s.grow(sizedPool(), s.waits(s.gapPod()))
+
+			assert.Equal(t, []string{"cx23"}, typesOfSpecs(plan.Create), "the type ordered by cx23's published size")
+		})
+	}
+}
+
+func TestDecideAndPlanCloud_ADecisionJudgesAPodByTheNewestOfTwoReportsAndHandsThePlanTheRoomItRead(t *testing.T) {
+	s := newSite(t, imagedOn("cx23"))
+	s.reach(oneOf("cx23"))
+	running := s.members()[0].Name
+	s.offers(running, report.Request{MilliCPU: 100, Memory: 100 << 20})
+	older := s.waits(s.gapPod())
+	s.offers(running, cx23Allocatable())
+	newest := s.waits(s.gapPod())
+	pool := oneOf("cx23")
+	pool.Min, pool.Max = 0, 3
+
+	decision, err := scale.Decide(pool, s.members(), []report.Read{newest, older}, pools.Holds(context.Background(), s.plane, pool))
+
+	require.NoError(t, err)
+	assert.Equal(t, 2, decision.Want, "the members the pool wants once the newest report's cx23 holds the pod")
+	assert.Equal(t, pools.Measured{"cx23": cx23Allocatable()}, decision.Measured, "the room the decision hands the plan")
+}
+
+func typesOfSpecs(specs []controlplane.ServerSpec) []string {
+	var out []string
+	for _, spec := range specs {
+		out = append(out, spec.ServerType)
+	}
+	return out
+}
+
 func TestDecideAndPlanCloud_APoolListingASmallTypeBeforeALargeOneOrdersTheSmallOneForAWaitingPod(t *testing.T) {
 	s := newSite(t, imagedOn("cx23"))
 

@@ -5,11 +5,16 @@ import (
 	"strconv"
 )
 
-// WaitingPod is a pod the scheduler found no node for, named as namespace/name, with the placement it asks of a node.
+// WaitingPod is a pod the scheduler found no node for, named as namespace/name, with the placement it asks of a node
+// and what the scheduler reserves for it there.
 type WaitingPod struct {
 	Name      string
 	placement *placement
+	request   Request
 }
+
+// Request is what the scheduler reserves for the pod on a node, zero from a report that carries no requests.
+func (w WaitingPod) Request() Request { return w.request }
 
 // placement is a pod's node selector and the terms of its required node affinity, as the node report copies them.
 type placement struct {

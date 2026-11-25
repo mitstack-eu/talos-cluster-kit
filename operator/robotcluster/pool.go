@@ -96,7 +96,7 @@ func (c convergence) poolRefusal(ctx context.Context) error {
 	// A pool no larger than its members plans no creation, so this plan needs no worker image, firewall or orderable type.
 	held := pool
 	held.Max = min(pool.Max, members)
-	plan, err := pools.PlanCloud(ctx, c.plane, held, neverDrained)
+	plan, err := pools.PlanCloud(ctx, c.plane, held, neverDrained, nil)
 	if err != nil {
 		return refusal(err)
 	}
@@ -140,7 +140,7 @@ func (c convergence) poolStep(ctx context.Context) (controlplane.Step, bool, err
 	}
 	sized := pool
 	sized.Max = decision.Want
-	plan, err := pools.PlanCloud(ctx, c.plane, sized, neverDrained)
+	plan, err := pools.PlanCloud(ctx, c.plane, sized, neverDrained, decision.Measured, decision.Waiting...)
 	if err != nil || len(plan.Create) == 0 {
 		return controlplane.Step{}, false, refusal(err)
 	}
@@ -199,12 +199,12 @@ func (c convergence) scaling(ctx context.Context) (scaling.Decision, error) {
 	if err != nil {
 		return scaling.Decision{}, err
 	}
-	return scaling.Decide(pool, c.state.Servers[pools.RoleCloudWorker], reads)
+	return scaling.Decide(pool, c.state.Servers[pools.RoleCloudWorker], reads, pools.Holds(ctx, c.plane, pool))
 }
 
-// poolHold names a pool that holds while pods wait for a node, at its maximum or for want of a steady member, or whose
-// node labeller's newest run failed, the cluster resource's health cause.
-func poolHold(ctx context.Context, d contract.Desired, st controlplane.State, reports *GatewayReports) (cause, detail string, err error) {
+// poolHold names the cluster resource's health cause for a pool at its maximum while pods wait, for pods no listed type
+// holds, for a pool held for want of a steady member, or for a pool whose node labeller's newest run failed.
+func poolHold(ctx context.Context, d contract.Desired, p controlplane.Plane, st controlplane.State, reports *GatewayReports) (cause, detail string, err error) {
 	pool, err := readCloudPool(d)
 	if err != nil || !pool.Scales() {
 		return "", "", nil
@@ -214,12 +214,14 @@ func poolHold(ctx context.Context, d contract.Desired, st controlplane.State, re
 		return "", "", err
 	}
 	members := st.Servers[pools.RoleCloudWorker]
-	decision, err := scaling.Decide(pool, members, reads)
+	decision, err := scaling.Decide(pool, members, reads, pools.Holds(ctx, p, pool))
 	switch {
 	case err != nil:
 		return "", "", err
 	case decision.AtMaximum:
 		return scaling.CauseAtMaximum, decision.Detail, nil
+	case decision.Unheld != "":
+		return scaling.CauseNoTypeHolds, decision.Unheld, nil
 	case decision.Detail != "" && decision.Remove == nil && decision.Want <= len(members):
 		return CauseHeldForSteady, decision.Detail, nil
 	}

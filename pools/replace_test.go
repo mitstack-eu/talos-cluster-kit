@@ -485,6 +485,20 @@ func TestReplaceStep_ASuccessorTakesThePoolsNextTypeWhenItsLocationCannotOrderTh
 	assert.Len(t, w.eventsNaming("as cx43, since Hetzner can order no cx33 there now"), 1, "the events: %v", w.events)
 }
 
+func TestReplaceStep_ASuccessorKeepsTheTypeOfTheWorkerItReplacesThoughThePoolListsAnotherFirst(t *testing.T) {
+	_, w := withWorkers(t)
+	require.Equal(t, "cx33", w.worker("fsn1-1").ServerType, "precondition: the worker's type")
+	reordered := pool2
+	reordered.ServerTypes = []string{"cx43", "cx33"}
+	require.NoError(t, w.upgrade(reordered, "fsn1-1"))
+
+	require.NoError(t, w.replace(reordered, nil))
+
+	assert.Equal(t, "cx33", w.worker("fsn1-1").ServerType, "the successor's type")
+	assert.Equal(t, []string{"took " + removePath + " out of the cluster repository and created the successor of Cloud worker fsn1-1 in fsn1 as cx33"},
+		w.eventsNaming("created the successor"), "the successor's event")
+}
+
 func TestReplaceStep_AnUpgradeThatNamesNoWorkerDrainsAndReplacesNone(t *testing.T) {
 	s, w := withWorkers(t)
 	servers, writes := ids(s.members()), s.cloud.Writes()

@@ -54,6 +54,16 @@
           ]
         }
       ]
+    },
+    "requests": {
+      "initContainers": [],
+      "containers": [
+        {
+          "resources": {
+            "requests": {}
+          }
+        }
+      ]
     }
   },
   {

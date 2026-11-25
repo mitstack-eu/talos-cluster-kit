@@ -384,7 +384,7 @@ func (k *Cluster) observeCluster(ctx context.Context, d contract.Desired) (contr
 	obs := contract.Observation{State: contract.Present, Outputs: outputs, StatusDetail: detail}
 	cause, why, err := p.Unhealthy(ctx, st)
 	if err == nil && cause == "" {
-		cause, why, err = poolHold(ctx, d, st, reports)
+		cause, why, err = poolHold(ctx, d, p, st, reports)
 	}
 	if err != nil {
 		return contract.Observation{}, err

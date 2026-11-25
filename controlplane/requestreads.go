@@ -17,6 +17,8 @@ type RequestReads struct {
 	drops uint64
 	// writing counts the writes still running, during which nothing is kept, since a list may miss what they change.
 	writing int
+	// types is the server types each location offers, which no write of the project's changes, so no write drops it.
+	types map[string][]ServerType
 }
 
 func NewRequestReads() *RequestReads {
@@ -44,6 +46,27 @@ func (r *RequestReads) read(ctx context.Context, p Plane) (State, error) {
 		r.kept[p.Selector()] = st.clone()
 	}
 	return st, nil
+}
+
+// serverTypes is the server types api offers in location as the request first listed them, a copy each caller may change.
+func (r *RequestReads) serverTypes(ctx context.Context, api API, location string) ([]ServerType, error) {
+	r.mu.Lock()
+	kept, ok := r.types[location]
+	r.mu.Unlock()
+	if ok {
+		return slices.Clone(kept), nil
+	}
+	types, err := api.AvailableServerTypes(ctx, location)
+	if err != nil {
+		return nil, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.types == nil {
+		r.types = map[string][]ServerType{}
+	}
+	r.types[location] = slices.Clone(types)
+	return types, nil
 }
 
 func (r *RequestReads) startWrite() {
@@ -74,9 +97,9 @@ func WithoutRequestReads(ctx context.Context) context.Context {
 	return context.WithValue(ctx, hiddenReadsKey{}, true)
 }
 
-// ReadOncePerRequest wraps api so Plane.Read answers from the RequestReads readsOf finds in a call's context, and every
-// write through it, refused or not, has the request's reads list afresh while it runs and after; a context with none
-// reads as api does.
+// ReadOncePerRequest wraps api so Plane.Read and each location's server types answer from the RequestReads readsOf
+// finds in a call's context, and every write through it, refused or not, has the request's Plane.Read list afresh
+// while it runs and after; a context with none reads as api does.
 func ReadOncePerRequest(api API, readsOf func(context.Context) *RequestReads) API {
 	return &readOncePerRequest{api: api, readsOf: readsOf}
 }
@@ -88,11 +111,16 @@ type readOncePerRequest struct {
 	readsOf func(context.Context) *RequestReads
 }
 
-func (w *readOncePerRequest) read(ctx context.Context, p Plane) (State, error) {
+// requestReads is the reads of ctx's request, nil when it has none or hides them.
+func (w *readOncePerRequest) requestReads(ctx context.Context) *RequestReads {
 	if hidden, _ := ctx.Value(hiddenReadsKey{}).(bool); hidden {
-		return p.list(ctx)
+		return nil
 	}
-	reads := w.readsOf(ctx)
+	return w.readsOf(ctx)
+}
+
+func (w *readOncePerRequest) read(ctx context.Context, p Plane) (State, error) {
+	reads := w.requestReads(ctx)
 	if reads == nil {
 		return p.list(ctx)
 	}
@@ -119,7 +147,11 @@ func (w *readOncePerRequest) CreateServers(ctx context.Context, specs ...ServerS
 }
 
 func (w *readOncePerRequest) AvailableServerTypes(ctx context.Context, location string) ([]ServerType, error) {
-	return w.api.AvailableServerTypes(ctx, location)
+	reads := w.requestReads(ctx)
+	if reads == nil {
+		return w.api.AvailableServerTypes(ctx, location)
+	}
+	return reads.serverTypes(ctx, w.api, location)
 }
 
 func (w *readOncePerRequest) ServerStarted(ctx context.Context, id int64) (bool, error) {

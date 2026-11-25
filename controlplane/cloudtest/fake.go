@@ -338,10 +338,13 @@ func (f *Fake) AvailableServerTypes(_ context.Context, location string) ([]contr
 	}), nil
 }
 
-// serverTypes is each server type the project sells with its disk, as Hetzner's server types reference lists them.
+// serverTypes is each server type the project sells with its disk, vCPUs and memory, as Hetzner's server types
+// reference lists them.
 var serverTypes = []controlplane.ServerType{
-	{Name: "cx23", DiskGB: 40}, {Name: "cx33", DiskGB: 80}, {Name: "cx43", DiskGB: 160}, {Name: "cx53", DiskGB: 320},
-	{Name: "cpx22", DiskGB: 80}, {Name: "cpx32", DiskGB: 160}, {Name: "cpx52", DiskGB: 480}, {Name: "cpx62", DiskGB: 640},
+	{Name: "cx23", DiskGB: 40, Cores: 2, MemoryGB: 4}, {Name: "cx33", DiskGB: 80, Cores: 4, MemoryGB: 8},
+	{Name: "cx43", DiskGB: 160, Cores: 8, MemoryGB: 16}, {Name: "cx53", DiskGB: 320, Cores: 16, MemoryGB: 32},
+	{Name: "cpx22", DiskGB: 80, Cores: 2, MemoryGB: 4}, {Name: "cpx32", DiskGB: 160, Cores: 4, MemoryGB: 8},
+	{Name: "cpx52", DiskGB: 480, Cores: 12, MemoryGB: 24}, {Name: "cpx62", DiskGB: 640, Cores: 16, MemoryGB: 32},
 }
 
 // diskOf is the disk of the server type name in GB, and false for a type the project does not sell.

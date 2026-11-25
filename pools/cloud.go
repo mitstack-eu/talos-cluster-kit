@@ -76,8 +76,10 @@ func (p CloudPlan) Apply(ctx context.Context, api controlplane.API) error {
 
 // PlanCloud compares the servers Hetzner lists for the subscription's Cloud pool with the pool's size, Max. It creates
 // a server only while the pool holds fewer than Max, a member leaving included, and none while a worker's replacement
-// runs, which creates its successor itself. drained reports whether a member's node has left the cluster.
-func PlanCloud(ctx context.Context, plane controlplane.Plane, pool CloudPool, drained func(controlplane.Server) bool) (CloudPlan, error) {
+// runs, which creates its successor itself. drained reports whether a member's node has left the cluster. Each of the
+// first servers it creates is for one of waiting, in turn, on the smallest type that holds it by measured.
+func PlanCloud(ctx context.Context, plane controlplane.Plane, pool CloudPool, drained func(controlplane.Server) bool,
+	measured Measured, waiting ...report.WaitingPod) (CloudPlan, error) {
 	st, err := plane.Read(ctx)
 	if err != nil {
 		return CloudPlan{}, err
@@ -128,8 +130,13 @@ func PlanCloud(ctx context.Context, plane controlplane.Plane, pool CloudPool, dr
 	}
 	taken := memberKeys(members)
 	steady := len(slices.DeleteFunc(slices.Clone(keep), IsBurst))
-	for range room {
-		loc, serverType, err := site.place(ctx, pool, keep)
+	for i := range room {
+		var loc, serverType string
+		if i < len(waiting) {
+			loc, serverType, err = site.placeFor(ctx, pool, keep, waiting[i], measured)
+		} else {
+			loc, serverType, err = site.place(ctx, pool, keep)
+		}
 		if err != nil {
 			return CloudPlan{}, err
 		}
@@ -226,10 +233,10 @@ func memberKeys(members []controlplane.Server) map[string]bool {
 
 // creation holds what a new member needs from the cluster, and the server types each location offers.
 type creation struct {
-	network   controlplane.Network
-	firewall  controlplane.Firewall
-	image     controlplane.Snapshot
-	orderable *controlplane.OrderableTypes
+	network  controlplane.Network
+	firewall controlplane.Firewall
+	image    controlplane.Snapshot
+	*sizing
 }
 
 func newSite(plane controlplane.Plane, st controlplane.State) (*creation, error) {
@@ -242,15 +249,38 @@ func newSite(plane controlplane.Plane, st controlplane.State) (*creation, error)
 	case !hasImage || image.Status != controlplane.SnapshotAvailable:
 		return nil, &controlplane.Refusal{Class: "worker-image-missing", Message: "the cluster has no available worker image to boot a Cloud worker from"}
 	}
-	return &creation{network: network, firewall: firewall, image: image, orderable: &controlplane.OrderableTypes{API: plane.API}}, nil
+	return &creation{network: network, firewall: firewall, image: image, sizing: newSizing(plane, image.DiskGB)}, nil
 }
 
 // place is the pool's location holding the fewest of members, the earlier one listed on a tie, among those offering a
 // pool type whose disk holds the worker image, together with the first such type.
 func (c *creation) place(ctx context.Context, pool CloudPool, members []controlplane.Server) (string, string, error) {
+	return c.firstHolding(ctx, pool, fewestFirst(pool, members))
+}
+
+// placeFor is the pool's location holding the fewest of members, the earlier one listed on a tie, among those where a
+// burst member holds w, together with the smallest type that holds it there, refusing with no-server-type-available,
+// naming w, when no location has one.
+func (c *creation) placeFor(ctx context.Context, pool CloudPool, members []controlplane.Server, w report.WaitingPod, measured Measured) (string, string, error) {
+	for _, loc := range fewestFirst(pool, members) {
+		serverType, err := c.smallest(ctx, pool, loc, w, measured)
+		if err != nil {
+			return "", "", err
+		}
+		if serverType != "" {
+			return loc, serverType, nil
+		}
+	}
+	return "", "", &controlplane.Refusal{Class: "no-server-type-available", Message: fmt.Sprintf(
+		"Hetzner can order none of the Cloud pool's server types %s in %s now that holds the waiting pod %s's %s beside what a burst member runs; retry once it sells one there again",
+		strings.Join(pool.ServerTypes, ", "), strings.Join(pool.Locations, " or "), w.Name, w.Request())}
+}
+
+// fewestFirst is the pool's locations by how many of members each holds, the earlier one listed on a tie.
+func fewestFirst(pool CloudPool, members []controlplane.Server) []string {
 	locations := slices.Clone(pool.Locations)
 	slices.SortStableFunc(locations, func(a, b string) int { return count(members, a) - count(members, b) })
-	return c.firstHolding(ctx, pool, locations)
+	return locations
 }
 
 // serverType is firstHolding for the one location a member already holds, so its successor takes the rule that placed it.

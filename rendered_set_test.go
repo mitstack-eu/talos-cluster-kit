@@ -515,13 +515,10 @@ func smallestPoolServer(t *testing.T) podRequest {
 	return smallest
 }
 
-// kubeletHardEvictionMemory is the kubelet's default memory.available hard eviction threshold, which allocatable leaves out.
-const kubeletHardEvictionMemory = 100 << 20
-
 // workerAllocatable is what a Talos worker of size server offers its pods, after the system reservation and the hard eviction threshold.
 func workerAllocatable(server podRequest) podRequest {
 	cpu, memory := resource.MustParse(constants.KubeletSystemReservedCPU), resource.MustParse(constants.KubeletSystemReservedMemoryWorker)
-	return podRequest{milliCPU: server.milliCPU - cpu.MilliValue(), memory: server.memory - memory.Value() - kubeletHardEvictionMemory}
+	return podRequest{milliCPU: server.milliCPU - cpu.MilliValue(), memory: server.memory - memory.Value() - controlplane.KubeletHardEvictionMemory}
 }
 
 func runnerPod(t *testing.T) renderedPod {

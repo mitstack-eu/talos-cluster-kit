@@ -758,6 +758,32 @@ func TestPlaneRead_KeepsEachPlaneApart(t *testing.T) {
 	assert.Equal(t, lists(1), h.cloud.Reads().Since(before), "the reads of the other plane's first read and this plane's second")
 }
 
+// What Hetzner sells does not follow the project's own writes, so a write leaves the request's listings kept.
+func TestReadOncePerRequest_ListsEachLocationsServerTypesOnceARequest(t *testing.T) {
+	h := newHarness(t, readingOncePerRequest)
+	h.seed()
+	ctx := inRequest()
+	before := h.cloud.Reads()
+	listed := func() int { return h.cloud.Reads().Since(before)["AvailableServerTypes"] }
+	list := func(ctx context.Context, loc string) []controlplane.ServerType {
+		types, err := h.plane.API.AvailableServerTypes(ctx, loc)
+		require.NoError(t, err)
+		return types
+	}
+
+	first := list(ctx, "fsn1")
+	first[0].Name = "changed by its caller"
+	assert.Equal(t, list(inRequest(), "fsn1"), list(ctx, "fsn1"), "a listing kept for the request, as another request lists it")
+	list(ctx, "nbg1")
+	_, err := h.plane.API.CreateServers(ctx, h.cloudWorkerSpec())
+	require.NoError(t, err)
+	list(ctx, "fsn1")
+	assert.Equal(t, 3, listed(), "the listings of fsn1 in two requests and of nbg1, with a create between")
+	list(controlplane.WithoutRequestReads(ctx), "fsn1")
+	list(context.Background(), "fsn1")
+	assert.Equal(t, 5, listed(), "the listings once fsn1 is read outside the request and with no request")
+}
+
 var planeReads = []string{
 	"ListServers", "AvailableServerTypes", "ServerStarted", "ListNetworks", "LastPowerAction", "ListFirewalls",
 	"ListLoadBalancers", "ListSnapshots", "ServerMetrics", "RunningAction", "GetServer",

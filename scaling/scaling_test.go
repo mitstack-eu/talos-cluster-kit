@@ -1,10 +1,11 @@
 package scaling_test
 
-// A Cloud pool that scales grows by the pods no node can take that a burst member would, up to its maximum, and loses a
-// burst member that ran no pod but the cluster's own for its idle window, down to its minimum.
+// A Cloud pool that scales grows by the pods no node can take that a burst member of a listed type would, up to its
+// maximum, and loses a burst member that ran no pod but the cluster's own for its idle window, down to its minimum.
 
 import (
 	"encoding/json"
+	"errors"
 	"strconv"
 	"testing"
 	"time"
@@ -125,15 +126,74 @@ func TestDecide_PodsThatWaitAddOneMemberForEachUpToTheMaximumAndNeverPastIt(t *t
 		{"a pool at its maximum names the first three of five waiting pods", scaled(0, 3), full,
 			[]pod{job("a", full[0]), job("b", full[1]), job("c", full[2]), waiting("d"), waiting("e"), waiting("f"), waiting("g"), waiting("h")},
 			scaling.Decision{Want: 3, AtMaximum: true, Detail: "5 pods wait for a node, and the Cloud pool holds its maximum of 3: ci/d, ci/e, ci/f and 2 more"}},
+		{"a pod no listed type holds, waiting beside two it holds, adds a member for each of the two and is named", scaled(0, 5), []controlplane.Server{joined},
+			[]pod{job("busy", joined), waiting("a"), waiting("huge"), waiting("b")},
+			scaling.Decision{Want: 3, Detail: "2 pods wait for a node, so the Cloud pool grows from 1 to 3 of at most 5",
+				Unheld: "1 pods wait for a node that no server type the Cloud pool lists and Hetzner sells holds: ci/huge"}},
+		{"a pod no listed type holds, waiting beside a kit component, adds no member and is named", scaled(1, 5), []controlplane.Server{joined},
+			[]pod{job("busy", joined), waiting("huge"), component("argocd-server-0")},
+			scaling.Decision{Want: 1, Detail: "1 pods wait for a node that no server type the Cloud pool lists and Hetzner sells holds, so the Cloud pool holds 1: ci/huge",
+				Unheld: "1 pods wait for a node that no server type the Cloud pool lists and Hetzner sells holds: ci/huge"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := scaling.Decide(tc.pool, tc.members, []report.Read{read(t, start.Add(5*time.Minute), tc.members, tc.pods...)})
+			got, err := scaling.Decide(tc.pool, tc.members, []report.Read{read(t, start.Add(5*time.Minute), tc.members, tc.pods...)}, listedTypes)
 
 			require.NoError(t, err)
-			assert.Equal(t, tc.want, got, "the pool's decision")
+			assert.Equal(t, tc.want, judged(got), "the pool's decision")
 		})
 	}
+}
+
+// listedTypes holds every waiting pod but ci/huge, as a pool whose largest listed type holds any other pod.
+func listedTypes(w report.WaitingPod, _ pools.Measured) (bool, error) {
+	return w.Name != "ci/huge", nil
+}
+
+// judged is d without the pods it grows for and the room it measured, which a table judges by its detail.
+func judged(d scaling.Decision) scaling.Decision {
+	d.Waiting, d.Measured = nil, nil
+	return d
+}
+
+// asking holds every waiting pod, recording each pod it is asked about.
+func asking(asked *[]string) func(report.WaitingPod, pools.Measured) (bool, error) {
+	return func(w report.WaitingPod, _ pools.Measured) (bool, error) {
+		*asked = append(*asked, w.Name)
+		return true, nil
+	}
+}
+
+func TestDecide_AsksWhetherATypeHoldsOnlyThePodsABurstMemberAdmitsBelowThePoolsMaximum(t *testing.T) {
+	full := []controlplane.Server{member(1, "fsn1-1", start), member(2, "nbg1-1", start)}
+	cases := []struct {
+		name    string
+		members []controlplane.Server
+		pods    []pod
+		want    []string
+	}{
+		{"a pool at its maximum", full, []pod{job("a", full[0]), job("b", full[1]), waiting("c")}, nil},
+		{"a kit component beside a builder's pod", nil, []pod{component("argocd-server-0"), waiting("a")}, []string{"ci/a"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var asked []string
+
+			_, err := scaling.Decide(scaled(0, 2), tc.members, []report.Read{read(t, start.Add(5*time.Minute), tc.members, tc.pods...)}, asking(&asked))
+
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, asked, "the pods whose server type the decision asks about")
+		})
+	}
+}
+
+func TestDecide_FailsWhenTheServerTypesCannotBeRead(t *testing.T) {
+	listing := errors.New("reading the server types Hetzner can order in fsn1: service unavailable")
+
+	_, err := scaling.Decide(scaled(0, 3), nil, []report.Read{read(t, start, nil, waiting("a"))},
+		func(report.WaitingPod, pools.Measured) (bool, error) { return false, listing })
+
+	assert.ErrorIs(t, err, listing)
 }
 
 const unreadPods = `{"nodes": [], "pods": {"exitStatus": 1, "stderr": "the server was unable to return a response"}}`
@@ -173,7 +233,7 @@ func TestDecide_HoldsThePoolWhenNoRuleChangesIt(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := scaling.Decide(tc.pool, tc.members, tc.reads)
+			got, err := scaling.Decide(tc.pool, tc.members, tc.reads, listedTypes)
 
 			require.NoError(t, err)
 			assert.Equal(t, scaling.Decision{Want: tc.want}, got, "the pool's decision")
@@ -186,7 +246,7 @@ func TestDecide_ABurstMemberWhoseLastRunnerPodEndedGoesOnceItsIdleWindowPassesAn
 	reads := append([]report.Read{read(t, start.Add(5*time.Minute), members, job("runner-1", members[2]))},
 		every(t, start.Add(10*time.Minute), start.Add(30*time.Minute), members)...)
 
-	got, err := scaling.Decide(scaled(2, 5), members, reads)
+	got, err := scaling.Decide(scaled(2, 5), members, reads, listedTypes)
 
 	require.NoError(t, err)
 	require.NotNil(t, got.Remove, "the member the pool removes")
@@ -201,7 +261,7 @@ func TestDecide_RemovesNoMemberWhilePodsWaitAndGrowsPastAnOlderReportThatCouldNo
 	reads[2].Body = []byte(unreadPods)
 	reads = append(reads, read(t, start.Add(30*time.Minute), []controlplane.Server{idle}, waiting("a")))
 
-	got, err := scaling.Decide(scaled(0, 3), []controlplane.Server{idle}, reads)
+	got, err := scaling.Decide(scaled(0, 3), []controlplane.Server{idle}, reads, listedTypes)
 
 	require.NoError(t, err)
 	assert.Nil(t, got.Remove, "the member the pool removes while a pod waits")
@@ -213,7 +273,7 @@ func TestDecide_OfFourIdleMembersRemovesABurstOneAndKeepsBothSteadyOnesThoughOne
 		member(3, "nbg1-1", start.Add(2*time.Minute)), member(4, "fsn1-3", start.Add(3*time.Minute))}
 	reads := every(t, start.Add(5*time.Minute), start.Add(30*time.Minute), members)
 
-	got, err := scaling.Decide(scaled(2, 5), members, reads)
+	got, err := scaling.Decide(scaled(2, 5), members, reads, listedTypes)
 
 	require.NoError(t, err)
 	require.NotNil(t, got.Remove, "the member the pool removes")
@@ -226,14 +286,14 @@ func TestDecide_APoolOfASetSizeNeitherGrowsNorShrinksNorReadsHeld(t *testing.T) 
 	reads := every(t, start.Add(5*time.Minute), start.Add(time.Hour), members)
 	reads = append(reads, read(t, start.Add(65*time.Minute), members, waiting("a")))
 
-	got, err := scaling.Decide(scaled(2, 2), members, reads)
+	got, err := scaling.Decide(scaled(2, 2), members, reads, listedTypes)
 
 	require.NoError(t, err)
 	assert.Equal(t, scaling.Decision{Want: 2}, got, "a pool of two whose members idle while a pod waits")
 }
 
 func TestDecide_FailsOnAReportThatIsNotTheNodeReportsJSON(t *testing.T) {
-	_, err := scaling.Decide(scaled(0, 3), nil, []report.Read{{Body: []byte("not json"), At: start}})
+	_, err := scaling.Decide(scaled(0, 3), nil, []report.Read{{Body: []byte("not json"), At: start}}, listedTypes)
 
 	require.Error(t, err)
 	assert.ErrorContains(t, err, start.Format(time.RFC3339), "the error names the report it could not read")

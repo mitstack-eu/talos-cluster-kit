@@ -37,8 +37,8 @@ const (
 	runnerGroupsPath = "/orgs/" + runnerOrg + "/actions/runner-groups"
 	groupRunnersPath = runnerGroupsPath + "/7/runners"
 	forbiddenRefusal = "Resource not accessible by integration"
-	killedRunner     = "mitstack-ci-7xk2p-runner-q8w4z"
-	startingRunner   = "mitstack-ci-7xk2p-runner-m3v9d"
+	killedRunner     = "mitstack-ci-runner-tlmgf"
+	startingRunner   = "mitstack-ci-runner-wrzwk"
 )
 
 // gitHubRunner is one runner as GitHub lists it, in the scale set's runner group unless RunnerGroupID names another.
@@ -187,10 +187,12 @@ func sweptMember(t *testing.T, posted *postedReport) map[string]any {
 func TestReport_RemovesARunnerOfItsScaleSetThatGitHubListsOfflineWithNoPodBehindItAndKeepsEveryOtherRunner(t *testing.T) {
 	cases := map[string]struct {
 		runner    gitHubRunner
+		scaleSet  string
 		pods      []string
 		ephemeral []string
 		removed   bool
 		waits     bool
+		notOurs   bool
 	}{
 		"a runner whose pod and EphemeralRunner went mid-job is offline and idle once GitHub fails the job, and it is removed": {
 			runner: gitHubRunner{ID: 11, Name: killedRunner, Status: "offline"}, removed: true},
@@ -198,6 +200,11 @@ func TestReport_RemovesARunnerOfItsScaleSetThatGitHubListsOfflineWithNoPodBehind
 			runner: gitHubRunner{ID: 12, Name: killedRunner, Status: "offline", Busy: true}, waits: true},
 		"a runner whose pod ended after its job leaves it offline and idle with no pod, and it is removed": {
 			runner: gitHubRunner{ID: 13, Name: killedRunner, Status: "offline"}, pods: []string{"mitstack-ci-7xk2p-listener"}, removed: true},
+		"the same runner offline with its pod still running is kept": {
+			runner: gitHubRunner{ID: 10, Name: killedRunner, Status: "offline"}, pods: []string{killedRunner}},
+		"a runner of a scale set whose name Kubernetes cuts to 58 characters before the five it generates is removed": {
+			scaleSet: "acme-continuous-integration-for-every-repository-of-acme", removed: true,
+			runner: gitHubRunner{ID: 9, Name: "acme-continuous-integration-for-every-repository-of-acme-rtlmgf", Status: "offline"}},
 		"a runner starting up is offline with its pod, and it is kept": {
 			runner: gitHubRunner{ID: 14, Name: startingRunner, Status: "offline"}, pods: []string{startingRunner}},
 		"a runner ARC registered before it created the pod is offline with only its EphemeralRunner, and it is kept": {
@@ -206,25 +213,29 @@ func TestReport_RemovesARunnerOfItsScaleSetThatGitHubListsOfflineWithNoPodBehind
 			runner: gitHubRunner{ID: 16, Name: startingRunner, Status: "online", Busy: true}, pods: []string{startingRunner}},
 		"a runner GitHub still lists online after its pod went is kept until GitHub reads it offline": {
 			runner: gitHubRunner{ID: 17, Name: killedRunner, Status: "online"}},
-		"an offline runner of another scale set with no pod is kept": {
-			runner: gitHubRunner{ID: 18, Name: "other-ci-7xk2p-runner-q8w4z", Status: "offline"}},
-		"an offline runner named after the scale set but not as ARC names a runner is kept": {
-			runner: gitHubRunner{ID: 19, Name: runnerScaleSet + "-laptop", Status: "offline"}},
+		"an offline runner of another scale set whose name starts with this one's, as ARC names mitstack-ci-kata's, is kept": {
+			runner: gitHubRunner{ID: 18, Name: "mitstack-ci-kata-runner-tlmgf", Status: "offline"}, notOurs: true},
+		"an offline runner registered by hand under a name Kubernetes never generates is kept": {
+			runner: gitHubRunner{ID: 19, Name: "mitstack-ci-runner-dev01", Status: "offline"}, notOurs: true},
+		"an offline runner named as ARC before 0.15 named one, which is how ARC 0.15 names a runner of mitstack-ci-7xk2p, is kept": {
+			runner: gitHubRunner{ID: 8, Name: "mitstack-ci-7xk2p-runner-q8w4z", Status: "offline"}, notOurs: true},
 		"an offline runner of a same-named scale set in another runner group, as another cluster registers, is kept unread": {
-			runner: gitHubRunner{ID: 20, RunnerGroupID: otherGroupID, Name: killedRunner, Status: "offline"}},
+			runner: gitHubRunner{ID: 20, RunnerGroupID: otherGroupID, Name: killedRunner, Status: "offline"}, notOurs: true},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			api := gitHubRunners(t, tc.runner)
 
-			_, posted, out, err := runReport(t, withRunnerHolds(tc.pods, tc.ephemeral), sweeping(t, api)...)
+			scaleSet := cmp.Or(tc.scaleSet, runnerScaleSet)
+
+			_, posted, out, err := runReport(t, withRunnerHolds(tc.pods, tc.ephemeral), append(sweeping(t, api), "RUNNER_SCALE_SET="+scaleSet)...)
 
 			require.NoError(t, err, out)
 			assert.Equal(t, []string{"GET " + runnerGroupsPath + "?per_page=100", "GET " + groupRunnersPath + "?per_page=100&page=1"}, api.callsTo(http.MethodGet),
 				"the sweep finds its runner group by name and reads only that group's runners")
-			want := map[string]any{"scaleSet": runnerScaleSet, "listed": float64(1), "removed": []any{}, "unremoved": []any{},
+			want := map[string]any{"scaleSet": scaleSet, "listed": float64(1), "removed": []any{}, "unremoved": []any{},
 				"busy": []any{}, "deferred": float64(0), "unlisted": float64(0)}
-			if !strings.HasPrefix(tc.runner.Name, runnerScaleSet+"-7xk2p-runner-") || tc.runner.RunnerGroupID == otherGroupID {
+			if tc.notOurs {
 				want["listed"] = float64(0)
 			}
 			removals := []string{}
@@ -243,10 +254,10 @@ func TestReport_RemovesARunnerOfItsScaleSetThatGitHubListsOfflineWithNoPodBehind
 	}
 }
 
-func TestReport_ARemovalGitHubRefusesLeavesTheRunnerUnremovedNamingItWithGitHubsStatusAndMessageAndTheRestAndEach404AreRemoved(t *testing.T) {
-	gone := "mitstack-ci-7xk2p-runner-n4t8r"
+func TestReport_ARemovalGitHubRefusesLeavesTheRunnerListedAndUnremovedWithGitHubsStatusAndMessageUntilARunGitHubAcceptsItAndTheRestAndEach404AreRemoved(t *testing.T) {
+	gone := "mitstack-ci-runner-n4t8r"
 	api := gitHubRunners(t, gitHubRunner{ID: 21, Name: killedRunner, Status: "offline"},
-		gitHubRunner{ID: 22, Name: "mitstack-ci-7xk2p-runner-h5j6k", Status: "offline"}, gitHubRunner{ID: 23, Name: gone, Status: "offline"})
+		gitHubRunner{ID: 22, Name: "mitstack-ci-runner-lqrcl", Status: "offline"}, gitHubRunner{ID: 23, Name: gone, Status: "offline"})
 	api.refusals[21], api.refusals[23] = http.StatusForbidden, http.StatusNotFound
 	api.refusal = forbiddenRefusal + strings.Repeat(" and more", 40)
 
@@ -255,10 +266,16 @@ func TestReport_ARemovalGitHubRefusesLeavesTheRunnerUnremovedNamingItWithGitHubs
 	require.NoError(t, err, "a refused removal is a reading of the report, which still posts: %s", out)
 	assert.ElementsMatch(t, []string{"DELETE " + runnersPath + "/21", "DELETE " + runnersPath + "/22", "DELETE " + runnersPath + "/23"}, api.removals())
 	member := sweptMember(t, posted)
-	assert.ElementsMatch(t, []any{"mitstack-ci-7xk2p-runner-h5j6k", gone}, member["removed"], "a 404 means ARC removed it between the list and the removal")
+	assert.ElementsMatch(t, []any{"mitstack-ci-runner-lqrcl", gone}, member["removed"], "a 404 means ARC removed it between the list and the removal")
 	assert.Equal(t, map[string]any{"scaleSet": runnerScaleSet, "listed": float64(3), "busy": []any{}, "deferred": float64(0), "unlisted": float64(0),
 		"removed": member["removed"], "unremoved": []any{map[string]any{"name": killedRunner, "id": float64(21), "status": float64(http.StatusForbidden),
 			"message": api.refusal[:256]}}}, member, "the refused runner by name, with GitHub's status and its message cut to 256 characters")
+
+	delete(api.refusals, 21)
+	_, next, out, err := runReport(t, withRunnerPods(), sweeping(t, api)...)
+
+	require.NoError(t, err, out)
+	assert.Contains(t, sweptMember(t, next)["removed"], killedRunner, "the next run asks again and removes the runner once GitHub accepts")
 }
 
 func TestReport_RemovesNoRunnerAndNamesTheReadThatFailedWhenGitHubsListOrTheRunnerNamespacesReadFails(t *testing.T) {
@@ -393,7 +410,7 @@ func TestReport_StopsRemovingOnceGitHubAnswersARemovalWithARateLimitAndLeavesThe
 func TestReport_AsksAtMostTenRemovalsARunStartingWhereTheRunBeforeStoppedSoRunnersGitHubKeepsRefusingCannotStarveTheRest(t *testing.T) {
 	var runners []gitHubRunner
 	for i := range 12 {
-		runners = append(runners, gitHubRunner{ID: int64(500 + i), Name: fmt.Sprintf("mitstack-ci-abcde-runner-%05d", i), Status: "offline"})
+		runners = append(runners, gitHubRunner{ID: int64(500 + i), Name: fmt.Sprintf("mitstack-ci-runner-zzzz%c", "bcdfghjklmnp"[i]), Status: "offline"})
 	}
 	removal := func(id int) string { return fmt.Sprintf("DELETE %s/%d", runnersPath, id) }
 	cases := map[string]struct {
@@ -406,7 +423,7 @@ func TestReport_AsksAtMostTenRemovalsARunStartingWhereTheRunBeforeStoppedSoRunne
 				removal(507), removal(508), removal(509)}, removed: []any{}},
 		"the next run starts at the eleventh and wraps round, so the two left are removed": {run: 1,
 			removals: []string{removal(510), removal(511), removal(500), removal(501), removal(502), removal(503), removal(504),
-				removal(505), removal(506), removal(507)}, removed: []any{"mitstack-ci-abcde-runner-00010", "mitstack-ci-abcde-runner-00011"}},
+				removal(505), removal(506), removal(507)}, removed: []any{"mitstack-ci-runner-zzzzn", "mitstack-ci-runner-zzzzp"}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

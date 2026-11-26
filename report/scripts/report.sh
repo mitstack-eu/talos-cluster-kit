@@ -3,8 +3,9 @@
 # health and the leader, each node's addresses with their types and its STATE and EPHEMERAL encryption, Argo CD's health
 # of each Application and each object it applied, what each Argo CD route answers a caller without a session, Argo CD's
 # Services, Ingresses and pod images, every Ingress with its class and the addresses its status holds, CloudNativePG's
-# objects with each cluster's primary, archiving and last backup, the plugins it finds and each ObjectStore's recovery
-# windows, each CronJob a block labels with its last success and newest failure since, every pod's node, phase,
+# objects with each cluster's primary, archiving and last backup, whether each instance is the primary and whether its
+# WAL receiver streams as its instance manager answers, the plugins it finds and each ObjectStore's recovery windows,
+# each CronJob a block labels with its last success and newest failure since, every pod's node, phase,
 # controller's kind, whether no node can take it, and container states with the message of each failed container in
 # the newest failed pod of each Job the kit renders, each
 # image reference the pods and the workloads' pod templates name, each OpenBao member's seal state and the active one,
@@ -21,14 +22,16 @@
 # RUNNER_TOKEN_FILE, and its runners member names each removal and each refusal.
 # When a read, the body or the token request fails or times out, it posts an unsigned report whose error names it
 # instead, then exits non-zero.
-# Usage: REPORT_URL=<https url> SUBSCRIPTION_ID=<id> HOST_IP=<this pod's node> REPORT_PROOF_SCRIPT=<script> MESH_PROBE_URL=<target's url> MESH_PROBE_ANSWER=<its answer> MESH_PROBE_IDENTITY=<its SPIFFE id> MESH_PROBE_CONFIGMAP=<namespace/name> OPENBAO_MEMBERS="<name>=<https url> ..." OPENBAO_CA_FILE=<pem> ARGOCD_URL=<https url> GATEWAYS="<address> ..." EGRESS_URL=<https url> [POD_NAMESPACE=mitstack-node] [REPORT_TOKEN_FILE=/var/run/mitstack/token] [REPORT_READ_SECONDS=21] [RUNNERS_ORGANIZATION=<org> RUNNER_GROUP=<name> RUNNER_SCALE_SET=<name> RUNNERS_NAMESPACE=<namespace> RUNNER_TOKEN_FILE=<file> GITHUB_API_URL=<https url>] report.sh
+# Usage: REPORT_URL=<https url> SUBSCRIPTION_ID=<id> HOST_IP=<this pod's node> REPORT_PROOF_SCRIPT=<script> MESH_PROBE_URL=<target's url> MESH_PROBE_ANSWER=<its answer> MESH_PROBE_IDENTITY=<its SPIFFE id> MESH_PROBE_CONFIGMAP=<namespace/name> OPENBAO_MEMBERS="<name>=<https url> ..." OPENBAO_CA_FILE=<pem> [DATABASE_CA_FILE=<pem>] ARGOCD_URL=<https url> GATEWAYS="<address> ..." EGRESS_URL=<https url> [POD_NAMESPACE=mitstack-node] [REPORT_TOKEN_FILE=/var/run/mitstack/token] [REPORT_READ_SECONDS=21] [RUNNERS_ORGANIZATION=<org> RUNNER_GROUP=<name> RUNNER_SCALE_SET=<name> RUNNERS_NAMESPACE=<namespace> RUNNER_TOKEN_FILE=<file> GITHUB_API_URL=<https url>] report.sh
 # It exists so the platform sees a cluster it never dials into, as ADR 0072 requires, with os:reader and no Secret right.
 set -euo pipefail
 
 # Nine limits of 21 seconds, the token request's 5, each with a 5-second kill grace, and the post's 20 make 264, which
-# leaves 16 seconds of the Job's activeDeadlineSeconds of 280 for the tools to start. The mesh, pod, workload, Argo CD,
-# default-deny, credential, ObjectStore, scan, OpenBao, etcd status, gateway and egress reads run beside them, each within one limit,
-# the admission fixtures' read and their dry runs within two, and the runner sweep within five.
+# leaves 16 seconds of the Job's activeDeadlineSeconds of 280 for the tools to start. The workload, Argo CD,
+# default-deny, credential, ObjectStore, scan, OpenBao, etcd status and egress reads run beside them, each within one limit,
+# and the mesh probe's call and the read of its outside result, which holds each gateway's reading, the admission
+# fixtures' read and their dry runs, and the pod read and the instance managers' calls, each within two, and the
+# runner sweep within five.
 limit=${REPORT_READ_SECONDS:-21}
 # The sweep's fourteen GitHub calls at most, one list of groups, three pages and ten removals, of five seconds each fit its five limits.
 runners_per_page=100
@@ -45,6 +48,8 @@ scan_cronjob=mitstack-security-scan
 scan_events_kept=20
 # CloudNativePG finds a plugin only by a Service in the namespace its operator runs in.
 cnpg_namespace=cnpg-system
+# An instance manager's status answer carries its whole pod, so a bound well above one pod's size caps what is read.
+instance_status_max_bytes=1048576
 # Kinds as kubectl --show-kind names them, as blocks name their objects; never secret, as the report holds no Secret right.
 subscription_kinds=(namespace serviceaccount service resourcequota limitrange deployment.apps
   ingress.networking.k8s.io networkpolicy.networking.k8s.io role.rbac.authorization.k8s.io
@@ -107,7 +112,7 @@ read_egress() {
 read_cluster() {
   local member
   sweep_runners &
-  read_beside pods kubectl get pods -A -o json &
+  { read_beside pods kubectl get pods -A -o json; read_instance_status; } &
   read_beside workloads kubectl get deployments.apps,statefulsets.apps,daemonsets.apps,jobs.batch,cronjobs.batch -A -o json &
   read_beside default-deny kubectl get networkpolicies.networking.k8s.io -A --field-selector metadata.name=mitstack-default-deny -o json &
   read_beside sealed-secrets kubectl get sealedsecrets.bitnami.com -n argocd -o json &
@@ -283,6 +288,69 @@ remove_runner() {
   jq -c -n --argjson runner "$1" --argjson status "$((10#$status))" \
     --arg message "$(jq -r '.message // empty | tostring | .[0:256]' "$work/removal.answer" 2> /dev/null || true)" \
     '$runner + {status: $status, message: (if $status == 0 then "GitHub gave no answer" else $message end)}'
+}
+
+# read_instance_status asks each CloudNativePG instance pod's instance manager for its status, and leaves its status file
+# 0 only once the pod list was read and parsed and each instance's answer was kept.
+read_instance_status() {
+  local i=0 called instance scheme target dir=$work/instances
+  mkdir "$dir"
+  : > "$work/instance-status.json"
+  printf 1 > "$work/instance-status.status"
+  [ "$(cat "$work/pods.status")" = 0 ] || return 0
+  jq -r '.items[] | select(.metadata.labels["cnpg.io/podRole"] == "instance")
+    | ([.spec.containers[]? | select(.name == "postgres")][0] // {}) as $postgres
+    | ([$postgres.ports[]? | select(.name == "status") | .containerPort][0] // null) as $port
+    | (if ($postgres.command // []) | index("--status-port-tls") then "https" else "http" end) as $scheme
+    | [({namespace: .metadata.namespace, cluster: (.metadata.labels["cnpg.io/cluster"] // null), name: .metadata.name} | tojson),
+      $scheme, (if .status.podIP and $port
+        then "\(.metadata.labels["cnpg.io/cluster"])-rw.\(.metadata.namespace).svc:\($port):\(.status.podIP)" else "" end)] | @tsv' \
+    "$work/pods.out" > "$dir/instances" 2> /dev/null || return 0
+  while IFS=$'\t' read -r instance scheme target; do
+    instance_status "$dir/$i" "$instance" "$scheme" "$target" &
+    i=$((i + 1))
+  done < "$dir/instances"
+  wait
+  for ((called = 0; called < i; called++)); do
+    [ -s "$dir/$called.json" ] || return 0
+    cat "$dir/$called.json"
+  done >> "$work/instance-status.json"
+  printf 0 > "$work/instance-status.status"
+}
+
+# instance_status calls the status route at the pod's IP under its Cluster's read-write Service name, since the database
+# CA signs a certificate for a Cluster's Services and never for a pod's IP, and two namespaces may each hold a Cluster of
+# one name; -q reads no ~/.curlrc that could add a credential.
+instance_status() {
+  local out=$1 instance=$2 scheme=$3 target=$4 host port code ended=0 reason=
+  host=${target%%:*}
+  port=${target#*:}
+  port=${port%%:*}
+  if [ -z "$target" ]; then
+    reason="the pod has no IP and status port to call"
+  elif [ "$scheme" != https ]; then
+    reason="the instance manager serves its status without TLS"
+  elif [ ! -s "${DATABASE_CA_FILE:-}" ]; then
+    reason="the report holds no database CA to check the certificate with"
+  fi
+  if [ -n "$reason" ]; then
+    jq -c -n --argjson instance "$instance" --arg reason "$reason" '$instance + {unreadable: $reason}' > "$out.json"
+    return 0
+  fi
+  code=$(limited "$limit" curl -q -s --proto '=https' --cacert "$DATABASE_CA_FILE" --resolve "$target" --connect-timeout 2 \
+    --max-time 5 --max-filesize "$instance_status_max_bytes" -o "$out.body" -w '%{http_code}' "https://$host:$port/pg/status") ||
+    ended=$?
+  [ -f "$out.body" ] || : > "$out.body"
+  jq -c -n --argjson instance "$instance" --argjson ended "$ended" --arg code "${code:-0}" --arg host "$host" \
+    --rawfile answer "$out.body" '
+    ((try ($answer | fromjson) catch null) | if type == "object" then . else {} end) as $a
+    | $instance + if $ended == 124 or $ended == 28 then {unreadable: "the call timed out"}
+      elif $ended == 60 then {unreadable: "the certificate is not one the database CA signed for \($host)"}
+      elif $ended != 0 then {unreadable: "curl exit \($ended)"}
+      elif $code != "200" then {unreadable: "HTTP \($code)"}
+      elif ($a.isPrimary | type) != "boolean" or ($a.isWalReceiverActive | type) != "boolean" then
+        {unreadable: "the answer names no isPrimary or isWalReceiverActive"}
+      else {isPrimary: $a.isPrimary, isWalReceiverActive: $a.isWalReceiverActive} end' > "$out.json"
 }
 
 # read_admission reads the probe namespace's fixtures and has the API server dry-run each one named for a rule, all at
@@ -492,6 +560,8 @@ body() {
     --rawfile cnpg_err "$work/cloudnative-pg.err" \
     --argjson cnpg_status "$(cat "$work/cloudnative-pg.status")" \
     --arg cnpg_namespace "$cnpg_namespace" \
+    --slurpfile instance_status "$work/instance-status.json" \
+    --argjson instance_status_status "$(cat "$work/instance-status.status")" \
     --rawfile object_stores "$work/object-stores.out" \
     --rawfile object_stores_err "$work/object-stores.err" \
     --argjson object_stores_status "$(cat "$work/object-stores.status")" \
@@ -547,13 +617,20 @@ body() {
     # condition is the Cluster's condition of one type as CloudNativePG wrote it, or null while the Cluster holds none.
     def condition($type): [.status.conditions[]? | select(.type == $type)
       | {status, reason: (.reason // null), message: (.message // null | at_most_256)}] | .[0];
+    # instance_status is what the instance manager of each of the Cluster's instance pods answered, by pod name, or null
+    # when the pods could not be read or an instance's answer could not be kept.
+    def instance_status: .metadata as $cluster
+      | if $instance_status_status != 0 then null
+        else [$instance_status[] | select(.namespace == $cluster.namespace and .cluster == $cluster.name)
+          | del(.namespace, .cluster)] | sort_by(.name) end;
     def cloudnative_pg: {
       namespace: .metadata.namespace, kind: .kind, name: .metadata.name,
       subscription: (.metadata.labels["mitstack.dev/subscription"] // null)
     } + if .kind == "Cluster" then
       {phase: .status.phase, instances: .status.instances, readyInstances: .status.readyInstances,
         currentPrimary: (.status.currentPrimary // null),
-        continuousArchiving: condition("ContinuousArchiving"), lastBackup: condition("LastBackupSucceeded")}
+        continuousArchiving: condition("ContinuousArchiving"), lastBackup: condition("LastBackupSucceeded"),
+        instanceStatus: instance_status}
     else
       {applied: .status.applied, message: (.status.message // null | at_most_256)}
     end;

@@ -2,19 +2,31 @@ package report_test
 
 import (
 	"cmp"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
 	"maps"
+	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -218,7 +230,9 @@ func runReport(t *testing.T, fakes map[string]string, env ...string) (*testutil.
 	all := map[string]string{"talosctl": fakeTalosctl, "kubectl": fakeKubectl}
 	maps.Copy(all, fakes)
 	tools := testutil.NewTools(t, all)
-	tools.AddImageJq(t)
+	if _, ok := all["jq"]; !ok {
+		tools.AddImageJq(t)
+	}
 	token := filepath.Join(t.TempDir(), "token")
 	require.NoError(t, os.WriteFile(token, []byte(reportToken), 0o600))
 
@@ -522,6 +536,22 @@ func TestManifests_PointsTheReportAtEachOpenBaoPodByANameItsCertificateHoldsTrus
 		"trust-manager names the ConfigMap after its Bundle and writes the authority under the Bundle's key")
 }
 
+func TestManifests_GivesTheReportTheDatabaseCAReadOnlyToCheckEachInstanceManagersCertificate(t *testing.T) {
+	set, err := components.Hosting(testutil.HostingInputs(t))
+	require.NoError(t, err)
+	tls := testutil.Documents(t, testutil.Manifest(t, "mitstack-hosting-tls", set.Served).Bytes)
+	bundle := testutil.Named(t, tls, "Bundle", "mitstack-database-ca")
+
+	job, _, container := cronJob(t, manifests(t, reportURL), "mitstack-node-report")
+
+	assert.Contains(t, testutil.Field(t, job, "spec", "jobTemplate", "spec", "template", "spec", "volumes"),
+		map[string]any{"name": "mitstack-database-ca", "configMap": map[string]any{"name": testutil.Field(t, bundle, "metadata", "name"), "optional": true}})
+	assert.Contains(t, testutil.Field(t, container, "volumeMounts"),
+		map[string]any{"name": "mitstack-database-ca", "mountPath": "/var/run/mitstack-database-ca", "readOnly": true})
+	assert.Equal(t, "/var/run/mitstack-database-ca/"+testutil.Field(t, bundle, "spec", "target", "configMap", "key").(string),
+		testutil.ContainerEnv(t, container)["DATABASE_CA_FILE"], "trust-manager names the ConfigMap after its Bundle and writes the authority under the Bundle's key")
+}
+
 func TestManifests_PointsTheReportAtArgoCDsServerServiceOnItsHTTPSPort(t *testing.T) {
 	_, env := renderedScript(t, reportURL, "mitstack-node-report")
 	service := testutil.Named(t, testutil.Documents(t, testutil.Manifest(t, "argocd", components.Default().Served).Bytes), "Service", "argocd-server")
@@ -631,7 +661,8 @@ func TestReport_PostsEachMemberItReadsFromAHealthyCluster(t *testing.T) {
 			map[string]any{"namespace": "app-pg", "kind": "Cluster", "name": "shared", "subscription": "sub_pg0123456789",
 				"phase": "Cluster in healthy state", "instances": float64(2), "readyInstances": float64(2), "currentPrimary": "shared-1",
 				"continuousArchiving": map[string]any{"status": "True", "reason": "ContinuousArchivingSuccess", "message": "Continuous archiving is working"},
-				"lastBackup":          map[string]any{"status": "False", "reason": "LastBackupFailed", "message": "can't execute backup: exit status 4"}},
+				"lastBackup":          map[string]any{"status": "False", "reason": "LastBackupFailed", "message": "can't execute backup: exit status 4"},
+				"instanceStatus":      []any{}},
 			map[string]any{"namespace": "app-pg", "kind": "Database", "name": "shop", "subscription": "sub_shop01234567",
 				"applied": true, "message": nil},
 			map[string]any{"namespace": "app-pg", "kind": "DatabaseRole", "name": "shop", "subscription": nil,
@@ -882,7 +913,7 @@ func TestReport_NamesAFailedVolumeCloudNativePGStorageOrServiceReadInlineWithIts
 		"the storage and Service read prints no JSON": {kubectlWith(storageRead, "echo 'not json'"),
 			map[string]any{"storage": notStorage, "services": notStorage, "cloudNativePGPlugins": notStorage}},
 		"the pod read exits 1, for every pod and Argo CD's": {kubectlWith(podsRead, `echo 'error: pods is forbidden' >&2; exit 1`),
-			map[string]any{"pods": podsFailed, "kubernetes.argocdPods": podsFailed}},
+			map[string]any{"pods": podsFailed, "kubernetes.argocdPods": podsFailed, "cloudNativePG.0.instanceStatus": nil}},
 		"the pod read times out": {kubectlWith(podsRead, "sleep 10"), map[string]any{"pods": timedOut}},
 		"the Ingress read exits 1, for every Ingress and Argo CD's": {kubectlWith(ingressesRead, `echo 'error: ingresses is forbidden' >&2; exit 1`),
 			map[string]any{"ingresses": ingressesFailed, "argocd.ingresses": ingressesFailed}},
@@ -1038,4 +1069,295 @@ func TestManifests_RefusesAProofScriptOneByteOverItsLimit(t *testing.T) {
 	_, err := report.Manifests(in)
 
 	require.ErrorContains(t, err, fmt.Sprintf("the proof script is %d bytes, over the %d a report takes", len(in.ProofScript), report.ProofScriptLimit))
+}
+
+const primaryStatusAnswer = `{"currentLsn": "0/5000060", "systemID": "7311", "isPrimary": true, "isWalReceiverActive": false, "node": "poc-talos4-cp2",
+	"pod": {"metadata": {"name": "shared-1"}}, "replicationInfo": [{"applicationName": "shared-2", "state": "streaming"}], "sessionID": "s-1"}`
+
+// instanceManager is the port a database pod names for its instance manager, and whether it serves TLS there.
+type instanceManager struct {
+	port  string
+	https bool
+}
+
+func instanceManagerAnswering(t *testing.T, newServer func(http.Handler) *httptest.Server, status int, answer string, calls *atomic.Int32) instanceManager {
+	t.Helper()
+	server := newServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		assert.Empty(t, r.Header.Values("Authorization"), "a status call that sends a credential")
+		if r.TLS != nil {
+			assert.Empty(t, r.TLS.PeerCertificates, "a status call that presents a client certificate")
+		}
+		if r.URL.Path != "/pg/status" || r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, answer)
+	}))
+	t.Cleanup(server.Close)
+	parsed, err := url.Parse(server.URL)
+	require.NoError(t, err)
+	return instanceManager{port: parsed.Port(), https: parsed.Scheme == "https"}
+}
+
+func instanceManagerNeverAnswering(t *testing.T, newServer func(http.Handler) *httptest.Server) instanceManager {
+	t.Helper()
+	server := newServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(10 * time.Second):
+		}
+	}))
+	t.Cleanup(server.Close)
+	parsed, err := url.Parse(server.URL)
+	require.NoError(t, err)
+	return instanceManager{port: parsed.Port(), https: parsed.Scheme == "https"}
+}
+
+func closedPort(t *testing.T) instanceManager {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	_, port, err := net.SplitHostPort(listener.Addr().String())
+	require.NoError(t, err)
+	require.NoError(t, listener.Close())
+	return instanceManager{port: port, https: true}
+}
+
+// authority is a throwaway CA standing in for the database CA, or for another one.
+type authority struct {
+	cert *x509.Certificate
+	key  *ecdsa.PrivateKey
+}
+
+func newAuthority(t *testing.T) authority {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	template := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "mitstack database CA"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true,
+		KeyUsage: x509.KeyUsageCertSign}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	require.NoError(t, err)
+	cert, err := x509.ParseCertificate(der)
+	require.NoError(t, err)
+	return authority{cert: cert, key: key}
+}
+
+func (a authority) file(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "ca.crt")
+	require.NoError(t, os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: a.cert.Raw}), 0o600))
+	return path
+}
+
+// serving starts each TLS server it makes with the certificate the authority signs for a Cluster's Services, under the
+// names postgres-db-kube asks cert-manager for, as CloudNativePG serves an instance's status with it.
+func (a authority) serving(t *testing.T, cluster, namespace string) func(http.Handler) *httptest.Server {
+	t.Helper()
+	var names []string
+	for _, service := range []string{"rw", "r", "ro"} {
+		name := cluster + "-" + service
+		names = append(names, name, name+"."+namespace, name+"."+namespace+".svc", name+"."+namespace+".svc.cluster.local")
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	template := &x509.Certificate{SerialNumber: big.NewInt(2), DNSNames: names, NotBefore: time.Now().Add(-time.Hour),
+		NotAfter: time.Now().Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	der, err := x509.CreateCertificate(rand.Reader, template, a.cert, &key.PublicKey, a.key)
+	require.NoError(t, err)
+	return func(handler http.Handler) *httptest.Server {
+		server := httptest.NewUnstartedServer(handler)
+		server.TLS = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}, MinVersion: tls.VersionTLS13,
+			ClientAuth: tls.RequestClientCert}
+		server.StartTLS()
+		return server
+	}
+}
+
+func databasePod(t *testing.T, namespace, name string, labels map[string]any, ip string, manager instanceManager) map[string]any {
+	t.Helper()
+	command := []any{"/controller/manager", "instance", "run", "--status-port=" + manager.port}
+	if manager.https {
+		command = append(command, "--status-port-tls")
+	}
+	port, err := strconv.Atoi(manager.port)
+	require.NoError(t, err)
+	status := map[string]any{"phase": "Running"}
+	if ip != "" {
+		status["podIP"] = ip
+	}
+	return map[string]any{
+		"metadata": map[string]any{"name": name, "namespace": namespace, "labels": labels},
+		"spec": map[string]any{"nodeName": "poc-talos4-cp2", "containers": []any{map[string]any{"name": "postgres", "image": "ghcr.io/cloudnative-pg/postgresql:16.15",
+			"command": command, "ports": []any{map[string]any{"name": "postgresql", "containerPort": 5432, "protocol": "TCP"},
+				map[string]any{"name": "metrics", "containerPort": 9187, "protocol": "TCP"},
+				map[string]any{"name": "status", "containerPort": port, "protocol": "TCP"}}}}},
+		"status": status,
+	}
+}
+
+func instancePod(t *testing.T, namespace, cluster, name, ip string, manager instanceManager) map[string]any {
+	t.Helper()
+	return databasePod(t, namespace, name, map[string]any{"cnpg.io/cluster": cluster, "cnpg.io/podRole": "instance"}, ip, manager)
+}
+
+func readingInstances(podsFile string, fakes map[string]string) map[string]string {
+	all := map[string]string{"kubectl": kubectlAnswering(map[string]string{podsRead: "cat " + podsFile,
+		cloudNativePGRead: "cat testdata/instance-status-clusters.json"})}
+	maps.Copy(all, fakes)
+	return all
+}
+
+func podsFile(t *testing.T, pods ...any) string {
+	t.Helper()
+	list, err := json.Marshal(map[string]any{"apiVersion": "v1", "kind": "List", "items": pods})
+	require.NoError(t, err)
+	path := filepath.Join(t.TempDir(), "pods.json")
+	require.NoError(t, os.WriteFile(path, list, 0o600))
+	return path
+}
+
+func statusCalls(t *testing.T, tools *testutil.Tools) [][]string {
+	t.Helper()
+	var calls [][]string
+	for _, call := range tools.Calls(t) {
+		args := strings.Fields(call)
+		if args[0] == "curl" && slices.ContainsFunc(args, func(arg string) bool { return strings.HasSuffix(arg, "/pg/status") }) {
+			calls = append(calls, args[1:])
+		}
+	}
+	return calls
+}
+
+// skipsVerification reads -k alone or in a run of short options, and --insecure, either of which accepts any certificate.
+func skipsVerification(arg string) bool {
+	short := strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--")
+	return arg == "--insecure" || short && strings.Contains(arg, "k")
+}
+
+func TestReport_NamesEachDatabaseInstancesRoleAndWhetherItStreamsOrWhyItsStatusIsUnreadable(t *testing.T) {
+	var instanceCalls, uncheckedCalls, jobCalls atomic.Int32
+	database, other := newAuthority(t), newAuthority(t)
+	shared, solo, lost := database.serving(t, "shared", "app-pg"), database.serving(t, "solo", "app-solo"), database.serving(t, "lost", "app-pg")
+	answering := func(newServer func(http.Handler) *httptest.Server, status int, answer string) instanceManager {
+		return instanceManagerAnswering(t, newServer, status, answer, &instanceCalls)
+	}
+	unchecked := func(newServer func(http.Handler) *httptest.Server) instanceManager {
+		return instanceManagerAnswering(t, newServer, http.StatusOK, `{"isPrimary": true, "isWalReceiverActive": false}`, &uncheckedCalls)
+	}
+	pods := podsFile(t,
+		instancePod(t, "app-pg", "shared", "shared-1", "127.0.0.1", answering(shared, http.StatusOK, primaryStatusAnswer)),
+		instancePod(t, "app-pg", "shared", "shared-2", "127.0.0.1", answering(shared, http.StatusOK,
+			`{"systemID": "7311", "isPrimary": false, "isWalReceiverActive": true, "receivedLsn": "0/5000060", "node": "poc-talos4-cp1"}`)),
+		instancePod(t, "app-pg", "shared", "shared-3", "127.0.0.1", answering(shared, http.StatusOK,
+			`{"systemID": "7311", "isPrimary": false, "isWalReceiverActive": false}`)),
+		instancePod(t, "app-solo", "solo", "solo-1", "127.0.0.1", answering(solo, http.StatusOK, `{"isPrimary": true, "isWalReceiverActive": false}`)),
+		instancePod(t, "app-pg", "lost", "lost-1", "127.0.0.1", closedPort(t)),
+		instancePod(t, "app-pg", "lost", "lost-2", "127.0.0.1", instanceManagerNeverAnswering(t, lost)),
+		instancePod(t, "app-pg", "lost", "lost-3", "127.0.0.1", answering(lost, http.StatusInternalServerError, `{"isPrimary": true, "isWalReceiverActive": false}`)),
+		instancePod(t, "app-pg", "lost", "lost-4", "", answering(lost, http.StatusOK, `{"isPrimary": true, "isWalReceiverActive": false}`)),
+		instancePod(t, "app-pg", "lost", "lost-5", "127.0.0.1", answering(lost, http.StatusOK, `{"systemID": "7311"}`)),
+		instancePod(t, "app-pg", "lost", "lost-6", "127.0.0.1", unchecked(other.serving(t, "lost", "app-pg"))),
+		instancePod(t, "app-pg", "lost", "lost-7", "127.0.0.1", unchecked(database.serving(t, "lost", "app-other"))),
+		instancePod(t, "app-pg", "lost", "lost-8", "127.0.0.1", unchecked(httptest.NewServer)),
+		instancePod(t, "app-pg", "lost", "lost-9", "127.0.0.1", answering(lost, http.StatusOK, "<html>the instance manager is starting</html>")),
+		databasePod(t, "app-pg", "shared-1-initdb-x7k2p", map[string]any{"cnpg.io/cluster": "shared", "cnpg.io/jobRole": "initdb"}, "127.0.0.1",
+			instanceManagerAnswering(t, shared, http.StatusOK, primaryStatusAnswer, &jobCalls)),
+	)
+	caFile := database.file(t)
+	curl, err := exec.LookPath("curl")
+	require.NoError(t, err)
+
+	tools, posted, out, err := runReport(t, readingInstances(pods, map[string]string{"curl": "exec '" + curl + `' "$@"`}),
+		"REPORT_READ_SECONDS=1", "DATABASE_CA_FILE="+caFile)
+
+	require.NoError(t, err, out)
+	assert.Equal(t, readJSON(t, "testdata", "golden", "instance-status.json"), posted.body["cloudNativePG"])
+	assert.Equal(t, int32(7), instanceCalls.Load(), "one call to each instance whose certificate the database CA signed for its Cluster, and none to another")
+	assert.Zero(t, uncheckedCalls.Load(), "a request to an instance whose certificate fails the check, or that serves its status without TLS")
+	assert.Zero(t, jobCalls.Load(), "a call to a pod CloudNativePG does not label an instance")
+	for _, field := range []string{"currentLsn", "receivedLsn", "replicationInfo", "systemID", "sessionID"} {
+		assert.NotContains(t, string(posted.raw), field, "the report keeps no field of the status answer but its two flags")
+	}
+	calls := statusCalls(t, tools)
+	assert.Len(t, calls, 11, "one curl to each instance with an IP, a status port and TLS: %q", calls)
+	for _, args := range calls {
+		assert.False(t, slices.ContainsFunc(args, skipsVerification), "a status call that accepts any certificate: %q", args)
+		assert.Equal(t, caFile, flagValue(args, "--cacert"), "the CA a status call checks the certificate against: %q", args)
+	}
+}
+
+func flagValue(args []string, flag string) string {
+	at := slices.Index(args, flag)
+	if at < 0 || at+1 == len(args) {
+		return ""
+	}
+	return args[at+1]
+}
+
+func TestReport_ReadsEachDatabaseInstanceUnreadableAndCallsNoneWhenItHoldsNoDatabaseCA(t *testing.T) {
+	cases := []struct {
+		name  string
+		write func(t *testing.T, path string)
+	}{
+		{"the database CA's ConfigMap is missing, so its optional mount holds no file", func(*testing.T, string) {}},
+		{"the database CA's file is empty", func(t *testing.T, path string) { require.NoError(t, os.WriteFile(path, nil, 0o600)) }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int32
+			pods := podsFile(t, instancePod(t, "app-pg", "shared", "shared-1", "127.0.0.1",
+				instanceManagerAnswering(t, newAuthority(t).serving(t, "shared", "app-pg"), http.StatusOK, primaryStatusAnswer, &calls)))
+			caFile := filepath.Join(t.TempDir(), "ca.crt")
+			tc.write(t, caFile)
+
+			_, posted, out, err := runReport(t, readingInstances(pods, nil), "REPORT_READ_SECONDS=1", "DATABASE_CA_FILE="+caFile)
+
+			require.NoError(t, err, out)
+			clusters, ok := posted.body["cloudNativePG"].([]any)
+			require.True(t, ok && len(clusters) > 0, "the report names no CloudNativePG object: %v", posted.body["cloudNativePG"])
+			shared := clusters[0].(map[string]any)
+			require.Equal(t, "shared", shared["name"], "the fixture's first object")
+			assert.Equal(t, []any{map[string]any{"name": "shared-1", "unreadable": "the report holds no database CA to check the certificate with"}},
+				shared["instanceStatus"])
+			assert.Zero(t, calls.Load(), "a call to an instance manager whose certificate the report cannot check")
+		})
+	}
+}
+
+func TestReport_NamesNoInstanceStatusWhenItCannotKeepOneInstancesAnswer(t *testing.T) {
+	var calls atomic.Int32
+	database := newAuthority(t)
+	shared := database.serving(t, "shared", "app-pg")
+	pods := podsFile(t,
+		instancePod(t, "app-pg", "shared", "shared-1", "127.0.0.1", instanceManagerAnswering(t, shared, http.StatusOK, primaryStatusAnswer, &calls)),
+		instancePod(t, "app-pg", "shared", "shared-2", "127.0.0.1", instanceManagerAnswering(t, shared, http.StatusOK,
+			`{"isPrimary": false, "isWalReceiverActive": true}`, &calls)))
+	curl, err := exec.LookPath("curl")
+	require.NoError(t, err)
+	failsOnSharedTwosAnswer := `case "$*" in *'"name":"shared-2"'*'--rawfile answer'*) exit 5 ;; esac` + "\nexec '" + imageJq(t) + `' "$@"`
+
+	_, posted, out, err := runReport(t, readingInstances(pods, map[string]string{"curl": "exec '" + curl + `' "$@"`, "jq": failsOnSharedTwosAnswer}),
+		"REPORT_READ_SECONDS=1", "DATABASE_CA_FILE="+database.file(t))
+
+	require.NoError(t, err, out)
+	require.Equal(t, int32(2), calls.Load(), "one call to each instance")
+	objects, ok := posted.body["cloudNativePG"].([]any)
+	require.True(t, ok && len(objects) > 0, "the report names no CloudNativePG object: %v", posted.body["cloudNativePG"])
+	for _, object := range objects {
+		if cluster := object.(map[string]any); cluster["kind"] == "Cluster" {
+			assert.Nil(t, cluster["instanceStatus"], "an instance status list that leaves out shared-2, whose answer was never kept: %v", cluster)
+		}
+	}
+}
+
+func imageJq(t *testing.T) string {
+	t.Helper()
+	tools := testutil.NewTools(t, nil)
+	tools.AddImageJq(t)
+	path, err := os.Readlink(filepath.Join(tools.Dir, "jq"))
+	require.NoError(t, err)
+	return path
 }

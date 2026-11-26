@@ -60,7 +60,9 @@ var sliceEndpoints = map[string]testutil.CiliumEndpoint{
 	"app": testutil.Endpoint("app-a1", map[string]string{"mitstack.dev/subscription": "sub-a1"}, map[string]string{"mitstack.dev/app": "shop"}),
 	"instance outside a database slice": testutil.Endpoint("app-b2", map[string]string{"mitstack.dev/subscription": "sub-b2"},
 		map[string]string{"cnpg.io/cluster": "own", "cnpg.io/podRole": "instance", "mitstack.dev/app": "own"}),
-	"operator": testutil.Endpoint("cnpg-system", nil, map[string]string{"app.kubernetes.io/name": "cloudnative-pg", "mitstack.dev/app": "cloudnative-pg"}),
+	"operator":                     testutil.Endpoint("cnpg-system", nil, map[string]string{"app.kubernetes.io/name": "cloudnative-pg", "mitstack.dev/app": "cloudnative-pg"}),
+	"node report":                  testutil.Endpoint("mitstack-node", nil, map[string]string{"app.kubernetes.io/name": "mitstack-node-report"}),
+	"another pod in mitstack-node": testutil.Endpoint("mitstack-node", nil, map[string]string{"app.kubernetes.io/name": "mitstack-node-logs"}),
 }
 
 func TestDatabaseSlicesPolicy_GrantsEachPodExactlyItsAllows(t *testing.T) {
@@ -69,12 +71,14 @@ func TestDatabaseSlicesPolicy_GrantsEachPodExactlyItsAllows(t *testing.T) {
 		"instance": {
 			"egress to entity kube-apiserver", "egress with instance on 5432/TCP 15008/TCP", "ingress with app on 5432/TCP 15008/TCP",
 			"ingress with instance on 5432/TCP 15008/TCP", "ingress with instance outside a database slice on 5432/TCP 15008/TCP",
-			"ingress with job on 5432/TCP 15008/TCP", "ingress with operator on 8000/TCP 15008/TCP",
+			"ingress with job on 5432/TCP 15008/TCP", "ingress with node report on 8000/TCP 15008/TCP", "ingress with operator on 8000/TCP 15008/TCP",
 		},
 		"job":                               {"egress to entity kube-apiserver", "egress with instance on 5432/TCP 15008/TCP"},
 		"app":                               {"egress with instance on 5432/TCP 15008/TCP"},
 		"instance outside a database slice": {"egress with instance on 5432/TCP 15008/TCP"},
 		"operator":                          nil,
+		"node report":                       nil,
+		"another pod in mitstack-node":      nil,
 	} {
 		t.Run(pod, func(t *testing.T) {
 			assert.Equal(t, want, testutil.Grants(t, policy, sliceEndpoints, pod))

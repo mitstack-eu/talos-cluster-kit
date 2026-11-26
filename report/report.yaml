@@ -2,8 +2,9 @@
 # role and a Kubernetes identity that may only read Nodes, pods, Applications,
 # CloudNativePG's objects, claims, storage classes and the kinds of object a
 # block labels with its subscription, never a Secret, and posts the result to
-# the platform. It verifies OpenBao against the openbao-ca bundle that
-# trust-manager copies into every namespace, and asks Argo CD's server its
+# the platform. It verifies OpenBao against the openbao-ca bundle, and each
+# database instance manager against the mitstack-database-ca bundle, both of
+# which trust-manager copies into every namespace, and asks Argo CD's server its
 # routes with no session. It carries what the outside probe last read of each
 # gateway's mirror, and opens a TLS connection to Let's Encrypt's ACME API
 # through the network's default route, which needs no rule here. It also creates the one namespace
@@ -237,6 +238,8 @@ spec:
                   value: {{ printf "%q" .OpenBaoMembers }}
                 - name: OPENBAO_CA_FILE
                   value: /var/run/openbao-ca/ca.crt
+                - name: DATABASE_CA_FILE
+                  value: /var/run/mitstack-database-ca/ca.crt
                 - name: ARGOCD_URL
                   value: https://argocd-server.argocd.svc
                 - name: GATEWAYS
@@ -281,6 +284,9 @@ spec:
                   mountPath: /var/run/mitstack-runner
                   readOnly: true
 {{- end }}
+                - name: mitstack-database-ca
+                  mountPath: /var/run/mitstack-database-ca
+                  readOnly: true
           volumes:
             - name: tmp
               emptyDir: {}
@@ -304,3 +310,8 @@ spec:
                 optional: true
                 defaultMode: 0440
 {{- end }}
+            # Without the hosting set there is no database CA either, and the report reads each instance unreadable.
+            - name: mitstack-database-ca
+              configMap:
+                name: mitstack-database-ca
+                optional: true

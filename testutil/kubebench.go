@@ -42,11 +42,14 @@ func KubeBenchConfig(t *testing.T) string {
 			t.Errorf("kube-bench's archive names %q, a path outside the directory it is unpacked into", header.Name)
 			continue
 		}
-		if name := path.Clean(header.Name); name == "cfg/config.yaml" || path.Dir(name) == "cfg/cis-1.10" && name != "cfg/cis-1.10/config.yaml" {
-			data, err := io.ReadAll(archive)
-			require.NoError(t, err)
-			require.NoError(t, os.WriteFile(filepath.Join(dir, name), data, 0o644))
+		name := path.Clean(header.Name)
+		benchmarkFile := path.Dir(name) == "cfg/cis-1.10" && name != "cfg/cis-1.10/config.yaml"
+		if name != "cfg/config.yaml" && !benchmarkFile {
+			continue
 		}
+		data, err := io.ReadAll(archive)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), data, 0o644))
 	}
 	_, here, _, _ := runtime.Caller(0)
 	talos, err := os.ReadFile(filepath.Join(filepath.Dir(here), "..", "tools", "kube-bench-talos.yaml"))

@@ -1011,7 +1011,7 @@ The fields mean this:
 
 - `scaleSet` is the scale set's name.
 - `listed` counts the runners of the group that carry ARC's name for the scale
-  set.
+  set, online or offline, busy or idle, held by a pod or not.
 - `removed` names each runner GitHub removed, or answered 404 for.
 - `unremoved` holds each refusal, with GitHub's status and its message cut to
   256 characters. The runner stays listed, and the next run asks again.
@@ -1085,7 +1085,8 @@ with the text, and a later clean run clears it.
 
 A removal GitHub refuses, on its own, leaves the check healthy. The report
 still names the runner under `unremoved`, and the next run asks GitHub again,
-so the runner goes once GitHub accepts.
+so the runner goes once GitHub accepts. A removal GitHub answers as done, for a
+runner it then still lists, reads unhealthy as the last case above says.
 
 The sweep never removes a busy runner, so a dead runner GitHub keeps reading
 busy would stay listed with no other sign. GitHub's docs give no time within

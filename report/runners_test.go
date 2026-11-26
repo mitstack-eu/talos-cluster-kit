@@ -200,7 +200,7 @@ func TestReport_RemovesARunnerOfItsScaleSetThatGitHubListsOfflineWithNoPodBehind
 			runner: gitHubRunner{ID: 12, Name: killedRunner, Status: "offline", Busy: true}, waits: true},
 		"a runner whose pod ended after its job leaves it offline and idle with no pod, and it is removed": {
 			runner: gitHubRunner{ID: 13, Name: killedRunner, Status: "offline"}, pods: []string{"mitstack-ci-7xk2p-listener"}, removed: true},
-		"the same runner offline with its pod still running is kept": {
+		"a runner ARC named as it names mitstack-ci-runner-tlmgf, offline with its pod still running, is kept": {
 			runner: gitHubRunner{ID: 10, Name: killedRunner, Status: "offline"}, pods: []string{killedRunner}},
 		"a runner of a scale set whose name Kubernetes cuts to 58 characters before the five it generates is removed": {
 			scaleSet: "acme-continuous-integration-for-every-repository-of-acme", removed: true,
@@ -225,7 +225,6 @@ func TestReport_RemovesARunnerOfItsScaleSetThatGitHubListsOfflineWithNoPodBehind
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			api := gitHubRunners(t, tc.runner)
-
 			scaleSet := cmp.Or(tc.scaleSet, runnerScaleSet)
 
 			_, posted, out, err := runReport(t, withRunnerHolds(tc.pods, tc.ephemeral), append(sweeping(t, api), "RUNNER_SCALE_SET="+scaleSet)...)

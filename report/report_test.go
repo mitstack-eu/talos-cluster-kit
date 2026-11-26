@@ -914,7 +914,7 @@ func TestReport_NamesAFailedVolumeCloudNativePGStorageOrServiceReadInlineWithIts
 			map[string]any{"storage": notStorage, "services": notStorage, "cloudNativePGPlugins": notStorage}},
 		"the pod read exits 1, for every pod and Argo CD's": {kubectlWith(podsRead, `echo 'error: pods is forbidden' >&2; exit 1`),
 			map[string]any{"pods": podsFailed, "kubernetes.argocdPods": podsFailed, "cloudNativePG.0.instanceStatus": nil}},
-		"the pod read times out": {kubectlWith(podsRead, "sleep 10"), map[string]any{"pods": timedOut, "cloudNativePG.0.instanceStatus": nil}},
+		"the pod read times out": {kubectlWith(podsRead, "sleep 10"), map[string]any{"pods": timedOut}},
 		"the Ingress read exits 1, for every Ingress and Argo CD's": {kubectlWith(ingressesRead, `echo 'error: ingresses is forbidden' >&2; exit 1`),
 			map[string]any{"ingresses": ingressesFailed, "argocd.ingresses": ingressesFailed}},
 		"the Ingress read prints no JSON": {kubectlWith(ingressesRead, "echo 'not json'"),

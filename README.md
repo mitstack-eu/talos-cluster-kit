@@ -2682,13 +2682,14 @@ The reader runs as user 65532 under the Talos identity
 gives that role the process list, and the identity's Secret holds no other
 right. Talos lets a pod hold such an identity only in a namespace its machine
 configuration names, so the kit names `kube-system` beside `mitstack-node`.
-That configuration, `talosAPIAccessDocument` in `nodeconfig/documents.go`,
-holds one list of roles for every namespace it names. So a Talos
-ServiceAccount in `kube-system` may hold any role in `TalosAPIRoles`, `os:admin`
-among them. To use that, an identity must create such a ServiceAccount, and
-among the roles the kit installs only Argo CD's application controller may,
-since it may create any object in the cluster. It must also run a pod in
-`kube-system`, and anyone who can do that can already run a privileged pod
+The kit writes that part of the configuration in `talosAPIAccessDocument`, in
+`nodeconfig/documents.go`, and Talos takes one list of roles for every
+namespace it names. So a Talos ServiceAccount in `kube-system` may hold any
+role in `TalosAPIRoles`, `os:admin` among them. Holding such a role takes two
+rights. The first is creating a Talos ServiceAccount, which among the roles
+the kit installs only Argo CD's application controller has, since it may
+create any object in the cluster. The second is running a pod in
+`kube-system`, and anyone with that right can already run a privileged pod
 there. So naming `kube-system` gives no one a right they lacked.
 
 When the node runs no process of one of those five components, the reader

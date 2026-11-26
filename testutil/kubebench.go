@@ -38,6 +38,10 @@ func KubeBenchConfig(t *testing.T) string {
 			break
 		}
 		require.NoError(t, err)
+		if !filepath.IsLocal(header.Name) {
+			t.Errorf("kube-bench's archive names %q, a path outside the directory it is unpacked into", header.Name)
+			continue
+		}
 		if name := path.Clean(header.Name); name == "cfg/config.yaml" || path.Dir(name) == "cfg/cis-1.10" && name != "cfg/cis-1.10/config.yaml" {
 			data, err := io.ReadAll(archive)
 			require.NoError(t, err)

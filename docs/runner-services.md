@@ -931,8 +931,9 @@ report whose plane names runner inputs takes these steps:
    0.15, the release the kit pins, names a runner `<scale set>-runner-`
    followed by five characters Kubernetes generates, as in
    `mitstack-ci-runner-tlmgf`. Kubernetes draws the five from
-   `bcdfghjklmnpqrstvwxz2456789`, and first cuts the part before them to 58
-   characters, so the sweep matches that exact shape.
+   `bcdfghjklmnpqrstvwxz2456789`, and first cuts the prefix
+   `<scale set>-runner-` to 58 characters, so the sweep matches that exact
+   shape.
 5. It leaves a picked runner that GitHub still reads busy for a later run,
    since GitHub refuses to remove a runner while it holds a job.
 6. It asks GitHub to remove the other picked runners one at a time, at most
@@ -958,16 +959,18 @@ its runners. The kit assumes one cluster per scale set name in a runner group:
 a second cluster that registers the same name in the same group shares the
 scale set, and its sweep could remove the first cluster's starting runners.
 
-The exact shape keeps two kinds of runner that share the group. A runner of a
-scale set whose name starts with this one's, such as
-`mitstack-ci-kata-runner-tlmgf`, carries a hyphen where the five characters
-stand. A runner registered by hand, such as `mitstack-ci-runner-dev01`, ends in
-characters Kubernetes never generates. A hand-registered name that does end in
-five of those characters, such as `mitstack-ci-runner-gh2x4`, fits the shape,
-and the sweep removes it once it is offline with no pod.
+The exact shape keeps two kinds of runner that share the group. A name fits
+only when it starts with `<scale set>-runner-` and then ends in exactly five
+generated characters. A runner of a scale set whose name starts with this
+one's, such as `mitstack-ci-kata-runner-tlmgf`, reads `kata-` where
+`mitstack-ci-runner-` expects `runner-`, so it does not fit. A runner
+registered by hand, such as `mitstack-ci-runner-dev01`, ends in characters
+Kubernetes never generates. A hand-registered name that does end in five of
+those characters, such as `mitstack-ci-runner-gh2x4`, fits the shape, and the
+sweep removes it once it is offline with no pod.
 
 The shape holds the whole `-runner-` only for a scale set name of at most 50
-characters. Past that, the 58-character cut reaches into it. Two scale sets in
+characters, since 50 and the 8 characters of `-runner-` make 58. Past that, the 58-character cut reaches into it. Two scale sets in
 one runner group match each other's runners when `<scale set>-runner-` cut to
 58 characters reads the same for both, as for a 58-character name and the
 same name with `-kata` added.

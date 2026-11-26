@@ -15,7 +15,7 @@ spec:
       mode: PERMISSIVE
 ---
 # Cilium sees a mesh call only on ztunnel's port 15008, so the ports it names for an instance are kept here: Postgres on
-# 5432, and the instance manager on 8000 for the operator alone.
+# 5432, and the instance manager on 8000 for the operator and the node report alone, which reaches no other port.
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
 metadata:
@@ -32,7 +32,13 @@ spec:
         notPorts: ["5432", "8000"]
   - from:
     - source:
-        notPrincipals: ["cluster.local/ns/cnpg-system/sa/cloudnative-pg"]
+        notPrincipals: ["cluster.local/ns/cnpg-system/sa/cloudnative-pg", "cluster.local/ns/mitstack-node/sa/mitstack-node-report"]
     to:
     - operation:
         ports: ["8000"]
+  - from:
+    - source:
+        principals: ["cluster.local/ns/mitstack-node/sa/mitstack-node-report"]
+    to:
+    - operation:
+        notPorts: ["8000"]

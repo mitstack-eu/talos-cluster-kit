@@ -143,10 +143,8 @@ func TestSecurityScan_RunsNoKubeBenchAndKeepsWhyWhenTheReaderFindsAComponentsPro
 	assert.NotRegexp(t, `(?m)^kube-bench `, strings.Join(run.tools.Calls(t), "\n"), "kube-bench judges no default in place of a flag it could not read")
 }
 
-// readsProcess matches an audit that reads the node's process list.
-var readsProcess = regexp.MustCompile(`\bps -`)
-
 func TestSecurityScan_PointsEachAuditThatReadsAProcessAtItsComponentsCommandLineInTheReadersDirectory(t *testing.T) {
+	readsProcess, readsFile := regexp.MustCompile(`\bps -`), regexp.MustCompile(`cat /processes/(\w+)`)
 	given := filepath.Join(t.TempDir(), "cfg")
 	run := runScan(t, map[string]string{"kube-bench": `cp -R "$3" ` + given + "\ncat testdata/scan/kube-bench.json"})
 	require.NoError(t, run.err, run.out)
@@ -159,7 +157,7 @@ func TestSecurityScan_PointsEachAuditThatReadsAProcessAtItsComponentsCommandLine
 			continue
 		}
 		assert.NotRegexp(t, readsProcess, audits[id], "check %s", id)
-		if component := regexp.MustCompile(`cat /processes/(\w+)`).FindStringSubmatch(audits[id]); assert.NotNil(t, component, "check %s: %s", id, audits[id]) {
+		if component := readsFile.FindStringSubmatch(audits[id]); assert.NotNil(t, component, "check %s: %s", id, audits[id]) {
 			read[component[1]]++
 		}
 	}

@@ -2700,7 +2700,7 @@ Four more things let kube-bench read a Talos node truthfully.
 | The tools image names uid and gid 60 `etcd` | Talos runs etcd as uid and gid 60 and gives it the etcd directory. Check 1.1.12 reads that directory's owner by name and wants `etcd:etcd`, which `stat` prints only when the image's own user list names the uid |
 
 The reader and the two tools run as three steps of one pod, so no step holds
-two of the Talos identity, the host's files and the API token. The reader runs
+more than one of the Talos identity, the host's files and the API token. The reader runs
 first and leaves the command lines in a shared scratch directory. kube-bench
 runs next, as root with those five directories and no token, and leaves its
 summary in another. kubescape runs last as a non-root user, with the token and

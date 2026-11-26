@@ -48,7 +48,7 @@ var (
 const (
 	admissionProbeNamespace = "mitstack-admission-probe"
 	admissionFixturesName   = "admission-fixtures"
-	securityScanNamespace   = "kube-system"
+	securityScanNamespace   = nodeconfig.SecurityScanNamespace
 	securityScansConfigMap  = "mitstack-security-scans"
 )
 

@@ -7,16 +7,17 @@
 # cluster tokens' scripts, since a node's machine configuration has no room for them inside the builder's user data, and
 # the script each component's handover Job runs and the one OpenBao's rollout Job runs. The security scan's
 # kube-bench with its own cis-1.10 config, kubescape and the NSA framework with its default inputs are checked against
-# scan.env. procps gives kube-bench the ps it finds each component's process with, which busybox's ps refuses. The image
-# carries every manifest a gateway serves at its repository path under the scripts' directory, since a gateway copies
-# talosctl, kubectl and those manifests out of it. It builds from the repository's root: docker build -f tools/Dockerfile .
+# scan.env. The image carries every manifest a gateway serves at its repository path under the scripts' directory, since
+# a gateway copies talosctl, kubectl and those manifests out of it. It builds from the repository's root: docker build
+# -f tools/Dockerfile .
 #
 # machine-config renders a running node's configuration inside the cluster, since only the nodes hold the cluster's
 # keys. It builds from the kit's own source with the Go release go.mod names, which a test holds the stage to. The
 # build needs the components package's Go source and every manifest it embeds, so the build context lets the whole
 # components directory in. The image takes that directory from this stage once its Go source is deleted, so it carries
 # every manifest of it, the gateways serving a subset. The same stage builds package-cache, which runs the runner
-# services' Go and npm caches and sweeps the image cache's disk.
+# services' Go and npm caches and sweeps the image cache's disk, and process-list, which writes each control-plane
+# component's command line from Talos's process list for the security scan's kube-bench.
 FROM docker.io/library/golang:1.26.10-alpine@sha256:87c65a688975c0b1d4585d204874c45ca78354670e3a5f11368c5a492303d696 AS machine-config
 
 WORKDIR /src
@@ -31,13 +32,15 @@ RUN CGO_ENABLED=0 GOTOOLCHAIN=local go build -trimpath -ldflags="-s -w" -o /mach
 COPY cmd/package-cache/ cmd/package-cache/
 COPY packagecache/ packagecache/
 RUN CGO_ENABLED=0 GOTOOLCHAIN=local go build -trimpath -ldflags="-s -w" -o /package-cache ./cmd/package-cache
+COPY cmd/process-list/ cmd/process-list/
+RUN CGO_ENABLED=0 GOTOOLCHAIN=local go build -trimpath -ldflags="-s -w" -o /process-list ./cmd/process-list
 RUN find components -name "*.go" -delete
 
 FROM docker.io/library/alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
 
 COPY tools/tools.env tools/jq.env tools/scan.env /tmp/
 
-RUN apk add --no-cache bash ca-certificates coreutils curl git gpg openssh-client openssl procps \
+RUN apk add --no-cache bash ca-certificates coreutils curl git gpg openssh-client openssl \
  && . /tmp/tools.env \
  && . /tmp/jq.env \
  && curl -fsSL --proto '=https' -o /usr/local/bin/talosctl "https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/talosctl-linux-amd64" \
@@ -73,5 +76,6 @@ COPY tools/kube-bench-talos.yaml /usr/local/lib/mitstack/kube-bench/cfg/cis-1.10
 COPY --from=machine-config /src/components/ /usr/local/lib/mitstack/components/
 COPY --from=machine-config /machine-config /usr/local/bin/machine-config
 COPY --from=machine-config /package-cache /usr/local/bin/package-cache
+COPY --from=machine-config /process-list /usr/local/bin/process-list
 
 USER 65532:65532

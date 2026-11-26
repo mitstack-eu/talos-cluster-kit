@@ -62,7 +62,7 @@ the order a block uses them.
 | `openbaoinit` | Renders OpenBao's init Job, which the hosting set carries. On a hosting cluster, a cluster that runs mitstack's own control plane, it initialises OpenBao once, commits the root token and recovery key to the cluster repository as PGP messages, then writes the policy that External Secrets reads with in each slice, the namespace a block gives one app | `Manifests`, `Inputs`, `InitFile` |
 | `rollout` | Gives a running cluster a release's component set, the manifests one kit release carries; [How a running cluster takes a release's components](#how-a-running-cluster-takes-a-releases-components) defines each term. A block commits the set's files to the cluster repository, where Argo CD applies each component through an Application of its own, which is Argo CD's record of one repository directory it keeps applied to the cluster. Files that an earlier release committed and this release no longer states are retired, which means deleted. Each component's sync runs a handover Job, which has Talos give up the fields it set when it created the component's objects, so they hold only what the release states. After OpenBao's sync, OpenBao's rollout Job moves each member onto the StatefulSet's new revision, as [How OpenBao's members take a new revision](#how-openbaos-members-take-a-new-revision) explains, which also says what a member, a StatefulSet and a revision are. Every Application reads the cluster repository at `Release.RepoURL`, the one address the cluster holds a credential for. The read-back then checks from the node report that the cluster runs each component as the release states it | `Release.Files`, `Release.Retired`, `Release.ReadBack`, `Release.ToolsImage`, `Release.RepoURL`, `LegacyFiles` |
 | `controlplane` | Builds and deletes a Talos control plane on Hetzner Cloud: a network, a firewall, a builder that makes the cluster's own snapshot, one or three nodes with a gateway beside each, and an API and an ingress load balancer. Three nodes run in `fsn1`, `nbg1` and `hel1`, and one node runs in `fsn1`. Each call reads the resources by their labels and takes the one change still missing, and [How a request reads the Cloud once](#how-a-request-reads-the-cloud-once) says how one request lists each kind once. A refusal is a `*Refusal` with a `Class` and a `Message`, which the block answers as its own framework's refusal | `Plane`, `Plane.NodeLocations`, `DefaultSize`, `KeySize`, `Plane.Read`, `ReadOncePerRequest`, `RequestReads`, `NewRequestReads`, `WithoutRequestReads`, `Plane.EnsureNetwork`, `Plane.SizeRefusal`, `Plane.NextStep`, `Plane.Problems`, `Plane.Unhealthy`, `Plane.Outputs`, `Plane.CopyIdentityStep`, `State.IngressAddresses`, `Plane.Release`, `ErrNoIngressAddress`, `Plane.GatewaysAwaitRelease`, `Plane.GatewaysServeRelease`, `Plane.Delete`, `Plane.Busy`, `Plane.Unsettled`, `NewAPI`, `Calls`, `Refusal`, `TopologyLabels`, `GatewayUpgradeBound`, `GatewayCertRenewBefore`, `KeyGatewayCertExpires` |
-| `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image carries and the gateway copies out of it, `tools/jq.env`, which pins the tools image's jq, and `tools/kube-bench-talos.yaml`, the settings kube-bench reads over its own on Talos. Its Dockerfile builds `cmd/machine-config` into the tools image. It names the tools image a release published and the directory in that image that holds the node report's, its outside probe's, the labeller's, the cluster tokens', the handover's and OpenBao's rollout's scripts, and where in that image each served manifest sits | `Env`, `Pin`, `Image`, `ScriptDir`, `ManifestPath` |
+| `tools` | Holds `tools/tools.env`, which pins the talosctl and kubectl that the tools image carries and the gateway copies out of it, `tools/jq.env`, which pins the tools image's jq, and `tools/kube-bench-talos.yaml`, the settings kube-bench reads over its own on Talos. Its Dockerfile builds `cmd/machine-config`, `cmd/package-cache` and `cmd/process-list` into the tools image. It names the tools image a release published and the directory in that image that holds the node report's, its outside probe's, the labeller's, the cluster tokens', the handover's and OpenBao's rollout's scripts, and where in that image each served manifest sits | `Env`, `Pin`, `Image`, `ScriptDir`, `ManifestPath` |
 | `redundant` | Carries a removal's redundant set, each member with its reading, to the guard the block passes, block-kit's `redundancy.Set.AllowRemoval`, which this module does not import. A set's `Minimum` is how many members it keeps serving: `Majority`, `AllButOne`, or `NoRedundancy`, which lets the one member of a set of one go | `Set`, `Guard`, `Held`, `Minimum` |
 | `scaling` | Decides from the node reports alone how a Cloud pool whose minimum is below its maximum follows its cluster's load, so only the block's operator, which holds the Hetzner token, changes the pool. [How a Cloud pool scales with the load](#how-a-cloud-pool-scales-with-the-load) gives the rules | `Decide`, `Decision`, `CauseAtMaximum`, `CauseNoTypeHolds` |
 | `testutil` | Holds the fixtures, fakes and decoders this module's tests and a block's tests share | `NewCluster`, `NewTools`, `Golden` |
@@ -2629,8 +2629,9 @@ check in an error, which does not carry the policy's message.
 The `mitstack-security-scan` CronJob runs once a day in `kube-system`, on a
 control-plane node, from the tools image. kube-bench runs the `cis-1.10`
 benchmark, the one Sidero documents for Talos, since kube-bench's version
-mapping picks none for Talos. It reads each component's flags from its
-process. It also reads `/etc/kubernetes`, `/var/lib/kubelet`, `/var/lib/etcd`
+mapping picks none for Talos. It reads each component's flags from the
+component's command line, which the scan's first step writes from Talos's
+process list. It also reads `/etc/kubernetes`, `/var/lib/kubelet`, `/var/lib/etcd`
 and the two directories that hold the scheduler's and the controller
 manager's kubeconfigs, all read-only. kubescape scans the NSA framework with
 an empty exception list and no host sensor, under an identity that may read
@@ -2666,21 +2667,44 @@ The controller manager's directory also holds its signing keys, each with mode
 400 for the controller manager's user, so the scan's root, holding no
 capability, can read none of them.
 
+The scan's pod shares no process table with the node, so kube-bench cannot
+see the control plane's processes. Its first step, the reader, runs
+`process-list`, which asks the node's Talos API for its process list with
+`MachineService/Processes`. It writes the command line of the API server, the
+controller manager, the scheduler, etcd and the kubelet into one file each.
+kube-bench's step then copies its config and rewrites each of the 66
+`cis-1.10` audits that reads a process, so the audit reads that component's
+file in place of `ps -ef` or `ps -fC`. Check 4.3.1 reads kube-proxy, which
+the kit turns off, so it still finds no process and fails.
+
+The reader runs as user 65532 under the Talos identity
+`mitstack-security-scan-processes`, which holds `os:reader` alone. Talos
+gives that role the process list, and the identity's Secret holds no other
+right. Talos lets a pod hold such an identity only in a namespace its machine
+configuration names, so the kit names `kube-system` beside `mitstack-node`.
+Anyone who can create a pod in `kube-system` can already run a privileged pod
+there, so naming it gives no one a right they lacked.
+
+When the node runs no process of one of those five components, the reader
+writes nothing and names each missing one. kube-bench then does not run,
+since it would judge a default in place of each flag it could not read. Its
+summary keeps the reader's error, and the Job runs again.
+
 Four more things let kube-bench read a Talos node truthfully.
 
 | What the scan does | Why |
 |---|---|
 | It names no variable that starts with `KUBE_BENCH_` | kube-bench reads its own settings under that prefix. It takes `KUBE_BENCH_VERSION` for its `--version` flag and refuses that flag beside `--benchmark` |
-| The tools image installs `procps` | kube-bench finds each component's process with `ps -C`, which busybox's `ps` refuses. Without it, every check of a component's flags reads nothing and fails |
+| `tools/kube-bench-talos.yaml` makes every control-plane component optional | kube-bench looks for each component's process before it runs a check, and refuses to run when a component it needs is missing. An optional component it cannot find takes the component's own name, which no rewritten audit reads |
 | `tools/kube-bench-talos.yaml` stands where kube-bench reads the settings that override its config for `cis-1.10`, and names `/var/lib/etcd` as etcd's data directory | Talos gives that directory mode 700 and etcd's own user. kube-bench's default looks up a path inside it, which the scan's root may not do with every capability dropped, and kube-bench then stops |
 | The tools image names uid and gid 60 `etcd` | Talos runs etcd as uid and gid 60 and gives it the etcd directory. Check 1.1.12 reads that directory's owner by name and wants `etcd:etcd`, which `stat` prints only when the image's own user list names the uid |
 
-The two tools run as two steps of one pod, so neither holds both the host's
-files and the API token. kube-bench runs first, as root with those five
-directories and no token, and leaves its summary in a shared scratch
-directory. kubescape runs after it as a non-root user, with the token and no
-host file, and then patches both summaries. A non-root user cannot reach a
-root process through the host's process table.
+The reader and the two tools run as three steps of one pod, so no step holds
+two of the Talos identity, the host's files and the API token. The reader runs
+first and leaves the command lines in a shared scratch directory. kube-bench
+runs next, as root with those five directories and no token, and leaves its
+summary in another. kubescape runs last as a non-root user, with the token and
+no host file, and then patches both summaries.
 
 The scan patches each summary into the `mitstack-security-scans` ConfigMap,
 which its Role lets it read and patch by name, and which the report may only

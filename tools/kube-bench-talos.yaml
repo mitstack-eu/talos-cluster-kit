@@ -1,14 +1,28 @@
 ---
 # kube-bench reads this file over its own cfg/config.yaml when it runs cis-1.10. It names etcd's data directory where
 # Talos keeps it, so kube-bench looks up no path inside that directory, which only etcd's own user may search and the
-# scan's root, holding no capability, may not.
+# scan's root, holding no capability, may not. Every component is optional, since the scan shares no process table with
+# the node: kube-bench finds no component's process and reads each component's command line from the scan's reader.
 master:
+  apiserver:
+    optional: true
+  scheduler:
+    optional: true
+  controllermanager:
+    optional: true
   etcd:
     datadirs:
       - /var/lib/etcd
     defaultdatadir: /var/lib/etcd
+node:
+  kubelet:
+    optional: true
 etcd:
   etcd:
+    optional: true
     datadirs:
       - /var/lib/etcd
     defaultdatadir: /var/lib/etcd
+controlplane:
+  apiserver:
+    optional: true

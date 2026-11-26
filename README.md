@@ -2690,7 +2690,8 @@ rights. The first is creating a Talos ServiceAccount, which among the roles
 the kit installs only Argo CD's application controller has, since it may
 create any object in the cluster. The second is running a pod in
 `kube-system`, and anyone with that right can already run a privileged pod
-there. So naming `kube-system` gives no one a right they lacked.
+there, since Talos's pod security and every Kyverno pod policy leave
+`kube-system` out. So naming `kube-system` gives no one a right they lacked.
 
 When the node runs no process of one of those five components, the reader
 writes nothing and names each missing one. kube-bench then does not run,
@@ -2702,16 +2703,16 @@ Four more things let kube-bench read a Talos node truthfully.
 | What the scan does | Why |
 |---|---|
 | It names no variable that starts with `KUBE_BENCH_` | kube-bench reads its own settings under that prefix. It takes `KUBE_BENCH_VERSION` for its `--version` flag and refuses that flag beside `--benchmark` |
-| `tools/kube-bench-talos.yaml` makes every control-plane component optional | kube-bench looks for each component's process before it runs a check, and refuses to run when a component it needs is missing. An optional component it cannot find no longer stops the run. kube-bench then names that component after the component itself, and no rewritten audit uses that name |
+| `tools/kube-bench-talos.yaml` makes every control-plane component optional | kube-bench looks for each component's process before it runs a check, and refuses to run when a component it needs is missing. An optional component it cannot find no longer stops the run, and takes its own name as its program's name. No rewritten audit reads a program's name, so that fallback changes no verdict |
 | `tools/kube-bench-talos.yaml` stands where kube-bench reads the settings that override its config for `cis-1.10`, and names `/var/lib/etcd` as etcd's data directory | Talos gives that directory mode 700 and etcd's own user. kube-bench's default looks up a path inside it, which the scan's root may not do with every capability dropped, and kube-bench then stops |
 | The tools image names uid and gid 60 `etcd` | Talos runs etcd as uid and gid 60 and gives it the etcd directory. Check 1.1.12 reads that directory's owner by name and wants `etcd:etcd`, which `stat` prints only when the image's own user list names the uid |
 
 The reader and the two tools run as three steps of one pod, so no step holds
-more than one of the Talos identity, the host's files and the API token. The reader runs
-first and leaves the command lines in a shared scratch directory. kube-bench
-runs next, as root with those five directories and no token, and leaves its
-summary in another. kubescape runs last as a non-root user, with the token and
-no host file, and then patches both summaries.
+more than one of the Talos identity, the host's files and the API token. The
+reader runs first and leaves the command lines in a shared scratch directory.
+kube-bench runs next, as root with those five directories and no token, and
+leaves its summary in another. kubescape runs last as a non-root user, with the
+token and no host file, and then patches both summaries.
 
 The scan patches each summary into the `mitstack-security-scans` ConfigMap,
 which its Role lets it read and patch by name, and which the report may only

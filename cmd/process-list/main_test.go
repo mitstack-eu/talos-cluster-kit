@@ -1,6 +1,5 @@
+// process-list writes each control-plane component's command line from Talos's process list.
 package main
-
-// main_test.go pins the reader that writes each control-plane component's command line from Talos's process list.
 
 import (
 	"context"

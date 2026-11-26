@@ -38,6 +38,11 @@ runners_per_page=100
 runner_pages_max=3
 runner_removals_max=10
 github_call_seconds=5
+# ARC 0.15 names each runner by Kubernetes' generateName, which cuts the prefix <scale set>-runner- to 58 characters
+# and adds five drawn from these.
+generated_name_prefix_max=58
+generated_name_suffix_length=5
+generated_name_chars=bcdfghjklmnpqrstvwxz2456789
 # The outside probe writes every five minutes, so a result three runs old means it stopped.
 mesh_probe_max_age=900
 # The report dry-runs the admission fixtures in the probe namespace, and reads what the security scan last kept.
@@ -242,10 +247,11 @@ read_runner_holds() {
 # remove_stale_runners skips a busy runner, removes one at a time and stops at a rate limit, since GitHub refuses a
 # runner holding a job and asks clients to call one at a time and to stop calling once limited.
 remove_stale_runners() {
-  local runner picked=()
+  local runner picked=() prefix=$RUNNER_SCALE_SET-runner- pattern
+  pattern="^${prefix:0:generated_name_prefix_max}[$generated_name_chars]{$generated_name_suffix_length}\$"
   # The first line counts what the sweep read, and each line after it is a runner to remove. The start moves on by the
   # removal cap every five minutes, so runners GitHub keeps refusing cannot starve the rest.
-  if ! jq -c -n --arg pattern "^$RUNNER_SCALE_SET-[a-z0-9]+-runner-[a-z0-9]+\$" --rawfile held "$work/runner-holds.names" \
+  if ! jq -c -n --arg pattern "$pattern" --rawfile held "$work/runner-holds.names" \
       --argjson most "$runner_removals_max" --argjson run "$(($(date +%s) / 300))" '
       ($held | split("\n")) as $names
       | [inputs] as $all

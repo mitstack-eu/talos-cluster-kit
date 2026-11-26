@@ -928,9 +928,11 @@ report whose plane names runner inputs takes these steps:
    runner ARC still holds has one of the two by the time of this read.
 4. It picks each listed runner that GitHub reads offline, whose name no pod
    or EphemeralRunner holds, and whose name is ARC's for the scale set. ARC
-   names a runner after its scale set, then the random suffix of the
-   EphemeralRunnerSet that holds it, then `runner` and the random suffix of
-   its EphemeralRunner, as in `mitstack-ci-7xk2p-runner-q8w4z`.
+   0.15, the release the kit pins, names a runner `<scale set>-runner-`
+   followed by five characters Kubernetes generates, as in
+   `mitstack-ci-runner-tlmgf`. Kubernetes draws the five from
+   `bcdfghjklmnpqrstvwxz2456789`, and first cuts the part before them to 58
+   characters, so the sweep matches that exact shape.
 5. It leaves a picked runner that GitHub still reads busy for a later run,
    since GitHub refuses to remove a runner while it holds a job.
 6. It asks GitHub to remove the other picked runners one at a time, at most
@@ -955,6 +957,12 @@ there. A scale set of the same name in another runner group therefore keeps
 its runners. The kit assumes one cluster per scale set name in a runner group:
 a second cluster that registers the same name in the same group shares the
 scale set, and its sweep could remove the first cluster's starting runners.
+
+The exact shape keeps two kinds of runner that share the group. A runner of a
+scale set whose name starts with this one's, such as
+`mitstack-ci-kata-runner-tlmgf`, carries a hyphen where the five characters
+stand. A runner registered by hand, such as `mitstack-ci-runner-dev01`, ends in
+characters Kubernetes never generates.
 
 A runner starting up is offline with its EphemeralRunner, so the sweep keeps
 it. A runner whose pod just went may still read online, so a later run
@@ -982,9 +990,9 @@ third with status 403, which means the token lacks the right to remove it:
 {
   "scaleSet": "mitstack-ci",
   "listed": 3,
-  "removed": ["mitstack-ci-7xk2p-runner-q8w4z"],
-  "unremoved": [{"id": 22, "name": "mitstack-ci-7xk2p-runner-m3n5b", "status": 403, "message": "the message GitHub answered with"}],
-  "busy": ["mitstack-ci-7xk2p-runner-h5j6k"],
+  "removed": ["mitstack-ci-runner-tlmgf"],
+  "unremoved": [{"id": 22, "name": "mitstack-ci-runner-m4n5b", "status": 403, "message": "the message GitHub answered with"}],
+  "busy": ["mitstack-ci-runner-h5j6k"],
   "deferred": 1,
   "unlisted": 0
 }
@@ -997,7 +1005,7 @@ The fields mean this:
   set.
 - `removed` names each runner GitHub removed, or answered 404 for.
 - `unremoved` holds each refusal, with GitHub's status and its message cut to
-  256 characters.
+  256 characters. The runner stays listed, and the next run asks again.
 - `busy` names each picked runner GitHub still reads busy, which the sweep
   leaves for a later run.
 - `deferred` counts the busy runners and the picked runners the run did not
@@ -1056,7 +1064,6 @@ blocked, in these cases:
 - the sweep carries `unread` or `skipped`
 - the sweep read another scale set than the one the cluster runs
 - the sweep says neither how many runners it listed nor why it listed none
-- GitHub refused a removal, named with its status and message
 - `unlisted` is above zero, since a dead runner past the third page stays
   listed
 - a runner reads busy in two sweeps 30 minutes or more apart
@@ -1066,6 +1073,10 @@ blocked, in these cases:
 The text is empty when that report shows none of these, and for a cluster
 that runs no scale set. The block reads its runner capability as unhealthy
 with the text, and a later clean run clears it.
+
+A removal GitHub refuses leaves the text as it would be without it. The report
+still names the runner under `unremoved`, and the next run asks GitHub again,
+so the runner goes once GitHub accepts.
 
 The sweep never removes a busy runner, so a dead runner GitHub keeps reading
 busy would stay listed with no other sign. GitHub's docs give no time within

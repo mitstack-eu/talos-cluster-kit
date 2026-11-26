@@ -310,6 +310,7 @@ allowedRoles:
     - os:reader
 allowedKubernetesNamespaces:
     - mitstack-node
+    - kube-system
 ---
 apiVersion: v1alpha1
 kind: RegistryMirrorConfig

@@ -5,7 +5,6 @@
 package talosclusterkit
 
 import (
-	"bufio"
 	"bytes"
 	"crypto/rand"
 	"encoding/json"
@@ -74,16 +73,16 @@ func TestAPIServer_TheOutsideProbeAndTheSecurityScanWriteTheirOwnConfigMapAndNoO
 	t.Run("the security scan writes what kube-bench read of each control-plane process, of etcd's directory and of each kubeconfig as Talos keeps them", func(t *testing.T) {
 		results := sharedDir(t)
 		require.NoError(t, os.Chmod(results, 0o777))
-		standIns := map[string][]string{"/results": {"-v", results + ":/results"}, "/var/lib/etcd": {"--tmpfs", "/var/lib/etcd:ro," + talosEtcdDirectory}}
+		standIns := map[string][]string{"/results": {"-v", results + ":/results"}, "/processes": {"-v", controlPlaneProcesses(t) + ":/processes:ro"},
+			"/var/lib/etcd": {"--tmpfs", "/var/lib/etcd:ro," + talosEtcdDirectory}}
 		for _, path := range []string{constants.KubernetesSchedulerSecretsDir, constants.KubernetesControllerManagerSecretsDir} {
 			secrets := sharedDir(t)
 			require.NoError(t, os.WriteFile(filepath.Join(secrets, "kubeconfig"), []byte("apiVersion: v1\nkind: Config\n"), talosKubeconfigMode))
 			standIns[path] = []string{"-v", secrets + ":" + path + ":ro"}
 		}
 		job, pod := cronJobPod(t, rendered, "mitstack-security-scan")
-		bench := testutil.Field(t, pod, "initContainers", "0")
-		benchArgs := append([]string{"run", "--rm", "--pid", "container:" + controlPlaneStandIns(t, server.toolsImage)},
-			containerArgs(t, job, pod, bench, standIns)...)
+		bench := testutil.Item(t, pod, "kube-bench", "initContainers")
+		benchArgs := append([]string{"run", "--rm"}, containerArgs(t, job, pod, bench, standIns)...)
 
 		benchOut, benchErr := exec.Command("docker", append(append(benchArgs, server.toolsImage), command(t, bench)...)...).CombinedOutput()
 		require.NoError(t, benchErr, "the kube-bench step printed:\n%s", benchOut)
@@ -300,37 +299,16 @@ const talosEtcdDirectory = "mode=0700,uid=60,gid=60"
 // talosKubeconfigMode is the mode Talos writes the scheduler's and the controller manager's kubeconfigs with.
 const talosKubeconfigMode = 0o400
 
-// controlPlaneStandIns starts a container that holds one process named as each component kube-bench looks for, with the
-// flag the scan test reads back, and returns the container's name once every process runs.
-func controlPlaneStandIns(t *testing.T, toolsImage string) string {
+// controlPlaneProcesses writes the command line the scan's reader writes for each component kube-bench reads, each with
+// the flag the scan test reads back, into a directory the kube-bench step mounts where its pod mounts the reader's.
+func controlPlaneProcesses(t *testing.T) string {
 	t.Helper()
-	name := "mitstack-apiserver-check-" + strings.ToLower(rand.Text()[:8]) + "-control-plane"
-	cmd := exec.Command("docker", "run", "--rm", "--name", name, toolsImage, "bash", "-c", `set -euo pipefail
-mkdir /tmp/bin
-mkfifo /tmp/up /tmp/hold
-exec 3<> /tmp/up
-start() { ln -s /bin/bash "/tmp/bin/$1"; "/tmp/bin/$1" -c 'echo up > /tmp/up; read -r _ < /tmp/hold' "$@" & }
-start kube-apiserver --profiling=false
-start kube-controller-manager --profiling=false
-start kube-scheduler --profiling=false
-start etcd --data-dir=/var/lib/etcd
-start kubelet
-for _ in 1 2 3 4 5; do read -r _ <&3; done
-echo ready
-wait`)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	stdout, err := cmd.StdoutPipe()
-	require.NoError(t, err)
-	require.NoError(t, cmd.Start())
-	t.Cleanup(func() {
-		_ = exec.Command("docker", "rm", "-f", name).Run()
-		_ = cmd.Wait()
-	})
-	line, err := bufio.NewReader(stdout).ReadString('\n')
-	require.NoError(t, err, "the stand-in control plane never started: %s", stderr.String())
-	require.Equal(t, "ready\n", line)
-	return name
+	dir := sharedDir(t)
+	for name, line := range map[string]string{"apiserver": "kube-apiserver --profiling=false", "controllermanager": "kube-controller-manager --profiling=false",
+		"scheduler": "kube-scheduler --profiling=false", "etcd": "etcd --data-dir=/var/lib/etcd", "kubelet": "kubelet"} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte("/usr/local/bin/"+line+"\n"), 0o644))
+	}
+	return dir
 }
 
 func cronJobPod(t *testing.T, rendered []byte, name string) (job map[string]any, pod any) {

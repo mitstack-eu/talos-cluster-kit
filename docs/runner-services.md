@@ -962,12 +962,19 @@ The exact shape keeps two kinds of runner that share the group. A runner of a
 scale set whose name starts with this one's, such as
 `mitstack-ci-kata-runner-tlmgf`, carries a hyphen where the five characters
 stand. A runner registered by hand, such as `mitstack-ci-runner-dev01`, ends in
-characters Kubernetes never generates.
+characters Kubernetes never generates. A hand-registered name that does end in
+five of those characters, such as `mitstack-ci-runner-gh2x4`, fits the shape,
+and the sweep removes it once it is offline with no pod.
+
+The shape holds the whole `-runner-` only for a scale set name of at most 50
+characters. Past that, the 58-character cut reaches into it. A longer scale
+set and another whose name starts with the same 51 characters then match each
+other's runners, if both sit in one runner group.
 
 A runner starting up is offline with its EphemeralRunner, so the sweep keeps
 it. A runner whose pod just went may still read online, so a later run
-removes it. The sweep never removes a runner of another scale set or one ARC
-did not name. When a GitHub list or the read of `mitstack-runners` fails, the
+removes it. Within those limits, the sweep removes no runner of another scale
+set and none ARC did not name. When a GitHub list or the read of `mitstack-runners` fails, the
 sweep removes nothing, since it cannot tell which runners ARC still holds.
 These answers count as failed reads too:
 
@@ -1074,7 +1081,7 @@ The text is empty when that report shows none of these, and for a cluster
 that runs no scale set. The block reads its runner capability as unhealthy
 with the text, and a later clean run clears it.
 
-A removal GitHub refuses leaves the text as it would be without it. The report
+A removal GitHub refuses, on its own, leaves the check healthy. The report
 still names the runner under `unremoved`, and the next run asks GitHub again,
 so the runner goes once GitHub accepts.
 

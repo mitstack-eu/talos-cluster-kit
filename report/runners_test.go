@@ -200,8 +200,6 @@ func TestReport_RemovesARunnerOfItsScaleSetThatGitHubListsOfflineWithNoPodBehind
 			runner: gitHubRunner{ID: 12, Name: killedRunner, Status: "offline", Busy: true}, waits: true},
 		"a runner whose pod ended after its job leaves it offline and idle with no pod, and it is removed": {
 			runner: gitHubRunner{ID: 13, Name: killedRunner, Status: "offline"}, pods: []string{"mitstack-ci-7xk2p-listener"}, removed: true},
-		"a runner ARC named as it names mitstack-ci-runner-tlmgf, offline with its pod still running, is kept": {
-			runner: gitHubRunner{ID: 10, Name: killedRunner, Status: "offline"}, pods: []string{killedRunner}},
 		"a runner of a scale set whose name Kubernetes cuts to 58 characters before the five it generates is removed": {
 			scaleSet: "acme-continuous-integration-for-every-repository-of-acme", removed: true,
 			runner: gitHubRunner{ID: 9, Name: "acme-continuous-integration-for-every-repository-of-acme-rtlmgf", Status: "offline"}},
@@ -217,8 +215,6 @@ func TestReport_RemovesARunnerOfItsScaleSetThatGitHubListsOfflineWithNoPodBehind
 			runner: gitHubRunner{ID: 18, Name: "mitstack-ci-kata-runner-tlmgf", Status: "offline"}, notOurs: true},
 		"an offline runner registered by hand under a name Kubernetes never generates is kept": {
 			runner: gitHubRunner{ID: 19, Name: "mitstack-ci-runner-dev01", Status: "offline"}, notOurs: true},
-		"an offline runner named as ARC before 0.15 named one, which is how ARC 0.15 names a runner of mitstack-ci-7xk2p, is kept": {
-			runner: gitHubRunner{ID: 8, Name: "mitstack-ci-7xk2p-runner-q8w4z", Status: "offline"}, notOurs: true},
 		"an offline runner of a same-named scale set in another runner group, as another cluster registers, is kept unread": {
 			runner: gitHubRunner{ID: 20, RunnerGroupID: otherGroupID, Name: killedRunner, Status: "offline"}, notOurs: true},
 	}

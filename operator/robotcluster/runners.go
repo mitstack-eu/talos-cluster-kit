@@ -22,30 +22,20 @@ const staleSweepBound = 3 * report.Interval
 // busy runner and GitHub documents no time within which it fails the job of a runner that went away.
 const stuckRunnerBound = 30 * time.Minute
 
-// unremovedRunner is a runner the sweep asked GitHub to remove that GitHub did not answer as gone, with its status
-// and message.
-type unremovedRunner struct {
-	Name    string `json:"name"`
-	ID      int64  `json:"id"`
-	Status  int    `json:"status"`
-	Message string `json:"message"`
-}
-
 // runnerSweep is the part of the node report's runners member that the check reads.
 type runnerSweep struct {
-	ScaleSet  string            `json:"scaleSet"`
-	Listed    *int              `json:"listed"`
-	Unread    string            `json:"unread"`
-	Skipped   string            `json:"skipped"`
-	Removed   []string          `json:"removed"`
-	Unremoved []unremovedRunner `json:"unremoved"`
-	Busy      []string          `json:"busy"`
-	Unlisted  int               `json:"unlisted"`
+	ScaleSet string   `json:"scaleSet"`
+	Listed   *int     `json:"listed"`
+	Unread   string   `json:"unread"`
+	Skipped  string   `json:"skipped"`
+	Removed  []string `json:"removed"`
+	Busy     []string `json:"busy"`
+	Unlisted int      `json:"unlisted"`
 }
 
 // RunnersProblem names each way the newest node report that read everything shows the runner sweep failed, stopped or
 // blocked, and is "" when it shows none or the cluster runs no scale set, so a backlog the sweep still works through
-// reads "".
+// reads "", as does a removal GitHub refused, which the next run asks again.
 func (k *Cluster) RunnersProblem(ctx context.Context, d contract.Desired) string {
 	runners, err := k.runnersFor(d)
 	switch {
@@ -84,9 +74,6 @@ func (k *Cluster) RunnersProblem(ctx context.Context, d contract.Desired) string
 		return "the newest runner sweep says neither how many runners it listed nor why it listed none, so whether it removed every dead runner is unknown"
 	}
 	var problems []string
-	if len(sweep.Unremoved) > 0 {
-		problems = append(problems, sweep.refusals())
-	}
 	if sweep.Unlisted > 0 {
 		problems = append(problems, fmt.Sprintf("GitHub lists %d more runners in the runner group of the scale set %s than the sweep reads, so a dead runner among them stays listed",
 			sweep.Unlisted, sweep.ScaleSet))
@@ -138,13 +125,4 @@ func namedEarlier(names []string, full []observe.NodeReport, at time.Time, apart
 		}
 	}
 	return named
-}
-
-func (s runnerSweep) refusals() string {
-	named := make([]string, 0, len(s.Unremoved))
-	for _, r := range s.Unremoved {
-		named = append(named, fmt.Sprintf("%s (id %d), HTTP %d: %s", r.Name, r.ID, r.Status, r.Message))
-	}
-	return fmt.Sprintf("GitHub refused to remove these idle offline runners of the scale set %s, which ARC no longer holds: %s",
-		s.ScaleSet, strings.Join(named, "; "))
 }

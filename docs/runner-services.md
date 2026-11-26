@@ -967,15 +967,17 @@ five of those characters, such as `mitstack-ci-runner-gh2x4`, fits the shape,
 and the sweep removes it once it is offline with no pod.
 
 The shape holds the whole `-runner-` only for a scale set name of at most 50
-characters. Past that, the 58-character cut reaches into it. A longer scale
-set and another whose name starts with the same 51 characters then match each
-other's runners, if both sit in one runner group.
+characters. Past that, the 58-character cut reaches into it. Two scale sets in
+one runner group match each other's runners when `<scale set>-runner-` cut to
+58 characters reads the same for both, as for a 58-character name and the
+same name with `-kata` added.
 
 A runner starting up is offline with its EphemeralRunner, so the sweep keeps
 it. A runner whose pod just went may still read online, so a later run
 removes it. Within those limits, the sweep removes no runner of another scale
-set and none ARC did not name. When a GitHub list or the read of `mitstack-runners` fails, the
-sweep removes nothing, since it cannot tell which runners ARC still holds.
+set and none ARC did not name. When a GitHub list or the read of
+`mitstack-runners` fails, the sweep removes nothing, since it cannot tell which
+runners ARC still holds.
 These answers count as failed reads too:
 
 - a runner-group answer with no `runner_groups` array

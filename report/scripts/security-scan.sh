@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# Runs kube-bench on the cis-1.10 benchmark, and then kubescape on the NSA framework, and patches a summary of each, with
-# the run's outcome, into the ConfigMap the node report reads. A tool that fails is kept as its summary's error, and the
-# scan then exits non-zero, so the Job runs it again.
-# Usage: SCAN_RESULTS=<dir> SCAN_BENCH_CONFIG=<cfg dir> SCAN_BENCH_VERSION=<v> security-scan.sh bench
+# Reads each control-plane component's command line from Talos's process list, runs kube-bench on the cis-1.10
+# benchmark over those command lines, then kubescape on the NSA framework, and patches a summary of each, with the run's
+# outcome, into the ConfigMap the node report reads. A tool that fails is kept as its summary's error, and the scan then
+# exits non-zero, so the Job runs it again.
+# Usage: SCAN_RESULTS=<dir> SCAN_PROCESSES=<dir> HOST_IP=<node address> security-scan.sh processes
+#   SCAN_RESULTS=<dir> SCAN_PROCESSES=<dir> SCAN_BENCH_CONFIG=<cfg dir> SCAN_BENCH_VERSION=<v> security-scan.sh bench
 #   SCAN_RESULTS=<dir> SCAN_CONFIGMAP=<namespace/name> KUBESCAPE_ARTIFACTS=<dir holding nsa and default_config_inputs>
 #   KUBESCAPE_CONTROLS_VERSION=<v> security-scan.sh
-# The bench step reads the host as root with no token and leaves its summary in SCAN_RESULTS; the second step runs as
-# another user with the token, so no tool holds both. It exists because a Talos node runs no host service, so the scan
-# runs as a Job and leaves its summaries where the report, which holds no right to start it, can read them.
+# The processes step reads the Talos API as a non-root user, the bench step reads the host as root with no token, and
+# each leaves what it found in SCAN_RESULTS; the last step runs as a non-root user with the token, so no step holds two
+# of them. It exists because a Talos node runs no host service, so the scan runs as a Job and leaves its summaries where
+# the report, which holds no right to start it, can read them.
 set -euo pipefail
 
 # kube-bench's version mapping picks no benchmark for Talos, so the scan names the one Sidero documents for it.
@@ -50,10 +53,29 @@ summary_error() {
 # shellcheck disable=SC2016 # jq expands its own variables
 readonly bounded='def bounded($n): reduce .[] as $x ([]; if ((. + [$x]) | tojson | utf8bytelength) <= $n then . + [$x] else . end);'
 
+# bench_config copies kube-bench's config into $work/cfg, pointing each audit that reads a process at that component's
+# command line under SCAN_PROCESSES, since the pod shares no process table with the node.
+bench_config() {
+  cp -R "$SCAN_BENCH_CONFIG" "$work/cfg"
+  sed -i -E \
+    -e 's#(/bin/)?ps -ef [|] (/bin/)?grep [$]([a-z]+)bin( [|] (/bin/)?grep -v grep)?#cat '"$SCAN_PROCESSES"'/\3#g' \
+    -e 's#ps -ef [|] grep kubelet#cat '"$SCAN_PROCESSES"'/kubelet#g' \
+    -e 's#/bin/ps -fC [$]([a-z]+)bin#cat '"$SCAN_PROCESSES"'/\1#g' \
+    "$work/cfg/$benchmark/"*.yaml
+}
+
+# kube_bench runs no benchmark when the reader failed, since kube-bench would judge a default in place of each flag it
+# could not read, and keeps the reader's error as its own.
 kube_bench() {
   local started status=0
   started=$(now)
-  run_tool kube-bench kube-bench run --config-dir "$SCAN_BENCH_CONFIG" --benchmark "$benchmark" --targets "$targets" --json || status=$?
+  if [ -s "$SCAN_RESULTS/process-list.error" ]; then
+    { printf 'kube-bench did not run, since '; cat "$SCAN_RESULTS/process-list.error"; } > "$work/kube-bench.error"
+    status=1
+  else
+    bench_config
+    run_tool kube-bench kube-bench run --config-dir "$work/cfg" --benchmark "$benchmark" --targets "$targets" --json || status=$?
+  fi
   if [ "$status" -eq 0 ] && jq -c --argjson limit "$failed_limit" "$bounded"' {
       totals: (.Totals | {pass: .total_pass, fail: .total_fail, warn: .total_warn, info: .total_info}),
       failed: ([.Controls[].tests[].results[] | select(.status == "FAIL")
@@ -111,10 +133,23 @@ kubescape_scan() {
   return "$status"
 }
 
+# processes_step exits 0 when the reader fails, leaving its error in SCAN_RESULTS for kube-bench's summary, so the scan
+# still runs kubescape and patches both.
+processes_step() {
+  : "${SCAN_PROCESSES:?names the directory the reader writes each command line into}" "${HOST_IP:?names the node to read}"
+  if run_tool process-list process-list "$HOST_IP" "$SCAN_PROCESSES"; then
+    echo "security-scan: process-list ran"
+  else
+    cp "$work/process-list.error" "$SCAN_RESULTS/process-list.error"
+    echo "security-scan: process-list failed"
+  fi
+}
+
 # bench_step exits 0 when kube-bench fails, keeping the failure in its summary, so the step after it still runs kubescape
 # and patches both. Its variables stay outside KUBE_BENCH_, the prefix kube-bench reads its own settings under.
 bench_step() {
   : "${SCAN_BENCH_CONFIG:?names the config directory of kube-bench}" "${SCAN_BENCH_VERSION:?names the kube-bench the image carries}"
+  : "${SCAN_PROCESSES:?names the directory the reader wrote each command line into}"
   local outcome=ran
   kube_bench || outcome=failed
   cp "$work/kube-bench.json" "$SCAN_RESULTS/kube-bench.json"
@@ -146,6 +181,7 @@ main() {
   : "${SCAN_RESULTS:?names the directory the two steps share}"
   export HOME=$work
   case "${1:-}" in
+    processes) processes_step ;;
     bench) bench_step ;;
     "") scan_step ;;
     *) echo "security-scan: unknown step $1" >&2; return 2 ;;

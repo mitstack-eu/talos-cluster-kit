@@ -27,28 +27,34 @@ func imageJq(t *testing.T) string {
 	version, sum := tools.Pin("JQ_VERSION"), tools.Pin("JQ_SHA256")
 	require.NotEmpty(t, version, "jq.env pins no JQ_VERSION")
 	require.Equal(t, "linux/amd64", runtime.GOOS+"/"+runtime.GOARCH, "the tools image's jq is a linux/amd64 binary")
+	path := pinnedDownload(t, "https://github.com/jqlang/jq/releases/download/"+version+"/jq-linux-amd64", version, sum, "jq")
+	require.NoError(t, os.Chmod(path, 0o755))
+	return path
+}
 
+// pinnedDownload fetches url once per machine into the user's cache as name, and fails unless its sha256 is sum.
+func pinnedDownload(t *testing.T, url, version, sum, name string) string {
+	t.Helper()
 	cache, err := os.UserCacheDir()
 	require.NoError(t, err)
 	dir := filepath.Join(cache, "talos-cluster-kit", version+"-"+sum)
-	path := filepath.Join(dir, "jq")
+	path := filepath.Join(dir, name)
 	if fileSHA256(path) == sum {
 		return path
 	}
 
 	require.NoError(t, os.MkdirAll(dir, 0o755))
-	resp, err := http.Get("https://github.com/jqlang/jq/releases/download/" + version + "/jq-linux-amd64")
+	resp, err := http.Get(url)
 	require.NoError(t, err)
 	defer resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode, "fetching %s", version)
-	tmp, err := os.CreateTemp(dir, "jq-*")
+	require.Equal(t, http.StatusOK, resp.StatusCode, "fetching %s", url)
+	tmp, err := os.CreateTemp(dir, name+"-*")
 	require.NoError(t, err)
 	defer os.Remove(tmp.Name())
 	_, err = io.Copy(tmp, resp.Body)
 	require.NoError(t, err)
 	require.NoError(t, tmp.Close())
-	require.Equal(t, sum, fileSHA256(tmp.Name()), "the fetched %s does not match jq.env's JQ_SHA256", version)
-	require.NoError(t, os.Chmod(tmp.Name(), 0o755))
+	require.Equal(t, sum, fileSHA256(tmp.Name()), "the fetched %s does not match its pinned sha256", url)
 	require.NoError(t, os.Rename(tmp.Name(), path))
 	return path
 }

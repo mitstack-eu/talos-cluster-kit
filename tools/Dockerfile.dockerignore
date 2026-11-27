@@ -14,6 +14,7 @@
 !go.sum
 !cmd/machine-config/
 !cmd/package-cache/
+!cmd/process-list/
 !packagecache/
 !components/
 !internal/check/

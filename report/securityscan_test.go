@@ -25,10 +25,11 @@ const scanAt = "echo 2026-11-07T03:17:00Z"
 const kubescapeWriting = `while [ $# -gt 0 ]; do if [ "$1" = --output ]; then cp testdata/scan/kubescape.json "$2"; fi; shift; done`
 
 type scanRun struct {
-	tools *testutil.Tools
-	data  map[string]string
-	out   string
-	err   error
+	tools  *testutil.Tools
+	config string
+	data   map[string]string
+	out    string
+	err    error
 }
 
 // summary is one summary the scan patched into its ConfigMap, decoded.
@@ -42,21 +43,24 @@ func (r scanRun) summary(t *testing.T, key string) map[string]any {
 func runScan(t *testing.T, fakes map[string]string) scanRun {
 	t.Helper()
 	patch := filepath.Join(t.TempDir(), "patch.json")
-	all := map[string]string{"date": scanAt, "kubectl": `cp "${@: -1}" ` + patch,
+	all := map[string]string{"date": scanAt, "kubectl": `cp "${@: -1}" ` + patch, "process-list": "",
 		"kube-bench": "cat testdata/scan/kube-bench.json", "kubescape": kubescapeWriting}
 	maps.Copy(all, fakes)
 	tools := testutil.NewTools(t, all)
 	tools.AddImageJq(t)
 	script, env := renderedScript(t, reportURL, "mitstack-security-scan")
-	bench := testutil.ContainerEnv(t, testutil.Field(t, scanPod(t), "initContainers", "0"))
-	results := "SCAN_RESULTS=" + t.TempDir()
+	reader := testutil.ContainerEnv(t, testutil.Item(t, scanPod(t), "processes", "initContainers"))
+	bench := testutil.ContainerEnv(t, testutil.Item(t, scanPod(t), "kube-bench", "initContainers"))
+	results, config := "SCAN_RESULTS="+t.TempDir(), testutil.KubeBenchConfig(t)
 
-	benchOut, benchErr := testutil.RunBash(t, script, tools.Env(results, "SCAN_BENCH_CONFIG=/kube-bench/cfg",
+	readerOut, readerErr := testutil.RunBash(t, script, tools.Env(results, "SCAN_PROCESSES="+reader["SCAN_PROCESSES"], "HOST_IP=10.0.0.6"), "processes")
+	require.NoError(t, readerErr, "the reader's step keeps a failure for kube-bench's summary: %s", readerOut)
+	benchOut, benchErr := testutil.RunBash(t, script, tools.Env(results, "SCAN_BENCH_CONFIG="+config, "SCAN_PROCESSES="+bench["SCAN_PROCESSES"],
 		"SCAN_BENCH_VERSION="+bench["SCAN_BENCH_VERSION"]), "bench")
 	require.NoError(t, benchErr, "kube-bench's step keeps a failure in its summary, so kubescape still runs: %s", benchOut)
 	out, err := testutil.RunBash(t, script, tools.Env(results, "SCAN_CONFIGMAP="+env["SCAN_CONFIGMAP"], "KUBESCAPE_ARTIFACTS=testdata/scan",
 		"KUBESCAPE_CONTROLS_VERSION="+env["KUBESCAPE_CONTROLS_VERSION"]))
-	run := scanRun{tools: tools, out: out, err: err}
+	run := scanRun{tools: tools, config: config, out: out, err: err}
 	var written struct{ Data map[string]string }
 	data, readErr := os.ReadFile(patch)
 	require.NoError(t, readErr, "the scan patched its ConfigMap: %s", out)
@@ -70,8 +74,9 @@ func TestSecurityScan_RunsKubeBenchOnTheTalosBenchmarkAndKubescapeOnNSAAndPatche
 	require.NoError(t, run.err, run.out)
 
 	calls := run.tools.Calls(t)
-	assert.Contains(t, calls, "kube-bench run --config-dir /kube-bench/cfg --benchmark cis-1.10 --targets master,etcd,controlplane,node,policies --json",
-		"the benchmark Sidero documents for Talos, since kube-bench's version mapping picks none for Talos")
+	assert.Equal(t, "process-list 10.0.0.6 /processes", calls[0], "the reader reads its own node's process list before kube-bench runs")
+	assert.Regexp(t, `(?m)^kube-bench run --config-dir \S+ --benchmark cis-1.10 --targets master,etcd,controlplane,node,policies --json$`,
+		strings.Join(calls, "\n"), "the benchmark Sidero documents for Talos, since kube-bench's version mapping picks none for Talos")
 	for _, call := range calls {
 		if strings.HasPrefix(call, "kubescape ") {
 			assert.Regexp(t, `^kubescape scan framework nsa --use-from testdata/scan/nsa --controls-config \S+/inputs\.json `+
@@ -127,6 +132,39 @@ func TestSecurityScan_KeepsAToolThatFailsAsAnErrorWithItsStderrRunsTheOtherAndEx
 		"output": "kube-bench: failed; kubescape: ran"}, run.summary(t, "last-run"))
 }
 
+func TestSecurityScan_RunsNoKubeBenchAndKeepsWhyWhenTheReaderFindsAComponentsProcessMissing(t *testing.T) {
+	run := runScan(t, map[string]string{"process-list": `echo '10.0.0.6 runs no etcd process, so no command line was written' >&2; exit 1`})
+
+	require.Error(t, run.err, "a scan that judged no flag fails the Job, so it runs again")
+	assert.Equal(t, map[string]any{"tool": "kube-bench", "version": "v0.16.0", "startedAt": "2026-11-07T03:17:00Z",
+		"finishedAt": "2026-11-07T03:17:00Z", "profile": "cis-1.10",
+		"error": "kube-bench did not run, since process-list exited 1: 10.0.0.6 runs no etcd process, so no command line was written\n"},
+		run.summary(t, "kube-bench"))
+	assert.NotRegexp(t, `(?m)^kube-bench `, strings.Join(run.tools.Calls(t), "\n"), "kube-bench judges no default in place of a flag it could not read")
+}
+
+func TestSecurityScan_PointsEachAuditThatReadsAProcessAtItsComponentsCommandLineInTheReadersDirectory(t *testing.T) {
+	readsProcess, readsFile := regexp.MustCompile(`\bps -`), regexp.MustCompile(`cat /processes/(\w+)`)
+	given := filepath.Join(t.TempDir(), "cfg")
+	run := runScan(t, map[string]string{"kube-bench": `cp -R "$3" ` + given + "\ncat testdata/scan/kube-bench.json"})
+	require.NoError(t, run.err, run.out)
+
+	read := map[string]int{}
+	audits := testutil.KubeBenchAudits(t, given)
+	for id, shipped := range testutil.KubeBenchAudits(t, run.config) {
+		if !readsProcess.MatchString(shipped) {
+			assert.Equal(t, shipped, audits[id], "check %s reads no process, so its audit stays as kube-bench ships it", id)
+			continue
+		}
+		assert.NotRegexp(t, readsProcess, audits[id], "check %s", id)
+		if component := readsFile.FindStringSubmatch(audits[id]); assert.NotNil(t, component, "check %s: %s", id, audits[id]) {
+			read[component[1]]++
+		}
+	}
+	assert.Equal(t, map[string]int{"apiserver": 30, "controllermanager": 7, "scheduler": 2, "etcd": 9, "kubelet": 17, "proxy": 1}, read,
+		"each of the 66 cis-1.10 checks whose audit reads a process reads its own component's command line")
+}
+
 func TestSecurityScan_KeepsEachSummaryWithinTheReportsBoundAtAnySize(t *testing.T) {
 	bench := `jq -n '{Totals: {total_pass: 0, total_fail: 2000, total_warn: 0, total_info: 0}, Controls: [{tests: [{results:
 		[range(2000) | {test_number: "1.\(.)", test_desc: ("d" * 300), status: "FAIL", scored: true}]}]}]}'`
@@ -171,21 +209,17 @@ func TestManifests_RunsKubeBenchAsRootOnTheHostsConfigWithNoTokenAndKubescapeAsN
 	assert.Equal(t, "Forbid", testutil.Field(t, job, "spec", "concurrencyPolicy"))
 	pod := scanPod(t)
 	assert.Equal(t, "mitstack-security-scan", testutil.Field(t, pod, "serviceAccountName"))
-	assert.Equal(t, true, testutil.Field(t, pod, "hostPID"), "kube-bench reads each component's flags from its process")
+	assert.NotContains(t, pod, "hostPID", "no container shares the node's process table, since kube-bench reads the reader's command lines")
 	assert.Equal(t, false, testutil.Field(t, pod, "automountServiceAccountToken"), "only the container that calls the API server holds a token")
 	assert.Equal(t, map[string]any{"node-role.kubernetes.io/control-plane": ""}, testutil.Field(t, pod, "nodeSelector"))
-	bench := testutil.Field(t, pod, "initContainers", "0")
+	bench := testutil.Item(t, pod, "kube-bench", "initContainers")
 	assert.Equal(t, []any{"bash", tools.ScriptDir + "/security-scan.sh", "bench"}, testutil.Field(t, bench, "command"))
-	locked := func(user int, nonRoot bool) map[string]any {
-		return map[string]any{"runAsUser": user, "runAsNonRoot": nonRoot, "allowPrivilegeEscalation": false, "readOnlyRootFilesystem": true,
-			"capabilities": map[string]any{"drop": []any{"ALL"}}}
-	}
+	assert.Equal(t, "/processes", testutil.ContainerEnv(t, bench)["SCAN_PROCESSES"])
 	assert.Equal(t, locked(0, false), testutil.Field(t, bench, "securityContext"), "kube-bench reads root-owned files on the host")
-	assert.Equal(t, locked(65532, true), testutil.Field(t, scan, "securityContext"),
-		"kubescape, which reads no host file, cannot reach a root process through the host's process table")
+	assert.Equal(t, locked(65532, true), testutil.Field(t, scan, "securityContext"), "kubescape reads no host file")
 	scheduler, controllerManager := constants.KubernetesSchedulerSecretsDir, constants.KubernetesControllerManagerSecretsDir
-	assert.Equal(t, map[string]any{"/tmp": nil, "/results": nil, "/etc/kubernetes": true, "/var/lib/kubelet": true, "/var/lib/etcd": true,
-		scheduler: true, controllerManager: true},
+	assert.Equal(t, map[string]any{"/tmp": nil, "/results": nil, "/processes": true, "/etc/kubernetes": true, "/var/lib/kubelet": true,
+		"/var/lib/etcd": true, scheduler: true, controllerManager: true},
 		mounts(t, bench), "kube-bench alone mounts the host, read-only, and holds no token")
 	assert.Equal(t, map[string]any{"/tmp": nil, "/results": nil, "/var/run/secrets/kubernetes.io/serviceaccount": true}, mounts(t, scan))
 	typeChecks := map[any]any{}
@@ -204,10 +238,33 @@ func TestManifests_RunsKubeBenchAsRootOnTheHostsConfigWithNoTokenAndKubescapeAsN
 			assert.Equal(t, path, testutil.Field(t, v, "mountPath"), "kube-bench reads each host directory where Talos keeps it, among the paths it looks in")
 		}
 	}
-	for _, c := range []any{bench, scan} {
+	for _, c := range []any{testutil.Item(t, pod, "processes", "initContainers"), bench, scan} {
 		assert.Equal(t, testutil.ToolsImage, testutil.Field(t, c, "image"))
 		assert.NotNil(t, testutil.Field(t, c, "resources", "limits", "memory"), "each step sets its memory limit")
 	}
+}
+
+func locked(user int, nonRoot bool) map[string]any {
+	return map[string]any{"runAsUser": user, "runAsNonRoot": nonRoot, "allowPrivilegeEscalation": false, "readOnlyRootFilesystem": true,
+		"capabilities": map[string]any{"drop": []any{"ALL"}}}
+}
+
+func TestManifests_ReadsTheProcessListFirstAsNonRootWithTheTalosReaderRoleAloneAndNoHostPathOrToken(t *testing.T) {
+	docs := testutil.Documents(t, manifests(t, reportURL))
+	pod := scanPod(t)
+
+	reader := testutil.Field(t, pod, "initContainers", "0").(map[string]any)
+	assert.Equal(t, "processes", reader["name"], "the reader runs before kube-bench, which reads what it wrote")
+	assert.Equal(t, []any{"bash", tools.ScriptDir + "/security-scan.sh", "processes"}, reader["command"])
+	assert.Equal(t, locked(65532, true), reader["securityContext"])
+	assert.Equal(t, map[string]any{"/tmp": nil, "/results": nil, "/processes": nil, constants.ServiceAccountMountPath: true}, mounts(t, reader))
+	assert.Equal(t, "status.hostIP", testutil.Field(t, testutil.Item(t, reader, "HOST_IP", "env"), "valueFrom", "fieldRef", "fieldPath"),
+		"the reader reads its own node's process list")
+	talos := testutil.Named(t, testutil.Kind(docs, "ServiceAccount"), "ServiceAccount", "mitstack-security-scan-processes")
+	assert.Equal(t, []any{"talos.dev/v1alpha1", "kube-system", []any{"os:reader"}}, []any{talos["apiVersion"], testutil.Field(t, talos, "metadata", "namespace"),
+		testutil.Field(t, talos, "spec", "roles")}, "a Talos identity in the scan's namespace alone, with os:reader, which Talos gives the process list")
+	assert.Equal(t, "mitstack-security-scan-processes", testutil.Field(t, testutil.Item(t, pod, "talos-secrets", "volumes"), "secret", "secretName"),
+		"the Secret Talos writes for that identity")
 }
 
 func TestManifests_LetsTheScanReadNoSecret(t *testing.T) {

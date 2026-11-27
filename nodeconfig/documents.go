@@ -33,11 +33,15 @@ var HetznerResolvers = []netip.Addr{netip.MustParseAddr("185.12.64.1"), netip.Mu
 // HetznerTimeServers are Hetzner's NTP servers, which every node syncs from in place of time.cloudflare.com.
 var HetznerTimeServers = []string{"ntp1.hetzner.de", "ntp2.hetzner.com", "ntp3.hetzner.net"}
 
-// TalosAPIRoles are the roles a TalosAPINamespace pod may hold, os:admin as etcd member removal takes no narrower one.
+// TalosAPIRoles are the roles a pod of TalosAPINamespace or SecurityScanNamespace may hold, os:admin as etcd member
+// removal takes no narrower one.
 var TalosAPIRoles = []string{"os:admin", "os:etcd:backup", "os:reader"}
 
-// TalosAPINamespace is the one namespace whose pods may hold a Talos API identity.
+// TalosAPINamespace is the namespace of the node Jobs that hold a Talos API identity.
 const TalosAPINamespace = "mitstack-node"
+
+// SecurityScanNamespace is the namespace of the security scan, whose process reader holds a Talos API identity.
+const SecurityScanNamespace = "kube-system"
 
 // adapt changes the generated documents the kit keeps, turning kube-proxy off since Cilium replaces it.
 func (c Cluster) adapt(generated []config.Document, role machine.Type, n Node) []config.Document {
@@ -285,7 +289,7 @@ func kernelLogDocument() config.Document {
 func talosAPIAccessDocument() config.Document {
 	doc := k8s.NewKubeTalosAPIAccessConfigV1Alpha1()
 	doc.AccessAllowedRoles = TalosAPIRoles
-	doc.AccessAllowedKubernetesNamespaces = []string{TalosAPINamespace}
+	doc.AccessAllowedKubernetesNamespaces = []string{TalosAPINamespace, SecurityScanNamespace}
 	return doc
 }
 

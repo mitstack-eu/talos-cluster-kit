@@ -17,7 +17,12 @@ require (
 )
 
 require (
+	github.com/ProtonMail/gopenpgp/v3 v3.4.1 // indirect
+	github.com/adrg/xdg v0.5.3 // indirect
+	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.1 // indirect
+	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
+	github.com/siderolabs/go-api-signature v0.3.13 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 )
@@ -56,7 +61,7 @@ require (
 	github.com/prometheus/procfs v0.21.1 // indirect
 	github.com/ryanuber/go-glob v1.0.0 // indirect
 	github.com/sasha-s/go-deadlock v0.3.9 // indirect
-	github.com/siderolabs/crypto v0.6.5 // indirect
+	github.com/siderolabs/crypto v0.6.5
 	github.com/siderolabs/gen v0.8.8 // indirect
 	github.com/siderolabs/go-pointer v1.0.1 // indirect
 	github.com/siderolabs/net v0.4.0 // indirect
@@ -73,7 +78,7 @@ require (
 	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260810153831-ec0a7760b754 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260810153831-ec0a7760b754 // indirect
-	google.golang.org/grpc v1.83.2 // indirect
+	google.golang.org/grpc v1.83.2
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
